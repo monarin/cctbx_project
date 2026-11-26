@@ -1,4 +1,3 @@
-from __future__ import division
 # LIBTBX_SET_DISPATCHER_NAME xpp.jobs_sentinel
 
 """
@@ -8,11 +7,13 @@ and submit new runs at 0.1 Hz.
 Example usage:
 xpp.jobs_sentinel db.name=xppi6115 db.user=xppi6115 experiment=xppi6115 experiment_tag=debug
 """
+from __future__ import absolute_import, division, print_function
 
 import iotbx.phil
 import libtbx.load_env
 from libtbx.utils import Usage, Sorry
 import sys, os, time
+from six.moves import zip
 
 master_phil = """
   experiment = None
@@ -124,7 +125,7 @@ def submit_job(params, dbobj, trial_id, trial, rungroup_id, run, config_path):
   template.close()
   phil.close()
 
-  from xfel.command_line.cxi_mpi_submit import Script as submit_script
+  from xfel.command_line.submit_job import Script as submit_script
   submit_script().run([submit_phil_path])
 
 def run(args):
@@ -149,11 +150,11 @@ def run(args):
     password = params.db.password
 
   while True:
-    print "Checking for new jobs to submit"
+    print("Checking for new jobs to submit")
     # need to get a new connection each iteration to prevent caching
     try:
       dbobj = db.dbconnect(host=params.db.host, db=params.db.name, username=params.db.user, password=password)
-    except Exception, e:
+    except Exception as e:
       raise Sorry(e)
 
     # Get the set of known runs in the experiment database
@@ -208,7 +209,7 @@ def run(args):
           if run_id in submitted_run_ids:
             continue
 
-          print "Submitting run %d into trial %d using rungroup %d"%(run_id, trial, rungroup_id)
+          print("Submitting run %d into trial %d using rungroup %d"%(run_id, trial, rungroup_id))
 
           config_path = write_hitfind_cfg(params, dbobj, trial_id, trial, rungroup_id)
           if submit_job(params, dbobj, trial_id, trial, rungroup_id, run, config_path):

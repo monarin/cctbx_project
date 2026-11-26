@@ -1,10 +1,11 @@
-from __future__ import division
+from __future__ import absolute_import, division, print_function
 
 # regularize_from_pdb.py
 # a tool to replace segments of a structure with similar segment with good
 # geometry from the PDB
 
 import math
+from operator import itemgetter
 from iotbx.pdb import resseq_encode
 import iotbx.phil
 import os,sys
@@ -14,9 +15,13 @@ from scitbx.array_family import flex
 from mmtbx.secondary_structure.find_ss_from_ca import \
    find_secondary_structure, \
    find_helix,find_beta_strand,find_other_structure,helix,strand,other,\
-   get_first_resno,get_last_resno,get_sequence,get_chain_id,get_atom_list,\
-   apply_atom_selection,model_info,split_model,merge_hierarchies_from_models, \
-   get_pdb_hierarchy
+   get_atom_list,\
+   model_info,split_model
+from mmtbx.secondary_structure.find_ss_from_ca import \
+   merge_hierarchies_from_models
+from iotbx.pdb.utils import get_pdb_hierarchy
+from six.moves import zip
+from six.moves import range
 
 master_phil = iotbx.phil.parse("""
 
@@ -98,13 +103,26 @@ master_phil = iotbx.phil.parse("""
 
      ss_by_chain = None
        .type = bool
-       .help = Find secondary structure only within individual chains. \
+       .help = Only applies if search_method = from_ca. \
+              Find secondary structure only within individual chains. \
                Alternative is to allow H-bonds between chains. Can be \
                much slower with ss_by_chain=False. If your model is complete \
                use ss_by_chain=True. If your model is many fragments, use \
                ss_by_chain=False.  Not used in regularize_pdb
        .short_caption = Secondary structure by chain
        .style = hidden
+
+     auto_choose_ca_vs_ca_n_o = True
+       .type = bool
+       .help = Automatically identify whether chains are mostly CA or mostly \
+                contain CA/N/O atoms (requires min_ca_n_o_completeness).
+       .short_caption = Auto choose CA vs CA/N/O
+
+     min_ca_n_o_completeness = 0.95
+       .type = float
+       .help = Minimum completeness of CA/N/O atoms to not use CA-only
+       .short_caption = Minimum completeness of CA/N/O
+
      max_rmsd = 1
        .type = float
        .help = Maximum rmsd to consider two chains with identical sequences \
@@ -173,6 +191,11 @@ master_phil = iotbx.phil.parse("""
        .help = Cut up segments (make short segments of secondary structure)
        .short_caption = Cut up segments
 
+     extend_segments = False
+       .type = bool
+       .help = Try to extend segments in both directions one residue at a time
+       .short_caption = Extend segments
+
      write_helix_sheet_records = False
        .type = bool
        .help = Write HELIX and SHEET records
@@ -187,6 +210,11 @@ master_phil = iotbx.phil.parse("""
        .type = bool
        .help = Write SHEET records that contain a single strand
        .short_caption = Write single strands
+
+     remove_missing_atom_annotation = False
+       .type = bool
+       .help = Remove annotation that refers to atoms that are not present
+       .short_caption = Remove missing atom annotation
 
      max_h_bond_length = 3.5
        .type = float
@@ -223,6 +251,17 @@ master_phil = iotbx.phil.parse("""
               structure element (helix/sheet) if require_h_bonds is set. \
               Note: None means ignore this test, 0 means allow no poor H-bonds.
       .short_caption = Maximum number of poor H bonds
+
+    tolerant = None
+      .type = bool
+      .help = Set values for tolerant search
+      .short_caption = Tolerant search
+
+     tolerant_max_h_bond_length = 5
+       .type = float
+       .help = Tolerant maximum H-bond length to include in \
+           secondary structure
+       .short_caption = Tolerant maximum H-bond length
 
   }
 
@@ -379,23 +418,24 @@ master_params = master_phil
 def get_and_split_model(pdb_hierarchy=None,
      pdb_in=None,get_start_end_length=None,out=sys.stdout):
     if not pdb_hierarchy:
-      print >>out,"Reading model from %s" %(pdb_in)
+      print("Reading model from %s" %(pdb_in), file=out)
       if not pdb_in:
         return []
       if not os.path.isfile (pdb_in):
         raise Sorry("Missing the file %s" %(pdb_in))
-      pdb_hierarchy=get_pdb_hierarchy(text=open(pdb_in).read())
+      with open(pdb_in) as f:
+        text = f.read()
+      pdb_hierarchy=get_pdb_hierarchy(text=text)
     model=model_info(
       hierarchy=pdb_hierarchy,
       info={})
     models=split_model(model=model,verbose=False)
-    print >>out,"Split model into %d chains" %(len(models))
 
     for model in models:
       model.hierarchy.remove_alt_confs(always_keep_one_conformer=False)
       if get_start_end_length:
-        model.info['model_start_resno']=get_first_resno(model.hierarchy)
-        model.info['model_end_resno']=get_last_resno(model.hierarchy)
+        model.info['model_start_resno']=model.hierarchy.first_resseq_as_int()
+        model.info['model_end_resno']=model.hierarchy.last_resseq_as_int()
         id=model.info['chain_number']
         ll=model.info['model_end_resno']-model.info['model_start_resno']+1
         model.info['length']=ll
@@ -413,14 +453,13 @@ class segment_library:
     if params.library is None:
       params.library=""
     elif not os.path.isfile(params.library):
-      import libtbx.load_env
-      name=os.path.join('cctbx_project','mmtbx',
-         'secondary_structure','regularize_from_pdb_lib',params.library)
-      full_name=libtbx.env.find_in_repositories(
-         relative_path=name, test=os.path.exists)
-      if not full_name:
+      from pathlib import Path
+      import mmtbx
+      library_dir = str(Path(mmtbx.__file__).parent / 'secondary_structure' / 'regularize_from_pdb_lib' / params.library)
+
+      if (not library_dir) or (library_dir == "None"):
         raise Sorry("Cannot find the library file %s" %(params.library))
-      params.library=full_name
+      params.library=library_dir
 
     self.models=get_and_split_model(pdb_in=params.library,out=out)
 
@@ -438,12 +477,14 @@ class segment_library:
   def get_info_file(self,info_file=None,out=sys.stdout):
     self.max_count=None
     if os.path.isfile(info_file):
-      print >>out,"Reading other library info from %s" %(info_file)
+      print("Reading other library info from %s" %(info_file), file=out)
       self.model_number_list=[]
       self.model_n_obs=[]
       self.model_rms=[]
       info_number_of_segments=None
-      for line in open(info_file).readlines():
+      with open(info_file) as f:
+        lines = f.readlines()
+      for line in lines:
         spl=line.split()
         if info_number_of_segments is None:
           info_number_of_segments=int(spl[-1])
@@ -455,8 +496,8 @@ class segment_library:
           if self.max_count is None or nn>self.max_count:
             self.max_count=nn
       if len(self.model_number_list)!=info_number_of_segments:
-       print "Model numbers: %d  Segments: %d " %(
-         len(self.model_number_list),info_number_of_segments)
+       print("Model numbers: %d  Segments: %d " %(
+         len(self.model_number_list),info_number_of_segments))
       assert len(self.model_number_list)==info_number_of_segments
       assert len(self.model_number_list)==len(self.models)
       self.have_info=True
@@ -485,7 +526,7 @@ class segment_library:
       assert self.index_length==segment.standard_length
       index_list=self.get_index_list(segment=segment)
       for index in index_list:
-        if not index in index_dict.keys():
+        if not index in index_dict:
           index_dict[index]=[]
         index_dict[index].append(segment)
     self.index_dict=index_dict
@@ -528,22 +569,22 @@ class segment_library:
     if original_order==target_order:
       return xyz  # already was ok
 
-    recover_target_order=list(xrange(len(target_order)))
+    recover_target_order=range(len(target_order))
     recover_sort_list=[]
     for target,recover in zip(target_order,recover_target_order):
       recover_sort_list.append([target,recover])
-    recover_sort_list.sort() # sorted on target_order, tag is place these go
+    recover_sort_list.sort(key=itemgetter(0)) # sorted on target_order, tag is place these go
 
     sort_list=[]
     for x,orig in zip(xyz,original_order):
       sort_list.append([orig,x])
-    sort_list.sort()  # sorted on original order, tag is xyz
+    sort_list.sort(key=itemgetter(0))  # sorted on original order, tag is xyz
 
 
     second_sort_list=[]
     for [orig,x],[target,recover] in zip(sort_list,recover_sort_list):
       second_sort_list.append([recover,x,orig,target])
-    second_sort_list.sort()
+    second_sort_list.sort(key=itemgetter(0))
 
     new_xyz=flex.vec3_double()
     new_order=[]
@@ -575,18 +616,18 @@ class segment_library:
     model_resseq_list=[]
     other_resseq_list=[]
     for i,j in zip(
-       xrange(first_res_in_model_segment,last_res_in_model_segment+1),
-       xrange(start_res,end_res+1)):
+       range(first_res_in_model_segment,last_res_in_model_segment+1),
+       range(start_res,end_res+1)):
       atom_selection=\
          "resid %s through %s and (name n or name c or name ca or name o)" %(
           resseq_encode(i),resseq_encode(i))
-      model_res_hierarchy=apply_atom_selection(
-        atom_selection,hierarchy=model_segment.hierarchy)
+      model_res_hierarchy=model_segment.hierarchy.apply_atom_selection(
+        atom_selection)
       atom_selection=\
          "resid %s through %s and (name n or name c or name ca or name o)" %(
           resseq_encode(j),resseq_encode(j))
-      other_res_hierarchy=apply_atom_selection(
-        atom_selection,hierarchy=placed_other_hierarchy)
+      other_res_hierarchy=placed_other_hierarchy.apply_atom_selection(
+        atom_selection)
       xyz1=model_res_hierarchy.atoms().extract_xyz()
       xyz2=other_res_hierarchy.atoms().extract_xyz()
       assert xyz1.size()==xyz2.size()
@@ -669,7 +710,7 @@ class segment_library:
       if extra_residues<0:
         continue # skip if too short
       if start_position is None or start_position>extra_residues:
-         range_to_use=xrange(extra_residues+1)
+         range_to_use=range(extra_residues+1)
       else:  # just use start_position
          range_to_use=[start_position]
       all_too_short=False
@@ -712,8 +753,8 @@ class segment_library:
               found=True
     if all_too_short:
       if verbose:
-        print >>out,"No templates long enough for segment: %s " %(
-          model_segment.summary())
+        print("No templates long enough for segment: %s " %(
+          model_segment.summary()), file=out)
     if best_segment:
       # apply rt to the hierarchy in segment
       placed_hierarchy=model_segment.apply_lsq_fit(lsq_fit_obj=best_lsq_fit,
@@ -724,14 +765,14 @@ class segment_library:
       return None,None,None,None,None,None,None
     if frequency is not None:
       if verbose:
-        print "Used segment # %d (examined %d) with freq %5.3f and rmsd %5.2f" %(
-          best_id,nn,frequency,best_rms)
+        print("Used segment # %d (examined %d) with freq %5.3f and rmsd %5.2f" %(
+          best_id,nn,frequency,best_rms))
       log_frequency=math.log(frequency)
     else:
       log_frequency=None
       if verbose:
-        print "Used segment # %d (examined %d) and rmsd %5.2f" %(
-          best_id,nn,best_rms)
+        print("Used segment # %d (examined %d) and rmsd %5.2f" %(
+          best_id,nn,best_rms))
     return placed_hierarchy,best_rms,log_frequency,\
           best_left_crossover,best_right_crossover,\
              best_left_crossover_other,best_right_crossover_other
@@ -746,7 +787,7 @@ class connected_group_segment:
     self.end_resno=end_resno
     self.delta_length=\
        self.segment.info['length']-self.segment.info['target_length']
-    self.first_resno_of_hierarchy=get_first_resno(self.segment.hierarchy)
+    self.first_resno_of_hierarchy=self.segment.hierarchy.first_resseq_as_int()
     self.get_score()
 
 
@@ -842,7 +883,7 @@ class connected_group_segment:
         self.get_score())
     if return_text: return text
     if out is None: out=sys.stdout
-    print >>out, text
+    print(text, file=out)
     return ""
 
 
@@ -886,7 +927,7 @@ class connected_group:
     sequence=[]
     sequences=[]  # list of sequences, one for each model
     if model_to_match:
-      chain_id=get_chain_id(model_to_match.hierarchy)
+      chain_id=model_to_match.hierarchy.first_chain_id()
     else:
       chain_id='A'
     overall_start_resno=None
@@ -913,7 +954,7 @@ class connected_group:
       start_offset=target_start_resno-cgs.segment.info['target_start_resno']
 
       # where we start (by resid) in the hierarchy
-      start_resno=get_first_resno(cgs.segment.hierarchy)+start_offset
+      start_resno=cgs.segment.hierarchy.first_resseq_as_int()+start_offset
       length=target_end_resno-target_start_resno+1
       end_resno=start_resno+length-1+cgs.delta_length # insert may be different
       overall_delta_residues+=cgs.delta_length
@@ -929,21 +970,21 @@ class connected_group:
 
       atom_selection="resid %s through %s" %(resseq_encode(start_resno),
        resseq_encode(end_resno))
-      h=apply_atom_selection(atom_selection,hierarchy=cgs.segment.hierarchy)
+      h=cgs.segment.hierarchy.apply_atom_selection(atom_selection)
 
       if model_to_match: # get comparison and sequence
         atom_selection="name ca and resid %s through %s" %(
          resseq_encode(target_start_resno),
          resseq_encode(target_end_resno))
-        original_ca=apply_atom_selection(atom_selection,
-          hierarchy=model_to_match.hierarchy)
+        original_ca=model_to_match.hierarchy.apply_atom_selection(
+         atom_selection)
         original_xyz=original_ca.atoms().extract_xyz()
-        original_sequence=get_sequence(original_ca)
+        original_sequence=original_ca.as_list_of_residue_names()
 
         atom_selection="name ca "
-        replacement_ca=apply_atom_selection(atom_selection,hierarchy=h)
+        replacement_ca=h.apply_atom_selection(atom_selection)
         replacement_xyz=replacement_ca.atoms().extract_xyz()
-        replacement_sequence=get_sequence(replacement_ca)
+        replacement_sequence=replacement_ca.as_list_of_residue_names()
 
         if original_xyz.size()==replacement_xyz.size():
           diffs.extend(original_xyz-replacement_xyz)
@@ -966,23 +1007,22 @@ class connected_group:
       models.append(m)
 
     if diffs:
-      print >>out,"RMSD (%d residues): %5.2f A" %(
-          diffs.size(),diffs.rms_length()),
+      print("RMSD (%d residues): %5.2f A" %(
+          diffs.size(),diffs.rms_length()), end=' ', file=out)
       self.model_rms=diffs.rms_length()
       self.model_rms_n=diffs.size()
       if skipped:
-        print >>out,\
-         "\n(Not including %d residues in insertions/deletions)" %(skipped)
-      else: print>>out
+        print("\n(Not including %d residues in insertions/deletions)" %(skipped), file=out)
+      else: print(file=out)
       if verbose:
-        print >>out,"Sequence: %s" %(" ".join(sequence))
+        print("Sequence: %s" %(" ".join(sequence)), file=out)
 
 
     if offset_to_renumber_right_end_at_target:
       overall_start_resno=overall_start_resno-overall_delta_residues
     new_model=merge_hierarchies_from_models(models=models,renumber=True,
       first_residue_number=overall_start_resno,sequences=sequences,
-      chain_id=chain_id,trim_side_chains=True)
+      chain_id=chain_id,trim_side_chains=True,replace_hetatm=True)
     return new_model
 
   def has_insertions_deletions(self):
@@ -1051,7 +1091,7 @@ class connected_group:
     best_resno=None
     best_rms=None
 
-    for resno in xrange(start_resno,end_resno+1):
+    for resno in range(start_resno,end_resno+1):
       self_cgs=self.get_cgs_containing_resno(resno)
       other_cgs=other.get_cgs_containing_resno(resno)
       rms=self.get_connection_rms(
@@ -1134,7 +1174,7 @@ class connected_group:
 
   def find_residue_range(self,trim_dict=None):
     # find longest segment that is not trimmed
-    keys=trim_dict.keys()
+    keys=list(trim_dict.keys())
     keys.sort()
     res_start=None
     res_end=None
@@ -1277,7 +1317,7 @@ class connected_group:
     sort_list=[]
     for cgs in self.connected_group_segments:
       sort_list.append([cgs.start_resno,cgs])
-    sort_list.sort()
+    sort_list.sort(key=itemgetter(0))
     self.connected_group_segments=[]
     for id,cgs in sort_list:
       self.connected_group_segments.append(cgs)
@@ -1383,7 +1423,7 @@ class connected_group:
     else:
       s1_connection_resno=resno
     start_offset_s1=s1.start_resno-s1.segment.info['target_start_resno']
-    last_resno_s1=get_first_resno(s1.segment.hierarchy)+\
+    last_resno_s1=s1.segment.hierarchy.first_resseq_as_int()+\
        start_offset_s1+s1_connection_resno-s1.start_resno
     last_resno_s1+=s1.delta_length
     # do we already have it:
@@ -1399,12 +1439,12 @@ class connected_group:
     else:
       s2_connection_resno=resno
     start_offset_s2=s2_connection_resno-s2.segment.info['target_start_resno']
-    first_resno_s2=get_first_resno(s2.segment.hierarchy)+start_offset_s2
+    first_resno_s2=s2.segment.hierarchy.first_resseq_as_int()+start_offset_s2
 
     # make sure we create something long enough (not length 1):
-    first_resno_s1=get_first_resno(s1.segment.hierarchy)
+    first_resno_s1=s1.segment.hierarchy.first_resseq_as_int()
     start_offset_s2=s2.start_resno-s2.segment.info['target_start_resno']
-    last_resno_s2=get_first_resno(s2.segment.hierarchy)+\
+    last_resno_s2=s2.segment.hierarchy.first_resseq_as_int()+\
         start_offset_s2+s2.end_resno-s2.start_resno
 
     if not allow_unit_length and (
@@ -1417,9 +1457,9 @@ class connected_group:
         h2=s2.segment.hierarchy,resno2=first_resno_s2)
 
     # save it so we don't calculate twice...
-    if not s1.segment in self.connection_rms_dict.keys():
+    if not s1.segment in self.connection_rms_dict:
       self.connection_rms_dict[s1.segment]={}
-    if not s2.segment in self.connection_rms_dict[s1.segment].keys():
+    if not s2.segment in self.connection_rms_dict[s1.segment]:
       self.connection_rms_dict[s1.segment][s2.segment]={}
     self.connection_rms_dict[s1.segment][s2.segment][last_resno_s1]=rms
 
@@ -1437,7 +1477,7 @@ class connected_group:
     atom_selection="resseq %s and (name ca or name c or name o or name n)"  %(
      resseq_encode(resno))
 
-    sele=apply_atom_selection(atom_selection,hierarchy=hierarchy)
+    sele=hierarchy.apply_atom_selection(atom_selection)
     return sele.atoms().extract_xyz()
 
 
@@ -1451,7 +1491,7 @@ class connected_group:
      len(self.connected_group_segments),self.score,lc,rc,rc-lc+1)
     if return_text: return text
     if out is None: out=sys.stdout
-    print >>out, text
+    print(text, file=out)
     return ""
 
   def show_comprehensive_summary(self,out=None,return_text=True):
@@ -1468,30 +1508,29 @@ class connected_group:
         text+=" Junction:%5.2f A " %(self.get_connection_rms(cs,cs1))
     if return_text: return text
     if out is None: out=sys.stdout
-    print >>out, text
+    print(text, file=out)
     return ""
 
 class replacement_segment_summary:
   def __init__(self,model=None):
     self.model=model
     self.id=model.info['chain_number']
-    self.chain_id=get_chain_id(self.model.hierarchy)
+    self.chain_id=self.model.hierarchy.first_chain_id()
     self.replacement_model=None
     self.model_is_complete=None
     self.connected_groups=None
     self.model_has_insertions_deletions=None
 
   def show_summary(self,out=sys.stdout):
-    print >>out,\
-    "\nID: %d ChainID: '%s'  RMSD: %5.2f A  (n=%d) " %(
+    print("\nID: %d ChainID: '%s'  RMSD: %5.2f A  (n=%d) " %(
        self.get_segment_id(),
        self.get_chain_id(),self.get_rms(),self.get_rms_n(),
         )+"Junction RMSD: %5.2f A (n=%d)" %(
       self.get_junction_rms(),self.get_junction_rms_n(),
-       )
-    print >>out,"Complete: %s  Insertions/deletions: %s" %(
-       self.is_complete(),self.has_insertions_deletions())
-    print >>out,"Input model start: %d  end: %d  length: %d " %(
+       ), file=out)
+    print("Complete: %s  Insertions/deletions: %s" %(
+       self.is_complete(),self.has_insertions_deletions()), file=out)
+    print("Input model start: %d  end: %d  length: %d " %(
          self.input_first_resno(),
          self.input_last_resno(),
          self.input_number_of_residues(),)+\
@@ -1499,7 +1538,7 @@ class replacement_segment_summary:
          self.output_first_resno(),
          self.output_last_resno(),
          self.output_number_of_residues(),
-         )
+         ), file=out)
 
   def get_segment_id(self):
     return self.id
@@ -1576,20 +1615,20 @@ class replacement_segment_summary:
       return 0
 
   def input_first_resno(self):
-    return get_first_resno(self.model.hierarchy)
+    return self.model.hierarchy.first_resseq_as_int()
 
   def input_last_resno(self):
-    return get_last_resno(self.model.hierarchy)
+    return self.model.hierarchy.last_resseq_as_int()
 
   def output_first_resno(self):
     if self.replacement_model:
-      return get_first_resno(self.replacement_model.hierarchy)
+      return self.replacement_model.hierarchy.first_resseq_as_int()
     else:
       return 0
 
   def output_last_resno(self):
     if self.replacement_model:
-      return get_last_resno(self.replacement_model.hierarchy)
+      return self.replacement_model.hierarchy.last_resseq_as_int()
     else:
       return 0
 
@@ -1621,7 +1660,8 @@ class replace_with_segments_from_pdb:
     models=self.find_ss_from_pdb(params,pdb_hierarchy=pdb_hierarchy,out=out)
 
     # see if we can replace any secondary structure
-    all_replacement_models=self.replace_secondary_structure(params,models=models,
+    all_replacement_models=self.replace_secondary_structure(
+        params,models=models,
         helix_lib=helix_lib,strand_lib=strand_lib,other_lib=other_lib,
          out=out)
     replacement_model=merge_hierarchies_from_models(
@@ -1629,11 +1669,11 @@ class replace_with_segments_from_pdb:
 
     # write out results
     if params.output_files.pdb_out:
-      print >>out,"\nWriting output PDB file to %s" %(
-        params.output_files.pdb_out)
-      f=open(params.output_files.pdb_out,'w')
-      print >>f, replacement_model.hierarchy.as_pdb_string()
-      f.close()
+      params.output_files.pdb_out = \
+         replacement_model.hierarchy.write_pdb_or_mmcif_file(
+           target_filename = params.output_files.pdb_out)
+      print("\nWriting output PDB file to %s" %(
+        params.output_files.pdb_out), file=out)
     self.replacement_model=replacement_model
 
   def replacement_hierarchy(self):
@@ -1650,7 +1690,7 @@ class replace_with_segments_from_pdb:
       args=args,
       master_phil=master_phil)
     params = command_line.work.extract()
-    print >>out,"\nRegularize from pdb: Use PDB segment to replace parts of a model"
+    print("\nRegularize from pdb: Use PDB segment to replace parts of a model", file=out)
     master_phil.format(python_object=params).show(out=out)
     return params
 
@@ -1676,7 +1716,7 @@ class replace_with_segments_from_pdb:
 
   def get_libraries(self,params,out=sys.stdout):
     # read in libraries
-    print >>out,"Reading libraries..."
+    print("Reading libraries...", file=out)
     if params.control.verbose:
       lout=out
     else:
@@ -1685,16 +1725,15 @@ class replace_with_segments_from_pdb:
     strand_lib=segment_library(segment_class=strand,params=params.beta,out=lout)
     other_lib=segment_library(segment_class=other,params=params.other,out=lout)
 
-    print >>out,"Libraries read with %d helices and %d strands and %d other\n" %(
-      len(helix_lib.segments),len(strand_lib.segments),len(other_lib.segments))
+    print("Libraries read with %d helices and %d strands and %d other\n" %(
+      len(helix_lib.segments),len(strand_lib.segments),len(other_lib.segments)), file=out)
     return helix_lib,strand_lib,other_lib
 
   def get_ss_structure(self,params,model=None,out=sys.stdout):
     if params.control.verbose:
-      print >>out,\
-        "\nLooking for secondary structure in model %d with %d residues" %(
+      print("\nLooking for secondary structure in model %d with %d residues" %(
         model.info['chain_number'],model.hierarchy.overall_counts().n_residues)+\
-        " starting at %d" %(get_first_resno(model.hierarchy))
+        " starting at %d" %(model.hierarchy.first_resseq_as_int()), file=out)
 
     if params.alpha.find_alpha:
       find_alpha=find_helix(params=params.alpha,model=model,
@@ -1736,7 +1775,7 @@ class replace_with_segments_from_pdb:
           [cg.get_left_connection()+cg.get_score()*small_number,cg])
       else:
         sort_list.append([cg.get_score(),cg])
-    sort_list.sort()
+    sort_list.sort(key=itemgetter(0))
     if not sort_by_start: # high to low in score, low to high in sort_by_start
       sort_list.reverse()
     connected_groups=[]
@@ -1797,11 +1836,11 @@ class replace_with_segments_from_pdb:
     connected_groups=self.sort_connected_groups(
        connected_groups,sort_by_start=True)
     if verbose:
-      print >>out,"\nNumber of groups after combining by shared residue: %d"%(
-         len(connected_groups))
-      print >>out,"\nConnected groups after combining by shared residue:"
+      print("\nNumber of groups after combining by shared residue: %d"%(
+         len(connected_groups)), file=out)
+      print("\nConnected groups after combining by shared residue:", file=out)
       for cg in connected_groups:
-        print cg.show_summary(out=out)
+        print(cg.show_summary(out=out))
 
     # remove overlapping now
     connected_groups=self.sort_and_remove_overlapping_groups(connected_groups,
@@ -1834,11 +1873,11 @@ class replace_with_segments_from_pdb:
        connected_groups,sort_by_start=True)
 
     if verbose:
-      print >>out,"\nNumber of groups after combining by shared segment: %d"%(
-         len(connected_groups))
-      print >>out,"\nConnected groups after combining by shared segment:"
+      print("\nNumber of groups after combining by shared segment: %d"%(
+         len(connected_groups)), file=out)
+      print("\nConnected groups after combining by shared segment:", file=out)
       for cg in connected_groups:
-        print cg.show_summary(out=out)
+        print(cg.show_summary(out=out))
 
     connected_groups=self.sort_and_remove_overlapping_groups(
        connected_groups,out=out)
@@ -1863,11 +1902,11 @@ class replace_with_segments_from_pdb:
        connected_groups,sort_by_start=True)
 
     if verbose:
-      print >>out,"\nNumber of groups after removing overlapping: %d"%(
-         len(connected_groups))
-      print >>out,"\nConnected groups after removing overlapping:"
+      print("\nNumber of groups after removing overlapping: %d"%(
+         len(connected_groups)), file=out)
+      print("\nConnected groups after removing overlapping:", file=out)
       for cg in connected_groups:
-        print cg.show_summary(out=out)
+        print(cg.show_summary(out=out))
 
     return connected_groups
 
@@ -1876,21 +1915,21 @@ class replace_with_segments_from_pdb:
     cg_dict={}
     for cg in connected_groups:
       cg_dict[cg]={}
-      for i in xrange(cg.get_left_connection(),cg.get_right_connection()+1):
+      for i in range(cg.get_left_connection(),cg.get_right_connection()+1):
         cg_dict[cg][i]=None  # present
 
     new_groups=[]
     # mark all residues covered by a better segment and keep remaining good ones
-    for i in xrange(len(connected_groups)):
+    for i in range(len(connected_groups)):
       cg=connected_groups[i]
-      keys=cg_dict[cg].keys()
+      keys=list(cg_dict[cg].keys())
       keys.sort()
       ok=cg.trim_residues(trim_dict=cg_dict[cg])
       if ok:
         new_groups.append(cg)
-        for j in xrange(i+1,len(connected_groups)):
+        for j in range(i+1,len(connected_groups)):
           cg_j=connected_groups[j]
-          for k in xrange(cg.get_left_connection(),cg.get_right_connection()+1):
+          for k in range(cg.get_left_connection(),cg.get_right_connection()+1):
             if k in cg_dict[cg_j].keys():
               cg_dict[cg_j][k]=True
 
@@ -1899,8 +1938,8 @@ class replace_with_segments_from_pdb:
 
   def remove_overlapping_groups(self,connected_groups,contained_only=False):
      removed_list=[None]*len(connected_groups)
-     for i in xrange(len(connected_groups)):
-       for j in xrange(i+1,len(connected_groups)):
+     for i in range(len(connected_groups)):
+       for j in range(i+1,len(connected_groups)):
          if removed_list[j]:
             continue # already removed
          if contained_only:
@@ -1935,8 +1974,8 @@ class replace_with_segments_from_pdb:
       if start_of_right_connections<=start_of_left_connections:
         start_of_right_connections=start_of_left_connections+1
 
-      for i in xrange(start_of_left_connections,end_of_left_connections+1):
-        for j in xrange(start_of_right_connections,end_of_right_connections+1):
+      for i in range(start_of_left_connections,end_of_left_connections+1):
+        for j in range(start_of_right_connections,end_of_right_connections+1):
           if i>=j: continue
           connection_pairs.append([i,j])
 
@@ -1956,7 +1995,7 @@ class replace_with_segments_from_pdb:
        return None
     if renumber:
       new_model=merge_hierarchies_from_models(models=models,resid_offset=100,
-        first_residue_number=get_first_resno(models[0].hierarchy))
+        first_residue_number=models[0].hierarchy.first_resseq_as_int())
     else:
       new_model=merge_hierarchies_from_models(models=models,renumber=False)
     return new_model
@@ -2067,7 +2106,7 @@ class replace_with_segments_from_pdb:
     if len(connected_groups) < 2: return connected_groups,found
 
     if params.control.verbose:
-      print >>out,"\nLinking groups that are not yet connected"
+      print("\nLinking groups that are not yet connected", file=out)
     connected_groups=self.sort_connected_groups(connected_groups,
       sort_by_start=True) # get them in order
     new_connected_groups=[]
@@ -2091,16 +2130,16 @@ class replace_with_segments_from_pdb:
         combined_model=merge_hierarchies_from_models(
           models=[cg1_model,cg2_model],
           resid_offset=1,
-          first_residue_number=get_first_resno(cg1_model.hierarchy),
+          first_residue_number=cg1_model.hierarchy.first_resseq_as_int(),
           renumber=True)
 
-        sites=combined_model.hierarchy.extract_xray_structure().sites_cart()
+        sites=combined_model.hierarchy.atoms().extract_xyz()
 
         # now select a few possibilities with at least 1 res overlap on each end
         #  and no more than other.standard_length residues
-        first_resno=get_first_resno(combined_model.hierarchy)
-        last_resno=get_last_resno(combined_model.hierarchy)
-        before_junction=get_last_resno(cg1_model.hierarchy)
+        first_resno=combined_model.hierarchy.first_resseq_as_int()
+        last_resno=combined_model.hierarchy.last_resseq_as_int()
+        before_junction=cg1_model.hierarchy.last_resseq_as_int()
 
         target_overlap=2
         i_start=max(first_resno,before_junction-target_overlap+1)
@@ -2115,14 +2154,14 @@ class replace_with_segments_from_pdb:
         best_cg=None
         best_rms=None
         segment_list=[]
-        for i in xrange(i_start,i_end+1):
+        for i in range(i_start,i_end+1):
           atom_selection=\
            "resid %s through %s and (name n or name c or name ca or name o)" %(
             resseq_encode(i),resseq_encode(i+2*target_overlap-1))
           segment_list.append(other(params=params.other,
             start_resno=i,
-            hierarchy= apply_atom_selection(
-            atom_selection,hierarchy=combined_model.hierarchy)))
+            hierarchy= combined_model.hierarchy.apply_atom_selection(
+            atom_selection)))
         for segment in segment_list:
           # now find replacements for this segment
           rs,rms,log_frequency,lc,rc,lc_other,rc_other=\
@@ -2167,20 +2206,20 @@ class replace_with_segments_from_pdb:
     connected_groups+=new_connected_groups
 
     if params.control.verbose:
-      print >>out,"\nGroups after adding linker groups:"
-      for cg in connected_groups: print cg.show_comprehensive_summary()
+      print("\nGroups after adding linker groups:", file=out)
+      for cg in connected_groups: print(cg.show_comprehensive_summary())
       for cg in connected_groups:
-        print "\nGROUP:"
-        print cg.as_model(is_left_end=True).hierarchy.as_pdb_string()
+        print("\nGROUP:")
+        print(cg.as_model(is_left_end=True).hierarchy.as_pdb_string()) # PDB OK debug only
 
     connected_groups=self.sort_and_remove_overlapping_groups(connected_groups)
 
     if params.control.verbose:
-      print >>out,"\nGroups after removing overlapping:"
-      for cg in connected_groups: print cg.show_comprehensive_summary()
+      print("\nGroups after removing overlapping:", file=out)
+      for cg in connected_groups: print(cg.show_comprehensive_summary())
       for cg in connected_groups:
-        print "\nGROUP:"
-        print cg.as_model(is_left_end=True).hierarchy.as_pdb_string()
+        print("\nGROUP:")
+        print(cg.as_model(is_left_end=True).hierarchy.as_pdb_string()) # PDB OK debug only
 
     connected_groups=self.combine_groups_by_residue(connected_groups,
        maximum_junction_rmsd=maximum_junction_rmsd,
@@ -2202,10 +2241,10 @@ class replace_with_segments_from_pdb:
       for lc,rc in connection_pairs:
           cg=connected_group(segment=rs,start_resno=lc,end_resno=rc)
           connected_groups.append(cg)
-          if not lc in possible_right_connection_dict.keys():
+          if not lc in possible_right_connection_dict:
             possible_right_connection_dict[lc]=[]
           possible_right_connection_dict[lc].append(cg)
-          if not rc in possible_left_connection_dict.keys():
+          if not rc in possible_left_connection_dict:
             possible_left_connection_dict[rc]=[]
           possible_left_connection_dict[rc].append(cg)
     # here possible_right_connection_dict[rc] is a list of connected_groups that
@@ -2215,11 +2254,11 @@ class replace_with_segments_from_pdb:
        connected_groups,sort_by_start=True)
 
     if verbose:
-      print >>out,"\nNumber of starting connected groups: %d"%(
-          len(connected_groups))
-      print >>out,"\nConnected groups:"
+      print("\nNumber of starting connected groups: %d"%(
+          len(connected_groups)), file=out)
+      print("\nConnected groups:", file=out)
       for cg in connected_groups:
-        print cg.show_summary(out=out)
+        print(cg.show_summary(out=out))
 
     return connected_groups,possible_left_connection_dict,\
         possible_right_connection_dict
@@ -2231,7 +2270,7 @@ class replace_with_segments_from_pdb:
      verbose=None,out=sys.stdout):
 
     if verbose:
-      print >>out,"\nCreating new connected groups"
+      print("\nCreating new connected groups", file=out)
 
     used_connected_groups=[]
     final_connected_groups=[]
@@ -2252,11 +2291,11 @@ class replace_with_segments_from_pdb:
        connected_groups,sort_by_start=True)
 
     if verbose:
-      print >>out,"\nNumber of connected groups after connecting: %d"%(
-        len(connected_groups))
-      print >>out,"\nConnected groups after connecting:"
+      print("\nNumber of connected groups after connecting: %d"%(
+        len(connected_groups)), file=out)
+      print("\nConnected groups after connecting:", file=out)
       for cg in connected_groups:
-        print cg.show_summary(out=out)
+        print(cg.show_summary(out=out))
 
     return connected_groups
 
@@ -2272,9 +2311,9 @@ class replace_with_segments_from_pdb:
     #  number in the hierarchy which is arbitrary)
 
     if params.control.verbose:
-      print >>out,"\nReplacement segments:"
+      print("\nReplacement segments:", file=out)
       for rs in replacement_segments:
-        print rs.show_summary(out=out)
+        print(rs.show_summary(out=out))
 
     # Initial single connected groups and possible left and right connections
     connected_groups,possible_left_connection_dict,\
@@ -2315,9 +2354,9 @@ class replace_with_segments_from_pdb:
       if n>1: break # makes infinite loop
 
     if params.control.verbose:
-      print >>out,"\nFinal groups for this segment: "
+      print("\nFinal groups for this segment: ", file=out)
       for cg in connected_groups:
-        print >>out,cg.show_comprehensive_summary()
+        print(cg.show_comprehensive_summary(), file=out)
 
     return connected_groups
 
@@ -2330,11 +2369,11 @@ class replace_with_segments_from_pdb:
     #    can be used as crossover, otherwise, only the end residues
 
     if params.control.verbose:
-      print >>out,"\nAssembling segments for model. Start:"+\
+      print("\nAssembling segments for model. Start:"+\
          " %d length: %d Replacement segments: %d" %(
-       get_first_resno(model.hierarchy),
+       model.hierarchy.first_resseq_as_int(),
        model.hierarchy.overall_counts().n_residues,
-       len(replacement_segments))
+       len(replacement_segments)), file=out)
     connected_groups=self.get_connections(params,
       replacement_segments=replacement_segments,
       model=model,
@@ -2361,11 +2400,12 @@ class replace_with_segments_from_pdb:
         insertions_deletions_of_all_replacement_models.append(True)
         completeness_of_all_replacement_models.append(True)
       else:
-        print >>out,"\nReplacing segment %d (n=%d," %(
+        print("\nReplacing segment %d (n=%d," %(
             model.info['chain_number'],
             model.hierarchy.overall_counts().n_residues)+\
             " %d - %d) ..." %(
-           get_first_resno(model.hierarchy),get_last_resno(model.hierarchy))
+             model.hierarchy.first_resseq_as_int(),
+             model.hierarchy.last_resseq_as_int()), file=out)
 
         connected_groups=self.assemble_segments(params,model=model,
           other_lib=other_lib,
@@ -2392,20 +2432,24 @@ class replace_with_segments_from_pdb:
           insertions_deletions_of_all_replacement_models.append(
             has_insertions_deletions)
           id=model.info['chain_number']
-          start_residue=get_first_resno(replacement_model.hierarchy)
+          start_residue=replacement_model.hierarchy.first_resseq_as_int()
           self.model_output_number_of_residues_by_segment[id]=\
             replacement_model.hierarchy.overall_counts().n_residues
           if params.control.verbose:
-            print >>out,"Replacement model for segment %d with %d residues " %(
+            print("Replacement model for segment %d with %d residues " %(
               model.info['chain_number'],
               replacement_model.hierarchy.overall_counts().n_residues) + \
              " from %d to %d:" %(
-             get_first_resno(model.hierarchy),get_last_resno(model.hierarchy))
+             model.hierarchy.first_resseq_as_int(),
+             model.hierarchy.last_resseq_as_int()), file=out)
         else:
-          print >>out,"No replacement model found for this segment"
+          print("No replacement model found for this segment", file=out)
           all_replacement_models.append(None)
           completeness_of_all_replacement_models.append(None)
           insertions_deletions_of_all_replacement_models.append(None)
+
+    self.is_complete = (completeness_of_all_replacement_models.count(True) ==
+       len(completeness_of_all_replacement_models))
 
     return all_replacement_models
 
@@ -2431,12 +2475,12 @@ class replace_with_segments_from_pdb:
           else: # usual
             delta_residues=segment.optimal_delta_length
             if delta_residues and params.control.verbose:
-              print >>out,"\nReplacing segment from model length " + \
+              print("\nReplacing segment from model length " + \
                 "%d with library segment length %d"%(
-                segment.length(),segment.optimal_delta_length+segment.length(),)
+                segment.length(),segment.optimal_delta_length+segment.length(),), file=out)
             elif params.control.verbose:
-              print >>out,"\nReplacing segment from model length " +\
-                "%d with library strand" %(segment.length())
+              print("\nReplacing segment from model length " +\
+                "%d with library strand" %(segment.length()), file=out)
             rs,rms,log_frequency,lc,rc,lc_other,rc_other=\
                segment_lib.get_replacement_segment(
               model_segment=segment,
@@ -2476,9 +2520,9 @@ if __name__=="__main__":
 
   print_output=False
   if print_output:
-    print "Output model:\n%s" %(r.replacement_hierarchy().as_pdb_string())
+    print("Output model:\n%s" %(r.replacement_hierarchy().as_pdb_string())) # PDB OK debug only
 
 
-  print "\nSummary by segment:"
+  print("\nSummary by segment:")
   for rss in r.model_replacement_segment_summaries:
     rss.show_summary()

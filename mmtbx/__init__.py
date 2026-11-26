@@ -1,6 +1,11 @@
-from __future__ import division
+"""fmodels and map_names container classes"""
+
+from __future__ import absolute_import, division, print_function
 
 from libtbx.utils import Sorry
+from libtbx.version import get_version
+
+__version__ = get_version()
 
 class fmodels(object):
   """
@@ -13,14 +18,12 @@ class fmodels(object):
   xray_scattering_dict :
   neutron_scattering_dict :
   neutron_refinement :
-  twin_law :
   """
   def __init__(self, fmodel_xray = None,
                      fmodel_neutron = None,
                      xray_scattering_dict = None,
                      neutron_scattering_dict = None,
                      neutron_refinement = None,
-                     twin_law = None, # XXX used below in ONE place to avoid running into a BUG in twin_f_model
                      log = None):
     self.fmodel_x = fmodel_xray
     self.fmodel_n = fmodel_neutron
@@ -28,16 +31,6 @@ class fmodels(object):
     self.neutron_scattering_dict = neutron_scattering_dict
     self.neutron_refinement = neutron_refinement
     self.log = log
-    # pre-scale
-    if(self.fmodel_n is not None and twin_law is None): # XXX This is broken if twin_f_model is used
-      scale_k1_x = self.fmodel_x.scale_k1()
-      scale_k1_n = self.fmodel_n.scale_k1()
-      xn_scale = scale_k1_x / scale_k1_n
-      f_obs_n_new = self.fmodel_n.f_obs().array(
-        data = self.fmodel_n.f_obs().data()*xn_scale)
-      f_obs_n_new.set_observation_type_xray_amplitude()
-      self.fmodel_n.update(f_obs = f_obs_n_new)
-    #
     self.create_target_functors()
 
   def pseudo_deep_copy(self):
@@ -156,7 +149,7 @@ class fmodels(object):
       self.fmodel_xray().info().show_rfactors_targets_scales_overall(
         header = prefix, out = log)
     if(self.fmodel_n is not None):
-      print >> self.log
+      print(file=self.log)
       self.fmodel_neutron().info().show_rfactors_targets_scales_overall(
         header = "neutron data", out = log)
 
@@ -182,13 +175,26 @@ class fmodels(object):
         nproc               = 1,
         log                 = None,
         apply_back_trace    = False,
-        refine_hd_scattering=None):
+        refine_hd_scattering=None,
+        mosaic              = False,
+        squeeze             = False,
+        water_selection     = None):
     """
-    ...
+    Update structure factors and all scales of the X-ray and neutron fmodel.
+
+    mosaic : bool
+        Passed to update_all_scales of the X-ray fmodel (mosaic bulk-solvent
+        model, see mmtbx.f_model.manager.update_all_scales). The neutron
+        fmodel never uses it.
+    squeeze : bool
+        Passed to update_all_scales of the X-ray fmodel (unmodelled solvent
+        density as a contribution to F_model, see
+        mmtbx.f_model.manager.update_all_scales). The neutron fmodel never
+        uses it.
+    water_selection : flex.bool, optional
+        Water atoms; used by squeeze.
     """
     if log is None: log = self.log
-    fast=True
-    if(params.mode=="slow"): fast=False
     from mmtbx.refinement import print_statistics
     print_statistics.make_header("updating all scales", out = log)
     self.update_xray_structure(update_f_calc = True, update_f_mask = True,
@@ -198,27 +204,28 @@ class fmodels(object):
       msg = None
       if(self.fmodel_n is not None):
         msg = "X-ray:"
-        print >> log, msg
+        print(msg, file=log)
       self.fmodel_xray().update_all_scales(
         update_f_part1       = update_f_part1,
         remove_outliers      = remove_outliers,
         params               = params,
-        fast                 = fast,
         log                  = log,
         show                 = True,
         optimize_mask        = optimize_mask,
         nproc                = nproc,
         apply_back_trace     = apply_back_trace,
-        refine_hd_scattering = refine_hd_scattering)
+        refine_hd_scattering = refine_hd_scattering,
+        mosaic               = mosaic,
+        squeeze              = squeeze,
+        water_selection      = water_selection)
       self.fmodel_x.show(log = log, suffix = msg)
     if(self.fmodel_n is not None):
       msg = "Neutron:"
-      print >> log, msg
+      print(msg, file=log)
       self.fmodel_neutron().update_all_scales(
         update_f_part1       = update_f_part1,
         remove_outliers      = remove_outliers,
         params               = params,
-        fast                 = fast,
         log                  = log,
         show                 = True,
         optimize_mask        = optimize_mask,
@@ -316,6 +323,7 @@ class fmodels(object):
           else:
             sf = tfx_r.gradients_wrt_atomic_parameters(
               u_iso_refinable_params = u_iso_refinable_params).packed()
+
           self.gradient_xray = sf
           self.gradient_xray_weighted = sf * wx
         if(fmodels.fmodel_neutron() is not None):
@@ -395,11 +403,11 @@ class map_names(object):
         s = s.replace(tmp,"")
         self.f_obs_filled = True
     if(s.count('ano')):
-      if (s.count('resid')) :
+      if (s.count('resid')):
         self.anomalous_residual = True
       else :
         self.anomalous = True
-    elif (s.count("sad") or s.count("llg")) :
+    elif (s.count("sad") or s.count("llg")):
       self.phaser_sad_llg = True
     elif(s in self.FC):
       self.k = 0
@@ -512,7 +520,7 @@ Wrong map type requested: %s
     >>> print r.format()
     mFobs-DFmodel
     """
-    if (not self.anomalous) and (not self.phaser_sad_llg) :
+    if (not self.anomalous) and (not self.phaser_sad_llg):
       if(abs(int(self.k)-self.k)<1.e-6): k = str(int(self.k))
       else: k = str(self.k)
       if(abs(int(self.n)-self.n)<1.e-6):
@@ -534,6 +542,6 @@ Wrong map type requested: %s
     else:
       assert [self.k,self.n,self.ml_map].count(None) == 3
       assert [self.f_obs_filled].count(False)==1
-      if (self.phaser_sad_llg) :
+      if (self.phaser_sad_llg):
         return "phaser_sad_llg"
       return "anomalous_difference"

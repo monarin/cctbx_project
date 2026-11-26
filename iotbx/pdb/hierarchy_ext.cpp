@@ -2,6 +2,7 @@
 
 #include <boost/python/module.hpp>
 #include <boost/python/class.hpp>
+#include <boost/python/str.hpp>
 #include <boost/python/def.hpp>
 #include <boost/python/args.hpp>
 #include <boost/python/tuple.hpp>
@@ -61,8 +62,8 @@ namespace {
   {
     typedef atom_group w_t;
 
-    IOTBX_PDB_HIERARCHY_DATA_WRAPPERS_SMALL_STR_GET_SET(altloc)
-    IOTBX_PDB_HIERARCHY_DATA_WRAPPERS_SMALL_STR_GET_SET(resname)
+    IOTBX_PDB_HIERARCHY_DATA_WRAPPERS_STD_STRING_GET_SET(altloc)
+    IOTBX_PDB_HIERARCHY_DATA_WRAPPERS_STD_STRING_GET_SET(resname)
 
     static
     af::shared<atom>
@@ -277,8 +278,11 @@ namespace {
 
     IOTBX_PDB_HIERARCHY_GET_CHILDREN(root, model, models)
 
-#ifndef IS_PY3K
+#ifdef IS_PY3K
+    static PyObject *
+#else
     static void
+#endif
     as_pdb_string_cstringio(
       w_t const& self,
       boost::python::object cstringio,
@@ -296,7 +300,12 @@ namespace {
         self.atoms_reset_serial(
           interleaved_conf, *atoms_reset_serial_first_value);
       }
+#ifdef IS_PY3K
+      std::stringstream ss;
+      write_utils::sstream_write write(&ss);
+#else
       write_utils::cstringio_write write(cstringio.ptr());
+#endif
       models_as_pdb_string(
         write,
         self.models(),
@@ -307,8 +316,10 @@ namespace {
         anisou,
         siguij,
         output_break_records);
-    }
+#ifdef IS_PY3K
+    return PyUnicode_FromStringAndSize( ss.str().c_str(), ss.str().size());
 #endif
+    }
 
     static void
     get_overall_counts(
@@ -432,13 +443,16 @@ namespace {
         .def("atoms", &w_t::atoms, (arg("interleaved_conf")=0))
         .def("reset_atom_i_seqs", &w_t::reset_atom_i_seqs)
         .def("sort_atoms_in_place", &w_t::sort_atoms_in_place)
+        .def("fits_in_pdb_format", &w_t::fits_in_pdb_format, (
+          arg("use_hybrid36")=true))
         .def("atoms_with_i_seq_mismatch", &w_t::atoms_with_i_seq_mismatch)
+        .def("atoms_with_labels", &w_t::atoms_with_labels,
+          "Array of atom_with_labels, in the order of atoms().")
         .def("atoms_reset_serial", &w_t::atoms_reset_serial, (
           arg("interleaved_conf")=0,
           arg("first_value")=1))
         .def("is_similar_hierarchy", &w_t::is_similar_hierarchy, (
           arg("other")))
-#ifndef IS_PY3K
         .def("_as_pdb_string_cstringio", as_pdb_string_cstringio, (
           arg("self"),
           arg("cstringio"),
@@ -450,7 +464,6 @@ namespace {
           arg("anisou"),
           arg("siguij"),
           arg("output_break_records")=true))
-#endif
         .def("_write_pdb_file", &w_t::write_pdb_file, (
           arg("file_name"),
           arg("open_append"),
@@ -494,7 +507,7 @@ namespace {
       return boost::python::object(*result);
     }
 
-    IOTBX_PDB_HIERARCHY_DATA_WRAPPERS_SMALL_STR_GET(resname)
+    IOTBX_PDB_HIERARCHY_DATA_WRAPPERS_STD_STRING_GET(resname)
     IOTBX_PDB_HIERARCHY_DATA_WRAPPERS_SMALL_STR_GET(resseq)
     IOTBX_PDB_HIERARCHY_DATA_WRAPPERS_SMALL_STR_GET(icode)
 

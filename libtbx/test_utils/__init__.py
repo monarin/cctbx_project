@@ -1,17 +1,24 @@
-from __future__ import division, absolute_import
-from __future__ import print_function
+from __future__ import absolute_import, division, print_function
 from libtbx.option_parser import option_parser
 from libtbx.utils import Sorry
 from libtbx.str_utils import show_string
 from libtbx import easy_run
 from libtbx import introspection
+try:
+  from contextlib import AbstractContextManager
+except ImportError:
+  AbstractContextManager = object
 import difflib
 import libtbx.load_env
 import math
 import os
 import sys
 import time
+import types
 
+import six
+from six.moves import cStringIO as StringIO
+from six.moves import range
 try:
   import threading
 except ImportError:
@@ -61,15 +68,32 @@ class pickle_detector(object):
 Exception_expected = RuntimeError("Exception expected.")
 Exception_not_expected = RuntimeError("Exception not expected.")
 
+class raises(AbstractContextManager):
+  def __init__(self, expected_exception):
+    self.expected_exception = expected_exception
+    self.type = None
+    self.value = None
+    self.traceback = None
+
+  def __enter__(self):  # this is only needed for Python 2
+    return self
+
+  def __exit__(self, exc_type, exc_value, traceback):
+    self.type = exc_type
+    self.value = exc_value
+    self.traceback = traceback
+    if isinstance(self.type(), self.expected_exception):
+      return self
+
 class Default: pass
 
-def test_usage (cmd) :
+def test_usage(cmd):
   result = easy_run.fully_buffered(cmd)
-  if (result.return_code == 0) :
+  if (result.return_code == 0):
     return True
   else :
-    if (len(result.stderr_lines) > 0) :
-      if ("Usage" in result.stdout_lines[0]) :
+    if (len(result.stderr_lines) > 0):
+      if ("Usage" in result.stdout_lines[0]):
         return True
       else :
         raise Sorry("Bad stderr output from %s:\n%s" % (cmd,
@@ -121,7 +145,7 @@ def run_tests(build_dir, dist_dir, tst_list, display_times=False):
     threads_pool = []
     log_queue = queue.Queue()
     interrupted = threading.Event()
-    for i in xrange(co.threads):
+    for i in range(co.threads):
       working_dir = os.tempnam()
       os.mkdir(working_dir)
       t = threading.Thread(
@@ -191,6 +215,12 @@ def iter_tests_cmd(co, build_dir, dist_dir, tst_list):
       elif (co is not None):
         cmd_args = " " + " ".join(tst[1:])
       tst = tst[0]
+    elif isinstance(tst, types.FunctionType): #adds ability to execute a function defined within run_tests.py
+      cmd = "libtbx.python -c "
+      base_module = os.path.basename(dist_dir)
+      cmd +='"from %s.run_tests import %s; %s()"'%(base_module,tst.__name__,tst.__name__)
+      yield cmd
+      continue
     elif (co is not None) and (co.verbose):
       continue
     if (tst.startswith("$B")):
@@ -214,6 +244,10 @@ def iter_tests_cmd(co, build_dir, dist_dir, tst_list):
     cmd += tst_path
     cmd += cmd_args
 
+    if hasattr(co,'python_keyword_text') and co.python_keyword_text:
+      cmd=cmd.replace("libtbx.python","libtbx.python %s" %(
+         co.python_keyword_text))
+
     if test_class and test_name:
       # If the passed object contains test class and name information
       # then attach that information to the string object.
@@ -223,18 +257,35 @@ def iter_tests_cmd(co, build_dir, dist_dir, tst_list):
     yield cmd
 
 def approx_equal_core(a1, a2, eps, multiplier, out, prefix):
-  if isinstance(a1, str) or isinstance(a1, unicode):
+  if isinstance(a1, (six.text_type, six.binary_type)):
     return a1 == a2
-  if hasattr(a1, "__len__"): # traverse list
+
+  # Dictionaries
+  if isinstance(a1, dict) and isinstance(a2, dict):
+    # Check if dictionaries have the same keys
+    if set(a1.keys()) != set(a2.keys()):
+      raise AssertionError(
+        "approx_equal ERROR: a1.keys() != a2.keys(): %s != %s" % (a1.keys(), a2.keys()))
+    # Compare each key-value pair
+    for key in a1:
+      if not approx_equal_core(
+        a1[key], a2[key], eps, multiplier, out, prefix + str(key) + ": "):
+        return False
+    return True
+
+  # List-like objects
+  if hasattr(a1, "__len__"):
     if (len(a1) != len(a2)):
       raise AssertionError(
         "approx_equal ERROR: len(a1) != len(a2): %d != %d" % (
           len(a1), len(a2)))
-    for i in xrange(len(a1)):
+    for i in range(len(a1)):
       if not approx_equal_core(
                 a1[i], a2[i], eps, multiplier, out, prefix+"  "):
         return False
     return True
+
+  # Complex numbers
   is_complex_1 = isinstance(a1, complex)
   is_complex_2 = isinstance(a2, complex)
   if (is_complex_1 and is_complex_2): # complex & complex
@@ -261,6 +312,8 @@ def approx_equal_core(a1, a2, eps, multiplier, out, prefix):
               0, a2.imag, eps, multiplier, out, prefix+"imag "):
       return False
     return True
+
+  # Regular numbers
   ok = True
   d = a1 - a2
   if (abs(d) > eps):
@@ -296,7 +349,7 @@ def not_approx_equal(a1, a2, eps=1.e-6, multiplier=1.e10):
 def eps_eq_core(a1, a2, eps, out, prefix):
   if (hasattr(a1, "__len__")): # traverse list
     assert len(a1) == len(a2)
-    for i in xrange(len(a1)):
+    for i in range(len(a1)):
       if (not eps_eq_core(a1[i], a2[i], eps, out, prefix+"  ")):
         return False
     return True
@@ -392,7 +445,7 @@ def precision_approx_equal(self,other,precision=24):
   if precision > 52: raise ValueError()
   if self==other:
     return True
-  if (self > 0.) != (other > 0.) :
+  if (self > 0.) != (other > 0.):
     return False
   #compute the exponent
   import math
@@ -406,7 +459,7 @@ def precision_approx_equal(self,other,precision=24):
 def show_diff(a, b, out=sys.stdout,
     selections=None, expected_number_of_lines=None,
     strip_trailing_whitespace=False):
-  if (not isinstance(a, str)):
+  if (not isinstance(a, (str,bytes))):
     a = "\n".join(a)+"\n"
   if (selections is None):
     assert expected_number_of_lines is None
@@ -519,24 +572,82 @@ def contains_lines(lines, expected):
   return contains_substring(
     actual=lines, expected=expected, failure_prefix="contains_lines() ")
 
+def assert_lines_text(text, lines, present=True,
+    remove_white_spaces=True, remove_newline=True):
+  """Tests if lines present or absent in the text.
+
+  Args:
+      text (str): source text
+      lines (str): lines to search for
+      remove_white_spaces (bool, optional): Remove whitespaces for more robust search.
+          Defaults to True.
+      remove_newline (bool, optional): Remove newlines for more robust search.
+          Defaults to True.
+  """
+  filtered_lines = lines
+  if remove_white_spaces:
+    text = text.replace(" ", "")
+    filtered_lines = filtered_lines.replace(" ", "")
+  if remove_newline:
+    text = text.replace(os.linesep,"")
+    filtered_lines = filtered_lines.replace(os.linesep,"")
+  if present:
+    assert text.find(filtered_lines) >= 0, \
+        "Lines:\n %s\n are not found" % (lines)
+  else:
+    assert text.find(filtered_lines) < 0, \
+        "Lines:\n %s\n are found, but they should not be there." % (lines)
+
+
+def assert_lines_in_text(text, lines,
+    remove_white_spaces=True, remove_newline=True):
+  """Tests if lines present in the text.
+
+  Args:
+      text (str): source text
+      lines (str): lines to search for
+      remove_white_spaces (bool, optional): Remove whitespaces for more robust search.
+          Defaults to True.
+      remove_newline (bool, optional): Remove newlines for more robust search.
+          Defaults to True.
+  """
+  assert_lines_text(text, lines, True, remove_white_spaces, remove_newline)
+
+def assert_lines_not_in_text(text, lines,
+    remove_white_spaces=True, remove_newline=True):
+  """Ensures that lines are NOT present in the text.
+
+  Args:
+      text (str): source text
+      lines (str): lines to search for
+      remove_white_spaces (bool, optional): Remove whitespaces for more robust search.
+          Defaults to True.
+      remove_newline (bool, optional): Remove newlines for more robust search.
+          Defaults to True.
+  """
+  assert_lines_text(text, lines, False, remove_white_spaces, remove_newline)
+
 def assert_lines_in_file(file_name, lines,
     remove_white_spaces=True, remove_newline=True):
   """
   lines here is a text, not a list of lines.
   """
-  import os
   f = open(file_name, "r")
   f_lines = f.read()
   f.close()
-  filtered_lines = lines
-  if remove_white_spaces:
-    f_lines = f_lines.replace(" ", "")
-    filtered_lines = filtered_lines.replace(" ", "")
-  if remove_newline:
-    f_lines = f_lines.replace(os.linesep,"")
-    filtered_lines = filtered_lines.replace(os.linesep,"")
-  assert f_lines.find(filtered_lines) >= 0, \
-      "Lines:\n %s\n are not in file %s" % (lines, file_name)
+  assert_lines_in_text(f_lines, lines=lines,
+      remove_white_spaces=remove_white_spaces, remove_newline=remove_newline)
+
+def assert_lines_not_in_file(file_name, lines,
+    remove_white_spaces=True, remove_newline=True):
+  """
+  lines here is a text, not a list of lines.
+  """
+  with open(file_name,'r') as f:
+    f_lines = f.read()
+    assert_lines_not_in_text(f_lines, lines=lines,
+        remove_white_spaces=remove_white_spaces, remove_newline=remove_newline)
+
 
 class RunCommandError(RuntimeError): pass
 
@@ -667,7 +778,6 @@ directly from within the same Python process running the unit tests.
   return cmd_result
 
 def exercise():
-  from six.moves import cStringIO as StringIO
   assert approx_equal(1, 1)
   out = StringIO()
   assert not approx_equal(1, 0, out=out)
@@ -694,7 +804,8 @@ approx_equal multiplier: 10000000000.0
   assert not approx_equal(0, 1.e-5, out=out)
   assert approx_equal(0, 1.e-6)
   out = StringIO()
-  assert not approx_equal([[0,1],[2j,3]],[[0,1],[-2j,3]], out=out, prefix="$%")
+  assert not approx_equal([[0,1],[2j,3]],[[0,1],[complex(0,-2),3]], out=out,
+                          prefix="$%")
   assert not show_diff(out.getvalue().replace("1e-006", "1e-06"), """\
 $%approx_equal eps: 1e-06
 $%approx_equal multiplier: 10000000000.0
@@ -738,7 +849,8 @@ eps_eq eps: 1e-06
   assert not eps_eq(0, 1.e-5, out=out)
   assert eps_eq(0, 1.e-6)
   out = StringIO()
-  assert not eps_eq([[0,1],[2j,3]],[[0,1],[-2j,3]], out=out, prefix="$%")
+  assert not eps_eq([[0,1],[2j,3]],[[0,1],[complex(0,-2),3]], out=out,
+                    prefix="$%")
   assert not show_diff(out.getvalue().replace("1e-006", "1e-06"), """\
 $%eps_eq eps: 1e-06
 $%    0
@@ -794,9 +906,8 @@ ERROR: is_above_limit(value=None, limit=-3, eps=1)
 ERROR: is_above_limit(value=None, limit=3, eps=1)
 """)
   #
-  import pickle
-  from six.moves import cPickle
-  for p in [pickle, cPickle]:
+  from six.moves import cPickle as pickle
+  for p in [pickle]:
     d = pickle_detector()
     assert d.unpickled_counter is None
     assert d.counter == 0
@@ -821,5 +932,171 @@ ERROR: is_above_limit(value=None, limit=3, eps=1)
   assert precision_approx_equal(0.799999,0.800004,precision=18)==False
   print("OK")
 
+def iterate_tests_without_and_with_mmCIF_conversion():
+  """ Return a simple iterator that first does nothing and returns False,
+      then converts all pdb_str_xxxx locals to mmCIF-only format
+      and prints a notice and returns True.
+
+      Behavior can be modified by specifying "skip_mmcif" or "mmcif_only"
+       in sys.argv or by setting the value of the environmental
+      variable REGRESSION_SKIP_CIF ( mmcif_only, skip_mmcif,
+       blank or missing is run both)
+  """
+  skip_string = os.environ.get("REGRESSION_SKIP_CIF",None)
+  if skip_string is None:
+    if 'mmcif_only' in sys.argv:
+      skip_string = 'mmcif_only'
+    elif 'skip_mmcif' in sys.argv:
+      skip_string = 'skip_mmcif'
+
+  if skip_string in [None, '']:
+    run_list = [False, True]
+  elif skip_string == 'mmcif_only':
+    run_list = [True]
+  elif skip_string == 'skip_mmcif':
+    run_list = [False]
+  else:
+    raise Sorry(
+      "Unrecognized value of REGRESSION_SKIP_CIF: '%s'" %(skip_string))
+
+  return run_list
+
+def convert_pdb_to_cif_for_pdb_str(locals, chain_addition = "ZXLONG",
+   key_str="pdb_str", hetatm_name_addition = "ZY", print_new_string = True):
+  #  Converts all the strings that start with "pdb_str" from PDB to mmcif
+  #  format, adding chain_addition to chain names
+  #  If hetatm_name_addition is set, add to hetatm names
+  #  If print_new_string is set, print the new strings
+  keys = list(locals.keys())
+  for key in keys:
+    if (not key.startswith(key_str)) or (type(locals[key]) != type("abc")):
+      continue
+
+    original_string = locals[key]
+
+    new_string = convert_string_to_cif_long(original_string,
+      chain_addition = chain_addition,
+      hetatm_name_addition = hetatm_name_addition)
+    locals[key] = new_string
+    if print_new_string:
+       print("\n",79*"=","\n",
+          "ORIGINAL STRING '%s':\n%s" %(key, original_string))
+       print("\n",79*"=","\n",
+          "MODIFIED STRING '%s':\n%s" %(key, new_string),
+          "\n",79*"=","\n")
+
+def convert_string_to_cif_long(original_string,  chain_addition = "ZXLONG",
+   hetatm_name_addition = "ZY"):
+    from iotbx.pdb.utils import get_pdb_input
+    pdb_inp = get_pdb_input(original_string)
+    ph = pdb_inp.construct_hierarchy()
+    if ph.overall_counts().n_residues < 1:
+      return ""
+    for model in ph.models():
+     for chain in model.chains():
+       chain.id = "%s%s" %(chain.id.strip(),chain_addition)
+       if hetatm_name_addition:
+         for rg in chain.residue_groups():
+           for ag in rg.atom_groups():
+             for at in ag.atoms():
+               if at.hetero and len(ag.resname)<=3:
+                 ag.resname = "%s%s" %(ag.resname.strip(), hetatm_name_addition)
+                 break
+    new_string = ph.as_mmcif_string(
+      crystal_symmetry = pdb_inp.crystal_symmetry())
+    return new_string
+def tst_convert():
+  text = """
+ATOM      1  N   VAL A   1      -5.111   0.049  13.245  1.00  9.36           N
+"""
+  # print(convert_string_to_cif_long(text))
+  assert convert_string_to_cif_long(text).strip() == """
+data_phenix
+loop_
+  _atom_site.group_PDB
+  _atom_site.id
+  _atom_site.label_atom_id
+  _atom_site.label_alt_id
+  _atom_site.label_comp_id
+  _atom_site.auth_asym_id
+  _atom_site.auth_seq_id
+  _atom_site.pdbx_PDB_ins_code
+  _atom_site.Cartn_x
+  _atom_site.Cartn_y
+  _atom_site.Cartn_z
+  _atom_site.occupancy
+  _atom_site.B_iso_or_equiv
+  _atom_site.type_symbol
+  _atom_site.pdbx_formal_charge
+  _atom_site.label_asym_id
+  _atom_site.label_entity_id
+  _atom_site.label_seq_id
+  _atom_site.auth_atom_id
+  _atom_site.pdbx_PDB_model_num
+  ATOM  1  N  .  VAL  AZXLONG  1  ?  -5.11100  0.04900  13.24500  1.000  9.36000  N  ?  A  ?  1  N  1
+
+loop_
+  _chem_comp.id
+  VAL
+
+loop_
+  _struct_asym.id
+  A
+""".strip()
+
+def tst_raises():
+  # check passing behavior
+  with raises(AssertionError) as e:
+    raise AssertionError('abc')
+  assert str(e.value) == 'abc'
+
+  # check failing behavior
+  try:
+    with raises(RuntimeError) as e:
+      raise AssertionError('def')
+  except AssertionError as e:
+    assert str(e) == 'def'
+
+  # catch subclass
+  with raises(Exception) as e:
+    raise AssertionError('ghi')
+  assert str(e.value) == 'ghi'
+
+  # reject parent class
+  try:
+    with raises(ValueError) as e:
+      raise Exception('jkl')
+  except Exception as e:
+    assert str(e) == 'jkl'
+
+def exercise_dict():
+  # test 1
+  assert approx_equal({'a':1, 'b':2}, {'a':1, 'b':2})
+
+  # test 2
+  out = StringIO()
+  assert not approx_equal({'a':1, 'b':2}, {'a':2, 'b':1}, out=out)
+  assert not show_diff(out.getvalue().replace("1e-006", "1e-06"), """\
+approx_equal eps: 1e-06
+approx_equal multiplier: 10000000000.0
+a: 1 approx_equal ERROR
+a: 2 approx_equal ERROR
+a:
+b: 2 approx_equal ERROR
+b: 1 approx_equal ERROR
+b:
+""")
+
+  # test 3
+  with raises(AssertionError) as e:
+    approx_equal({'a':1, 'b':2}, {'a':1, 'b':2, 'c':3}, out=out)
+  expected_error = """approx_equal ERROR: a1.keys() != a2.keys(): dict_keys(['a', 'b']) != dict_keys(['a', 'b', 'c'])"""
+  if sys.version_info.major == 2:
+    expected_error = """approx_equal ERROR: a1.keys() != a2.keys(): ['a', 'b'] != ['a', 'c', 'b']"""
+  assert str(e.value) == expected_error
+
 if (__name__ == "__main__"):
+  tst_convert()
+  tst_raises()
   exercise()
+  exercise_dict()

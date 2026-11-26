@@ -1,4 +1,5 @@
-from __future__ import division
+from __future__ import absolute_import, division, print_function
+from six.moves import range
 #-*- Mode: Python; c-basic-offset: 2; indent-tabs-mode: nil; tab-width: 8 -*-
 #
 # $Id: cspad_cbf_tbx.py
@@ -7,271 +8,20 @@ from __future__ import division
 import pycbf, os
 from scitbx import matrix
 from scitbx.array_family import flex
+import six
+from six.moves import zip
+from six.moves import map
 
-# need to define these here since it not defined in SLAC's metrology definitions
-asic_dimension = (194,185)
-asic_gap = 3
-pixel_size = 0.10992
-from xfel.cxi.cspad_ana.cspad_tbx import cspad_saturated_value, cspad_min_trusted_value
+PSANA2_VERSION = 0
+try:
+  PSANA2_VERSION = os.environ.get('PSANA2_VERSION', 0)
+except AttributeError:
+  pass
 
-def get_psana_corrected_data(psana_det, evt, use_default = False, dark = True, common_mode = None, apply_gain_mask = True, gain_mask_value = None, per_pixel_gain = False):
-  """
-  Given a psana Detector object, apply corrections as appropriate and return the data from the event
-  @param psana_det psana Detector object
-  @param evt psana event
-  @param use_default If true, apply the default calibration only, using the psana algorithms. Otherise, use the corrections
-  specified by the rest of the flags and values passed in.
-  @param dark Whether to apply the detector dark
-  @param common_mode Which common mode algorithm to apply. None: apply no algorithm. Default: use the algorithm specified
-  in the calib folder. Otherwise should be a list as specified by the psana documentation for common mode customization
-  @param apply_gain_mask Whether to apply the common mode gain mask correction
-  @param gain_mask_value Multiplier to apply to the pixels, according to the gain mask
-  @param per_pixel_gain If available, use the per pixel gain deployed to the calibration folder
-  @return Numpy array corrected as specified.
-  """
-  # order is pedestals, then common mode, then gain mask, then per pixel gain
-  run = evt.run()
-  if use_default:
-    return psana_det.calib(evt) # applies psana's complex run-dependent calibrations
-  data = psana_det.raw_data(evt)
-  if data is None:
-    return
-
-  import numpy as np
-  data = data.astype(np.float64)
-
-  if dark:
-    data -= psana_det.pedestals(run)
-  if common_mode:
-    if common_mode == 'default':
-      common_mode = None
-    psana_det.common_mode_apply(run, data, common_mode)
-  if apply_gain_mask:
-    if gain_mask_value is None:
-      gain_mask_value = 6.85
-    data *= psana_det.gain_mask(run, gain=gain_mask_value)
-  if per_pixel_gain:
-    data *= psana_det.gain(run)
-  return data
-
-from dxtbx.format.FormatCBFMultiTile import cbf_wrapper as dxtbx_cbf_wrapper
-class cbf_wrapper(dxtbx_cbf_wrapper):
-  """ Wrapper class that provides convenience functions for working with cbflib"""
-
-  def add_frame_shift(self, basis, axis_settings):
-    """Add an axis representing a frame shift (a rotation axis with an offset)"""
-    angle, axis = angle_and_axis(basis)
-
-    if angle == 0:
-      axis = (0,0,1)
-
-    if basis.include_translation:
-      translation = basis.translation
-    else:
-      translation = (0,0,0)
-
-    self.add_row([basis.axis_name,"rotation","detector",basis.depends_on,
-                  str(axis[0]),str(axis[1]),str(axis[2]),
-                  str(translation[0]),
-                  str(translation[1]),
-                  str(translation[2]),
-                  basis.equipment_component])
-
-    axis_settings.append([basis.axis_name, "FRAME1", str(angle), "0"])
-
-def angle_and_axis(basis):
-  """Normalize a quaternion and return the angle and axis
-  @param params metrology object"""
-  q = matrix.col(basis.orientation).normalize()
-  return q.unit_quaternion_as_axis_and_angle(deg=True)
-
-def center(coords):
-  """ Returns the average of a list of vectors
-  @param coords List of vectors to return the center of
-  """
-  for c in coords:
-    if 'avg' not in locals():
-      avg = c
-    else:
-      avg += c
-  return avg / len(coords)
-
-class basis(object):
-  """ Bucket for detector element information """
-  def __init__(self, orientation = None, translation = None, panelgroup = None, homogenous_transformation = None):
-    """
-    Provide only orientation + translation or a panelgroup or a homogenous_transformation.
-
-    @param orientation rotation in the form of a quarternion
-    @param translation vector translation in relation to the parent frame
-    @param panelgroup dxtbx panelgroup object whose local d matrix will represent the
-    basis shift
-    @param homogenous_transformation 4x4 matrix.sqr object representing a translation
-    and a rotation. Must not also contain a scale as this won't be decomposed properly.
-    """
-    self.include_translation = True
-
-    if panelgroup is not None:
-      d_mat = panelgroup.get_local_d_matrix()
-      fast = matrix.col((d_mat[0],d_mat[3],d_mat[6])).normalize()
-      slow = matrix.col((d_mat[1],d_mat[4],d_mat[7])).normalize()
-      orig = matrix.col((d_mat[2],d_mat[5],d_mat[8]))
-
-      v3 = fast.cross(slow).normalize()
-
-      r3 = matrix.sqr((fast[0],slow[0],v3[0],
-                       fast[1],slow[1],v3[1],
-                       fast[2],slow[2],v3[2]))
-
-      self.orientation = r3.r3_rotation_matrix_as_unit_quaternion()
-      self.translation = orig
-
-    elif orientation is not None or translation is not None:
-      assert orientation is not None and translation is not None
-      self.orientation = orientation
-      self.translation = translation
-
-    else:
-      # Decompose the homegenous transformation assuming no scale factors were used
-      h = homogenous_transformation
-      self.orientation = matrix.sqr((h[0],h[1],h[2],
-                                     h[4],h[5],h[6],
-                                     h[8],h[9],h[10])).r3_rotation_matrix_as_unit_quaternion()
-      self.translation = matrix.col((h[3],
-                                     h[7],
-                                     h[11]))
-      assert h[12] == h[13] == h[14] == 0 and h[15] == 1
-
-  def as_homogenous_transformation(self):
-    """ Returns this basis change as a 4x4 transformation matrix in homogenous coordinates"""
-    r3 = self.orientation.normalize().unit_quaternion_as_r3_rotation_matrix()
-    return matrix.sqr((r3[0],r3[1],r3[2],self.translation[0],
-                       r3[3],r3[4],r3[5],self.translation[1],
-                       r3[6],r3[7],r3[8],self.translation[2],
-                       0,0,0,1))
-
-  def __mul__(self, other):
-    """ Use homogenous matrices to multiply bases together """
-    if hasattr(other, 'as_homogenous_transformation'):
-      return basis(homogenous_transformation = self.as_homogenous_transformation() * other.as_homogenous_transformation())
-    elif hasattr(other, 'n'):
-      if other.n == (3,1):
-        b = matrix.col((other[0], other[1], other[2], 1))
-      elif other.n == (4,1):
-        b = other
-      else:
-        raise TypeError(b, "Incompatible matrices")
-      p = self.as_homogenous_transformation() * b
-      if other.n == (3,1):
-        return matrix.col(p[0:3])
-      else:
-        return p
-    else:
-      raise TypeError(b)
-
-
-def basis_from_geo(geo, use_z = True):
-  """ Given a psana GeometryObject, construct a basis object """
-  rotx = matrix.col((1,0,0)).axis_and_angle_as_r3_rotation_matrix(
-    geo.rot_x + geo.tilt_x, deg=True)
-  roty = matrix.col((0,1,0)).axis_and_angle_as_r3_rotation_matrix(
-    geo.rot_y + geo.tilt_y, deg=True)
-  rotz = matrix.col((0,0,1)).axis_and_angle_as_r3_rotation_matrix(
-    geo.rot_z + geo.tilt_z, deg=True)
-
-  rot = (rotx*roty*rotz).r3_rotation_matrix_as_unit_quaternion()
-
-  if use_z:
-    trans = matrix.col((geo.x0/1000, geo.y0/1000, geo.z0/1000))
-  else:
-    trans = matrix.col((geo.x0/1000, geo.y0/1000, 0))
-
-  return basis(orientation = rot, translation = trans)
-
-def read_slac_metrology(path = None, geometry = None, plot=False, include_asic_offset=False):
-  if path is None and geometry is None:
-    raise Sorry("Need to provide a geometry object or a path to a geometry file")
-
-  if path is not None and geometry is not None:
-    raise Sorry("Cannot provide a geometry object and a geometry file. Ambiguous")
-
-  if geometry is None:
-    try:
-      from PSCalib.GeometryAccess import GeometryAccess
-      geometry = GeometryAccess(path)
-    except Exception, e:
-      raise Sorry("Can't parse this metrology file")
-
-  metro = {}
-  pixel_size = geometry.get_pixel_scale_size()/1000
-  null_ori = matrix.col((0,0,1)).axis_and_angle_as_unit_quaternion(0, deg=True)
-
-  # collapse any transformations above those of the quadrants into one X/Y offset,
-  # but don't keep Z transformations, as those come from the XTC stream
-  root = geometry.get_top_geo()
-  root_basis = basis_from_geo(root, use_z=False)
-  while len(root.get_list_of_children()) != 4 and len(root.get_list_of_children()) != 32:
-    assert len(root.get_list_of_children()) == 1
-    root = root.get_list_of_children()[0]
-    root_basis *= basis_from_geo(root, use_z=False)
-
-  metro[(0,)] = root_basis
-
-  def add_sensor(quad_id, sensor_id, sensor):
-    metro[(0,quad_id,sensor_id)] = basis_from_geo(sensor)
-
-    x, y, z = sensor.get_pixel_coords()
-    x/=1000; y/=1000; z/=1000
-    assert x.shape == y.shape == z.shape
-    sensor_px_slow = x.shape[0]
-    sensor_px_fast = x.shape[1]
-    assert sensor_px_fast % 2 == 0
-
-    a0ul = sul = matrix.col((x[0,0],y[0,0],z[0,0]))
-    a1ur = sur = matrix.col((x[0,sensor_px_fast-1],y[0,sensor_px_fast-1],z[0,sensor_px_fast-1]))
-    a1lr = slr = matrix.col((x[sensor_px_slow-1,sensor_px_fast-1],y[sensor_px_slow-1,sensor_px_fast-1],z[sensor_px_slow-1,sensor_px_fast-1]))
-    a0ll = sll = matrix.col((x[sensor_px_slow-1,0],y[sensor_px_slow-1,0],z[sensor_px_slow-1,0]))
-
-    a0ur = matrix.col((x[0,sensor_px_fast//2-1],y[0,sensor_px_fast//2-1],z[0,sensor_px_fast//2-1]))
-    a0lr = matrix.col((x[sensor_px_slow-1,sensor_px_fast//2-1],y[sensor_px_slow-1,sensor_px_fast//2-1],z[sensor_px_slow-1,sensor_px_fast//2-1]))
-
-    a1ul = matrix.col((x[0,sensor_px_fast//2],y[0,sensor_px_fast//2],z[0,sensor_px_fast//2]))
-    a1ll = matrix.col((x[sensor_px_slow-1,sensor_px_fast//2],y[sensor_px_slow-1,sensor_px_fast//2],z[sensor_px_slow-1,sensor_px_fast//2]))
-
-    sensor_center = center([sul,sur,slr,sll])
-    asic0_center = center([a0ul,a0ur,a0lr,a0ll])
-    asic1_center = center([a1ul,a1ur,a1lr,a1ll])
-
-    asic_trans0 = (asic0_center-sensor_center).length()
-    asic_trans1 = (asic1_center-sensor_center).length()
-
-    if include_asic_offset:
-      rotated_ori = matrix.col((1,0,0)).axis_and_angle_as_unit_quaternion(180.0, deg=True)
-      offset_fast = -pixel_size*((sensor_px_fast) / 4) # 4 because sensor_px_fast is for sensor
-      offset_slow = +pixel_size*((sensor_px_slow) / 2) # Sensor is divided into 2 only in fast direction
-      metro[(0,quad_id,sensor_id,0)] = basis(orientation=rotated_ori,translation=matrix.col((-asic_trans0,0,0)))
-      metro[(0,quad_id,sensor_id,1)] = basis(orientation=rotated_ori,translation=matrix.col((+asic_trans1,0,0)))
-      metro[(0,quad_id,sensor_id,0)].translation += matrix.col((offset_fast, offset_slow, 0))
-      metro[(0,quad_id,sensor_id,1)].translation += matrix.col((offset_fast, offset_slow, 0))
-    else:
-      metro[(0,quad_id,sensor_id,0)] = basis(orientation=null_ori,translation=matrix.col((-asic_trans0,0,0)))
-      metro[(0,quad_id,sensor_id,1)] = basis(orientation=null_ori,translation=matrix.col((+asic_trans1,0,0)))
-
-  if len(root.get_list_of_children()) == 4:
-    for quad_id, quad in enumerate(root.get_list_of_children()):
-      metro[(0,quad_id)] = basis_from_geo(quad)
-      for sensor_id, sensor in enumerate(quad.get_list_of_children()):
-        add_sensor(quad_id, sensor_id, sensor)
-  elif len(root.get_list_of_children()) == 32:
-    for quad_id in xrange(4):
-      metro[(0,quad_id)] = basis(orientation = null_ori, translation = matrix.col((0,0,0)))
-      sensors = root.get_list_of_children()
-      for sensor_id in xrange(8):
-        add_sensor(quad_id, sensor_id, sensors[quad_id*4+sensor_id])
-  else:
-    assert False
-
-  return metro
+from dxtbx.format.FormatCBFMultiTile import cbf_wrapper
+from dxtbx.format.cbf_writer import add_frame_specific_cbf_tables
+from serialtbx.detector import basis, center
+from serialtbx.detector.cspad import cspad_saturated_value, cspad_min_trusted_value, read_slac_metrology, asic_dimension, asic_gap, pixel_size
 
 def get_calib_file_path(env, address, run):
   """ Findes the path to the SLAC metrology file stored in a psana environment
@@ -284,8 +34,8 @@ def get_calib_file_path(env, address, run):
   try:
     # try to get it from the detector interface
     psana_det = Detector(address, run.env())
-    return psana_det.pyda.geoaccess(run).path
-  except Exception, e:
+    return psana_det.pyda.geoaccess(run.run()).path
+  except Exception as e:
     pass
 
   # try to get it from the calib store directly
@@ -297,26 +47,23 @@ def get_calib_file_path(env, address, run):
     return None
   return ''.join(map(chr, path_nda))
 
-def env_dxtbx_from_slac_metrology(run, address, metro=None):
+def env_dxtbx_from_slac_metrology(run, address):
   """ Loads a dxtbx cspad cbf header only object from the metrology path stored
       in a psana run object's calibration store
       @param env psana run object
       @param address address string for a detector
   """
-  if metro is not None:
-    # FIXME: get metrology from a pickle file until det interface is ready
-    cbf = get_cspad_cbf_handle(None, metro, 'cbf', None, "test", None, 100, verbose = True, header_only = True)
-
-    from dxtbx.format.FormatCBFCspad import FormatCBFCspadInMemory
-    return FormatCBFCspadInMemory(cbf)
-
-  from psana import Detector
-  try:
-    # try to load the geometry from the detector interface
-    psana_det = Detector(address, run.env())
-    geometry = psana_det.pyda.geoaccess(run)
-  except Exception, e:
-    geometry = None
+  if PSANA2_VERSION:
+    det = run.Detector(address)
+    geometry = det.raw.geometry()
+  else:
+    from psana import Detector
+    try:
+      # try to load the geometry from the detector interface
+      psana_det = Detector(address, run.env())
+      geometry = psana_det.pyda.geoaccess(run.run())
+    except Exception as e:
+      geometry = None
 
   if geometry is None:
     metro_path = get_calib_file_path(run.env(), address, run)
@@ -353,7 +100,7 @@ def format_object_from_data(base_dxtbx, data, distance, wavelength, timestamp, a
   import numpy as np
   cbf = copy_cbf_header(base_dxtbx._cbf_handle)
   cspad_img = FormatCBFCspadInMemory(cbf)
-  cbf.set_datablockname(address + "_" + timestamp)
+  cbf.set_datablockname((address + "_" + timestamp).encode())
 
   if round_to_int:
     data = flex.double(data.astype(np.float64)).iround()
@@ -366,11 +113,11 @@ def format_object_from_data(base_dxtbx, data, distance, wavelength, timestamp, a
     [(cspad_min_trusted_value,cspad_saturated_value)]*n_asics)
 
   # Set the distance, I.E., the length translated along the Z axis
-  cbf.find_category("diffrn_scan_frame_axis")
-  cbf.find_column("axis_id")
-  cbf.find_row("AXIS_D0_Z") # XXX discover the Z axis somehow, don't use D0 here
-  cbf.find_column("displacement")
-  cbf.set_value(str(-distance))
+  cbf.find_category(b"diffrn_scan_frame_axis")
+  cbf.find_column(b"axis_id")
+  cbf.find_row(b"AXIS_D0_Z") # XXX discover the Z axis somehow, don't use D0 here
+  cbf.find_column(b"displacement")
+  cbf.set_value(b"%f"%(-distance))
 
   # Explicitly reset the detector object now that the distance is set correctly
   cspad_img._detector_instance = cspad_img._detector()
@@ -380,7 +127,7 @@ def format_object_from_data(base_dxtbx, data, distance, wavelength, timestamp, a
 
   # Get the data and add it to the cbf handle. Split it out by quads.
   tiles = {}
-  for i in xrange(4):
+  for i in range(4):
     tiles[(0,i)] = data[i:i+1,:,:,:]
     tiles[(0,i)].reshape(flex.grid((8,185,388)))
   add_tiles_to_cbf(cbf,tiles)
@@ -428,7 +175,7 @@ def read_optical_metrology_from_flat_file(path, detector, pixel_size, asic_dimen
   quadrants_trans = {}
   if detector == "CxiDs1":
     # rotate sensors 6 and 7 180 degrees
-    for q_id, quadrant in quadrants.iteritems():
+    for q_id, quadrant in six.iteritems(quadrants):
       six = quadrant[6]
       svn = quadrant[7]
       assert len(six) == 4 and len(svn) == 4
@@ -438,7 +185,7 @@ def read_optical_metrology_from_flat_file(path, detector, pixel_size, asic_dimen
 
     # apply transformations: bring to order (slow, fast) <=> (column,
      # row).  This takes care of quadrant rotations
-    for (q, sensors) in quadrants.iteritems():
+    for (q, sensors) in six.iteritems(quadrants):
       quadrants_trans[q] = {}
 
       q_apa = q
@@ -447,28 +194,28 @@ def read_optical_metrology_from_flat_file(path, detector, pixel_size, asic_dimen
         # Q0:
         #   x -> -slow
         #   y -> -fast
-        for (s, vertices) in sensors.iteritems():
+        for (s, vertices) in six.iteritems(sensors):
           quadrants_trans[q][s] = [matrix.col((-v[1]/1000, +v[0]/1000, v[2]/1000))
                                    for v in quadrants[q_apa][s]]
       elif q == 1:
         # Q1:
         #   x -> +fast
         #   y -> -slow
-        for (s, vertices) in sensors.iteritems():
+        for (s, vertices) in six.iteritems(sensors):
           quadrants_trans[q][s] = [matrix.col((+v[0]/1000, +v[1]/1000, v[2]/1000))
                                    for v in quadrants[q_apa][s]]
       elif q == 2:
         # Q2:
         #   x -> +slow
         #   y -> +fast
-        for (s, vertices) in sensors.iteritems():
+        for (s, vertices) in six.iteritems(sensors):
           quadrants_trans[q][s] = [matrix.col((+v[1]/1000, -v[0]/1000, v[2]/1000))
                                    for v in quadrants[q_apa][s]]
       elif q == 3:
         # Q3:
         #   x -> -fast
         #   y -> +slow
-        for (s, vertices) in sensors.iteritems():
+        for (s, vertices) in six.iteritems(sensors):
           quadrants_trans[q][s] = [matrix.col((-v[0]/1000, -v[1]/1000, v[2]/1000))
                                    for v in quadrants[q_apa][s]]
       else:
@@ -487,10 +234,10 @@ def read_optical_metrology_from_flat_file(path, detector, pixel_size, asic_dimen
     # quadrants.
     o = matrix.col((0, 0, 0))
     N = 0
-    slen = len(quadrants[quadrants.keys()[0]])
-    for (q, sensors) in quadrants.iteritems():
+    slen = len(quadrants[list(quadrants.keys())[0]])
+    for (q, sensors) in six.iteritems(quadrants):
       assert len(sensors) == slen
-      for s, sensor in sensors.iteritems():
+      for s, sensor in six.iteritems(sensors):
         o += center(sensor)
         N += 1
     o /= N
@@ -498,9 +245,9 @@ def read_optical_metrology_from_flat_file(path, detector, pixel_size, asic_dimen
     rot_mat = matrix.col((0,0,1)).axis_and_angle_as_r3_rotation_matrix(180,deg=True)
     sensors_to_rotate = [4,5,10,11,12,13,14,15,16,17,18,19,22,23,24,25]
 
-    for (q, quadrant) in quadrants.iteritems():
+    for (q, quadrant) in six.iteritems(quadrants):
       quadrants_trans[q] = {}
-      for (s, vertices) in quadrant.iteritems():
+      for (s, vertices) in six.iteritems(quadrant):
         # move to origin, rotate 180 degrees around origin, and scale
         vertices = [rot_mat*(v-o)/1000 for v in vertices]
 
@@ -519,13 +266,13 @@ def read_optical_metrology_from_flat_file(path, detector, pixel_size, asic_dimen
 
     a = []; b = []; c = []; d = []; cents = {}
 
-    for q_id, q in quadrants_trans.iteritems():
+    for q_id, q in six.iteritems(quadrants_trans):
       q_c = matrix.col((0,0,0))
-      for s_id, s in q.iteritems():
+      for s_id, s in six.iteritems(q):
         q_c += center(s)
       q_c /= len(q)
       cents["Q%d"%q_id] = q_c
-      for s_id, s in q.iteritems():
+      for s_id, s in six.iteritems(q):
         sensor = ((s[0][0], s[0][1]),
                   (s[1][0], s[1][1]),
                   (s[2][0], s[2][1]),
@@ -538,7 +285,7 @@ def read_optical_metrology_from_flat_file(path, detector, pixel_size, asic_dimen
     ax.set_xlim((-100, 100))
     ax.set_ylim((-100, 100))
     plt.scatter([v[0] for v in a], [v[1] for v in a], c = 'black')
-    for i, v in cents.iteritems():
+    for i, v in six.iteritems(cents):
         ax.annotate(i, (v[0],v[1]))
     plt.scatter([v[0] for v in b], [v[1] for v in b], c = 'yellow')
     #plt.scatter([v[0] for v in c], [v[1] for v in c], c = 'yellow')
@@ -549,16 +296,16 @@ def read_optical_metrology_from_flat_file(path, detector, pixel_size, asic_dimen
   null_ori = matrix.col((0,0,1)).axis_and_angle_as_unit_quaternion(0, deg=True)
   metro = { (0,): basis(null_ori, matrix.col((0,0,0))) }
 
-  for q_id, q in quadrants_trans.iteritems():
+  for q_id, q in six.iteritems(quadrants_trans):
     # calculate the center of the quadrant
     q_c = matrix.col((0,0,0))
-    for s_id, s in q.iteritems():
+    for s_id, s in six.iteritems(q):
       q_c += center(s)
     q_c /= len(q)
 
     metro[(0,q_id)] = basis(null_ori,q_c)
 
-    for s_id, s in q.iteritems():
+    for s_id, s in six.iteritems(q):
       sensorcenter_wrt_detector = center(s)
       sensorcenter_wrt_quadrant = sensorcenter_wrt_detector - q_c
 
@@ -578,7 +325,7 @@ def read_optical_metrology_from_flat_file(path, detector, pixel_size, asic_dimen
       metro[(0,q_id,s_id,1)] = basis(null_ori,matrix.col((+w,0,0)))
 
   if plot:
-    print "Validating transofmation matrices set up correctly"
+    print("Validating transformation matrices set up correctly")
     import matplotlib.pyplot as plt
     from matplotlib.patches import Polygon
     fig = plt.figure()
@@ -614,8 +361,8 @@ def cbf_file_to_basis_dict(path):
   """ Maps a cbf file to a dictionary of tuples and basis objects, in the same form as the above from
   read_optical_metrology_from_flat_file
   @param path cbf file path """
-  from dxtbx.format.Registry import Registry
-  reader = Registry.find(path)
+  import dxtbx.format.Registry
+  reader = dxtbx.format.Registry.get_format_class_for_file(path)
   instance = reader(path)
   return map_detector_to_basis_dict(instance.get_detector())
 
@@ -688,80 +435,19 @@ def metro_phil_to_basis_dict(metro):
 
   return bd
 
-def add_frame_specific_cbf_tables(cbf, wavelength, timestamp, trusted_ranges, diffrn_id = "DS1", is_xfel = True):
-  """ Adds tables to cbf handle that won't already exsist if the cbf file is just a header
-  @ param wavelength Wavelength in angstroms
-  @ param timestamp String formatted timestamp for the image
-  @ param trusted_ranges Array of trusted range tuples (min, max), one for each element """
-
-  """Data items in the DIFFRN_RADIATION category describe
-   the radiation used for measuring diffraction intensities,
-   its collimation and monochromatization before the sample.
-
-   Post-sample treatment of the beam is described by data
-   items in the DIFFRN_DETECTOR category."""
-  cbf.add_category("diffrn_radiation", ["diffrn_id","wavelength_id","probe"])
-  cbf.add_row([diffrn_id,"WAVELENGTH1","x-ray"])
-
-  """ Data items in the DIFFRN_RADIATION_WAVELENGTH category describe
-   the wavelength of the radiation used in measuring the diffraction
-   intensities. Items may be looped to identify and assign weights
-   to distinct wavelength components from a polychromatic beam."""
-  cbf.add_category("diffrn_radiation_wavelength", ["id","wavelength","wt"])
-  cbf.add_row(["WAVELENGTH1",str(wavelength),"1.0"])
-
-  """Data items in the DIFFRN_MEASUREMENT category record details
-   about the device used to orient and/or position the crystal
-   during data measurement and the manner in which the
-   diffraction data were measured."""
-  cbf.add_category("diffrn_measurement",["diffrn_id","id","number_of_axes","method","details"])
-  cbf.add_row([diffrn_id,
-    "INJECTION" if is_xfel else "unknown","0",
-    "electrospray" if is_xfel else "unknown"
-    "crystals injected by electrospray" if is_xfel else "unknown"])
-
-  """ Data items in the DIFFRN_SCAN category describe the parameters of one
-     or more scans, relating axis positions to frames."""
-  cbf.add_category("diffrn_scan",["id","frame_id_start","frame_id_end","frames"])
-  cbf.add_row(["SCAN1","FRAME1","FRAME1","1"])
-
-  """Data items in the DIFFRN_SCAN_FRAME category describe
-   the relationships of particular frames to scans."""
-  cbf.add_category("diffrn_scan_frame",["frame_id","frame_number","integration_time","scan_id","date"])
-  cbf.add_row(["FRAME1","1","0.0","SCAN1",timestamp])
-
-  """ Data items in the ARRAY_INTENSITIES category record the
-   information required to recover the intensity data from
-   the set of data values stored in the ARRAY_DATA category."""
-  # More detail here: http://www.iucr.org/__data/iucr/cifdic_html/2/cif_img.dic/Carray_intensities.html
-  array_names = []
-  cbf.find_category("diffrn_data_frame")
-  while True:
-    try:
-      cbf.find_column("array_id")
-      array_names.append(cbf.get_value())
-      cbf.next_row()
-    except Exception, e:
-      assert "CBF_NOTFOUND" in e.message
-      break
-
-  cbf.add_category("array_intensities",["array_id","binary_id","linearity","gain","gain_esd","overload","undefined_value"])
-  for i, array_name in enumerate(array_names):
-    cbf.add_row([array_name,str(i+1),"linear","1.0","0.1",str(trusted_ranges[i][1]),str(trusted_ranges[i][0])])
-
 def add_tiles_to_cbf(cbf, tiles, verbose = False):
   """
   Given a cbf handle, add the raw data and the necessary tables to support it
   """
   array_names = []
-  cbf.find_category("diffrn_data_frame")
+  cbf.find_category(b"diffrn_data_frame")
   while True:
     try:
-      cbf.find_column("array_id")
-      array_names.append(cbf.get_value())
+      cbf.find_column(b"array_id")
+      array_names.append(cbf.get_value().decode())
       cbf.next_row()
-    except Exception, e:
-      assert "CBF_NOTFOUND" in e.message
+    except Exception as e:
+      assert "CBF_NOTFOUND" in str(e)
       break
 
   tileisint = flex.bool()
@@ -788,7 +474,7 @@ def add_tiles_to_cbf(cbf, tiles, verbose = False):
   cbf.add_category("array_data",["array_id","binary_id","data"])
 
   if verbose:
-    print "Compressing tiles...",
+    print("Compressing tiles...", end=' ')
 
   for i, (tilekey, array_name) in enumerate(zip(sorted(tiles.keys()), array_names)):
     focus = tiles[tilekey].focus()
@@ -798,7 +484,7 @@ def add_tiles_to_cbf(cbf, tiles, verbose = False):
     binary_id = i+1
     data = tiles[tilekey].copy_to_byte_str()
     elements = len(tiles[tilekey])
-    byteorder = "little_endian"
+    byteorder = b"little_endian"
     dimfast = focus[2]
     dimmid = focus[1]
     dimslow = focus[0]
@@ -824,7 +510,8 @@ def add_tiles_to_cbf(cbf, tiles, verbose = False):
       elsize = 8
 
       cbf.set_realarray_wdims_fs(\
-        pycbf.CBF_CANONICAL,
+        #pycbf.CBF_CANONICAL,
+        pycbf.CBF_PACKED,
         binary_id,
         data,
         elsize,
@@ -842,7 +529,7 @@ def copy_cbf_header(src_cbf, skip_sections = False):
   which may not always be present
   @return cbf_wrapper instance with the header information from the source """
   dst_cbf = cbf_wrapper()
-  dst_cbf.new_datablock("dummy")
+  dst_cbf.new_datablock(b"dummy")
 
   categories = ["diffrn",
                 "diffrn_source",
@@ -860,20 +547,20 @@ def copy_cbf_header(src_cbf, skip_sections = False):
                 "diffrn_scan_frame_axis"])
 
   for cat in categories:
-    src_cbf.find_category(cat)
+    src_cbf.find_category(cat.encode())
     columns = []
-    for i in xrange(src_cbf.count_columns()):
+    for i in range(src_cbf.count_columns()):
       src_cbf.select_column(i)
-      columns.append(src_cbf.column_name())
+      columns.append(src_cbf.column_name().decode())
 
     dst_cbf.add_category(cat, columns)
 
-    for i in xrange(src_cbf.count_rows()):
+    for i in range(src_cbf.count_rows()):
       src_cbf.select_row(i)
       row = []
-      for j in xrange(src_cbf.count_columns()):
+      for j in range(src_cbf.count_columns()):
         src_cbf.select_column(j)
-        row.append(src_cbf.get_value())
+        row.append(src_cbf.get_value().decode())
       dst_cbf.add_row(row)
 
   return dst_cbf
@@ -881,11 +568,11 @@ def copy_cbf_header(src_cbf, skip_sections = False):
 def write_cspad_cbf(tiles, metro, metro_style, timestamp, cbf_root, wavelength, distance, verbose = True, header_only = False):
   cbf = get_cspad_cbf_handle(tiles, metro, metro_style, timestamp, cbf_root, wavelength, distance, verbose, header_only)
 
-  cbf.write_widefile(cbf_root,pycbf.CBF,\
+  cbf.write_widefile(cbf_root.encode(),pycbf.CBF,\
       pycbf.MIME_HEADERS|pycbf.MSG_DIGEST|pycbf.PAD_4K,0)
 
   if verbose:
-    print "%s written"%cbf_root
+    print("%s written"%cbf_root)
 
 def get_cspad_cbf_handle(tiles, metro, metro_style, timestamp, cbf_root, wavelength, distance, verbose = True, header_only = False):
   assert metro_style in ['calibdir','flatfile','cbf']
@@ -930,7 +617,7 @@ def get_cspad_cbf_handle(tiles, metro, metro_style, timestamp, cbf_root, wavelen
 
   # the data block is the root cbf node
   cbf=cbf_wrapper()
-  cbf.new_datablock(os.path.splitext(os.path.basename(cbf_root))[0])
+  cbf.new_datablock(os.path.splitext(os.path.basename(cbf_root))[0].encode())
 
   # Each category listed here is preceded by the imageCIF description taken from here:
   # http://www.iucr.org/__data/iucr/cifdic_html/2/cif_img.dic/index.html

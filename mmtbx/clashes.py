@@ -1,8 +1,10 @@
-from __future__ import division
+"""Obtain information on clashing atoms"""
+from __future__ import absolute_import, division, print_function
 import mmtbx.monomer_library
 import mmtbx.monomer_library.pdb_interpretation
 import sys
 from cctbx.geometry_restraints.linking_class import linking_class
+from six.moves import zip
 origin_ids = linking_class()
 from libtbx import adopt_init_args
 import mmtbx.model
@@ -34,13 +36,16 @@ class from_pdb(object):
 
   def __init__(self, pdb_str,
       clash_threshold, remove_clash_guard=False,
-      remove_max_reasonable_bond_distance=False):
+      remove_max_reasonable_bond_distance=False,
+      allow_polymer_cross_special_position=False):
     params = mmtbx.monomer_library.pdb_interpretation.master_params.extract()
     if remove_clash_guard:
       params.clash_guard.nonbonded_distance_threshold=None
       params.proceed_with_excessive_length_bonds=True
     if remove_max_reasonable_bond_distance:
       params.max_reasonable_bond_distance=None
+    if allow_polymer_cross_special_position:
+      params.allow_polymer_cross_special_position=True
 
     ppf = mmtbx.monomer_library.pdb_interpretation.process(
       mon_lib_srv              = mmtbx.monomer_library.server.server(),
@@ -71,7 +76,7 @@ class from_pdb(object):
   def show(self, log=None):
     if(log is None): log = sys.stdout
     for pair in self._pairs:
-      print >> log, self.format_clash_string(pair=pair)
+      print(self.format_clash_string(pair=pair), file=log)
 
 # END_MARKED_FOR_DELETION_OLEG
 
@@ -115,7 +120,7 @@ class remove_clashes(object):
     if not self.remove_selection_string:
       self.new_model=self.model.deep_copy() # nothing to do
     else:
-      sel1 = self.model.selection(selstr = " NOT (%s) " %(
+      sel1 = self.model.selection(string = " NOT (%s) " %(
          self.remove_selection_string))
       self.new_model=self.model.select(sel1)
 
@@ -200,10 +205,10 @@ class remove_clashes(object):
        self.remove_selection_string=remove_side_chain_selection_string
 
   def get_atomname(self,i):
-    return self.model.all_chain_proxies.pdb_atoms[i].name
+    return self.model.get_atoms()[i].name
 
   def get_key(self,i):
-      atom=self.model.all_chain_proxies.pdb_atoms[i]
+      atom=self.model.get_atoms()[i]
       ag=atom.parent()
       rg=ag.parent()
       resseq_i=rg.resseq

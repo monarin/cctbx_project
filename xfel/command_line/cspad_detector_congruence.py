@@ -12,17 +12,25 @@
 #
 # LIBTBX_SET_DISPATCHER_NAME cspad.detector_congruence
 #
-from __future__ import division
+from __future__ import absolute_import, division, print_function
+from six.moves import range
 from dials.array_family import flex
+from dials.util import show_mail_on_error
 from scitbx.matrix import col
-from matplotlib import pyplot as plt
-from matplotlib.patches import Polygon
-from matplotlib.colors import Normalize
-from matplotlib import cm
 import numpy as np
 from libtbx.phil import parse
 import libtbx.load_env
 import math
+from six.moves import zip
+from serialtbx.detector import iterate_detector_at_level, iterate_panels, id_from_name, get_center
+
+try:
+  from matplotlib import pyplot as plt
+  from matplotlib.patches import Polygon
+  from matplotlib.colors import Normalize
+  from matplotlib import cm
+except ImportError:
+  pass # Can happen on non-GUI nodes
 
 help_message = '''
 
@@ -31,7 +39,7 @@ between two detectors.
 
 Example:
 
-  %s experiment1.json experiment2.json reflections1.pickle reflections2.pickle
+  %s experiment1.expt experiment2.expt reflections1.refl reflections2.refl
 ''' % libtbx.env.dispatcher_name
 
 # Create the phil parameters
@@ -54,66 +62,6 @@ draw_normal_arrows=False
   .help=Whether to draw the XY components of each panel group's normal vector. Useful \
         for visualizing tilt.
 ''')
-
-def iterate_detector_at_level(item, depth = 0, level = 0):
-  """
-  Iterate through all panel groups or panels of a detector object at a given
-  hierarchy level
-  @param item panel group or panel. Use detector.hierarchy().
-  @param depth current dept for recursion. Should be 0 for initial call.
-  @param level iterate groups at this level
-  @return next panel or panel group object
-  """
-  if level == depth:
-    yield item
-  else:
-    for child in item:
-      for subitem in iterate_detector_at_level(child, depth+1, level):
-        yield subitem
-
-def iterate_panels(panelgroup):
-  """
-  Find and iterate all panels in the given panel group, regardless of the hierarchly level
-  of this panelgroup
-  @param panelgroup the panel group of interest
-  @return the next panel
-  """
-  if panelgroup.is_group():
-    for child in panelgroup:
-      for subitem in iterate_panels(child):
-        yield subitem
-  else:
-    yield panelgroup
-
-def id_from_name(detector, name):
-  """ Jiffy function to get the id of a panel using its name
-  @param detector detector object
-  @param name panel name
-  @return index of panel in detector
-  """
-  return [p.get_name() for p in detector].index(name)
-
-def get_center(pg):
-  """ Find the center of a panel group pg, projected on its fast/slow plane """
-  if pg.is_group():
-    # find the average center of all this group's children
-    children_center = col((0,0,0))
-    count = 0
-    for p in iterate_panels(pg):
-      children_center += get_center(p)
-      count += 1
-    children_center /= count
-
-    # project the children center onto the plane of the panel group
-    pgf = col(pg.get_fast_axis())
-    pgs = col(pg.get_slow_axis())
-    pgn = col(pg.get_normal())
-    pgo = col(pg.get_origin())
-
-    return (pgf.dot(children_center) * pgf) + (pgs.dot(children_center) * pgs) + (pgn.dot(pgo) * pgn)
-  else:
-    s = pg.get_image_size()
-    return col(pg.get_pixel_lab_coord((s[0]/2, s[1]/2)))
 
 def get_bounds(root, pg):
   """ Find the max extent of the panel group pg, projected onto the fast/slow plane of root """
@@ -152,60 +100,116 @@ def get_bounds(root, pg):
   else:
     return panel_bounds(root, pg)
 
+def detector_plot_dict(params, detector, data, title, units_str, show=True, reverse_colormap=False):
+  """
+  Use matplotlib to plot a detector, color coding panels according to data
+  @param detector detector reference detector object
+  @param data python dictionary of panel names as keys and numbers as values
+  @param title title string for plot
+  @param units_str string with a formatting statment for units on each panel
+  """
+  # initialize the color map
+  values = flex.double(list(data.values()))
+  norm = Normalize(vmin=flex.min(values), vmax=flex.max(values))
+  cmap = plt.get_cmap(params.colormap + ("_r" if reverse_colormap else ''))
+  sm = cm.ScalarMappable(norm=norm, cmap=cmap)
+  if len(values) == 0:
+    print("no values")
+    return
+  elif len(values) == 1:
+    sm.set_array(np.arange(values[0], values[0], 1)) # needed for colorbar
+  else:
+    sm.set_array(np.arange(flex.min(values), flex.max(values), (flex.max(values)-flex.min(values))/20)) # needed for colorbar
+
+  fig = plt.figure()
+  ax = fig.add_subplot(111, aspect='equal')
+  max_dim = 0
+  root = detector.hierarchy()
+  rf = col(root.get_fast_axis())
+  rs = col(root.get_slow_axis())
+  for pg_id, pg in enumerate(iterate_detector_at_level(root, 0, params.hierarchy_level)):
+    if pg.get_name() not in data:
+      continue
+    # get panel coordinates
+    p0, p1, p2, p3 = get_bounds(root, pg)
+
+    v1 = p1-p0
+    v2 = p3-p0
+    vcen = ((v2/2) + (v1/2)) + p0
+
+    # add the panel to the plot
+    ax.add_patch(Polygon((p0[0:2],p1[0:2],p2[0:2],p3[0:2]), closed=True, color=sm.to_rgba(data[pg.get_name()]), fill=True))
+    ax.annotate("%d %s"%(pg_id, units_str%data[pg.get_name()]), vcen[0:2], ha='center')
+
+    if params.draw_normal_arrows:
+      pgn = col(pg.get_normal())
+      v = col((rf.dot(pgn), rs.dot(pgn), 0))
+      v *= 10000
+      ax.arrow(vcen[0], vcen[1], v[0], v[1], head_width=5.0, head_length=10.0, fc='k', ec='k')
+
+    # find the plot maximum dimensions
+    for p in [p0, p1, p2, p3]:
+      for c in p[0:2]:
+        if abs(c) > max_dim:
+          max_dim = abs(c)
+
+  # plot the results
+  ax.set_xlim((-max_dim,max_dim))
+  ax.set_ylim((-max_dim,max_dim))
+  ax.set_xlabel("mm")
+  ax.set_ylabel("mm")
+  fig.colorbar(sm, ax=ax)
+  plt.title(title)
+  if show:
+    plt.show()
 
 class Script(object):
   ''' Class to parse the command line options. '''
 
   def __init__(self):
     ''' Set the expected options. '''
-    from dials.util.options import OptionParser
+    from dials.util.options import ArgumentParser
     import libtbx.load_env
 
     # Create the option parser
-    usage = "usage: %s experiment1.json experiment2.json reflections1.pickle reflections2.pickle" % libtbx.env.dispatcher_name
-    self.parser = OptionParser(
+    usage = "usage: %s experiment1.expt experiment2.expt reflections1.refl reflections2.refl" % libtbx.env.dispatcher_name
+    self.parser = ArgumentParser(
       usage=usage,
       sort_options=True,
       phil=phil_scope,
       read_experiments=True,
-      read_datablocks=True,
       read_reflections=True,
       epilog=help_message)
 
   def run(self):
     ''' Parse the options. '''
-    from dials.util.options import flatten_experiments, flatten_datablocks, flatten_reflections
+    from dials.util.options import flatten_experiments, flatten_reflections
     # Parse the command line arguments
     params, options = self.parser.parse_args(show_diff_phil=True)
     self.params = params
     experiments = flatten_experiments(params.input.experiments)
-    datablocks = flatten_datablocks(params.input.datablock)
     reflections = flatten_reflections(params.input.reflections)
 
     # Find all detector objects
     detectors = []
     detectors.extend(experiments.detectors())
-    dbs = []
-    for datablock in datablocks:
-      dbs.extend(datablock.unique_detectors())
-    detectors.extend(dbs)
 
     # Verify inputs
     if len(detectors) != 2:
-      print "Please provide two experiments and or datablocks for comparison"
+      print("Please provide two experiments for comparison")
       return
 
     # These lines exercise the iterate_detector_at_level and iterate_panels functions
     # for a detector with 4 hierarchy levels
     """
     print "Testing iterate_detector_at_level"
-    for level in xrange(4):
+    for level in range(4):
       print "iterating at level", level
       for panelg in iterate_detector_at_level(detectors[0].hierarchy(), 0, level):
         print panelg.get_name()
 
     print "Testing iterate_panels"
-    for level in xrange(4):
+    for level in range(4):
       print "iterating at level", level
       for panelg in iterate_detector_at_level(detectors[0].hierarchy(), 0, level):
         for panel in iterate_panels(panelg):
@@ -213,10 +217,10 @@ class Script(object):
     """
     tmp = []
     for refls in reflections:
-      print "N reflections total:", len(refls)
+      print("N reflections total:", len(refls))
       refls = refls.select(refls.get_flags(refls.flags.used_in_refinement))
-      print "N reflections used in refinement", len(refls)
-      print "Reporting only on those reflections used in refinement"
+      print("N reflections used in refinement", len(refls))
+      print("Reporting only on those reflections used in refinement")
 
       refls['difference_vector_norms'] = (refls['xyzcal.mm']-refls['xyzobs.mm.value']).norms()
       tmp.append(refls)
@@ -269,7 +273,7 @@ class Script(object):
     s0 = col(flex.vec3_double([col(b.get_s0()) for b in experiments.beams()]).mean())
 
     # Compute a set of radial and transverse displacements for each reflection
-    print "Setting up stats..."
+    print("Setting up stats...")
     tmp_refls = []
     for refls, expts in zip(reflections, [wrapper.data for wrapper in params.input.experiments]):
       tmp = flex.reflection_table()
@@ -324,7 +328,7 @@ class Script(object):
         pg1_refls += r1
         pg2_refls += r2
       if pg1_refls == 0 and pg2_refls == 0:
-        print "No reflections on panel group", pg_id
+        print("No reflections on panel group", pg_id)
         continue
 
       assert pg1.get_name() == pg2.get_name()
@@ -568,7 +572,7 @@ class Script(object):
     table_header = ["PanelG"]
     table_header2 = ["Id"]
     table_header3 = [""]
-    for i in xrange(len(detectors)):
+    for i in range(len(detectors)):
       table_header.extend(["D%d"%i]*4)
       table_header2.extend(["RMSD", "rRMSD", "tRMSD", "N refls"])
       table_header3.extend(["(microns)"]*3)
@@ -614,23 +618,23 @@ class Script(object):
       congruence_table_data.append(["Mean", "", "", "","","", "", "", "", "", "", "%6.1f"%flex.mean(all_refls_count.as_double())])
 
     from libtbx import table_utils
-    print "Congruence statistics, I.E. the differences between the input detectors:"
-    print table_utils.format(congruence_table_data,has_header=3,justify='center',delim=" ")
+    print("Congruence statistics, I.E. the differences between the input detectors:")
+    print(table_utils.format(congruence_table_data,has_header=3,justify='center',delim=" "))
 
-    print "PanelG Id: panel group id or panel id, depending on hierarchy_level. For each panel group, statistics are computed between the matching panel groups between the two input experiments."
-    print "Dist: distance from center of panel group to the beam center"
-    print "Dist Sigma: weighted standard deviation of the measurements used to compute Dist"
-    print "Normal angle: angle between the normal vectors of matching panel groups."
-    print "RNormal angle: radial component of the angle between the normal vectors of matching panel groups"
-    print "TNormal angle: transverse component of the angle between the normal vectors of matching panel groups"
-    print "Z rot: angle between the XY components of the fast axes of the panel groups."
-    print "Delta F: shift between matching panel groups along the detector fast axis."
-    print "Delta S: shift between matching panel groups along the detector slow axis."
-    print "Delta Z: Z shift between matching panel groups along the detector normal."
-    print "Delta O: Overall shift between matching panel groups along the detector normal."
-    print "N refls: number of reflections summed between both matching panel groups. This number is used as a weight when computing means and standard deviations."
-    print
-    print
+    print("PanelG Id: panel group id or panel id, depending on hierarchy_level. For each panel group, statistics are computed between the matching panel groups between the two input experiments.")
+    print("Dist: distance from center of panel group to the beam center")
+    print("Dist Sigma: weighted standard deviation of the measurements used to compute Dist")
+    print("Normal angle: angle between the normal vectors of matching panel groups.")
+    print("RNormal angle: radial component of the angle between the normal vectors of matching panel groups")
+    print("TNormal angle: transverse component of the angle between the normal vectors of matching panel groups")
+    print("Z rot: angle between the XY components of the fast axes of the panel groups.")
+    print("Delta F: shift between matching panel groups along the detector fast axis.")
+    print("Delta S: shift between matching panel groups along the detector slow axis.")
+    print("Delta Z: Z shift between matching panel groups along the detector normal.")
+    print("Delta O: Overall shift between matching panel groups along the detector normal.")
+    print("N refls: number of reflections summed between both matching panel groups. This number is used as a weight when computing means and standard deviations.")
+    print()
+    print()
 
 
     if len(all_weights) > 1:
@@ -666,25 +670,25 @@ class Script(object):
       detector_table_data.append(r1)
       detector_table_data.append(r2)
 
-    print "Detector statistics, I.E. measurements of parameters relative to the detector plane:"
-    print table_utils.format(detector_table_data,has_header=3,justify='center',delim=" ")
+    print("Detector statistics, I.E. measurements of parameters relative to the detector plane:")
+    print(table_utils.format(detector_table_data,has_header=3,justify='center',delim=" "))
 
-    print "PanelG Id: panel group id or panel id, depending on hierarchy_level. For each panel group, weighted means and weighted standard deviations (Sigmas) for the properties listed below are computed using the matching panel groups between the input experiments."
-    print "Dist: distance from center of panel group to the beam center"
-    print "Dist Sigma: weighted standard deviation of the measurements used to compute Dist"
-    print "Normal Angle: angle between the normal vector of the detector at its root hierarchy level and the normal of the panel group"
-    print "RNormal Angle: radial component of Normal Angle"
-    print "TNormal Angle: transverse component of Normal Angle"
-    print "RotZ: deviation from 90 degrees of the rotation of each panel group around the detector normal"
-    print "F Offset: offset of panel group along the detector's fast axis"
-    print "S Offset: offset of panel group along the detector's slow axis"
-    print "Z Offset: offset of panel group along the detector normal"
-    print "Offset: offset of panel group in F,S,Z space. Sigma is F, S, Z offset sigmas summed in quadrature."
-    print "N refls: number of reflections summed between both matching panel groups. This number is used as a weight when computing means and standard deviations."
-    print "All: weighted mean of the values shown"
-    print
-    print "Sigmas in this table are computed using the standard deviation of 2 measurements (I.E. a panel's Z Offset is measured twice, once in each input dataset). This is related by a factor of sqrt(2)/2 to the mean of the Delta Z parameter in the congruence statistics table above, which is the difference between Z parameters."
-    print
+    print("PanelG Id: panel group id or panel id, depending on hierarchy_level. For each panel group, weighted means and weighted standard deviations (Sigmas) for the properties listed below are computed using the matching panel groups between the input experiments.")
+    print("Dist: distance from center of panel group to the beam center")
+    print("Dist Sigma: weighted standard deviation of the measurements used to compute Dist")
+    print("Normal Angle: angle between the normal vector of the detector at its root hierarchy level and the normal of the panel group")
+    print("RNormal Angle: radial component of Normal Angle")
+    print("TNormal Angle: transverse component of Normal Angle")
+    print("RotZ: deviation from 90 degrees of the rotation of each panel group around the detector normal")
+    print("F Offset: offset of panel group along the detector's fast axis")
+    print("S Offset: offset of panel group along the detector's slow axis")
+    print("Z Offset: offset of panel group along the detector normal")
+    print("Offset: offset of panel group in F,S,Z space. Sigma is F, S, Z offset sigmas summed in quadrature.")
+    print("N refls: number of reflections summed between both matching panel groups. This number is used as a weight when computing means and standard deviations.")
+    print("All: weighted mean of the values shown")
+    print()
+    print("Sigmas in this table are computed using the standard deviation of 2 measurements (I.E. a panel's Z Offset is measured twice, once in each input dataset). This is related by a factor of sqrt(2)/2 to the mean of the Delta Z parameter in the congruence statistics table above, which is the difference between Z parameters.")
+    print()
 
     row = ["Overall"]
     for refls in reflections:
@@ -694,28 +698,28 @@ class Script(object):
       row.append("%8d"%len(refls))
     rmsds_table_data.append(row)
 
-    print "RMSDs by detector number"
-    print table_utils.format(rmsds_table_data,has_header=3,justify='center',delim=" ")
-    print "PanelG Id: panel group id or panel id, depending on hierarchy_level"
-    print "RMSD: root mean squared deviation between observed and predicted spot locations"
-    print "rRMSD: RMSD of radial components of the observed-predicted vectors"
-    print "tRMSD: RMSD of transverse components of the observed-predicted vectors"
-    print "N refls: number of reflections"
+    print("RMSDs by detector number")
+    print(table_utils.format(rmsds_table_data,has_header=3,justify='center',delim=" "))
+    print("PanelG Id: panel group id or panel id, depending on hierarchy_level")
+    print("RMSD: root mean squared deviation between observed and predicted spot locations")
+    print("rRMSD: RMSD of radial components of the observed-predicted vectors")
+    print("tRMSD: RMSD of transverse components of the observed-predicted vectors")
+    print("N refls: number of reflections")
 
     # Show stats for detector hierarchy root
     def _print_vector(v):
       for i in v:
-        print "%10.5f"%i,
-      print
+        print("%10.5f"%i, end=' ')
+      print()
     for d_id, d in enumerate(detectors):
       ori = d.hierarchy().get_origin()
       norm = d.hierarchy().get_normal()
       fast = d.hierarchy().get_fast_axis()
       slow = d.hierarchy().get_slow_axis()
-      print "Detector", d_id, "origin:   ",; _print_vector(ori)
-      print "Detector", d_id, "normal:   ",; _print_vector(norm)
-      print "Detector", d_id, "fast axis:",; _print_vector(fast)
-      print "Detector", d_id, "slow axis:",; _print_vector(slow)
+      print("Detector", d_id, "origin:   ", end=' '); _print_vector(ori)
+      print("Detector", d_id, "normal:   ", end=' '); _print_vector(norm)
+      print("Detector", d_id, "fast axis:", end=' '); _print_vector(fast)
+      print("Detector", d_id, "slow axis:", end=' '); _print_vector(slow)
 
     # Unit cell statstics
     lengths = flex.vec3_double()
@@ -727,11 +731,11 @@ class Script(object):
         angles.append(crystal.get_unit_cell().parameters()[3:6])
         weights.append(len(refls.select(refls['id'] == crystal_id)))
 
-    print "Unit cell stats (angstroms and degrees), weighted means and standard deviations"
+    print("Unit cell stats (angstroms and degrees), weighted means and standard deviations")
     for subset, tags in zip([lengths, angles], [["Cell a", "Cell b", "Cell c"],["Cell alpha", "Cell beta", "Cell gamma"]]):
       for data, tag in zip(subset.parts(), tags):
         stats = flex.mean_and_variance(data, weights)
-        print "%s %5.1f +/- %6.3f"%(tag, stats.mean(), stats.gsl_stats_wsd())
+        print("%s %5.1f +/- %6.3f"%(tag, stats.mean(), stats.gsl_stats_wsd()))
 
     if params.tag is None:
       tag = ""
@@ -740,86 +744,17 @@ class Script(object):
 
     if params.show_plots:
       # Plot the results
-      self.detector_plot_dict(detectors[0], refl_counts, u"%sN reflections"%tag, u"%6d", show=False)
-      #self.detector_plot_dict(detectors[0], delta_normals, u"%sAngle between normal vectors (\N{DEGREE SIGN})"%tag, u"%.2f\N{DEGREE SIGN}", show=False)
-      self.detector_plot_dict(detectors[0], z_angles, u"%sZ rotation angle between panels (\N{DEGREE SIGN})"%tag, u"%.2f\N{DEGREE SIGN}", show=False)
-      self.detector_plot_dict(detectors[0], f_deltas, u"%sFast displacements between panels (microns)"%tag, u"%4.1f", show=False)
-      self.detector_plot_dict(detectors[0], s_deltas, u"%sSlow displacements between panels (microns)"%tag, u"%4.1f", show=False)
-      self.detector_plot_dict(detectors[0], z_offsets_d, u"%sZ offsets along detector normal (microns)"%tag, u"%4.1f", show=False)
-      self.detector_plot_dict(detectors[0], z_deltas, u"%sZ displacements between panels (microns)"%tag, u"%4.1f", show=False)
-      self.detector_plot_dict(detectors[0], o_deltas, u"%sOverall displacements between panels (microns)"%tag, u"%4.1f", show=False)
-      plt.show()
-
-  def detector_plot_dict(self, detector, data, title, units_str, show=True, reverse_colormap=False):
-    """
-    Use matplotlib to plot a detector, color coding panels according to data
-    @param detector detector reference detector object
-    @param data python dictionary of panel names as keys and numbers as values
-    @param title title string for plot
-    @param units_str string with a formatting statment for units on each panel
-    """
-    # initialize the color map
-    values = flex.double(data.values())
-    norm = Normalize(vmin=flex.min(values), vmax=flex.max(values))
-    if reverse_colormap:
-      cmap = plt.cm.get_cmap(self.params.colormap + "_r")
-    else:
-      cmap = plt.cm.get_cmap(self.params.colormap)
-    sm = cm.ScalarMappable(norm=norm, cmap=cmap)
-    if len(values) == 0:
-      print "no values"
-      return
-    elif len(values) == 1:
-      sm.set_array(np.arange(values[0], values[0], 1)) # needed for colorbar
-    else:
-      sm.set_array(np.arange(flex.min(values), flex.max(values), (flex.max(values)-flex.min(values))/20)) # needed for colorbar
-
-    fig = plt.figure()
-    ax = fig.add_subplot(111, aspect='equal')
-    max_dim = 0
-    root = detector.hierarchy()
-    rf = col(root.get_fast_axis())
-    rs = col(root.get_slow_axis())
-    for pg_id, pg in enumerate(iterate_detector_at_level(root, 0, self.params.hierarchy_level)):
-      if pg.get_name() not in data:
-        continue
-      # get panel coordinates
-      p0, p1, p2, p3 = get_bounds(root, pg)
-
-      v1 = p1-p0
-      v2 = p3-p0
-      vcen = ((v2/2) + (v1/2)) + p0
-
-      # add the panel to the plot
-      ax.add_patch(Polygon((p0[0:2],p1[0:2],p2[0:2],p3[0:2]), closed=True, color=sm.to_rgba(data[pg.get_name()]), fill=True))
-      ax.annotate("%d %s"%(pg_id, units_str%data[pg.get_name()]), vcen[0:2], ha='center')
-
-      if self.params.draw_normal_arrows:
-        pgn = col(pg.get_normal())
-        v = col((rf.dot(pgn), rs.dot(pgn), 0))
-        v *= 10000
-        ax.arrow(vcen[0], vcen[1], v[0], v[1], head_width=5.0, head_length=10.0, fc='k', ec='k')
-
-      # find the plot maximum dimensions
-      for p in [p0, p1, p2, p3]:
-        for c in p[0:2]:
-          if abs(c) > max_dim:
-            max_dim = abs(c)
-
-    # plot the results
-    ax.set_xlim((-max_dim,max_dim))
-    ax.set_ylim((-max_dim,max_dim))
-    ax.set_xlabel("mm")
-    ax.set_ylabel("mm")
-    fig.colorbar(sm)
-    plt.title(title)
-    if show:
+      detector_plot_dict(self.params, detectors[0], refl_counts, u"%sN reflections"%tag, u"%6d", show=False)
+      #detector_plot_dict(self.params, detectors[0], delta_normals, u"%sAngle between normal vectors (\N{DEGREE SIGN})"%tag, u"%.2f\N{DEGREE SIGN}", show=False)
+      detector_plot_dict(self.params, detectors[0], z_angles, u"%sZ rotation angle between panels (\N{DEGREE SIGN})"%tag, u"%.2f\N{DEGREE SIGN}", show=False)
+      detector_plot_dict(self.params, detectors[0], f_deltas, u"%sFast displacements between panels (microns)"%tag, u"%4.1f", show=False)
+      detector_plot_dict(self.params, detectors[0], s_deltas, u"%sSlow displacements between panels (microns)"%tag, u"%4.1f", show=False)
+      detector_plot_dict(self.params, detectors[0], z_offsets_d, u"%sZ offsets along detector normal (microns)"%tag, u"%4.1f", show=False)
+      detector_plot_dict(self.params, detectors[0], z_deltas, u"%sZ displacements between panels (microns)"%tag, u"%4.1f", show=False)
+      detector_plot_dict(self.params, detectors[0], o_deltas, u"%sOverall displacements between panels (microns)"%tag, u"%4.1f", show=False)
       plt.show()
 
 if __name__ == '__main__':
-  from dials.util import halraiser
-  try:
+  with show_mail_on_error():
     script = Script()
     script.run()
-  except Exception as e:
-    halraiser(e)

@@ -1,4 +1,4 @@
-from __future__ import division
+from __future__ import absolute_import, division, print_function
 from cctbx.array_family import flex
 from cctbx import xray
 from cctbx import sgtbx
@@ -184,7 +184,7 @@ def tst_f_model(this_hkl=123):
 
   tmp = oldfm.d_target_d_all(1,0,this_hkl,gradient_flags).koverall()
   tmp_d = ((oldfm.f_model()[this_hkl]-newfm.f_model()[this_hkl])/(-h)).real
-  assert approx_equal( tmp,tmp_d,eps=1e-2 )
+  assert approx_equal( tmp,tmp_d,eps=1e-4 )
   newfm.renew_overall_scale_parameters(1, (0,0,0,0,0,0))
 
   newfm.renew_bulk_solvent_scale_parameters(1+h,1.0)
@@ -248,4 +248,4 @@ def run():
 
 if (__name__ == "__main__"):
   run()
-  print "OK"
+  print("OK")

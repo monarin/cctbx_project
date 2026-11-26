@@ -1,6 +1,5 @@
-from __future__ import division
+from __future__ import absolute_import, division, print_function
 # LIBTBX_PRE_DISPATCHER_INCLUDE_SH export PHENIX_GUI_ENVIRONMENT=1
-# LIBTBX_PRE_DISPATCHER_INCLUDE_SH export BOOST_ADAPTBX_FPE_DEFAULT=1
 
 import wxtbx.plots
 from libtbx.utils import Sorry, Abort, Usage
@@ -9,29 +8,29 @@ import wx
 import os
 import sys
 
-def run (args) :
+def run(args):
   app = wx.App(0)
   file_name = None
-  if (len(args) == 0) :
+  if (len(args) == 0):
     ask_for_file_name()
   else :
     file_name = args[0]
-  if (file_name is None) or (not os.path.isfile(file_name)) :
+  if (file_name is None) or (not os.path.isfile(file_name)):
     raise Usage("wxtbx.inspect_r_free_flags data.mtz")
   display_file_info(file_name)
   app.MainLoop()
 
-def ask_for_file_name (parent=None) :
+def ask_for_file_name(parent=None):
   import iotbx.file_reader
   file_name = wx.FileSelector(
     message="Select a reflections file",
-    flags=wx.OPEN,
+    flags=wx.FD_OPEN,
     wildcard=iotbx.file_reader.get_wildcard_strings(["hkl"]))
-  if (file_name == "") or (file_name is None) :
+  if (file_name == "") or (file_name is None):
     raise Abort()
   return file_name
 
-def display_file_info (file_name, parent=None) :
+def display_file_info(file_name, parent=None):
   from iotbx import reflection_file_editor
   from iotbx import file_reader
   from iotbx import data_plots
@@ -65,7 +64,7 @@ def display_file_info (file_name, parent=None) :
       n_all=array.indices().size(),
       percent_free=n_free/array.indices().size(),
       completeness=array.completeness()))
-  if (len(labels) == 0) :
+  if (len(labels) == 0):
     raise Sorry("No recognizable R-free flags found in this file.")
   frame = wx.Frame(parent, -1, "R-free flags info",
     style=wx.DEFAULT_FRAME_STYLE)
@@ -83,11 +82,11 @@ def display_file_info (file_name, parent=None) :
   frame.Fit()
   frame.Show()
 
-class RfreeInspector (wx.Panel) :
-  def __init__ (self, *args, **kwds) :
+class RfreeInspector(wx.Panel):
+  def __init__(self, *args, **kwds):
     wx.Panel.__init__(self, *args, **kwds)
     self.sizer = wx.BoxSizer(wx.VERTICAL)
-    grid = wx.FlexGridSizer(cols=2, rows=4)
+    grid = wx.FlexGridSizer(2, 4, 0, 0)
     self.sizer.Add(grid, 0, wx.ALL, 5)
     grid.Add(wx.StaticText(self, -1, "File name:"), 0,
       wx.ALL|wx.ALIGN_CENTER_VERTICAL, 5)
@@ -107,13 +106,13 @@ class RfreeInspector (wx.Panel) :
     self.percent_txt = wx.StaticText(self, -1, "", size=(300,-1))
     grid.Add(self.percent_txt, 0, wx.ALL|wx.ALIGN_CENTER_VERTICAL, 5)
     txt = wx.StaticText(self, -1,
-"""The graph on the right shows the total nubmer of test set \
+"""The graph on the right shows the total number of test set \
 reflections as a function of resolution.  A set picked at random will have an \
 approximately straight line; if the test set was picked in thin resolution \
 shells to avoid bias caused by non-crystallographic symmetry, it will \
 increase in sharp steps.  CCTBX/PHENIX can not currently extend a set picked \
 in shells; we suggest creating a new set in such cases.""")
-    txt.Wrap(780)
+    txt.Wrap(790)
     self.sizer.Add(txt, 0, wx.ALL, 5)
     plot_sizer = wx.BoxSizer(wx.HORIZONTAL)
     self.sizer.Add(plot_sizer, 1, wx.ALL|wx.EXPAND)
@@ -130,7 +129,7 @@ in shells; we suggest creating a new set in such cases.""")
     self.Bind(wx.EVT_CHOICE, self.OnChooseArray, self.labels_choice)
     self.stats = []
 
-  def set_data (self, file_name, labels, tables, stats, flags_and_values) :
+  def set_data(self, file_name, labels, tables, stats, flags_and_values):
     self.stats = stats
     self.flags_and_values = flags_and_values
     self.file_txt.SetValue(file_name)
@@ -139,7 +138,7 @@ in shells; we suggest creating a new set in such cases.""")
     self.plot2.set_tables(tables)
     self.OnChooseArray(None)
 
-  def OnChooseArray (self, evt) :
+  def OnChooseArray(self, evt):
     array_selection = self.labels_choice.GetSelection()
     flags, value = self.flags_and_values[array_selection]
     self.plot1.show_pie(flags, value)
@@ -152,15 +151,15 @@ in shells; we suggest creating a new set in such cases.""")
        100 * self.stats[array_selection].percent_free))
     self.Refresh()
 
-class RfreeFlagsPlot (wxtbx.plots.plot_container) :
-  def show_pie (self, flags, test_flag_value) :
+class RfreeFlagsPlot(wxtbx.plots.plot_container):
+  def show_pie(self, flags, test_flag_value):
     values = sorted(list(set(flags)))
     n_values = len(values)
     labels = []
     colors = []
     counts = []
-    for i, value in enumerate(values) :
-      if (value == test_flag_value) :
+    for i, value in enumerate(values):
+      if (value == test_flag_value):
         colors.append((1.,0.,0.))
       else :
         colors.append((0.5*(n_values-i)/n_values, 0.5*(n_values-i)/n_values,
@@ -174,5 +173,5 @@ class RfreeFlagsPlot (wxtbx.plots.plot_container) :
     p.set_title("Flag values")
     self.canvas.draw()
 
-if (__name__ == "__main__") :
+if (__name__ == "__main__"):
  run(sys.argv[1:])

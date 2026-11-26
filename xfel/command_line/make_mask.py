@@ -1,4 +1,5 @@
-from __future__ import division
+from __future__ import absolute_import, division, print_function
+from six.moves import range
 # -*- mode: python; coding: utf-8; indent-tabs-mode: nil; python-indent: 2 -*-
 #
 # LIBTBX_SET_DISPATCHER_NAME cxi.make_mask
@@ -15,7 +16,7 @@ from __future__ import division
 # to mask_pix_val.
 #
 
-from dxtbx.format.Registry import Registry
+import dxtbx.format.Registry
 from xfel.cxi.cspad_ana.cspad_tbx import dpack, dwritef2
 from scitbx.array_family import flex
 import sys
@@ -144,7 +145,7 @@ def run(argv=None):
   max_path    = paths[2]
 
   # load the three images
-  format_class = Registry.find(avg_path)
+  format_class = dxtbx.format.Registry.get_format_class_for_file(avg_path)
   avg_f = format_class(avg_path)
   avg_i = avg_f.get_detectorbase()
   avg_d = avg_i.get_raw_data()
@@ -193,8 +194,8 @@ def run(argv=None):
       if circle_y + radius > maxy: maxy = circle_y + radius
 
     sel = avg_d == command_line.options.mask_pix_val
-    for j in xrange(miny, maxy):
-      for i in xrange(minx, maxx):
+    for j in range(miny, maxy):
+      for i in range(minx, maxx):
         idx = j * avg_d.focus()[0] + i
         if not sel[idx]:
           if poly_mask is not None and point_in_polygon((i,j),poly_mask):
@@ -251,8 +252,8 @@ def run(argv=None):
   masked_out = len(avg_d.as_1d().select((avg_d == command_line.options.mask_pix_val).as_1d()))
   assert masked_out >= min_count
 
-  print "Masked out %d pixels out of %d (%.2f%%)"% \
-    (masked_out-min_count,len(avg_d)-min_count,(masked_out-min_count)*100/(len(avg_d)-min_count))
+  print("Masked out %d pixels out of %d (%.2f%%)"% \
+    (masked_out-min_count,len(avg_d)-min_count,(masked_out-min_count)*100/(len(avg_d)-min_count)))
 
 if (__name__ == "__main__"):
   sys.exit(run())

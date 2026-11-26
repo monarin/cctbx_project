@@ -13,19 +13,22 @@
 # LIBTBX_SET_DISPATCHER_NAME dev.cctbx.xfel.detector_residuals
 # LIBTBX_SET_DISPATCHER_NAME cctbx.xfel.detector_residuals
 # LIBTBX_PRE_DISPATCHER_INCLUDE_SH export PHENIX_GUI_ENVIRONMENT=1
-# LIBTBX_PRE_DISPATCHER_INCLUDE_SH export BOOST_ADAPTBX_FPE_DEFAULT=1
 #
-from __future__ import division
+from __future__ import absolute_import, division, print_function
+from six.moves import range
 from dials.array_family import flex
+from dials.util import show_mail_on_error
 from scitbx.matrix import col
 from matplotlib import pyplot as plt
 from matplotlib.patches import Polygon
 from matplotlib.colors import Normalize
 from matplotlib import cm
 from matplotlib.backends.backend_pdf import PdfPages
+from matplotlib.colors import LogNorm
 import numpy as np
 from libtbx.phil import parse
 import math
+from six.moves import zip
 
 help_message = '''
 
@@ -34,7 +37,7 @@ between observed and predicted reflections
 
 Example:
 
-  dev.cctbx.xfel.detector_residuals experiment.json reflections.pickle
+  dev.cctbx.xfel.detector_residuals experiment.expt reflections.refl
 '''
 
 # Create the phil parameters
@@ -53,7 +56,7 @@ repredict_input_reflections = True
   .help = Whether to use the input models to repredict reflection positions \
           prior to making plots
 residuals {
-  plot_max=None
+  plot_max=0.3
     .type = float
     .help = Maximum residual value to be shown in the detector plot
   histogram_max=None
@@ -78,6 +81,26 @@ residuals {
   recompute_outliers = False
     .type = bool
     .help = If True, use sauter_poon to recompute outliers and remove them
+  delta_scalar = 50
+    .type = float
+    .help = For deltaXY and similar plots that show for each reflection the offset \
+            between the observed and predicted spot in mm, scale that offset by this \
+            value
+  mcd_filter {
+    enable = False
+      .type = bool
+      .help = on the DeltaPsi plot, apply a 3-feature MCD filter
+    mahalanobis_distance = 7
+      .type = float(value_min=0.)
+      .help = cutoff level expressed as a multivariate Gaussian std dev
+    keep = *inliers outliers
+      .type = choice
+      .help = this should be obvious.  Either keep the good ones or the bad ones.
+  }
+  print_correlations = True
+    .type = bool
+    .help = For each panel group, print the correlation between radial offset\
+            and delta_psi, and transverse offset and delta_psi.
 }
 
 repredict
@@ -158,6 +181,10 @@ plots {
             center of the panel as an origin, plot the reflection displaced   \
             from the center of its panel along its deltaXY vector. The        \
             reflections are colored by their delta psi values.
+  transverse_radial_deltapsi_resolution = False
+    .type = bool
+    .help = Plot transverse vs. radial displacements, colored by delta psi, \
+            binned by resolution.
   deltaXY_by_reflection_energy = False
     .type = bool
     .help = As deltaXY_by_deltapsi, but reflections are colored mean pixel   \
@@ -186,6 +213,13 @@ plots {
     .help = For each panel, the radial displacements of each reflection are   \
             histogrammed.  The center is marked with a red line. Asymmetry    \
             indicates a panel not properly aligned in the radial direciton.
+  delta_vs_azimuthal_angle = False
+    .type = bool
+    .help = For each reflection, plot either overall, radial, or transverse   \
+            displacements vs. azimuthal angle, where the angle is between     \
+            (0,1,0), i.e. the vector pointing up in real space, and the XY    \
+            component of the vector from the sample to the observed spot      \
+            centroid. Plot is a 2D histogram on a log scale.
   intensity_vs_radials_2dhist = False
     .type = bool
     .help = 2D histogram of reflection intensities vs radial displacements.   \
@@ -193,17 +227,23 @@ plots {
             a given radial displacement.
   delta2theta_vs_deltapsi_2dhist = False
     .type = bool
-    .help = For each reflection compute the difference in measured vs pred-   \
+    .help = For each reflection, compute the difference in measured vs pred-   \
             icted two theta and the delta psi. 2D histogram is plotted where  \
             each pixel is the number of reflections with a given delta two    \
             theta and a given delta psi.  10 plots are shown, one for each of \
             10 resolution bins.
   delta2theta_vs_2theta_2dhist = False
     .type = bool
-    .help = For each reflection compute the two theta and the difference in   \
+    .help = For each reflection, compute the two theta and the difference in  \
             measured vs predicted two theta. 2D histogram is plotted where    \
             each pixel is the number of reflections with a given delta two    \
             theta and a given two theta.
+  deltaPsi_vs_2theta_2dhist = False
+    .type = bool
+    .help = For each reflection, compute the delta psi and two theta angles.  \
+            2D histogram is plotted where each pixel is the number of         \
+            reflections with a given delta psi and two theta. Result is       \
+            similar to a trumpet plot but for the whole dataset.
   grouped_stats = False
     .type = bool
     .help = 5 plots are shown with different stats. For each panel group, the \
@@ -227,6 +267,18 @@ plots {
   trumpet_plot = False
     .type = bool
     .help = Show trumpet plot from Sauter 2014 for the first experiment
+  ewald_offset_plot = False
+    .type = bool
+    .help = Show trumpet plot equivalent but using the Ewald offset for Y \
+            (I.E. the reflection distance from the Ewald sphere)
+  include_offset_dots = False
+    .type = bool
+    .help = Plot mean offset for spot predictions from observations in \
+            deltaXY_by_deltapsi plot
+  include_scale_bar_in_pixels = 0
+    .type = float (value_min=0)
+    .help = For each panel in the deltaXY_by_deltapsi plot, show xy scale \
+            bars. Length of the scale bar is specified here in pixels.
 }
 
 save_pdf = False
@@ -238,44 +290,44 @@ save_png = False
 include scope xfel.command_line.cspad_detector_congruence.phil_scope
 ''', process_includes=True)
 
-def setup_stats(detector, experiments, reflections, two_theta_only = False):
+def setup_stats(experiments, reflections, two_theta_only = False):
   # Compute a set of radial and transverse displacements for each reflection
-  print "Setting up stats..."
+  print("Setting up stats...")
   tmp = flex.reflection_table()
   # Need to construct a variety of vectors
-  for panel_id, panel in enumerate(detector):
-    panel_refls = reflections.select(reflections['panel'] == panel_id)
-    if len(panel_refls) == 0: continue
-    bcl = flex.vec3_double()
-    tto = flex.double()
-    ttc = flex.double()
-    # Compute the beam center in lab space (a vector pointing from the origin to where the beam would intersect
-    # the panel, if it did intersect the panel)
-    for expt_id in set(panel_refls['id']):
-      beam = experiments[expt_id].beam
+  for expt_id, expt in enumerate(experiments):
+    expt_refls = reflections.select(reflections['id'] == expt_id)
+    if len(expt_refls) == 0: continue
+    if 'd' not in expt_refls:
+      expt_refls['d'] = expt.crystal.get_unit_cell().d(expt_refls['miller_index'])
+    for panel_id, panel in enumerate(expt.detector):
+      refls = expt_refls.select(expt_refls['panel'] == panel_id)
+      if len(refls) == 0: continue
+      # Compute the beam center in lab space (a vector pointing from the origin to where the beam would intersect
+      # the panel, if it did intersect the panel)
+      beam = expt.beam
       s0 = beam.get_s0()
-      expt_refls = panel_refls.select(panel_refls['id'] == expt_id)
       beam_centre = panel.get_beam_centre_lab(s0)
-      bcl.extend(flex.vec3_double(len(expt_refls), beam_centre))
-      cal_x, cal_y, _ = expt_refls['xyzcal.px'].parts()
-      ttc.extend(flex.double([panel.get_two_theta_at_pixel(s0, (cal_x[i], cal_y[i])) for i in xrange(len(expt_refls))]))
-      if 'xyzobs.px.value' in expt_refls:
-        obs_x, obs_y, _ = expt_refls['xyzobs.px.value'].parts()
-        tto.extend(flex.double([panel.get_two_theta_at_pixel(s0, (obs_x[i], obs_y[i])) for i in xrange(len(expt_refls))]))
-    panel_refls['beam_centre_lab'] = bcl
-    panel_refls['two_theta_cal'] = ttc * (180/math.pi) #+ (0.5*panel_refls['delpsical.rad']*panel_refls['two_theta_obs'])
-    if 'xyzobs.px.value' in expt_refls:
-      panel_refls['two_theta_obs'] = tto * (180/math.pi)
-    if not two_theta_only:
-      # Compute obs in lab space
-      x, y, _ = panel_refls['xyzobs.mm.value'].parts()
-      c = flex.vec2_double(x, y)
-      panel_refls['obs_lab_coords'] = panel.get_lab_coord(c)
-      # Compute deltaXY in panel space. This vector is relative to the panel origin
-      x, y, _ = (panel_refls['xyzcal.mm'] - panel_refls['xyzobs.mm.value']).parts()
-      # Convert deltaXY to lab space, subtracting off of the panel origin
-      panel_refls['delta_lab_coords'] = panel.get_lab_coord(flex.vec2_double(x,y)) - panel.get_origin()
-    tmp.extend(panel_refls)
+      bcl = flex.vec3_double(len(refls), beam_centre)
+      cal_x, cal_y, _ = refls['xyzcal.px'].parts()
+      ttc = flex.double([panel.get_two_theta_at_pixel(s0, (cal_x[i], cal_y[i])) for i in range(len(refls))])
+      if 'xyzobs.px.value' in refls:
+        obs_x, obs_y, _ = refls['xyzobs.px.value'].parts()
+        tto = flex.double([panel.get_two_theta_at_pixel(s0, (obs_x[i], obs_y[i])) for i in range(len(refls))])
+      refls['beam_centre_lab'] = bcl
+      refls['two_theta_cal'] = ttc * (180/math.pi) #+ (0.5*panel_refls['delpsical.rad']*panel_refls['two_theta_obs'])
+      if 'xyzobs.px.value' in refls:
+        refls['two_theta_obs'] = tto * (180/math.pi)
+      if not two_theta_only:
+        # Compute obs in lab space
+        x, y, _ = refls['xyzobs.mm.value'].parts()
+        c = flex.vec2_double(x, y)
+        refls['obs_lab_coords'] = panel.get_lab_coord(c)
+        # Compute deltaXY in panel space. This vector is relative to the panel origin
+        x, y, _ = (refls['xyzcal.mm'] - refls['xyzobs.mm.value']).parts()
+        # Convert deltaXY to lab space, subtracting off of the panel origin
+        refls['delta_lab_coords'] = panel.get_lab_coord(flex.vec2_double(x,y)) - panel.get_origin()
+      tmp.extend(refls)
   reflections = tmp
   return reflections
 
@@ -291,8 +343,8 @@ def get_unweighted_rmsd(reflections, verbose=True):
   w_rmsd = math.sqrt( flex.sum( weights*(reflections['difference_vector_norms']**2) )/flex.sum(weights))
 
   if verbose:
-    print "Uweighted RMSD (mm)", un_rmsd
-    print "Weighted RMSD (mm)", w_rmsd
+    print("%20s%7.3f"%("Unweighted RMSD (μm)", un_rmsd*1000))
+    print("%20s%7.3f"%("Weighted RMSD (μm)", w_rmsd*1000))
 
   return un_rmsd
 
@@ -301,7 +353,7 @@ def reflection_wavelength_from_pixels(experiments, reflections):
   if 'shoebox' not in reflections:
     return reflections
 
-  print "Computing per-reflection wavelengths from shoeboxes"
+  print("Computing per-reflection wavelengths from shoeboxes")
 
   from dials.algorithms.shoebox import MaskCode
   valid_code = MaskCode.Valid | MaskCode.Foreground
@@ -316,7 +368,7 @@ def reflection_wavelength_from_pixels(experiments, reflections):
     unit_cell = expt.crystal.get_unit_cell()
     d = unit_cell.d(refls['miller_index'])
 
-    for i in xrange(len(refls)):
+    for i in range(len(refls)):
       sb = refls['shoebox'][i]
       # find the coordinates with signal
       mask = flex.bool([(m & valid_code) != 0 for m in sb.mask])
@@ -333,24 +385,47 @@ def reflection_wavelength_from_pixels(experiments, reflections):
   table['reflection_wavelength_from_pixels'] = wavelengths
   return table
 
-from xfel.command_line.cspad_detector_congruence import iterate_detector_at_level, iterate_panels, id_from_name, get_center
+def trumpet_plot(experiment, reflections, axis = None):
+  half_mosaicity_deg = experiment.crystal.get_half_mosaicity_deg()
+  domain_size_ang = experiment.crystal.get_domain_size_ang()
+  if not axis:
+    fig = plt.figure()
+    axis = plt.gca()
+  two_thetas = reflections['two_theta_cal']
+  delpsi = reflections['delpsical.rad']*180/math.pi
+  axis.scatter(two_thetas, delpsi)
+
+  LR = flex.linear_regression(two_thetas, delpsi)
+  model_y = LR.slope()*two_thetas + LR.y_intercept()
+  axis.plot(two_thetas, model_y, "k-")
+
+  tan_phi_deg = (experiment.crystal.get_unit_cell().d(reflections['miller_index']) / domain_size_ang)*180/math.pi
+  tan_outer_deg = tan_phi_deg + (half_mosaicity_deg/2)
+
+  axis.set_title("Mosaicity FW=%4.2f deg, Dsize=%5.0fA on %d spots"%(2*half_mosaicity_deg, domain_size_ang, len(two_thetas)))
+  axis.plot(two_thetas, tan_phi_deg, "r.")
+  axis.plot(two_thetas, -tan_phi_deg, "r.")
+  axis.plot(two_thetas, tan_outer_deg, "g.")
+  axis.plot(two_thetas, -tan_outer_deg, "g.")
+
+from xfel.command_line.cspad_detector_congruence import detector_plot_dict
+from serialtbx.detector import iterate_detector_at_level, iterate_panels, id_from_name, get_center
 from xfel.command_line.cspad_detector_congruence import Script as DCScript
 class Script(DCScript):
   ''' Class to parse the command line options. '''
 
   def __init__(self):
     ''' Set the expected options. '''
-    from dials.util.options import OptionParser
+    from dials.util.options import ArgumentParser
     import libtbx.load_env
 
     # Create the option parser
     usage = "usage: %s [options] /path/to/refined/json/file" % libtbx.env.dispatcher_name
-    self.parser = OptionParser(
+    self.parser = ArgumentParser(
       usage=usage,
       sort_options=True,
       phil=phil_scope,
       read_experiments=True,
-      read_datablocks=True,
       read_reflections=True,
       check_format=False,
       epilog=help_message)
@@ -376,7 +451,7 @@ class Script(DCScript):
       # case for passing in multiple images on the command line
       assert len(params.input.reflections) == len(detectors)
       reflections = flex.reflection_table()
-      for expt_id in xrange(len(detectors)):
+      for expt_id in range(len(detectors)):
         subset = params.input.reflections[expt_id].data
         subset['id'] = flex.int(len(subset), expt_id)
         reflections.extend(subset)
@@ -404,7 +479,7 @@ class ResidualsPlotter(object):
 
     # initialize the color map
     norm = Normalize(vmin=vmin, vmax=vmax)
-    cmap = plt.cm.get_cmap(self.params.colormap)
+    cmap = plt.get_cmap(self.params.colormap)
     sm = cm.ScalarMappable(norm=norm, cmap=cmap)
     color_vals = np.linspace(vmin, vmax, 11)
     sm.set_array(color_vals) # needed for colorbar
@@ -416,7 +491,7 @@ class ResidualsPlotter(object):
 
     data = (reflections['xyzcal.mm']-reflections['xyzobs.mm.value']).norms()
     norm, cmap, color_vals, sm = self.get_normalized_colors(data)
-    deltas = (reflections['xyzcal.mm']-reflections['xyzobs.mm.value'])*self.delta_scalar
+    deltas = (reflections['xyzcal.mm']-reflections['xyzobs.mm.value'])*self.params.residuals.delta_scalar
 
     x, y = panel.get_image_size_mm()
     offset = col((x, y, 0))/2
@@ -455,7 +530,7 @@ class ResidualsPlotter(object):
     assert panel is not None and ax is not None and bounds is not None
     data = reflections['delpsical.rad'] * (180/math.pi)
     norm, cmap, color_vals, sm = self.get_normalized_colors(data, vmin=-0.1, vmax=0.1)
-    deltas = (reflections['xyzcal.mm']-reflections['xyzobs.mm.value'])*self.delta_scalar
+    deltas = (reflections['xyzcal.mm']-reflections['xyzobs.mm.value'])*self.params.residuals.delta_scalar
 
     x, y = panel.get_image_size_mm()
     offset = col((x, y, 0))/2
@@ -464,7 +539,31 @@ class ResidualsPlotter(object):
 
     lab_coords = panel.get_lab_coord(mm_panel_coords)
 
-    ax.scatter(lab_coords.parts()[0], lab_coords.parts()[1], c = data, norm=norm, cmap = cmap, linewidths=0, s=self.params.dot_size)
+    lab_coords_x, lab_coords_y, _ = lab_coords.parts()
+    if self.params.residuals.mcd_filter.enable and len(reflections)>5:
+      from xfel.metrology.panel_fitting import Panel_MCD_Filter
+      MCD = Panel_MCD_Filter(lab_coords_x, lab_coords_y, data, i_panel = reflections["panel"][0],
+                      delta_scalar = self.params.residuals.delta_scalar, params = self.params)
+      sX,sY,sPsi = MCD.scatter_coords()
+      MCD.plot_contours(ax,show=False) # run this to pre-compute the center position
+      ax.scatter(sX, sY, c = sPsi, norm=norm, cmap = cmap, linewidths=0, s=self.params.dot_size)
+    else:
+      ax.scatter(lab_coords_x, lab_coords_y, c = data, norm=norm, cmap = cmap, linewidths=0, s=self.params.dot_size)
+
+    if self.params.plots.include_offset_dots:
+      panel_center = panel.get_lab_coord(offset[0:2])
+      ax.scatter(panel_center[0], panel_center[1], c='k', s=self.params.dot_size)
+      if self.params.plots.include_scale_bar_in_pixels > 0:
+        pxlsz0,pxlsz1 = panel.get_pixel_size()
+        ax.plot([panel_center[0],panel_center[0]],
+                [panel_center[1],panel_center[1]+self.params.plots.include_scale_bar_in_pixels*pxlsz1*self.params.residuals.delta_scalar], 'k-')
+        ax.plot([panel_center[0],panel_center[0]+self.params.plots.include_scale_bar_in_pixels*pxlsz0*self.params.residuals.delta_scalar],
+                [panel_center[1],panel_center[1]], 'k-')
+      ax.scatter(flex.mean(lab_coords_x), flex.mean(lab_coords_y), c='b', s=self.params.dot_size)
+      if self.params.residuals.mcd_filter.enable and len(reflections)>5:
+        ax.scatter(MCD.robust_model_XY.location_[0],
+                   MCD.robust_model_XY.location_[1], c='r', s=self.params.dot_size)
+      print(panel.get_name(), (flex.mean(lab_coords_x) - panel_center[0])/self.params.residuals.delta_scalar, (flex.mean(lab_coords_y) - panel_center[0])/self.params.residuals.delta_scalar)
 
     return sm, color_vals
 
@@ -476,7 +575,7 @@ class ResidualsPlotter(object):
     assert panel is not None and ax is not None and bounds is not None
     data = reflections['delpsical.rad.pxlambda'] * (180/math.pi)
     norm, cmap, color_vals, sm = self.get_normalized_colors(data, vmin=-0.1, vmax=0.1)
-    deltas = (reflections['xyzcal.mm.pxlambda']-reflections['xyzobs.mm.value'])*self.delta_scalar
+    deltas = (reflections['xyzcal.mm.pxlambda']-reflections['xyzobs.mm.value'])*self.params.residuals.delta_scalar
 
     x, y = panel.get_image_size_mm()
     offset = col((x, y, 0))/2
@@ -495,7 +594,7 @@ class ResidualsPlotter(object):
     assert panel is not None and ax is not None and bounds is not None
     data = 12398.4/reflections['reflection_wavelength_from_pixels']
     norm, cmap, color_vals, sm = self.get_normalized_colors(data, vmin=self.min_energy, vmax=self.max_energy)
-    deltas = (reflections['xyzcal.mm']-reflections['xyzobs.mm.value'])*self.delta_scalar
+    deltas = (reflections['xyzcal.mm']-reflections['xyzobs.mm.value'])*self.params.residuals.delta_scalar
 
     x, y = panel.get_image_size_mm()
     offset = col((x, y, 0))/2
@@ -518,7 +617,7 @@ class ResidualsPlotter(object):
     a = reflections['delpsical.rad']*180/math.pi
     b = reflections['radial_displacements']
 
-    fake_coords = flex.vec2_double(a, b) * self.delta_scalar
+    fake_coords = flex.vec2_double(a, b) * self.params.residuals.delta_scalar
 
     x, y = panel.get_image_size_mm()
     offset = col((x, y))/2
@@ -581,7 +680,7 @@ class ResidualsPlotter(object):
       data.extend(flex.vec2_double([(i, 0), (i, flex.max(h.slots()))]))
     data = self.get_bounded_data(data, bounds)
     tmp = [data[:n]]
-    for i in xrange(len(colors)):
+    for i in range(len(colors)):
       tmp.append(data[n+(i*2):n+((i+1)*2)])
     data = tmp
 
@@ -600,11 +699,11 @@ class ResidualsPlotter(object):
     x_extent = max(r)
     y_extent = len(r)
     xobs = [i/x_extent for i in sorted(r)]
-    yobs = [i/y_extent for i in xrange(y_extent)]
+    yobs = [i/y_extent for i in range(y_extent)]
     obs = [(x, y) for x, y in zip(xobs, yobs)]
 
     ncalc = 100
-    xcalc = [i/ncalc for i in xrange(ncalc)]
+    xcalc = [i/ncalc for i in range(ncalc)]
     ycalc = [1-math.exp((-i**2)/(2*(sigma**2))) for i in xcalc]
     calc = [(x, y) for x, y in zip(xcalc, ycalc)]
 
@@ -689,7 +788,7 @@ class ResidualsPlotter(object):
     data_scale_y = data_max_y - data_min_y
 
     if data_scale_x == 0 or data_scale_y == 0:
-      print "WARNING bad scale"
+      print("WARNING bad scale")
       return data
 
     xscale = scale/abs(data_scale_x)
@@ -706,36 +805,36 @@ class ResidualsPlotter(object):
     detector = experiments.detectors()[0]
 
     if params.repredict_input_reflections:
-      from dials.algorithms.refinement.prediction import ExperimentsPredictor
-      ref_predictor = ExperimentsPredictor(experiments, force_stills=experiments.all_stills())
+      from dials.algorithms.refinement.prediction.managed_predictors import ExperimentsPredictorFactory
+      ref_predictor = ExperimentsPredictorFactory.from_experiments(experiments, force_stills=experiments.all_stills())
       reflections = ref_predictor(reflections)
 
-    if params.verbose: print "N reflections total:", len(reflections)
+    if params.verbose: print("N reflections total:", len(reflections))
     if params.residuals.exclude_outliers_from_refinement:
       reflections = reflections.select(reflections.get_flags(reflections.flags.used_in_refinement))
-      if params.verbose: print "N reflections used in refinement:", len(reflections)
-      if params.verbose: print "Reporting only on those reflections used in refinement"
+      if params.verbose: print("N reflections used in refinement:", len(reflections))
+      if params.verbose: print("Reporting only on those reflections used in refinement")
 
     if params.residuals.recompute_outliers:
-      print "Performing outlier rejection on %d reflections"%len(reflections)
+      print("Performing outlier rejection on %d reflections"%len(reflections))
       from dials.algorithms.refinement.outlier_detection.sauter_poon import SauterPoon
       outlier = SauterPoon(px_sz=experiments[0].detector[0].get_pixel_size(), separate_panels=False)
       rejection_occured = outlier(reflections)
       if rejection_occured:
         reflections = reflections.select(~reflections.get_flags(reflections.flags.centroid_outlier))
-        if params.verbose: print "N reflections after outlier rejection:", len(reflections)
+        if params.verbose: print("N reflections after outlier rejection:", len(reflections))
       else:
-        if params.verbose: print "No rejections found"
+        if params.verbose: print("No rejections found")
 
     if self.params.residuals.i_sigi_cutoff is not None:
       sel = (reflections['intensity.sum.value']/flex.sqrt(reflections['intensity.sum.variance'])) >= self.params.residuals.i_sigi_cutoff
       reflections = reflections.select(sel)
-      if params.verbose: print "After filtering by I/sigi cutoff of %f, there are %d reflections left"%(self.params.residuals.i_sigi_cutoff,len(reflections))
+      if params.verbose: print("After filtering by I/sigi cutoff of %f, there are %d reflections left"%(self.params.residuals.i_sigi_cutoff,len(reflections)))
 
     if 'shoebox' in reflections and (params.repredict.enable or (params.show_plots and params.plots.reflection_energies)):
       reflections = reflection_wavelength_from_pixels(experiments, reflections)
       stats = flex.mean_and_variance(12398.4/reflections['reflection_wavelength_from_pixels'])
-      if params.verbose: print "Mean energy: %.1f +/- %.1f"%(stats.mean(), stats.unweighted_sample_standard_deviation())
+      if params.verbose: print("Mean energy: %.1f +/- %.1f"%(stats.mean(), stats.unweighted_sample_standard_deviation()))
       self.min_energy = stats.mean() - stats.unweighted_sample_standard_deviation()
       self.max_energy = stats.mean() + stats.unweighted_sample_standard_deviation()
 
@@ -772,8 +871,8 @@ class ResidualsPlotter(object):
 
         if params.repredict.refine_mode == 'per_experiment':
           refined_reflections = flex.reflection_table()
-          for expt_id in xrange(len(experiments)):
-            if params.verbose: print "*"*80, "EXPERIMENT", expt_id
+          for expt_id in range(len(experiments)):
+            if params.verbose: print("*"*80, "EXPERIMENT", expt_id)
             refls = reflections.select(reflections['id']==expt_id)
             refls['id'] = flex.int(len(refls), 0)
             refls = refine_wavelengths(experiments[expt_id:expt_id+1], refls, init_mp, tag, dest,
@@ -788,16 +887,18 @@ class ResidualsPlotter(object):
           reflections = func(experiments, reflections, init_mp)
         reflections = predictions_from_per_reflection_energies(experiments, reflections, tag, dest)
         stats = flex.mean_and_variance(12398.4/reflections[tag])
-        if params.verbose: print "Mean energy: %.1f +/- %.1f"%(stats.mean(), stats.unweighted_sample_standard_deviation())
+        if params.verbose: print("Mean energy: %.1f +/- %.1f"%(stats.mean(), stats.unweighted_sample_standard_deviation()))
         reflections['delpsical.rad'] = reflections['delpsical.rad.%s'%dest]
         reflections['xyzcal.mm'] = reflections['xyzcal.mm.%s'%dest]
         reflections['xyzcal.px'] = reflections['xyzcal.px.%s'%dest]
 
+    if 'xyzobs.mm.value' not in reflections:
+      reflections.centroid_px_to_mm(experiments)
     reflections['difference_vector_norms'] = (reflections['xyzcal.mm']-reflections['xyzobs.mm.value']).norms()
 
     n = len(reflections)
     rmsd = get_unweighted_rmsd(reflections, params.verbose)
-    print "Dataset RMSD (microns)", rmsd * 1000
+    print("%20s%7.3f"%("Dataset RMSD (μm)", rmsd * 1000))
 
     if params.tag is None:
       tag = ''
@@ -820,8 +921,6 @@ class ResidualsPlotter(object):
       plt.xlabel(r"N reflections with $\Delta\Psi$ > 0")
       plt.ylabel(r"N reflections with $\Delta\Psi$ < 0")
 
-    self.delta_scalar = 50
-
     # Iterate through the detectors, computing detector statistics at the per-panel level (IE one statistic per panel)
     # Per panel dictionaries
     rmsds = {}
@@ -837,13 +936,16 @@ class ResidualsPlotter(object):
     pg_t_rmsds = flex.double()
     pg_refls_count = flex.int()
     pg_refls_count_d = {}
-    table_header = ["PG id", "RMSD","Radial", "Transverse", "N refls"]
-    table_header2 = ["","(um)","RMSD (um)","RMSD (um)",""]
+    table_header = ["PG id", "RMSD","Radial", "Transverse", "N_refls"]
+    table_header2 = ["","(μm)","RMSD(μm)","RMSD(μm)",""]
+    if params.residuals.print_correlations:
+      table_header += ["Correl", "Correl"]
+      table_header2 += ["ΔR,ΔΨ","ΔT,ΔΨ"]
     table_data = []
     table_data.append(table_header)
     table_data.append(table_header2)
 
-    reflections = setup_stats(detector, experiments, reflections)
+    reflections = setup_stats(experiments, reflections)
 
     # The radial vector points from the center of the reflection to the beam center
     radial_vectors = (reflections['obs_lab_coords'] - reflections['beam_centre_lab']).each_normalize()
@@ -859,6 +961,10 @@ class ResidualsPlotter(object):
     else:
       iterable = enumerate(detector)
 
+    if params.residuals.print_correlations:
+      from xfel.metrology.panel_fitting import three_feature_fit
+      pg_r_all = flex.double(); pg_t_all = flex.double(); pg_delpsi_all = flex.double()
+
     s0 = experiments[0].beam.get_s0()
 
     for pg_id, pg in iterable:
@@ -866,6 +972,8 @@ class ResidualsPlotter(object):
       pg_r_msd_sum = 0
       pg_t_msd_sum = 0
       pg_refls = 0
+      if params.residuals.print_correlations:
+        pg_r = flex.double(); pg_t = flex.double()
       pg_delpsi = flex.double()
       pg_deltwotheta = flex.double()
       for p in iterate_panels(pg):
@@ -882,6 +990,8 @@ class ResidualsPlotter(object):
 
         r = panel_refls['radial_displacements']
         t = panel_refls['transverse_displacements']
+        if params.residuals.print_correlations:
+          pg_r.extend(r); pg_t.extend(t)
         pg_r_msd_sum += flex.sum_sq(r)
         pg_t_msd_sum += flex.sum_sq(t)
 
@@ -908,6 +1018,15 @@ class ResidualsPlotter(object):
       pg_refls_count.append(pg_refls)
       pg_refls_count_d[pg.get_name()] = pg_refls
       table_data.append(["%d"%pg_id, "%.1f"%pg_rmsd, "%.1f"%pg_r_rmsd, "%.1f"%pg_t_rmsd, "%6d"%pg_refls])
+      if params.residuals.print_correlations:
+        pg_r_all.extend(pg_r); pg_t_all.extend(pg_t); pg_delpsi_all.extend(pg_delpsi)
+        if len(pg_r)>2:
+          TF = three_feature_fit(delta_radial = pg_r, delta_transverse = pg_t, delta_psi = pg_delpsi, i_panel=pg_id, verbose=False)
+          pg_cc_Rpsi = 100.*TF.cross_correl[2]
+          pg_cc_Tpsi = 100.*TF.cross_correl[1]
+        else:
+          pg_cc_Rpsi = 0.; pg_cc_Tpsi = 0.
+        table_data[-1].extend(["%3.0f%%"%pg_cc_Rpsi, "%3.0f%%"%pg_cc_Tpsi])
 
       refl_counts[pg.get_name()] = pg_refls
       if pg_refls == 0:
@@ -924,8 +1043,8 @@ class ResidualsPlotter(object):
         ttdpcorr[pg.get_name()] = lc.coefficient()
 
 
-    r1 = ["Weighted mean"]
-    r2 = ["Weighted stddev"]
+    r1 = ["Weighted PG mean"]
+    r2 = ["Weighted PG stddev"]
     if len(pg_rmsds) > 1:
       stats = flex.mean_and_variance(pg_rmsds, pg_refls_count.as_double())
       r1.append("%.1f"%stats.mean())
@@ -943,11 +1062,17 @@ class ResidualsPlotter(object):
     r2.append("")
     table_data.append(r1)
     table_data.append(r2)
-    table_data.append(["Mean", "", "", "", "%8.1f"%flex.mean(pg_refls_count.as_double())])
+    table_data.append(["PG Mean", "", "", "", "%8.1f"%flex.mean(pg_refls_count.as_double())])
+
+    if params.residuals.print_correlations:
+      TFA = three_feature_fit(delta_radial = pg_r_all, delta_transverse = pg_t_all, delta_psi = pg_delpsi_all,
+         i_panel=pg_id, verbose=False)
+      table_data.append(["Refls Mean", "", "", "", "",
+                       "%3.0f%%"%(100.*TFA.cross_correl[2]), "%3.0f%%"%(100.*TFA.cross_correl[1]) ])
 
     from libtbx import table_utils
-    if params.verbose: print "Detector statistics.  Angles in degrees, RMSDs in microns"
-    if params.verbose: print table_utils.format(table_data,has_header=2,justify='center',delim=" ")
+    if params.verbose: print("Detector statistics by panel group (PG)")
+    if params.verbose: print(table_utils.format(table_data,has_header=2,justify='center',delim=" "))
 
     self.histogram(reflections, r"%s$\Delta$XY histogram (mm)"%tag, plots = params.show_plots and params.plots.deltaXY_histogram, verbose = params.verbose)
 
@@ -975,7 +1100,7 @@ class ResidualsPlotter(object):
       if params.plots.repredict_from_reflection_energies: self.detector_plot_refls(detector, reflections, r'%s$\Delta\Psi$ from mean pixel energies'%tag,
                                                                                    show=False, plot_callback=self.plot_obs_colored_by_deltapsi_pxlambda, colorbar_units=r"$\circ$")
       if params.plots.deltaXY_by_deltaXY:                 self.detector_plot_refls(detector, reflections, r'%s$\Delta$XY*%s'%(tag,
-                                                                                   self.delta_scalar), show=False, plot_callback=self.plot_deltas)
+                                                                                   self.params.residuals.delta_scalar), show=False, plot_callback=self.plot_deltas)
       if params.plots.manual_cdf:                         self.detector_plot_refls(detector, reflections, '%sSP Manual CDF'%tag,
                                                                                    show=False, plot_callback=self.plot_cdf_manually)
       if params.plots.deltaXY_histogram:                  self.detector_plot_refls(detector, reflections, r'%s$\Delta$XY Histograms'%tag,
@@ -986,6 +1111,25 @@ class ResidualsPlotter(object):
                                                                                    show=False, plot_callback=self.plot_difference_vector_norms_histograms)
       if params.plots.radial_difference_histograms:       self.detector_plot_refls(detector, reflections, r'%sRadial differences'%tag,
                                                                                    show=False, plot_callback=self.plot_radial_difference_histograms)
+
+      if params.plots.delta_vs_azimuthal_angle:
+        # Plot deltas (XY, radial, transverse) vs. azimuthal angle
+        xy = flex.vec3_double(reflections["s1"].parts()[0],
+                              reflections["s1"].parts()[1],
+                              flex.double(len(reflections), 0))
+        angle = xy.angle((0, 1, 0), deg=True)
+        sel = xy.parts()[0] >= 0
+        subset = angle.select(sel)
+        angle.set_selected(sel, 180 + (180 - subset))
+
+        for column_name, caption in zip(["difference_vector_norms", "radial_displacements", "transverse_displacements"],
+                                        ["XY", "radial", "transverse"]):
+          fig = plt.figure()
+          plt.hist2d(angle.as_numpy_array(), reflections[column_name].as_numpy_array() * 1000, bins=180, norm=LogNorm())
+          plt.title(r"2d histogram of $\Delta$ %s vs azimuthal angle"%caption)
+          plt.xlabel("Azimuthal angle (deg)")
+          plt.ylabel(r"$\Delta$ %s ($\mu$m)"%caption)
+          plt.colorbar()
 
       if params.plots.intensity_vs_radials_2dhist and 'intensity.sum.value' in reflections:
         # Plot intensity vs. radial_displacement
@@ -1009,7 +1153,7 @@ class ResidualsPlotter(object):
         bin_low = []
         bin_high = []
         data = flex.sorted(reflections['two_theta_obs'])
-        for i in xrange(n_bins):
+        for i in range(n_bins):
           bin_low = data[i*bin_size]
           if (i+1)*bin_size >= len(reflections):
             bin_high = data[-1]
@@ -1045,15 +1189,27 @@ class ResidualsPlotter(object):
 
         # calc the trendline
         z = np.polyfit(a.select(sel), b.select(sel), 1)
-        if params.verbose: print 'y=%.7fx+(%.7f)'%(z[0],z[1])
+        if params.verbose: print('y=%.7fx+(%.7f)'%(z[0],z[1]))
+
+      if params.plots.deltaPsi_vs_2theta_2dhist:
+        # Plot delta psi vs. 2theta
+        x = reflections['two_theta_obs'].as_numpy_array()
+        y = (reflections['delpsical.rad']*180/math.pi).as_numpy_array()
+        fig = plt.figure()
+        plt.hist2d(x, y, bins=100, range=((0,45), (-1,1)), norm=LogNorm())
+        cb = plt.colorbar()
+        cb.set_label("N reflections")
+        plt.title(r'%s$\Delta\Psi$ vs. 2$\Theta$. %d refls'%(tag,len(x)))
+        plt.xlabel(r'2$\Theta \circ$')
+        plt.ylabel(r'$\Delta\Psi \circ$')
 
       if params.plots.grouped_stats:
         # Plots with single values per panel
-        self.detector_plot_dict(detector, refl_counts, u"%s N reflections"%t, u"%6d", show=False)
-        self.detector_plot_dict(detector, rmsds, "%s Positional RMSDs (microns)"%t, u"%4.1f", show=False)
-        self.detector_plot_dict(detector, radial_rmsds, "%s Radial RMSDs (microns)"%t, u"%4.1f", show=False)
-        self.detector_plot_dict(detector, transverse_rmsds, "%s Transverse RMSDs (microns)"%t, u"%4.1f", show=False)
-        self.detector_plot_dict(detector, ttdpcorr, r"%s $\Delta2\Theta$ vs. $\Delta\Psi$ CC"%t, u"%5.3f", show=False)
+        detector_plot_dict(self.params, detector, refl_counts, u"%s N reflections"%t, u"%6d", show=False)
+        detector_plot_dict(self.params, detector, rmsds, "%s Positional RMSDs (microns)"%t, u"%4.1f", show=False)
+        detector_plot_dict(self.params, detector, radial_rmsds, "%s Radial RMSDs (microns)"%t, u"%4.1f", show=False)
+        detector_plot_dict(self.params, detector, transverse_rmsds, "%s Transverse RMSDs (microns)"%t, u"%4.1f", show=False)
+        detector_plot_dict(self.params, detector, ttdpcorr, r"%s $\Delta2\Theta$ vs. $\Delta\Psi$ CC"%t, u"%5.3f", show=False)
 
       if params.plots.unit_cell_histograms: self.plot_unitcells(experiments)
       if params.plots.stats_by_2theta:      self.plot_data_by_two_theta(reflections, tag)
@@ -1065,7 +1221,8 @@ class ResidualsPlotter(object):
         for k in pg_bc_dists:
           vdict[pg_bc_dists[k]] = k
         sorted_keys = [vdict[v] for v in sorted_values if vdict[v] in rmsds]
-        x = [sorted_values[i] for i in xrange(len(sorted_values)) if pg_bc_dists.keys()[i] in rmsds]
+        pg_bc_dists_keylist = list(pg_bc_dists.keys())
+        x = [sorted_values[i] for i in range(len(sorted_values)) if pg_bc_dists_keylist[i] in rmsds]
 
         self.plot_multi_data(x,
                              [[pg_refls_count_d[k] for k in sorted_keys],
@@ -1090,26 +1247,91 @@ class ResidualsPlotter(object):
       # Trumpet plot
       if params.plots.trumpet_plot:
         expt_id = min(set(reflections['id']))
-        half_mosaicity_deg = experiments[expt_id].crystal.get_half_mosaicity_deg()
-        domain_size_ang = experiments[expt_id].crystal.get_domain_size_ang()
         refls = reflections.select(reflections['id'] == expt_id)
+        trumpet_plot(experiments[expt_id], refls)
+
+      if params.plots.ewald_offset_plot:
+        n_bins = 10
+        all_offsets = flex.double()
+        all_twothetas = flex.double()
+
+        binned_offsets = [flex.double() for _ in range(n_bins)]
+        binned_isigi = [flex.double() for _ in range(n_bins)]
+        for expt_id in range(len(experiments)):
+          refls = reflections.select(reflections['id'] == expt_id)
+          s1 = refls['s1']
+          s0 = flex.vec3_double(len(refls), experiments[expt_id].beam.get_s0())
+          q = experiments[expt_id].crystal.get_A() * refls['miller_index'].as_vec3_double()
+          wavelength = experiments[expt_id].beam.get_wavelength()
+          offset = (q+s0).norms() - (1/wavelength)
+          two_thetas = refls['two_theta_cal']
+          if expt_id == 0:
+            fig = plt.figure()
+            plt.scatter(two_thetas, offset)
+            plt.title(r"%d: Ewald offset ($\AA^{-1}$) vs $2\theta$ on %d spots"%(expt_id, len(two_thetas)))
+            plt.xlabel(r"$2\theta (\circ)$")
+            plt.ylabel(r"Ewald offset ($\AA^{-1}$)")
+
+          array = refls.as_miller_array(experiments[expt_id])
+          binner = array.setup_binner(d_min=2.0, n_bins=n_bins)
+          isigi = refls['intensity.sum.value']/flex.sqrt(refls['intensity.sum.variance'])
+          for bin_id, bin_number in enumerate(binner.range_used()):
+            sel = binner.selection(bin_number)
+            offsetsel = offset.select(sel)
+            all_offsets.extend(offsetsel)
+            all_twothetas.extend(two_thetas.select(sel))
+            binned_offsets[bin_id].extend(offsetsel)
+            binned_isigi[bin_id].extend(isigi.select(sel))
+
         fig = plt.figure()
-        two_thetas = refls['two_theta_cal']
-        delpsi = refls['delpsical.rad']*180/math.pi
-        plt.scatter(two_thetas, delpsi)
+        legend = []
+        h = flex.histogram(all_offsets, n_slots=20)
+        for bin_id, bin_number in enumerate(binner.range_used()):
+          legend.append("%5.2f-%5.2f"%binner.bin_d_range(bin_number))
+          x, y = [], []
+          for slot_id, slot in enumerate(h.slot_infos()):
+            sel = (binned_offsets[bin_id] >= slot.low_cutoff) & (binned_offsets[bin_id] <= slot.high_cutoff)
+            x.append(slot.center())
+            y.append(flex.median(binned_isigi[bin_id].select(sel)) if sel.count(True) else 0)
+            print (bin_id, binner.bin_d_range(bin_number), sel.count(True), x[-1], y[-1])
+          plt.plot(x, y, '-')
+        plt.legend(legend)
+        plt.title(r"Binned $I/\sigma_I$ vs. Ewald offset")
+        plt.xlabel(r"Ewald offset ($\AA^{-1}$)")
+        plt.ylabel(r"Median $I/\sigma_I$")
 
-        LR = flex.linear_regression(two_thetas, delpsi)
-        model_y = LR.slope()*two_thetas + LR.y_intercept()
-        plt.plot(two_thetas, model_y, "k-")
+        plt.figure()
+        plt.title('Ewald offsets vs. two theta')
+        plt.hist2d(all_twothetas.as_numpy_array(), all_offsets.as_numpy_array(), bins=100)
 
-        tan_phi_deg = (experiments[expt_id].crystal.get_unit_cell().d(refls['miller_index']) / domain_size_ang)*180/math.pi
-        tan_outer_deg = tan_phi_deg + (half_mosaicity_deg/2)
+      if self.params.plots.transverse_radial_deltapsi_resolution:
+        n_bins = 10
+        d = reflections['d']
+        inv = 1/(d**2)
+        h = flex.histogram(inv, n_slots=n_bins)
 
-        plt.title("%d: mosaicity FW=%4.2f deg, Dsize=%5.0fA on %d spots"%(expt_id, 2*half_mosaicity_deg, domain_size_ang, len(two_thetas)))
-        plt.plot(two_thetas, tan_phi_deg, "r.")
-        plt.plot(two_thetas, -tan_phi_deg, "r.")
-        plt.plot(two_thetas, tan_outer_deg, "g.")
-        plt.plot(two_thetas, -tan_outer_deg, "g.")
+        fig, axes = plt.subplots(2, 5)
+        for i, info in enumerate(h.slot_infos()):
+          subset = reflections.select((inv >= info.low_cutoff) & (inv <= info.high_cutoff))
+
+          data = subset['delpsical.rad'] * (180/math.pi)
+          norm, cmap, color_vals, sm = self.get_normalized_colors(data, vmin=-0.1, vmax=0.1)
+
+          ax = axes.ravel()[i]
+          ax.set_title(r'%.2f-%.2f$\AA$, n:%d'%(1/math.sqrt(info.low_cutoff), 1/math.sqrt(info.high_cutoff), len(subset)))
+          ax.scatter(subset['radial_displacements'], subset['transverse_displacements'], c = data, norm=norm, cmap = cmap, linewidths=0, s=self.params.dot_size)
+          min_dis = min(flex.min(subset['radial_displacements']), flex.min(subset['transverse_displacements']))
+          max_dis = min(flex.max(subset['radial_displacements']), flex.max(subset['transverse_displacements']))
+          extent = max(abs(min_dis), abs(max_dis))
+          ax.set_xlim(-0.8, 0.8)
+          ax.set_ylim(-0.8, 0.8)
+          #ax.set_xlim(-extent, extent)
+          #ax.set_ylim(-extent, extent)
+          ax.set_aspect('equal')
+        fig.supxlabel('Radial displacements (mm)')
+        fig.supylabel('Transverse displacements (mm)')
+        fig.suptitle(r'%sTransverse vs. radials displacements colored by $\Delta\Psi$ and binned by resolution'%tag)
+        fig.tight_layout()
 
       if self.params.save_pdf:
         pp = PdfPages('residuals_%s.pdf'%(tag.strip()))
@@ -1122,7 +1344,7 @@ class ResidualsPlotter(object):
         else:
           prefix = "%s_"%tag.strip()
         for i in plt.get_fignums():
-          print "Saving figure", i
+          print("Saving figure", i)
           plt.figure(i).savefig("%sfig%02d.png"%(prefix, i))
       else:
         plt.show()
@@ -1170,8 +1392,8 @@ class ResidualsPlotter(object):
     n_bins = 30
     arbitrary_padding = 1
     sorted_two_theta = flex.sorted(reflections['two_theta_obs'])
-    bin_low = [sorted_two_theta[int((len(sorted_two_theta)/n_bins) * i)] for i in xrange(n_bins)]
-    bin_high = [bin_low[i+1] for i in xrange(n_bins-1)]
+    bin_low = [sorted_two_theta[int((len(sorted_two_theta)/n_bins) * i)] for i in range(n_bins)]
+    bin_high = [bin_low[i+1] for i in range(n_bins-1)]
     bin_high.append(sorted_two_theta[-1]+arbitrary_padding)
 
     title = "%sBinned data by two theta (n reflections per bin: %.1f)"%(tag, len(sorted_two_theta)/n_bins)
@@ -1186,7 +1408,7 @@ class ResidualsPlotter(object):
     #delta_two_theta = flex.double()
     rmsd_delta_two_theta = flex.double()
 
-    for i in xrange(n_bins):
+    for i in range(n_bins):
       x_centers.append(((bin_high[i]-bin_low[i])/2) + bin_low[i])
       refls = reflections.select((reflections['two_theta_obs'] >= bin_low[i]) & (reflections['two_theta_obs'] < bin_high[i]))
       n = len(refls)
@@ -1230,19 +1452,19 @@ class ResidualsPlotter(object):
     sigma = mode = h.slot_centers()[list(h.slots()).index(flex.max(h.slots()))]
     mean = flex.mean(data)
     median = flex.median(data)
-    if verbose: print "RMSD (microns)", rmsd * 1000
-    if verbose: print "Histogram mode (microns):", mode * 1000
-    if verbose: print "Overall mean (microns):", mean * 1000
-    if verbose: print "Overall median (microns):", median * 1000
+    if verbose: print("RMSD (microns)", rmsd * 1000)
+    if verbose: print("Histogram mode (microns):", mode * 1000)
+    if verbose: print("Overall mean (microns):", mean * 1000)
+    if verbose: print("Overall median (microns):", median * 1000)
     mean2 = math.sqrt(math.pi/2)*sigma
     rmsd2 = math.sqrt(2)*sigma
-    if verbose: print "Rayleigh Mean (microns)", mean2 * 1000
-    if verbose: print "Rayleigh RMSD (microns)", rmsd2 * 1000
+    if verbose: print("Rayleigh Mean (microns)", mean2 * 1000)
+    if verbose: print("Rayleigh RMSD (microns)", rmsd2 * 1000)
 
     r = reflections['radial_displacements']
     t = reflections['transverse_displacements']
-    if verbose: print "Overall radial RMSD (microns)", math.sqrt(flex.sum_sq(r)/len(r)) * 1000
-    if verbose: print "Overall transverse RMSD (microns)", math.sqrt(flex.sum_sq(t)/len(t)) * 1000
+    if verbose: print("Overall radial RMSD (microns)", math.sqrt(flex.sum_sq(r)/len(r)) * 1000)
+    if verbose: print("Overall transverse RMSD (microns)", math.sqrt(flex.sum_sq(t)/len(t)) * 1000)
 
     if not plots: return
 
@@ -1279,7 +1501,7 @@ class ResidualsPlotter(object):
     data *= 1000
     h = flex.histogram(data, n_slots=40)
     fig = plt.figure()
-    ax = fig.add_subplot('111')
+    ax = fig.add_subplot(111)
     ax.plot(h.slot_centers().as_numpy_array(), h.slots().as_numpy_array(), '-')
     plt.title("%sHistogram of image RMSDs"%tag)
     ax.set_xlabel("RMSD (microns)")
@@ -1288,7 +1510,7 @@ class ResidualsPlotter(object):
     if not boxplot: return
 
     fig = plt.figure()
-    ax = fig.add_subplot('111')
+    ax = fig.add_subplot(111)
     plt.boxplot(data, vert=False)
     plt.title("%sBoxplot of image RMSDs"%tag)
     ax.set_xlabel("RMSD (microns)")
@@ -1353,7 +1575,7 @@ class ResidualsPlotter(object):
     if sm is not None and color_vals is not None:
       if colorbar_units is None:
         colorbar_units = "mm"
-      cb = ax.figure.colorbar(sm, ticks=color_vals)
+      cb = ax.figure.colorbar(sm, ticks=color_vals, ax=ax)
       cb.ax.set_yticklabels(["%3.2f %s"%(i,colorbar_units) for i in color_vals])
 
     plt.title(title)
@@ -1362,9 +1584,6 @@ class ResidualsPlotter(object):
       plt.show()
 
 if __name__ == '__main__':
-  from dials.util import halraiser
-  try:
+  with show_mail_on_error():
     script = Script()
     script.run()
-  except Exception as e:
-    halraiser(e)

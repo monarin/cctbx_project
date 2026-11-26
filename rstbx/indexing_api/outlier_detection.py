@@ -1,10 +1,12 @@
-from __future__ import division
+from __future__ import absolute_import, division, print_function
+from six.moves import range
 import math
 import scitbx.math
 from scitbx.array_family import flex
 from rstbx.outlier_spots.fit_distribution import fit_cdf
 from rstbx.indexing_api import rayleigh_cpp
 from rstbx_ext import * # gets us SpotClass
+from six.moves import zip
 
 def format_data(x_data=None,y_data=None):
   """
@@ -57,16 +59,16 @@ def make_histogram_data(data=None,n_bins=25):
   min_value = float(math.floor(data[0]))
   max_value = 1.0
   d_bins = (max_value - min_value)/float(n_bins)
-  bins = [0.0 for i in xrange(n_bins)]
+  bins = [0.0 for i in range(n_bins)]
   bins[0] = min_value + d_bins
-  for i in xrange(1,n_bins):
+  for i in range(1,n_bins):
     bins[i] = bins[i-1] + d_bins
   bins.append(float(math.ceil(data[-1])))
   n_bins = n_bins + 1
   # sort data into bins
   current_bin = 0
-  histogram_data = [0 for i in xrange(n_bins)]
-  for i in xrange(len(data)):
+  histogram_data = [0 for i in range(n_bins)]
+  for i in range(len(data)):
     if (data[i] < bins[current_bin]):
       histogram_data[current_bin] = histogram_data[current_bin] + 1
     else:
@@ -78,7 +80,7 @@ def make_histogram_data(data=None,n_bins=25):
     histogram_data[-1] = histogram_data[-1] + 1
 
   # fractionalize output
-  for i in xrange(len(histogram_data)):
+  for i in range(len(histogram_data)):
     histogram_data[i] = float(histogram_data[i])/float(len(data))
 
   return bins,histogram_data
@@ -118,8 +120,8 @@ class find_outliers:
                                           old_status = status_with_marked_outliers )
 
     # store Miller indices
-    self.hkl = [0 for i in xrange(len(self.observed_spots))]
-    for i in xrange(len(self.observed_spots)):
+    self.hkl = [0 for i in range(len(self.observed_spots))]
+    for i in range(len(self.observed_spots)):
       self.hkl[i] = ai.get_hkl(i)
     return self.update_detail(horizon_phil,current_status,first_time_through,verbose)
 
@@ -127,7 +129,7 @@ class find_outliers:
     assert(len(self.observed_spots) == len(self.predicted_spots))
 
     if horizon_phil.indexing.outlier_detection.verbose:
-      classes=[str(current_status[i]) for i in xrange(len(self.observed_spots))]
+      classes=[str(current_status[i]) for i in range(len(self.observed_spots))]
       class_types = set(classes)
       class_counts = dict([[item,classes.count(item)] for item in class_types])
       flex_counts = flex.int(class_counts.values())
@@ -137,28 +139,28 @@ class find_outliers:
       #print "%10s %6d"%("TOTAL",len(self.observed_spots))
       if status_with_marked_outliers == None:
         # status_with_marked_outliers==None is shorthand for identifying the first run through
-        print """After indexing on a subset of %d spots (from all images), %d were reclassified as
+        print("""After indexing on a subset of %d spots (from all images), %d were reclassified as
       either lying on the spindle, or potential overlapped spots or ice rings."""%(
-      len(self.observed_spots),len(self.observed_spots)-class_counts["GOOD"])
+      len(self.observed_spots),len(self.observed_spots)-class_counts["GOOD"]))
       else:
-        print """Rerefinement on just the well-fit spots followed by spot reclassification
-      leaves %d good spots on which to calculate a triclinic rmsd."""%(class_counts["GOOD"])
+        print("""Rerefinement on just the well-fit spots followed by spot reclassification
+      leaves %d good spots on which to calculate a triclinic rmsd."""%(class_counts["GOOD"]))
 
     # check good spots
     if (self.good is not None):
       match = 0
-      for i in xrange(len(self.observed_spots)):
+      for i in range(len(self.observed_spots)):
         if ((current_status[i] == SpotClass.GOOD) and self.good[i]):
           match = match + 1
-      if self.verbose:print "Number of GOOD spots matched with previous model =",match
+      if self.verbose:print("Number of GOOD spots matched with previous model =",match)
 
     # calculate differences for all spots
     self.sorted_observed_spots = {}
     self.dr = flex.double()
     self.not_good_dr = flex.double()
-    self.dx = [0.0 for i in xrange(len(self.observed_spots))]
-    self.dy = [0.0 for i in xrange(len(self.observed_spots))]
-    for i in xrange(len(self.observed_spots)):
+    self.dx = [0.0 for i in range(len(self.observed_spots))]
+    self.dy = [0.0 for i in range(len(self.observed_spots))]
+    for i in range(len(self.observed_spots)):
       o = self.observed_spots[i]
       p = self.predicted_spots[i]
       self.dx[i] = o[0] - p[0]
@@ -175,13 +177,13 @@ class find_outliers:
         self.dr.append(key)
       else:
         self.not_good_dr.append(key)
-    if verbose: print ", ".join(["=".join([str(i[0]),"%d"%i[1]]) for i in spotclasses.items()]),
-    totalsp = sum([spotclasses.values()[iidx] for iidx in xrange(len(spotclasses))])
-    if verbose: print "Total=%d"%(totalsp),"# observed spots",len(self.observed_spots)
+    if verbose: print(", ".join(["=".join([str(i[0]),"%d"%i[1]]) for i in spotclasses.items()]), end=' ')
+    totalsp = sum(spotclasses.values())
+    if verbose: print("Total=%d"%(totalsp),"# observed spots",len(self.observed_spots))
     assert totalsp == len(self.observed_spots), "Some spot pairs have the same predicted-observed distances. Do you have duplicated images?"
 
     self.x = flex.double(len(self.dr))
-    for i in xrange(len(self.x)):
+    for i in range(len(self.x)):
       self.x[i] = float(i)/float(len(self.x))
 
     limit = int(self.fraction*len(self.dr))
@@ -202,14 +204,14 @@ class find_outliers:
       self.fraction_spot_indices.append(self.sorted_observed_spots[dr])
 
     # generate points for fitted distributions
-    rayleigh_cdf_x = flex.double(xrange(500))
+    rayleigh_cdf_x = flex.double(range(500))
     rayleigh_cdf_x /= float(len(rayleigh_cdf_x))
     rayleigh_cdf = fitted_rayleigh.distribution.cdf(x=rayleigh_cdf_x)
 
     # generate points for pdf
     dr_bins,dr_histogram = make_histogram_data(data=self.dr,n_bins=100)
     rayleigh_pdf = flex.double(len(dr_bins))
-    for i in xrange(len(dr_bins)):
+    for i in range(len(dr_bins)):
       rayleigh_pdf[i] = fitted_rayleigh.distribution.pdf(x=dr_bins[i])
     rayleigh_pdf = rayleigh_pdf/flex.sum(rayleigh_pdf)
     dr_bins = flex.double(dr_bins)
@@ -218,16 +220,16 @@ class find_outliers:
     # standard deviation for cdf
     sd = math.sqrt((4.0-math.pi)/(2.0)*
                    fitted_rayleigh.x[0]*fitted_rayleigh.x[0])
-    if self.verbose:print 'Standard deviation of Rayleigh fit = %4.3f'%sd
+    if self.verbose:print('Standard deviation of Rayleigh fit = %4.3f'%sd)
     sd_data = None
     radius_outlier_index = None
     limit_outlier = None
     # --- Quoted code superceeded by extension module call to find_green_bar
     """
-    for i in xrange(len(rayleigh_cdf_x)):
+    for i in range(len(rayleigh_cdf_x)):
       mx = rayleigh_cdf_x[i]
       my = rayleigh_cdf[i]
-      for j in xrange(1,len(self.dr)):
+      for j in range(1,len(self.dr)):
         upper_x = self.dr[j]
         upper_y = self.x[j]
         lower_x = self.dr[j-1]
@@ -253,7 +255,7 @@ class find_outliers:
       #assert sd_data[0][1] == green.sd_my
       #assert sd_data[1][0] == green.sd_lower_x
       #assert sd_data[1][1] == green.sd_lower_y
-      if self.verbose:print "Width of green bar = %4.3f"%(green.sd_lower_x - green.sd_mx)
+      if self.verbose:print("Width of green bar = %4.3f"%(green.sd_lower_x - green.sd_mx))
       radius_outlier_index = green.radius_outlier_index
       limit_outlier = green.limit_outlier
       sd_data = ((green.sd_mx, green.sd_my), (green.sd_lower_x, green.sd_lower_y))
@@ -263,7 +265,7 @@ class find_outliers:
     if (limit_outlier is None):
       limit_outlier = self.dr[-1]
     radius_95 = None
-    for i in xrange(len(rayleigh_cdf)):
+    for i in range(len(rayleigh_cdf)):
       if (rayleigh_cdf[i] >= 0.95):
         radius_95 = rayleigh_cdf_x[i]
         break
@@ -274,7 +276,7 @@ class find_outliers:
     d_radius = 2.0*radius_95/100.0
     x = -radius_95
     r2 = radius_95*radius_95
-    for i in xrange(100):
+    for i in range(100):
       y = math.sqrt(r2 - x*x)
       upper_circle.append((x,y))
       lower_circle.append((x,-y))
@@ -310,7 +312,7 @@ class find_outliers:
         if (not ((self.dx[i] > 1.0) or (self.dx[i] < -1.0) or
                  (self.dy[i] > 1.0) or (self.dy[i] < -1.0))):
           dxdy_outliers.append((self.dx[i],self.dy[i]))
-    if verbose: print ", ".join(["=".join([str(i[0]),"%d"%i[1]]) for i in trifold.items()])
+    if verbose: print(", ".join(["=".join([str(i[0]),"%d"%i[1]]) for i in trifold.items()]))
 
     # color code observed fractions
     o_fraction = []
@@ -318,7 +320,7 @@ class find_outliers:
     o_outliers = []
     mr = format_data(x_data=rayleigh_cdf_x,y_data=rayleigh_cdf)
     limit = int(self.fraction*len(self.dr))
-    for i in xrange(len(self.dr)):
+    for i in range(len(self.dr)):
       if (self.dr[i] <= 1.0):
         if (i < limit):
           o_fraction.append((self.dr[i],self.x[i]))
@@ -328,11 +330,11 @@ class find_outliers:
           o_outliers.append((self.dr[i],self.x[i]))
     if horizon_phil.indexing.outlier_detection.verbose:
       o_outliers_for_severity = []
-      for i in xrange(radius_outlier_index, len(self.dr)):
+      for i in range(radius_outlier_index, len(self.dr)):
         o_outliers_for_severity.append((self.dr[i],self.x[i]))
 
     # limit data range
-    for i in xrange(len(dr_bins)):
+    for i in range(len(dr_bins)):
       if (dr_bins[i] > 1.0):
         dr_bins.resize(i)
         dr_histogram.resize(i)
@@ -366,28 +368,28 @@ class find_outliers:
     # mark outliers
     if (first_time_through): #i.e., first time through the update() method
       if (radius_outlier_index < len(self.dr)):
-        for i in xrange(radius_outlier_index,len(self.dr)):
+        for i in range(radius_outlier_index,len(self.dr)):
           current_status[self.sorted_observed_spots[self.dr[i]]] = SpotClass.OUTLIER
 
     # reset good spots
-    self.good = [False for i in xrange(len(self.observed_spots))]
-    for i in xrange(len(self.observed_spots)):
+    self.good = [False for i in range(len(self.observed_spots))]
+    for i in range(len(self.observed_spots)):
       if (current_status[i] == SpotClass.GOOD):
         self.good[i] = True
 
     count_outlier = 0
     count_good = 0
-    for i in xrange(len(self.observed_spots)):
+    for i in range(len(self.observed_spots)):
       if (current_status[i] == SpotClass.OUTLIER):
         count_outlier = count_outlier + 1
       elif (current_status[i] == SpotClass.GOOD):
         count_good = count_good + 1
-    if self.verbose:print 'Old GOOD =', len(self.dr),\
+    if self.verbose:print('Old GOOD =', len(self.dr),\
           'OUTLIER =', count_outlier,\
-          'New GOOD =', count_good
+          'New GOOD =', count_good)
     if horizon_phil.indexing.outlier_detection.verbose and status_with_marked_outliers is None:
-      print "\nOf the remaining %d spots, %.1f%% were lattice outliers, leaving %d well-fit spots"%(
-       len(self.dr),100.*count_outlier/len(self.dr), count_good )
+      print("\nOf the remaining %d spots, %.1f%% were lattice outliers, leaving %d well-fit spots"%(
+       len(self.dr),100.*count_outlier/len(self.dr), count_good ))
       if count_outlier==0:return
       #width of green bar is sd
       delta_spread = o_outliers_for_severity[1][1]-o_outliers_for_severity[0][1]
@@ -401,7 +403,7 @@ class find_outliers:
         #print item, expected_delta_r, (delta_r - expected_delta_r) / sd
         severity += ((delta_r - expected_delta_r) / sd)
       severity *= delta_spread
-      print "The outlier severity is %.2f sigma [defined in J Appl Cryst (2010) 43, p.611 sec. 4].\n"%severity
+      print("The outlier severity is %.2f sigma [defined in J Appl Cryst (2010) 43, p.611 sec. 4].\n"%severity)
     return current_status
 
 

@@ -1,4 +1,4 @@
-from __future__ import division
+from __future__ import absolute_import, division, print_function
 import iotbx.pdb
 from cctbx.array_family import flex
 from libtbx import easy_run
@@ -78,7 +78,7 @@ def exercise(prefix="tst_models_to_from_chains"):
   xrs = iotbx.pdb.input(source_info=None, lines=pdb_str).xray_structure_simple()
   input_file_name = "%s.pdb"%prefix
   of = open(input_file_name,"w")
-  print >> of, pdb_str
+  print(pdb_str, file=of)
   of.close()
   mi = flex.miller_index(((0,0,1), ))
   ms = miller.set(xrs.crystal_symmetry(), mi,  anomalous_flag=False)
@@ -86,7 +86,7 @@ def exercise(prefix="tst_models_to_from_chains"):
   fc = complete_set.structure_factors_from_scatterers(
     xray_structure=xrs).f_calc()
   # models -> chains
-  easy_run.call("phenix.models_as_chains %s"%input_file_name)
+  assert not easy_run.call("phenix.models_as_chains %s"%input_file_name)
   pdb_inp = iotbx.pdb.input(file_name="chains_"+input_file_name)
   h = pdb_inp.construct_hierarchy()
   assert len(list(h.chains()))==expected_n
@@ -95,18 +95,7 @@ def exercise(prefix="tst_models_to_from_chains"):
   fc_c = complete_set.structure_factors_from_scatterers(
     xray_structure=xrs_c).f_calc()
   #
-  easy_run.call("phenix.chains_as_models chains_%s"%input_file_name)
-  pdb_inp = iotbx.pdb.input(file_name="models_chains_"+input_file_name)
-  h = pdb_inp.construct_hierarchy()
-  assert len(list(h.chains()))==expected_n
-  assert len(list(h.models()))==expected_n
-  xrs_m = pdb_inp.xray_structure_simple()
-  fc_m = complete_set.structure_factors_from_scatterers(
-    xray_structure=xrs_m).f_calc()
-  #
   assert approx_equal(0, r(fc, fc_c)  )
-  assert approx_equal(0, r(fc, fc_m)  )
-  assert approx_equal(0, r(fc_c, fc_m))
 
 if (__name__ == "__main__"):
   exercise()

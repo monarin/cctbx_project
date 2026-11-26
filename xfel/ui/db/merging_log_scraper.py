@@ -1,0 +1,362 @@
+from __future__ import absolute_import, division, print_function
+import os, glob
+from matplotlib import pyplot as plt
+
+"""
+Searches the cctbx.xfel.merge log files for statistics tables.
+
+Makes lots of assumptions regarding formatting.
+"""
+
+# Name of stat: (Line signal, offset to first line of table, index of value for a bin line, index of value for an 'All' line)
+types = {
+  "% accepted": ("Lattices resolution", 6, 4, 1),
+  "Multiplicity": ("Intensity Statistics (all accepted experiments)", 14, 6, 3),
+  "Completeness": ("Intensity Statistics (all accepted experiments)", 14, 5, 2),
+  "CC1/2": ("Table of Scaling Results", 6, 5, 2),
+  "Merged I/sigI": ("Intensity Statistics (all accepted experiments)", 14, 11, 8),
+}
+
+# How each statistic is drawn: its colour, and which y axis it belongs on.
+# 'percent' is the left axis, 'ratio' the right one, for the quantities that are
+# not percentages. Every key scrape() can return needs an entry, including both
+# forms of 'accepted', or plotting fails with a KeyError; unknown keys fall back
+# to the next colour in the matplotlib cycle rather than bringing the tab down.
+plot_styles = {
+  "% accepted":    ('orange', 'percent'),
+  "# accepted":    ('orange', 'ratio'),
+  "Multiplicity":  ('red',    'ratio'),
+  "Completeness":  ('green',  'percent'),
+  "CC1/2":         ('blue',   'percent'),
+  "Merged I/sigI": ('purple', 'ratio'),
+}
+
+# Defaults of modify.cosym.plot, used when a merging task does not override them.
+COSYM_PLOT_FILENAME = 'cosym_embedding'
+COSYM_PLOT_FORMAT = 'png'
+
+def cosym_plot_settings(task_parameters):
+  """Read the cosym embedding plot's file name root and format from a merging
+  task's PHIL string, falling back to the cosym defaults. The string is parsed on
+  its own rather than fetched against the merge scope, which is slow to build and
+  pulls in imports that are not needed just to name a file."""
+  root, plot_format = COSYM_PLOT_FILENAME, COSYM_PLOT_FORMAT
+  if not task_parameters:
+    return root, plot_format
+  from iotbx.phil import parse
+  try:
+    scope = parse(task_parameters)
+  except Exception:
+    return root, plot_format
+
+  def value_of(path):
+    try:
+      objects = scope.get(path).objects
+    except Exception:
+      return None
+    if not objects:
+      return None
+    obj = objects[0]
+    while getattr(obj, 'objects', None):
+      obj = obj.objects[0]
+    words = getattr(obj, 'words', None)
+    if not words:
+      return None
+    return ' '.join(word.value for word in words).strip() or None
+
+  return (value_of('modify.cosym.plot.filename') or root,
+          value_of('modify.cosym.plot.format') or plot_format)
+
+def find_cosym_embedding_plots(output_path, task_parameters=None):
+  """Return the cosym embedding plots left in a merging job's output directory,
+  or [] if there are none.
+
+  modify_cosym runs in the merging task, whose output directory is the dataset
+  version's own folder, so its plots sit beside the log the statistics tables are
+  scraped from and no extra plumbing is needed to find them. One file is written
+  per plotting rank, up to modify.cosym.plot.n_max of them, named
+  <root>_<rank>.<format>. The number is an MPI rank rather than a counter, so the
+  values are neither contiguous nor stable between runs, which is why this globs
+  rather than predicting names. Sorted by that rank so the order is at least
+  stable within a run."""
+  if not output_path:
+    return []
+  root, plot_format = cosym_plot_settings(task_parameters)
+  paths = glob.glob(os.path.join(output_path, "%s_*.%s" % (root, plot_format)))
+
+  def rank_of(path):
+    stem = os.path.splitext(os.path.basename(path))[0]
+    tail = stem[len(root) + 1:]
+    return (0, int(tail)) if tail.isdigit() else (1, 0)
+
+  return sorted(paths, key=lambda path: (rank_of(path), path))
+
+class Scraper(object):
+  def __init__(self, output_path, accepted):
+    self.output_path = output_path
+    assert accepted in ['%','#']
+    self.accepted = accepted
+
+  def scrape(self):
+    results = {}
+    try:
+      path = glob.glob(os.path.join(self.output_path, "*main*"))[0]
+    except IndexError: return results
+    lines = open(path).readlines()
+    for i, line in enumerate(lines):
+      for name in types:
+        signal, offset, _, _ = types[name]
+        if signal in line:
+          table = lines[i+offset:]
+          for l, dontjudgeme in enumerate(table):
+            if dontjudgeme.startswith("All"):
+              results[name] = table[:l+1]
+              break
+    for t in results:
+      parsed = []
+      for line in results[t]:
+        s = line.replace('[', ' ').replace(']', ' ').split()
+        if not s: continue
+        if s[0] == 'All':
+          value = float(s[types[t][3]].rstrip('%'))
+          parsed.append((s[0], value))
+        else:
+          bin_id = int(s[0])
+          d_max = float(s[1])
+          d_min = float(s[3])
+          value = float(s[types[t][2]].rstrip('%'))
+          if d_max < 0: d_max = 100
+          parsed.append((bin_id, d_max, d_min, value))
+      results[t] = parsed
+    if '% accepted' in results:
+      if self.accepted == '%':
+        self._num_to_percent(results, '% accepted')
+      else:
+        results['# accepted'] = results['% accepted']
+        del results['% accepted']
+      return results
+
+  def _num_to_percent(self, results, key):
+    data = results[key]
+    for line in data:
+      if line[0] == 'All':
+        denom = line[1]
+    new_data = []
+    for line in data:
+      if line[0] == 'All':
+        line = line[0], 100*line[1]/denom
+      else:
+        line = line[0], line[1], line[2], 100*line[3]/denom
+      new_data.append(line)
+    results[key] = new_data
+
+  def plot_single_results(self, results, title, xsize=30, ysize=10, interactive = True):
+    from matplotlib.ticker import FuncFormatter
+    import numpy as np
+    import math
+
+    # scrape() returns None when the log has no accepted lattices table, which
+    # is the case while a merging job is still early in its run. Return no plot
+    # rather than failing, matching how plot_many_results skips such results.
+    # Callers treat None as 'nothing new to draw'.
+    if not results:
+      return None
+
+    fig = plt.figure()
+    ax = ax1 = fig.gca()
+    ax2 = ax1.twinx()
+
+    right_axis_names = []
+
+    for name in results:
+      color, axis = plot_styles.get(name, (None, 'percent'))
+      if axis == 'ratio':
+        ax = ax2
+        right_axis_names.append(name)
+      else:
+        ax = ax1
+
+      x = []; y = []
+      for data in results[name]:
+        if data[0] == 'All':
+          continue
+        bin_num, d_max, d_min, value = data
+        x.append((d_max+d_min)/2)
+        y.append(value)
+      ax.plot(1/(np.array(x)**2), y, '-', label = name, color = color)
+
+    def resolution(x, pos):
+      if x <= 0:
+        return '-'
+      return "%.1f"%(1/math.sqrt(x))
+    formatter = FuncFormatter(resolution)
+    ax1.xaxis.set_major_formatter(formatter)
+    ax1.set_xlabel(r'Resolution ${\AA}$')
+    ax1.set_ylabel('%')
+    # Name the right axis after whatever ended up on it, rather than assuming
+    # multiplicity is the only thing there.
+    ax2.set_ylabel(' / '.join(right_axis_names) if right_axis_names else 'Multiplicity')
+    handles, labels = ax1.get_legend_handles_labels()
+    handles.extend(ax2.get_legend_handles_labels()[0])
+    labels.extend(ax2.get_legend_handles_labels()[1])
+    fig.legend(handles, labels, loc="upper right", bbox_to_anchor=(1,1), bbox_transform=ax.transAxes)
+    plt.title(title)
+
+    if interactive:
+      plt.show()
+    else:
+      fig.set_size_inches(xsize, ysize)
+      fig.savefig("datasets_tmp.png", bbox_inches='tight', dpi=100)
+      plt.close(fig)
+      return "datasets_tmp.png"
+
+  def plot_many_results(self, all_results, title, xsize=30, ysize=10, interactive = True):
+    from matplotlib.ticker import FuncFormatter
+    import numpy as np
+    import math
+    fig, (ax1a, ax2) = plt.subplots(2,1, sharex=True)
+    ax1b = ax1a.twinx()
+
+    xvals = []
+    overall_cc = []
+    overall_mult = []
+    overall_comp = []
+    cc_cutoff = []
+    mult_cutoff = []
+    comp_cutoff = []
+    for r in all_results:
+      if r is None or '# accepted' not in r or r['# accepted'] is None: continue
+      name, value = r['# accepted'][-1]
+      assert name == 'All'
+      #if xvals: assert value >= xvals[-1]
+      xvals.append(value)
+      for key, array in zip(['CC1/2', 'Multiplicity', 'Completeness'], [overall_cc, overall_mult, overall_comp]):
+        if key in r:
+          name, value = r[key][-1]
+          assert name == 'All'
+          array.append(value)
+        else:
+          array.append(0)
+
+      if 'CC1/2' in r:
+        last = last_res = 0
+        for row in r['CC1/2']:
+          if 'All' in row:
+            break
+          row_n, d_max, d_min, cc = row
+          if cc > 0 and not last:
+            last = cc; last_res = (d_max + d_min) / 2
+          elif cc > 0 and cc <= last:
+            last = cc; last_res = (d_max + d_min) / 2
+          else:
+            break
+        cc_cutoff.append(last_res)
+      else:
+        cc_cutoff.append(0)
+
+      if 'Multiplicity' in r:
+        last = last_res = 0
+        for row in r['Multiplicity']:
+          if row[0]=='All':
+            break
+          row_n, d_max, d_min, mult = row
+          if mult >= 10:
+            last = mult; last_res = (d_max + d_min) / 2
+          else:
+            break
+        mult_cutoff.append(last_res)
+      else:
+        mult_cutoff.append(0)
+
+      if 'Completeness' in r:
+        last = last_res = 0
+        for row in r['Completeness']:
+          if row[0]=='All':
+            break
+          row_n, d_max, d_min, comp = row
+          if comp >= 90:
+            last = comp; last_res = (d_max + d_min) / 2
+          else:
+            break
+        comp_cutoff.append(last_res)
+      else:
+        comp_cutoff.append(0)
+
+
+    ax1a.plot(xvals, overall_cc, 'o-', color='blue')
+    ax1b.plot(xvals, overall_mult, 'o-', color='red')
+    # A cutoff of zero (no bin met the criterion) plots as infinity, off the axis
+    with np.errstate(divide='ignore'):
+      ax2.plot(xvals, 1/(np.array(cc_cutoff)**2), 'o-', color='blue')
+      ax2.plot(xvals, 1/(np.array(mult_cutoff)**2), 'o-', color='red')
+      ax2.plot(xvals, 1/(np.array(comp_cutoff)**2), 'o-', color='green')
+
+    ax2.legend(["CC1/2 (monotonic)", "Multiplicity (10x)", "Completeness (90%)"])
+
+    ax2.set_xlabel("N images")
+    ax1a.set_ylabel("Overall CC1/2 (%)")
+    ax1b.set_ylabel("Overall multiplicity")
+    ax2.set_ylabel(r"Resolution ($\AA$")
+    ax1a.set_title(title)
+
+    def resolution(y, pos):
+      if y <= 0:
+        return '-'
+      return "%.2f"%(1/math.sqrt(y))
+    formatter = FuncFormatter(resolution)
+    ax2.yaxis.set_major_formatter(formatter)
+
+    #ax1a.set_xlabel
+
+    if interactive:
+      plt.show()
+    else:
+      fig.set_size_inches(xsize, ysize)
+      fig.savefig("datasets_tmp.png", bbox_inches='tight', dpi=100)
+      plt.close(fig)
+      return "datasets_tmp.png"
+
+if __name__ == "__main__":
+  import sys
+  args = sys.argv[1:]
+  if len(args) > 1:
+    all_results = []
+    for folder in args:
+      scraper = Scraper(folder, '#')
+      all_results.append(scraper.scrape())
+    scraper.plot_many_results(all_results, sys.argv[1])
+
+    xvals = []
+    all_y = {}
+    for r in all_results:
+      if r is None or '# accepted' not in r or r['# accepted'] is None: continue
+      name, value = r['# accepted'][-1]
+      assert name == 'All'
+      xvals.append(value)
+      key = 'Merged I/sigI'
+      if key in r:
+        for row in r[key]:
+          if 'All' not in row:
+            row_n, d_max, d_min, isigi = row
+            d = (d_max + d_min) / 2
+            if d not in all_y:
+              all_y[d] = []
+            all_y[d].append(isigi)
+    for d in all_y:
+      plt.plot(xvals, all_y[d])
+      if d <= 5:
+        plt.text(xvals[-1], all_y[d][-1], "%.2f"%d)
+      else:
+        plt.text(xvals[-1], all_y[d][-1], "-")
+    plt.xlabel('N images')
+    plt.ylabel('Merged I/sigI')
+    plt.plot([xvals[0], xvals[-1]], [2.0, 2.0], 'k:')
+    plt.show()
+  else:
+    scraper = Scraper(args[0], '%')
+    results = scraper.scrape()
+    for t in results:
+      for j in results[t]:
+        print (t, j)
+
+    scraper.plot_single_results(results, sys.argv[1])

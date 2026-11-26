@@ -1,8 +1,9 @@
-from __future__ import division
+from __future__ import absolute_import, division, print_function
 from scitbx.array_family import flex
 
-import boost.python
-ext = boost.python.import_ext("mmtbx_ncs_cartesian_restraints_ext")
+import boost_adaptbx.boost.python as bp
+from six.moves import zip
+ext = bp.import_ext("mmtbx_ncs_cartesian_restraints_ext")
 from mmtbx_ncs_cartesian_restraints_ext import *
 
 from cctbx import adptbx
@@ -16,12 +17,14 @@ from itertools import count
 import sys
 from libtbx.str_utils import line_breaker
 from mmtbx.ncs.ncs_params import global_ncs_params
+from mmtbx.ncs.ncs_restraints_group_list import class_ncs_restraints_group_list
 
 class cartesian_ncs_manager(object):
   def __init__(self, model, ncs_params, ext_groups=None):
     # create bunch of group objects
     self.ncs_params = ncs_params
     self.n_excessive_site_distances = None
+    self.ncs_restraints_group_list = class_ncs_restraints_group_list()
     if self.ncs_params is None:
       self.ncs_params = global_ncs_params.extract().ncs
     if ext_groups is not None:
@@ -29,9 +32,11 @@ class cartesian_ncs_manager(object):
     else:
       self.groups_list = []
       ncs_obj = model.get_ncs_obj()
-      ncs_restraints_group_list = ncs_obj.get_ncs_restraints_group_list()
-      ncs_groups_selection_string_list = ncs_restraints_group_list.get_array_of_str_selections()
-      for i_gr, gr in enumerate(ncs_restraints_group_list):
+      if ncs_obj is None:
+        return
+      self.ncs_restraints_group_list = ncs_obj.get_ncs_restraints_group_list()
+      ncs_groups_selection_string_list = self.ncs_restraints_group_list.get_array_of_str_selections()
+      for i_gr, gr in enumerate(self.ncs_restraints_group_list):
         n_copies = gr.get_number_of_copies()
         registry = pair_registry(n_seq=model.get_number_of_atoms(), n_ncs=n_copies+1)
         for i_copy, c in enumerate(gr.copies):
@@ -52,14 +57,20 @@ class cartesian_ncs_manager(object):
             u_average_min=1.e-6,)
         self.groups_list.append(g)
 
-  def select(self, iselection):
+  def select(self, selection):
+    iselection = selection
+    if isinstance(selection, flex.bool):
+      iselection = selection.iselection()
     ext_groups = []
     for group in self.groups_list:
       ext_groups.append(group.select(iselection))
-    return cartesian_ncs_manager(
+    new_manager = cartesian_ncs_manager(
         model=None,
         ncs_params=self.ncs_params,
         ext_groups=ext_groups)
+    new_manager.ncs_restraints_group_list = \
+        self.ncs_restraints_group_list.select(selection)
+    return new_manager
 
   def energies_adp_iso(self,
         u_isos,
@@ -98,17 +109,17 @@ class cartesian_ncs_manager(object):
          prefix=""):
     if (self.ncs_params.b_factor_weight is None
         or self.ncs_params.b_factor_weight <= 0):
-      print >> out, \
-        prefix+"  b_factor_weight: %s  =>  restraints disabled" % (
-          str(self.ncs_params.b_factor_weight))
+      print(prefix+"  b_factor_weight: %s  =>  restraints disabled" % (
+          str(self.ncs_params.b_factor_weight)), file=out)
+      return
     for i_group,group in enumerate(self.groups_list):
-      print >> out, prefix + "NCS restraint group %d:" % (i_group+1)
+      print(prefix + "NCS restraint group %d:" % (i_group+1), file=out)
       energies_adp_iso = group.energies_adp_iso(
         u_isos=u_isos,
         b_factor_weight=self.ncs_params.b_factor_weight,
         average_power=1,
         compute_gradients=False)
-      print >> out, prefix + "  weight: %.6g" % energies_adp_iso.weight
+      print(prefix + "  weight: %.6g" % energies_adp_iso.weight, file=out)
       energies_adp_iso.show_differences_to_average(
         site_labels=site_labels, out=out, prefix=prefix+"  ")
 
@@ -154,73 +165,45 @@ class cartesian_ncs_manager(object):
 
   def show_operators(self, sites_cart, out=None, prefix=""):
     for i_group,group in enumerate(self.groups_list):
-      print >> out, prefix + "NCS restraint group %d:" % (i_group+1)
+      print(prefix + "NCS restraint group %d:" % (i_group+1), file=out)
       group.show_operators(sites_cart=sites_cart, out=out, prefix=prefix+"  ")
 
   def as_pdb(self, sites_cart, out):
     result = out
     pr = "REMARK   3  "
-    print >> result, pr+"NCS DETAILS."
-    print >> result, pr+" NUMBER OF NCS GROUPS : %-6d" % self.get_n_groups()
+    print(pr+"NCS DETAILS.", file=result)
+    print(pr+" NUMBER OF NCS GROUPS : %-6d" % self.get_n_groups(), file=result)
     for i_group, group in enumerate(self.groups_list):
-      print >>result,pr+" NCS GROUP : %-6d"%(i_group+1)
+      print(pr+" NCS GROUP : %-6d"%(i_group+1), file=result)
       selection_strings = group.selection_strings
       for i_op,pair,mx,rms in zip(
           count(1),
           group.selection_pairs,
           group.matrices,
           group.rms):
-        print >> result,pr+"  NCS OPERATOR : %-d" % i_op
+        print(pr+"  NCS OPERATOR : %-d" % i_op, file=result)
         lines = line_breaker(selection_strings[0], width=34)
         for i_line, line in enumerate(lines):
           if(i_line == 0):
-            print >> result, pr+"   REFERENCE SELECTION: %s"%line
+            print(pr+"   REFERENCE SELECTION: %s"%line, file=result)
           else:
-            print >> result, pr+"                      : %s"%line
+            print(pr+"                      : %s"%line, file=result)
         lines = line_breaker(selection_strings[i_op], width=34)
         for i_line, line in enumerate(lines):
           if(i_line == 0):
-            print >> result, pr+"   SELECTION          : %s"%line
+            print(pr+"   SELECTION          : %s"%line, file=result)
           else:
-            print >> result, pr+"                      : %s"%line
-        print >> result,pr+"   ATOM PAIRS NUMBER  : %-d" % len(pair[0])
-        print >> result,pr+"   RMSD               : %-10.3f" % rms
+            print(pr+"                      : %s"%line, file=result)
+        print(pr+"   ATOM PAIRS NUMBER  : %-d" % len(pair[0]), file=result)
+        print(pr+"   RMSD               : %-10.3f" % rms, file=result)
     return result.getvalue()
 
-  def as_cif_block(self, loops, cif_block, sites_cart):
-    if cif_block is None:
-      cif_block = iotbx.cif.model.block()
-    (ncs_ens_loop, ncs_dom_loop, ncs_dom_lim_loop, ncs_oper_loop,
-        ncs_ens_gen_loop) = loops
-
-    oper_id = 0
-    if self.get_n_groups > 0:
-      for i_group, group in enumerate(self.groups_list):
-        ncs_ens_loop.add_row((i_group+1, "?"))
-        selection_strings = group.selection_strings
-        matrices = group.matrices
-        rms = group.rms
-        pair_count = len(group.selection_pairs[0])
-        for i_domain, domain_selection in enumerate(selection_strings):
-          ncs_dom_loop.add_row((i_domain+1, i_group+1, "?"))
-          # XXX TODO: export individual sequence ranges from selection
-          ncs_dom_lim_loop.add_row(
-            (i_group+1, i_domain+1, "?", "?", "?", "?", domain_selection))
-          if i_domain > 0:
-            rt_mx = group.matrices[i_domain-1]
-            oper_id += 1
-            row = [oper_id, "given"]
-            row.extend(rt_mx.r)
-            row.extend(rt_mx.t)
-            row.append("?")
-            ncs_oper_loop.add_row(row)
-            ncs_ens_gen_loop.add_row((1, i_domain+1, i_group+1, oper_id))
-    cif_block.add_loop(ncs_ens_loop)
-    cif_block.add_loop(ncs_dom_loop)
-    cif_block.add_loop(ncs_dom_lim_loop)
-    if self.get_n_groups > 0:
-      cif_block.add_loop(ncs_oper_loop)
-      cif_block.add_loop(ncs_ens_gen_loop)
+  def as_cif_block(self, cif_block, hierarchy, scattering_type):
+    self.ncs_restraints_group_list.as_cif_block(
+        cif_block=cif_block,
+        hierarchy=hierarchy,
+        scattering_type=scattering_type,
+        ncs_type='cartesian NCS')
     return cif_block
 
   def get_n_excessive_sites_distances(self):
@@ -236,19 +219,18 @@ class cartesian_ncs_manager(object):
     n_excessive = 0
     if (self.ncs_params.coordinate_sigma is None or
         self.ncs_params.coordinate_sigma <= 0):
-      print >> out, \
-        prefix+"  coordinate_sigma: %s  =>  restraints disabled" % (
-          str(self.ncs_params.coordinate_sigma))
+      print(prefix+"  coordinate_sigma: %s  =>  restraints disabled" % (
+          str(self.ncs_params.coordinate_sigma)), file=out)
       return n_excessive
     for i_group,group in enumerate(self.groups_list):
-      print >> out, prefix + "NCS restraint group %d:" % (i_group+1)
-      print >> out, prefix + "  coordinate_sigma: %.6g" % (
-        self.ncs_params.coordinate_sigma)
+      print(prefix + "NCS restraint group %d:" % (i_group+1), file=out)
+      print(prefix + "  coordinate_sigma: %.6g" % (
+        self.ncs_params.coordinate_sigma), file=out)
       energies_sites = group.energies_sites(
         sites_cart=sites_cart,
         coordinate_sigma = self.ncs_params.coordinate_sigma,
         compute_gradients=False)
-      print >> out, prefix + "  weight:  %.6g" % energies_sites.weight
+      print(prefix + "  weight:  %.6g" % energies_sites.weight, file=out)
       n_excessive += energies_sites.show_distances_to_average(
         site_labels=site_labels,
         excessive_distance_limit=excessive_distance_limit,
@@ -324,28 +306,27 @@ class _group(object):
           self.selection_pairs,
           self.matrices,
           self.rms):
-      print >> out, prefix + "NCS operator %d:" % i_op
-      print >> out, prefix + "  Reference selection:", \
-        show_string(self.selection_strings[0])
-      print >> out, prefix + "      Other selection:", \
-        show_string(self.selection_strings[i_op])
-      print >> out, prefix + "  Number of atom pairs:", len(pair[0])
-      print >> out, mx.r.mathematica_form(
+      print(prefix + "NCS operator %d:" % i_op, file=out)
+      print(prefix + "  Reference selection:", \
+        show_string(self.selection_strings[0]), file=out)
+      print(prefix + "      Other selection:", \
+        show_string(self.selection_strings[i_op]), file=out)
+      print(prefix + "  Number of atom pairs:", len(pair[0]), file=out)
+      print(mx.r.mathematica_form(
         label="Rotation", format="%.6g", one_row_per_line=True,
-        prefix=prefix+"  ")
-      print >> out, mx.t.mathematica_form(
-        label="Translation", format="%.6g", prefix=prefix+"  ")
+        prefix=prefix+"  "), file=out)
+      print(mx.t.mathematica_form(
+        label="Translation", format="%.6g", prefix=prefix+"  "), file=out)
       x = sites_cart.select(pair[0])
       y = mx * sites_cart.select(pair[1])
       d_sq = (x-y).dot()
       if (n_slots_difference_histogram is not None):
-        print >> out, prefix + "  Histogram of differences:"
+        print(prefix + "  Histogram of differences:", file=out)
         diff_histogram = flex.histogram(
           data=flex.sqrt(d_sq), n_slots=n_slots_difference_histogram)
         diff_histogram.show(
           f=out, prefix=prefix+"    ", format_cutoffs="%8.6f")
-      print >> out, \
-        prefix + "  RMS difference with respect to the reference: %8.6f" %(rms)
+      print(prefix + "  RMS difference with respect to the reference: %8.6f" %(rms), file=out)
 
   def energies_adp_iso(self,
         u_isos,
@@ -444,16 +425,16 @@ class _energies_adp_iso(scitbx.restraints.energies):
       max_label_size = max(max_label_size, len(label))
     fmt = "  %%%ds: %%7.2f - %%7.2f = %%8.4f" % max_label_size
     def show_selection(i_ncs, pair):
-      print >> out, prefix + "NCS selection:", \
-        show_string(self.group.selection_strings[i_ncs])
-      print >> out, prefix + " "*(max_label_size+2) \
-        + "    B-iso   NCS ave  Difference"
+      print(prefix + "NCS selection:", \
+        show_string(self.group.selection_strings[i_ncs]), file=out)
+      print(prefix + " "*(max_label_size+2) \
+        + "    B-iso   NCS ave  Difference", file=out)
       u_isos_current = self.u_isos.select(pair[1])
       u_isos_average = self.u_isos_average.select(pair[0])
       for i,c,a in zip(pair[1], u_isos_current, u_isos_average):
         c = adptbx.u_as_b(c)
         a = adptbx.u_as_b(a)
-        print >> out, prefix + fmt % (site_labels[i], c, a, c-a)
+        print(prefix + fmt % (site_labels[i], c, a, c-a), file=out)
     sel = (self.u_isos_count != 0).iselection()
     show_selection(i_ncs=0, pair=[sel, sel])
     for i_ncs,pair in zip(count(1), self.group.selection_pairs):
@@ -544,10 +525,10 @@ class _energies_sites(scitbx.restraints.energies):
       max_label_size = max(max_label_size, len(label))
     fmt = "  %%%ds: %%8.4f" % max_label_size
     def show_selection(i_ncs, pair, op):
-      print >> out, prefix + "NCS selection:", \
-        show_string(self.group.selection_strings[i_ncs])
-      print >> out, prefix + " "*(max_label_size+2) \
-        + "  Distance to NCS average"
+      print(prefix + "NCS selection:", \
+        show_string(self.group.selection_strings[i_ncs]), file=out)
+      print(prefix + " "*(max_label_size+2) \
+        + "  Distance to NCS average", file=out)
       sites_current = self.sites_cart.select(pair[1])
       if (op is None):
         sites_average = self.sites_average.select(pair[0])
@@ -556,12 +537,12 @@ class _energies_sites(scitbx.restraints.energies):
       n_excessive = 0
       for i,c,a in zip(pair[1], sites_current, sites_average):
         abs_diff = abs(matrix.col(c) - matrix.col(a))
-        print >> out, prefix + fmt % (site_labels[i], abs_diff),
+        print(prefix + fmt % (site_labels[i], abs_diff), end=' ', file=out)
         if (excessive_distance_limit is not None
             and abs_diff >= excessive_distance_limit):
-          print >> out, "EXCESSIVE",
+          print("EXCESSIVE", end=' ', file=out)
           n_excessive += 1
-        print >> out
+        print(file=out)
       return n_excessive
     sel = (self.sites_count != 0).iselection()
     n_excessive = show_selection(i_ncs=0, pair=[sel, sel], op=None)

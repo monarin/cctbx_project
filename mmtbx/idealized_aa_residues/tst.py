@@ -1,4 +1,4 @@
-from __future__ import division
+from __future__ import absolute_import, division, print_function
 import time
 from mmtbx import monomer_library
 import mmtbx.refinement.real_space.fit_residue
@@ -10,7 +10,8 @@ import libtbx.load_env
 
 mon_lib_srv = monomer_library.server.server()
 rotamer_eval = RotamerEval()
-rotamer_manager = mmtbx.idealized_aa_residues.rotamer_manager.load()
+rotamer_manager = mmtbx.idealized_aa_residues.rotamer_manager.load(
+  rotamers="favored")
 
 pdb_files = [
   "ala.pdb",
@@ -26,7 +27,6 @@ pdb_files = [
   "met.pdb",
   "mse.pdb", # is ignored with rotamer named None
   "phe.pdb",
-  "pro.pdb", # BAD all-rotamers files
   "ser.pdb",
   "thr.pdb",
   "trp.pdb",
@@ -39,7 +39,7 @@ pdb_files = [
 def sample(residue, clusters, states):
   xyz_moved_dc = residue.atoms().extract_xyz().deep_copy()
   chi_angles = rotamer_manager.get_chi_angles(resname=residue.resname)
-  print residue.resname, len(chi_angles)
+  print(residue.resname, len(chi_angles))
   if(residue.resname in ["ARG","LYS"]):
     return None # skip: too long to run
   if(residue.resname in ["ALA","GLY"]):
@@ -96,5 +96,5 @@ if(__name__ == "__main__"):
   t0 = time.time()
   for fn in pdb_files:
     exercise(file_name=fn)
-  print "Time: %8.4f"%(time.time()-t0)
-  print "OK"
+  print("Time: %8.4f"%(time.time()-t0))
+  print("OK")

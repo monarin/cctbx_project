@@ -1,11 +1,10 @@
-from __future__ import division
-
 '''
 Author      : Lyubimov, A.Y.
 Created     : 10/10/2014
 Last Changed: 11/03/2017
 Description : SIMTBX (nanoBragg) I/O module. Reads PHIL input.
 '''
+from __future__ import absolute_import, division, print_function
 
 import iotbx.phil as ip
 import inspect
@@ -110,8 +109,8 @@ dataset
                    ''.format(i, param_value, param_type, param_doc)
       param_lines.append(param_line)
 
-    except TypeError, e:
-      print i, e
+    except TypeError as e:
+      print(i, e)
       pass
 
   param_lines.append('}')

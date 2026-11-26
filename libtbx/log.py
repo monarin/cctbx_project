@@ -1,7 +1,36 @@
 """A simple logging interface."""
-from __future__ import division
+from __future__ import absolute_import, division, print_function
 import logging
 import sys
+
+class manager(object):
+  def __init__(self, log=None):
+    self.log      = log
+    self.messages = []
+    self.prefix   = ""
+
+  def set_prefix(self, prefix):
+    self.prefix=prefix
+
+  def add(self, msg):
+    msg = "%s%s"%(self.prefix, msg)
+    self.messages.append(msg)
+
+  def add_and_show(self, msg):
+    self.add(msg)
+    self.show_last()
+
+  def show(self):
+    print(msg, file=self.log)
+
+  def show_last(self):
+    if len(self.messages)>0:
+      print(self.messages[-1], file=self.log)
+
+  def show_all(self):
+    for msg in self.messages:
+      print(msg, file=self.log)
+
 
 class logger(object):
   """A basic wrapper over Python standard library logging module.
@@ -127,7 +156,7 @@ class TestLog(unittest.TestCase):
         assert value in data
 
   def test_debug(self):
-    print "Check set_debug"
+    print("Check set_debug")
     logger.set_logfile("test.log")
     logger.set_debug(False)
     debug("debug: muted")
@@ -140,7 +169,7 @@ class TestLog(unittest.TestCase):
       assert "ok" in data
 
   def test_quiet(self):
-    print "Check set_quiet"
+    print("Check set_quiet")
     logger.set_logfile("test.log")
     logger.set_quiet(False)
     info("quiet: ok")
@@ -153,7 +182,7 @@ class TestLog(unittest.TestCase):
       assert "ok" in data
 
   def test_logfile(self):
-    print "Check output file"
+    print("Check output file")
     logger.set_logfile("test.log")
     info("logfile: ok")
     with open("test.log") as f:
@@ -162,11 +191,11 @@ class TestLog(unittest.TestCase):
 
   def test_stdout(self):
     oldsys = sys.stdout
-    print "Checking sys.stdout redirect"
+    print("Checking sys.stdout redirect")
     sys.stdout = logger
-    print "redirect: ok"
+    print("redirect: ok")
     sys.stdout = oldsys
-    print "... and back again"
+    print("... and back again")
 
 if __name__ == "__main__":
   unittest.main(verbosity=0)

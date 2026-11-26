@@ -1,5 +1,6 @@
-from __future__ import division
+from __future__ import absolute_import, division, print_function
 from cctbx.array_family import flex
+from six.moves import zip
 
 mysql_master_phil = """
 backend = FS *MySQL SQLite Flex
@@ -128,7 +129,7 @@ class manager (manager_base):
 
   def initialize_db(self, indices):
     db = self.connection()
-    print "testing for tables"
+    print("testing for tables")
     cursor = db.cursor()
     cursor.execute("SHOW TABLES from %s;"%self.params.mysql.database)
     all_tables = cursor.fetchall()
@@ -138,8 +139,8 @@ class manager (manager_base):
     for table in new_tables:
       cursor.execute("DROP TABLE IF EXISTS %s;"%table[0])
       cursor.execute("CREATE TABLE %s "%table[0]+table[1].replace("\n"," ")+" ;")
-    import cStringIO
-    query = cStringIO.StringIO()
+    from six.moves import cStringIO as StringIO
+    query = StringIO()
     query.write("INSERT INTO `%s_miller` (h,k,l) VALUES "%self.params.mysql.runtag)
     firstcomma = ""
     for item in indices:
@@ -163,7 +164,7 @@ class manager (manager_base):
     # argument iterables and zip them up.  This effectively rearranges
     # a list of columns into a list of rows.
     try:
-      parameters = zip(*kwargs.values())
+      parameters = list(zip(*kwargs.values()))
     except TypeError:
       parameters = [kwargs.values()]
 
@@ -199,7 +200,7 @@ class manager (manager_base):
             + ", ".join(kwargs.keys()) + ") values (" \
             + ", ".join(["%s"] * len(kwargs.keys())) + ")"
     try:
-      parameters = zip(*kwargs.values())
+      parameters = list(zip(*kwargs.values()))
     except TypeError:
       parameters = [kwargs.values()]
     cursor.executemany(query, parameters)

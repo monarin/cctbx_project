@@ -1,11 +1,13 @@
-from __future__ import division, print_function
+"""validate hydrogens"""
+from __future__ import absolute_import, division, print_function
 # LIBTBX_SET_DISPATCHER_NAME phenix.validate_H
 import sys, time
 from mmtbx.monomer_library.pdb_interpretation import grand_master_phil_str
 import iotbx.phil
 import mmtbx.model
 from mmtbx.monomer_library import pdb_interpretation
-from mmtbx.hydrogens.validate_H import validate_H
+from mmtbx.hydrogens.validate_H import validate_H, parent_occupancy, \
+  only_hd_counts, unresolved_hd_text
 
 master_params_str = """\
 cif_file = None
@@ -83,7 +85,8 @@ Usage:
 
   def print_renamed(self, renamed):
     print('*'*79, file=self.log)
-    print('The following atoms were renamed:', file=self.log)
+    print('D atoms whose name does not match the H at the same position:',
+      file=self.log)
     for entry in renamed:
       id_str = entry[0]
       oldname = entry[2]
@@ -102,7 +105,8 @@ Usage:
         print('%s with occupancy %s' %(item[0], item[1]), file=self.log)
 
   def print_results_hd_sites(
-        self, count_exchanged_sites, hd_sites_analysis, overall_counts_hd):
+        self, count_exchanged_sites, hd_sites_analysis, overall_counts_hd,
+        unresolved_hd=None):
     sites_different_xyz = hd_sites_analysis.sites_different_xyz
     sites_different_b   = hd_sites_analysis.sites_different_b
     sites_sum_occ_not_1 = hd_sites_analysis.sites_sum_occ_not_1
@@ -110,10 +114,13 @@ Usage:
     print('*'*79, file=self.log)
     print('H/D EXCHANGED SITES:\n', file=self.log)
     print('Number of H/D exchanged sites: ', count_exchanged_sites, file=self.log)
-    print('Number of atoms modelled only as H: ', \
-     overall_counts_hd.count_h_protein - count_exchanged_sites, file=self.log)
-    print('Number of atoms modelled only as D: ', \
-     overall_counts_hd.count_d_protein - count_exchanged_sites, file=self.log)
+    h_only, d_only = only_hd_counts(
+      count_exchanged_sites, hd_sites_analysis, overall_counts_hd)
+    print('Number of atoms modelled only as H: ', h_only, file=self.log)
+    print('Number of atoms modelled only as D: ', d_only, file=self.log)
+    if unresolved_hd is not None:
+      print('H/D atoms without a parent atom: ',
+        sum(len(entry[2]) for entry in unresolved_hd), file=self.log)
     if sites_different_xyz:
       print('\nH/D pairs not at identical positions:', file=self.log)
       for item in sites_different_xyz:
@@ -124,10 +131,12 @@ Usage:
       for item in sites_different_b:
         print('%s and %s ' % (item[0][5:-1], item[1][5:-1]), file=self.log)
     if sites_sum_occ_not_1:
-      print('\nH/D pairs with occupancy sum != 1:', file=self.log)
+      print('\nH/D pairs whose occupancy sum is neither 1 nor the parent '
+        'occupancy:', file=self.log)
       for item in sites_sum_occ_not_1:
-        print(' %s  and %s with occupancy sum %s' % \
-          (item[0][5:-1], item[1][5:-1], item[2]), file=self.log)
+        print(' %s  and %s with occupancy sum %s, parent occupancy %s' % \
+          (item[0][5:-1], item[1][5:-1], item[2], parent_occupancy(item)),
+          file=self.log)
     if sites_occ_sum_no_scattering:
       print('\nRotatable H/D pairs with zero scattering occupancy sum:', file=self.log)
       for item in sites_occ_sum_no_scattering:
@@ -172,13 +181,24 @@ Usage:
     bond_results       = results.bond_results
     if overall_counts_hd:
       self.print_overall_results(overall_counts_hd)
+    if getattr(results, 'hd_pairing_note', None):
+      print('*'*79, file=self.log)
+      print('H/D pairs not analyzed: %s' % results.hd_pairing_note,
+        file=self.log)
     if renamed:
       self.print_renamed(renamed)
     if hd_atoms_with_occ_0 or single_hd_atoms_occ_lt_1:
       self.print_atoms_occ_lt_1(hd_atoms_with_occ_0, single_hd_atoms_occ_lt_1)
+    unresolved_hd = getattr(results, 'unresolved_hd', None)
     if count_exchanged_sites is not None:
       self.print_results_hd_sites(
-        count_exchanged_sites, hd_sites_analysis, overall_counts_hd)
+        count_exchanged_sites, hd_sites_analysis, overall_counts_hd,
+        unresolved_hd=unresolved_hd)
+    if unresolved_hd:
+      print('*'*79, file=self.log)
+      print('H/D atoms without a parent atom:', file=self.log)
+      for entry in unresolved_hd:
+        print(unresolved_hd_text(entry), file=self.log)
     if missing_HD_atoms:
       self.print_missing_HD_atoms(missing_HD_atoms)
     if outliers_bonds or outliers_angles:
@@ -192,6 +212,7 @@ Usage:
     pi_params = pdb_interpretation_phil.extract()
     pi_params.pdb_interpretation.use_neutron_distances = \
       self.work_params.use_neutron_distances
+    #pi_params.pdb_interpretation.clash_guard.nonbonded_distance_threshold=None
     #pi_params.pdb_interpretation.restraints_library.cdl=False
     return pi_params
 
@@ -205,12 +226,11 @@ Usage:
 
     pi_params = self.get_pdb_interpretation_params()
     model = mmtbx.model.manager(
-        model_input               = self.pdb_inp,
-#        process_input             = True,
-        build_grm                 = True,
-        pdb_interpretation_params = pi_params,
-        restraint_objects         = self.input_objects.cif_objects)
-
+      model_input       = self.pdb_inp,
+      stop_for_unknowns = False,
+      restraint_objects = self.input_objects.cif_objects)
+    model.process(pdb_interpretation_params=pi_params,
+      make_restraints=True)
     print("Model object created from file %s:" % \
       getattr(self.work_params, self.pdbf_def), file=self.log)
 
@@ -223,9 +243,11 @@ Usage:
     self.print_results(results)
 
     #results.pdb_hierarchy_curated.write_pdb_file(file_name="%s.pdb" % 'bla2')
+if __name__ == "__main__":
 
-t0 = time.time()
-validate_H_app = cl_validate_H(
+  t0 = time.time()
+  validate_H_app = cl_validate_H(
     cl_args=sys.argv[1:])
-validate_H_app.run()
-print("Finished. Time: %8.3f"%(time.time()-t0))
+  validate_H_app.run()
+  print("Finished. Time: %8.3f"%(time.time()-t0))
+

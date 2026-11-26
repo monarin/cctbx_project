@@ -1,4 +1,7 @@
-from __future__ import division
+"""
+  Homology search by BLAST, XML output
+"""
+from __future__ import absolute_import, division, print_function
 
 from iotbx.bioinformatics.xmlbuild import Single, Multiple
 from iotbx.bioinformatics.xmlbuild import Text, TextWithDefault, Group

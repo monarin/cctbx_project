@@ -1,9 +1,12 @@
-from __future__ import division
+from __future__ import absolute_import, division, print_function
 import time
 import iotbx.pdb
 import mmtbx.model
 from cctbx.array_family import flex
+from libtbx.utils import null_out
 from libtbx.test_utils import approx_equal
+from six.moves import zip
+from six.moves import range
 
 #-----------------------------------------------------------------------------
 # This finite difference test checks transformation of riding H gradients
@@ -16,15 +19,15 @@ def exercise(pdb_str, eps):
 
   model = mmtbx.model.manager(
             model_input = pdb_inp,
-            build_grm   = True)
-
+            log         = null_out())
+  model.process(make_restraints=True)
   geometry_restraints = model.restraints_manager.geometry
   xray_structure = model.get_xray_structure()
 
   model.setup_riding_h_manager()
   riding_h_manager = model.get_riding_h_manager()
 
-  riding_h_manager.idealize(xray_structure=xray_structure)
+  riding_h_manager.idealize_riding_h_positions(xray_structure=xray_structure)
 
   sites_cart = xray_structure.sites_cart()
 
@@ -42,7 +45,7 @@ def exercise(pdb_str, eps):
   ey = [0,eps,0]
   ez = [0,0,eps]
   g_fd = flex.vec3_double()
-  for i_site in xrange(sites_cart.size()):
+  for i_site in range(sites_cart.size()):
     g_fd_i = []
     for e in [ex,ey,ez]:
       ts = []
@@ -50,10 +53,10 @@ def exercise(pdb_str, eps):
         sites_cart_ = sites_cart.deep_copy()
         xray_structure_ = xray_structure.deep_copy_scatterers()
         sites_cart_[i_site] = [
-          sites_cart_[i_site][j]+e[j]*sign for j in xrange(3)]
+          sites_cart_[i_site][j]+e[j]*sign for j in range(3)]
         xray_structure_.set_sites_cart(sites_cart_)
         # after shift, recalculate H position
-        riding_h_manager.idealize(
+        riding_h_manager.idealize_riding_h_positions(
           xray_structure=xray_structure_)
         sites_cart_ = xray_structure_.sites_cart()
         ts.append(geometry_restraints.energies_sites(
@@ -309,4 +312,4 @@ def run():
 if (__name__ == "__main__"):
   t0 = time.time()
   run()
-  print "OK. Time:", round(time.time()-t0, 2), "seconds"
+  print("OK. Time:", round(time.time()-t0, 2), "seconds")

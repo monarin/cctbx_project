@@ -1,4 +1,4 @@
-from __future__ import division
+from __future__ import absolute_import, division, print_function
 from cctbx.array_family import flex
 from libtbx.test_utils import show_diff
 import libtbx.utils
@@ -9,6 +9,7 @@ import smtbx.development
 
 import random
 import math
+from six.moves import range
 
 def exercise_optimise_shelxl_weights():
   def calc_goof(fo2, fc, w, k, n_params):
@@ -72,10 +73,10 @@ def exercise_weighting_schemes():
   assert shelx_weighting.type() == "calc"
   assert not show_diff(
     str(shelx_weighting),
-    "w=1/[\s^2^(Fo^2^)+(0.1234P)^2^+0.5678P] where P=(Fo^2^+2Fc^2^)/3")
+    "w=1/[\\s^2^(Fo^2^)+(0.1234P)^2^+0.5678P] where P=(Fo^2^+2Fc^2^)/3")
   try:
     shelx_weighting(fo_sq=1, sigma=1, fc_sq=1, scale_factor=None)
-  except RuntimeError, e:
+  except RuntimeError as e:
     assert 'SMTBX_ASSERT' in str(e)
   else:
     raise Exception_expected("scale_factor must have a definite value")

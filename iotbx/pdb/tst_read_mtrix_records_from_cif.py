@@ -1,8 +1,9 @@
-from __future__ import division
+"""Test reading MTRIX records from mmCIF files"""
+from __future__ import absolute_import, division, print_function
 import iotbx.ncs
 import iotbx.pdb
 import mmtbx.model
-from libtbx.test_utils import approx_equal
+from libtbx.test_utils import approx_equal, show_diff
 
 test_pdb = """\
 CRYST1   94.730   94.730  250.870  90.00  90.00 120.00 P 65         12
@@ -133,12 +134,122 @@ ATOM 16   O OD2 . ASP A 1 2   ? 11.821 44.453 18.866  1.00 70.41  ? ? ? ? ? ? 2 
 #
 """
 
+test_cif2 = """\
+data_4V5G
+_struct_ncs_oper.id             1
+_struct_ncs_oper.code           given
+_struct_ncs_oper.details        ?
+_struct_ncs_oper.matrix[1][1]   -0.999932
+_struct_ncs_oper.matrix[1][2]   -0.011239
+_struct_ncs_oper.matrix[1][3]   0.003138
+_struct_ncs_oper.matrix[2][1]   0.010826
+_struct_ncs_oper.matrix[2][2]   -0.793178
+_struct_ncs_oper.matrix[2][3]   0.608894
+_struct_ncs_oper.matrix[3][1]   -0.004354
+_struct_ncs_oper.matrix[3][2]   0.608886
+_struct_ncs_oper.matrix[3][3]   0.793246
+_struct_ncs_oper.vector[1]      174.44280
+_struct_ncs_oper.vector[2]      -1.51400
+_struct_ncs_oper.vector[3]      0.70450
+#
+_struct_ncs_dom.id            1
+_struct_ncs_dom.details       ?
+_struct_ncs_dom.pdbx_ens_id   1
+#
+_struct_ncs_ens.id        1
+_struct_ncs_ens.details   ?
+#
+loop_
+_atom_site.group_PDB
+_atom_site.id
+_atom_site.type_symbol
+_atom_site.label_atom_id
+_atom_site.label_alt_id
+_atom_site.label_comp_id
+_atom_site.label_asym_id
+_atom_site.label_entity_id
+_atom_site.label_seq_id
+_atom_site.pdbx_PDB_ins_code
+_atom_site.Cartn_x
+_atom_site.Cartn_y
+_atom_site.Cartn_z
+_atom_site.occupancy
+_atom_site.B_iso_or_equiv
+_atom_site.pdbx_formal_charge
+_atom_site.auth_seq_id
+_atom_site.auth_comp_id
+_atom_site.auth_asym_id
+_atom_site.auth_atom_id
+_atom_site.pdbx_PDB_model_num
+ATOM   1      O  "O5'" . U   A  1  6    ? -79.179  -80.162  -28.130 1.00 93.14  ? 5    U   AA "O5'" 1
+ATOM   2      C  "C5'" . U   A  1  6    ? -78.563  -80.924  -27.084 1.00 95.32  ? 5    U   AA "C5'" 1
+ATOM   3      C  "C4'" . U   A  1  6    ? -79.547  -81.252  -25.987 1.00 96.14  ? 5    U   AA "C4'" 1
+"""
+
+test_cif2_1 = """\
+data_4V5G
+loop_
+_struct_ncs_oper.id
+_struct_ncs_oper.code
+_struct_ncs_oper.details
+_struct_ncs_oper.matrix[1][1]
+_struct_ncs_oper.matrix[1][2]
+_struct_ncs_oper.matrix[1][3]
+_struct_ncs_oper.matrix[2][1]
+_struct_ncs_oper.matrix[2][2]
+_struct_ncs_oper.matrix[2][3]
+_struct_ncs_oper.matrix[3][1]
+_struct_ncs_oper.matrix[3][2]
+_struct_ncs_oper.matrix[3][3]
+_struct_ncs_oper.vector[1]
+_struct_ncs_oper.vector[2]
+_struct_ncs_oper.vector[3]
+
+1 given ? -0.999932 -0.011239 0.003138 0.010826 -0.793178 0.608894 -0.004354 0.608886 0.793246 174.44280 -1.51400 0.70450
+
+#
+_struct_ncs_dom.id            1
+_struct_ncs_dom.details       ?
+_struct_ncs_dom.pdbx_ens_id   1
+#
+_struct_ncs_ens.id        1
+_struct_ncs_ens.details   ?
+#
+loop_
+_atom_site.group_PDB
+_atom_site.id
+_atom_site.type_symbol
+_atom_site.label_atom_id
+_atom_site.label_alt_id
+_atom_site.label_comp_id
+_atom_site.label_asym_id
+_atom_site.label_entity_id
+_atom_site.label_seq_id
+_atom_site.pdbx_PDB_ins_code
+_atom_site.Cartn_x
+_atom_site.Cartn_y
+_atom_site.Cartn_z
+_atom_site.occupancy
+_atom_site.B_iso_or_equiv
+_atom_site.pdbx_formal_charge
+_atom_site.auth_seq_id
+_atom_site.auth_comp_id
+_atom_site.auth_asym_id
+_atom_site.auth_atom_id
+_atom_site.pdbx_PDB_model_num
+ATOM   1      O  "O5'" . U   A  1  6    ? -79.179  -80.162  -28.130 1.00 93.14  ? 5    U   AA "O5'" 1
+ATOM   2      C  "C5'" . U   A  1  6    ? -78.563  -80.924  -27.084 1.00 95.32  ? 5    U   AA "C5'" 1
+ATOM   3      C  "C4'" . U   A  1  6    ? -79.547  -81.252  -25.987 1.00 96.14  ? 5    U   AA "C4'" 1
+"""
+
 
 def exercise():
   pdb_inp1 = iotbx.pdb.input(source_info=None, lines=test_pdb)
   pdb_inp2 = iotbx.pdb.input(source_info=None, lines=test_cif)
   model1 = mmtbx.model.manager(pdb_inp1)
-  model2 = mmtbx.model.manager(pdb_inp1)
+  model2 = mmtbx.model.manager(pdb_inp2)
+  model1_crystal_symmetry=model1.crystal_symmetry()
+
   trans_obj1 = iotbx.ncs.input(hierarchy=model1.get_hierarchy())
   trans_obj2 = iotbx.ncs.input(hierarchy=model2.get_hierarchy())
 
@@ -161,6 +272,32 @@ def exercise():
 
   assert approx_equal(results,expected)
 
+  # test when there is only one mtrix
+  pdb_inp = iotbx.pdb.input(source_info=None, lines=test_cif2)
+  transform_info = pdb_inp.process_MTRIX_records()
+  results = transform_info.as_pdb_string()
+  r = ""
+  for l in results.split('\n'):
+    r += l.strip() + '\n'
+  assert not show_diff(r, """MTRIX1   1 -0.999932 -0.011239  0.003138      174.44280    1
+MTRIX2   1  0.010826 -0.793178  0.608894       -1.51400    1
+MTRIX3   1 -0.004354  0.608886  0.793246        0.70450    1
+""")
+  m = mmtbx.model.manager(pdb_inp,
+   crystal_symmetry=model1_crystal_symmetry)
+  xrs = m.get_xray_structure()
+  m.set_xray_structure(xrs)
+
+def exercise_ncs_loop_1_elem():
+  """
+  Exercise the case when _struct_ncs_oper is a loop but contains only one row.
+  See the difference between test_cif2 and test_cif2_1
+  """
+  pdb_inp = iotbx.pdb.input(source_info=None, lines=test_cif2_1)
+  model = mmtbx.model.manager(pdb_inp)
+
+
 if __name__ == "__main__":
   exercise()
-  print "OK"
+  exercise_ncs_loop_1_elem()
+  print("OK")

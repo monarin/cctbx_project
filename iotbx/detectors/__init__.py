@@ -1,14 +1,15 @@
-from __future__ import division
+"""Tools to read X-ray images from a variety of detectors
+"""
+from __future__ import absolute_import, division, print_function
 import os
 import re
 
-import boost.python
-ext = boost.python.import_ext("iotbx_detectors_ext")
+import boost_adaptbx.boost.python as bp
+ext = bp.import_ext("iotbx_detectors_ext")
 from iotbx_detectors_ext import *
 from iotbx_detectors_bruker_ext import Bruker_base # import dependency
 
-import exceptions
-class ImageException(exceptions.Exception):
+class ImageException(Exception):
   pass
 
 from iotbx.detectors.adsc import ADSCImage
@@ -53,11 +54,6 @@ class SMVImage(ADSCImage):
 all_image_types = [EDFWrapper,SaturnImage,DIPImage,NoirImage,ADSCImage,HamamatsuImage,
                   MARImage,MARIPImage,DTREKImage,RAXISImage,
                   NonSquareRAXISImage,SMVImage,PilatusImage,EigerCBFImage,CBFImage,BrukerImage]
-#try :
-#  import h5py # special import
-#except ImportError :
-#  pass
-#else :
 all_image_types.insert(0, EIGERImage)
 
 all_url_types = [pilatus_slice_from_file_url,pilatus_slice_from_http_url,
@@ -70,8 +66,8 @@ def ImageFactory(filename,optional_index=None):
   if os.path.isfile(filename):
     if not os.access(filename, os.R_OK):
       raise Sorry("No read access to file %s" % filename)
-    from dxtbx.format.Registry import Registry
-    format_instance = Registry.find(filename)
+    import dxtbx.format.Registry
+    format_instance = dxtbx.format.Registry.get_format_class_for_file(filename)
     instance = format_instance(filename)
     if optional_index is not None:
       return instance.get_detectorbase(optional_index)
@@ -88,8 +84,8 @@ def ImageFactory(filename,optional_index=None):
     raise ImageException(filename+" does not work as a functioning image URL")
   raise ImageException(filename+" not recognized as any known detector image type")
 
-def identify_dataset (path_name) :
-  def get_file_name_components (file_name_) :
+def identify_dataset(path_name):
+  def get_file_name_components(file_name_):
     base, ext = os.path.splitext(os.path.basename(file_name_))
     fields = base.split("_")
     suffix = fields[-1]
@@ -97,13 +93,13 @@ def identify_dataset (path_name) :
     return (common_base, suffix, ext)
   suffix = common_base = common_ext = None
   file_name = dir_name = None
-  if (os.path.isfile(path_name)) :
+  if (os.path.isfile(path_name)):
     file_name = os.path.abspath(path_name)
-  elif (os.path.isdir(path_name)) :
+  elif (os.path.isdir(path_name)):
     dir_name = os.path.abspath(path_name)
   else :
     assert 0
-  if (file_name is not None) :
+  if (file_name is not None):
     dir_name = os.path.dirname(file_name)
     (common_base, suffix, common_ext) = get_file_name_components(file_name)
   all_files = os.listdir(dir_name)
@@ -111,10 +107,10 @@ def identify_dataset (path_name) :
   suffixes = {}
   extensions = {}
   for fn in all_files :
-    if (common_base is not None) :
-      if (fn.startswith(common_base)) and (fn.endswith(common_ext)) :
+    if (common_base is not None):
+      if (fn.startswith(common_base)) and (fn.endswith(common_ext)):
         (base2, suffix2, ext2) = get_file_name_components(fn)
-        if (common_base in stacks) :
+        if (common_base in stacks):
           stacks[common_base].append(int(suffix2))
         else :
           suffixes[common_base] = "#" * len(suffix)
@@ -123,21 +119,21 @@ def identify_dataset (path_name) :
     else :
       (base2, suffix2, ext2) = get_file_name_components(fn)
       # FIXME probably not a comprehensive list...
-      if (ext2 in [".img",".osc",".ccd",".mccd",".cbf"]) :
-        if (base2 in stacks) :
+      if (ext2 in [".img",".osc",".ccd",".mccd",".cbf"]):
+        if (base2 in stacks):
           stacks[base2].append(int(suffix2))
         else :
           stacks[base2] = [ int(suffix2) ]
           suffixes[base2] = "#" * len(suffix2)
           extensions[base2] = ext2
   results = []
-  for base in sorted(stacks.keys()) :
+  for base in sorted(stacks.keys()):
     ranges = []
     img_start = img_last = None
-    for x in sorted(stacks[base]) :
-      if (img_start is None) :
+    for x in sorted(stacks[base]):
+      if (img_start is None):
         img_start = x
-      elif (img_last is not None) and (x > (img_last + 1)) :
+      elif (img_last is not None) and (x > (img_last + 1)):
         ranges.append((img_start, img_last))
         img_start = x
       img_last = x
@@ -151,24 +147,24 @@ def identify_dataset (path_name) :
     results.append(dataset)
   return results
 
-class dataset_info (object) :
-  def __init__ (self, base_name, ranges) :
+class dataset_info(object):
+  def __init__(self, base_name, ranges):
     self.base_name = base_name
     self.ranges = ranges
 
-  def format (self) :
+  def format(self):
     ranges_strs = []
     for start, end in self.ranges :
-      if (start == end) :
+      if (start == end):
         ranges_strs.append(str(start))
       else :
         ranges_strs.append("%d-%d" % (start, end))
     return "%s (%s)" % (self.base_name, ",".join(ranges_strs))
 
-  def __str__ (self) :
+  def __str__(self):
     return self.format()
 
-  def get_frame_path (self, frame) :
+  def get_frame_path(self, frame):
     assert isinstance(frame, int) and (frame > 0)
     serial_format = "%%0%dd" % (self.base_name.count("#"))
     format_str = re.sub("[#]{1,}", serial_format, self.base_name)

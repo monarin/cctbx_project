@@ -1,5 +1,5 @@
-from __future__ import division
-from mmtbx.secondary_structure import build as ssb
+from __future__ import absolute_import, division, print_function
+from mmtbx.secondary_structure.build import ss_idealization as ssb
 import iotbx.pdb
 from libtbx.utils import Sorry
 import mmtbx.model
@@ -31,8 +31,8 @@ ATOM    885  H   TRP A 101    -126.863-142.797-102.745  1.00 42.04           H
   pdb_inp = iotbx.pdb.input(source_info=None, lines=tst_pdb_1)
   ann = pdb_inp.extract_secondary_structure()
   model = mmtbx.model.manager(
-    model_input = pdb_inp,
-    build_grm = True)
+    model_input = pdb_inp)
+  model.process(make_restraints=True)
   model.set_ss_annotation(ann)
   rm = ssb.substitute_ss(
       model,
@@ -66,12 +66,13 @@ ATOM    885  H   TRP A 101    -126.863-142.797-102.745  1.00 42.04           H
   pdb_inp = iotbx.pdb.input(source_info=None, lines=tst_pdb_1)
   ann = pdb_inp.extract_secondary_structure()
   model = mmtbx.model.manager(
-    model_input = pdb_inp,
-    build_grm = True)
+    model_input = pdb_inp)
+  model.process(make_restraints=True)
   model.set_ss_annotation(ann)
   try:
     rm = ssb.substitute_ss(
         model)
+    rm.run()
   except Sorry as e:
     assert e.args[0].startswith("C, CA or N")
   except Exception:
@@ -100,18 +101,19 @@ ATOM    881  CE3 TRP A 101    -125.446-147.437-100.384  1.00 42.04           C
   pdb_inp = iotbx.pdb.input(source_info=None, lines=tst_pdb_2)
   ann = pdb_inp.extract_secondary_structure()
   model = mmtbx.model.manager(
-    model_input = pdb_inp,
-    build_grm = True)
+    model_input = pdb_inp)
+  model.process(make_restraints=True)
   model.set_ss_annotation(ann)
   rm = ssb.substitute_ss(
       model)
+  rm.run()
 
 
 def exercise():
   exercise_presence_of_h()
   exercise_ca_absent()
   exercise_some_atoms_are_absent()
-  print "OK"
+  print("OK")
 
 if (__name__ == "__main__"):
   exercise()

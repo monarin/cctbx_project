@@ -1,4 +1,4 @@
-from __future__ import division
+from __future__ import absolute_import, division, print_function
 import sys,os
 import iotbx.pdb
 import mmtbx.utils
@@ -138,13 +138,13 @@ def get_params(args,out=sys.stdout):
     args=args,
     master_phil=master_phil)
   params = command_line.work.extract()
-  print >>out,"\nMinimize_chain ... optimize a coarse-grain model in EM or low-resolution X-ray map"
+  print("\nMinimize_chain ... optimize a coarse-grain model in EM or low-resolution X-ray map", file=out)
   master_phil.format(python_object=params).show(out=out)
   return params
 
 def ccp4_map(crystal_symmetry, file_name, map_data):
-  from iotbx import ccp4_map
-  ccp4_map.write_ccp4_map(
+  from iotbx import mrcfile
+  mrcfile.write_ccp4_map(
       file_name=file_name,
       unit_cell=crystal_symmetry.unit_cell(),
       space_group=crystal_symmetry.space_group(),
@@ -164,8 +164,9 @@ def get_map_coeffs(
   reflection_file=reflection_file_reader.any_reflection_file(map_coeffs_file)
   miller_arrays=reflection_file.as_miller_arrays()
   for ma in miller_arrays:
-    if not ma.is_complex_array: continue
-    if not map_coeffs_labels or map_coeffs_labels==ma.info().labels[0]:
+    if not ma.is_complex_array(): continue
+    if (not map_coeffs_labels) or map_coeffs_labels==ma.info().labels[0] or \
+       map_coeffs_labels == ",".join(ma.info().labels):
       return ma
   raise Sorry("Unable to find map coeffs in the file %s with labels %s" %(
       map_coeffs_file,str(map_coeffs_labels)))
@@ -214,18 +215,14 @@ def get_pdb_inp(
         pdb_string=open(pdb_in).read()
       else:
         raise Sorry("Need an input PDB file")
-    pdb_inp=iotbx.pdb.input(source_info=None, lines = pdb_string)
+    from iotbx.pdb.utils import get_pdb_input
+    pdb_inp=get_pdb_input(pdb_string)
     cryst1_line=iotbx.pdb.format_cryst1_record(
          crystal_symmetry=crystal_symmetry)
-    if not pdb_inp.crystal_symmetry(): # get it
-      from cStringIO import StringIO
-      f=StringIO()
-      print >>f, cryst1_line
-      print >>f,pdb_string
-      pdb_string=f.getvalue()
-      pdb_inp=iotbx.pdb.input(source_info=None, lines = pdb_string)
   if pdb_string is None:
-    pdb_string=pdb_inp.as_pdb_string()
+    ph = pdb_inp.construct_hierarchy()
+    pdb_string = ph.as_pdb_or_mmcif_string(
+      crystal_symmetry = crystal_symmetry)
   return pdb_inp,cryst1_line,pdb_string
 
 def run_one_cycle(
@@ -241,9 +238,9 @@ def run_one_cycle(
   hierarchy.atoms().reset_i_seq()
   xrs=pdb_inp.xray_structure_simple()
   if not pdb_string:
-    pdb_string=hierarchy.as_pdb_string()
+    pdb_string=hierarchy.as_pdb_or_mmcif_string(crystal_symmetry=xrs.crystal_symmetry())
   # Initialize states accumulator
-  states = mmtbx.utils.states(pdb_hierarchy=hierarchy, xray_structure=xrs)
+  states = mmtbx.utils.states(pdb_hierarchy=hierarchy)
   states.add(sites_cart = xrs.sites_cart())
   pdb_inp_params = monomer_library.pdb_interpretation.master_params.extract()
   pdb_inp_params.clash_guard.nonbonded_distance_threshold=None
@@ -294,7 +291,7 @@ def run(args,
     import random
     random.seed(params.control.random_seed)
     flex.set_random_seed(params.control.random_seed)
-    print >>out,"\nUsing random seed of %d" %(params.control.random_seed)
+    print("\nUsing random seed of %d" %(params.control.random_seed), file=out)
 
   # Get map_data if not present
   map_data,map_coeffs,crystal_symmetry=get_map_data_and_symmetry(
@@ -322,11 +319,10 @@ def run(args,
     out=out)
 
   if params.output_files.pdb_out:
-    f=open(params.output_files.pdb_out,'w')
-    print >>f, cryst1_line
-    print >>f, pdb_hierarchy.as_pdb_string()
-    print >>out,"\nWrote output model to %s" %(params.output_files.pdb_out)
-    f.close()
+    fn = pdb_hierarchy.write_pdb_or_mmcif_file(
+      target_filename=params.output_files.pdb_out,
+      crystal_symmetry=crystal_symmetry)
+    print("\nWrote output model to %s" %(fn), file=out)
   # all done
   return pdb_hierarchy,multiple_models_hierarchy
 

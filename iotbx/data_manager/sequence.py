@@ -1,8 +1,8 @@
-from __future__ import division, print_function
 '''
 '''
 
 from iotbx.data_manager import DataManagerBase
+from libtbx import Auto
 
 # =============================================================================
 class SequenceDataManager(DataManagerBase):
@@ -23,13 +23,18 @@ class SequenceDataManager(DataManagerBase):
     '''
     return self._get(SequenceDataManager.datatype, filename)
 
-  def get_sequence_as_string(self, filename=None, width=80):
+  def get_sequence_as_string(self, filename=None, width=80,
+      sequence_letters_only = False):
     '''
     Same as get_sequence, but returns a single string with all the sequences
-    separated by blank lines
+    separated by blank lines. If sequence_letters_only,remove
+    all lines starting with ">" removed and all spaces and line breaks
     '''
     sequences = self.get_sequence(filename=filename)
-    output = '\n'.join([s.format(width) for s in sequences])
+    if sequence_letters_only:
+      output = '\n\n'.join([s.sequence for s in sequences])
+    else: # usual
+      output = '\n\n'.join([s.format(width) for s in sequences])
     return output
 
   def get_sequence_names(self):
@@ -48,9 +53,17 @@ class SequenceDataManager(DataManagerBase):
   def process_sequence_file(self, filename):
     return self._process_file(SequenceDataManager.datatype, filename)
 
-  def write_sequence_file(self, filename, sequence_str, overwrite=False):
-    self._write_text(SequenceDataManager.datatype, filename,
-                     sequence_str, overwrite=overwrite)
+  def get_default_output_sequence_filename(self):
+    filename = self.get_default_output_filename()
+    if not filename.endswith('.seq'):
+      filename += '.seq'
+    return filename
+
+  def write_sequence_file(self, sequence_str, filename=Auto, overwrite=Auto):
+    if filename is Auto:
+      filename = self.get_default_output_sequence_filename()
+    return self._write_text(SequenceDataManager.datatype, sequence_str,
+                            filename=filename, overwrite=overwrite)
 
 # =============================================================================
 # end

@@ -4,9 +4,11 @@
 #
 # $Id
 
-from __future__ import division
+from __future__ import absolute_import, division, print_function
+from six.moves import range
 
 import sys, copy
+from six.moves import zip
 
 def run(argv=None):
   """Compute mean, standard deviation, and maximum projection images
@@ -21,7 +23,7 @@ def run(argv=None):
 
   from libtbx import option_parser
   from scitbx.array_family import flex
-  from dxtbx.format.Registry import Registry
+  import dxtbx.format.Registry
   from xfel.cftbx.detector.cspad_cbf_tbx import cbf_file_to_basis_dict, write_cspad_cbf
 #  from xfel.cxi.cspad_ana import cspad_tbx
 #  from iotbx.detectors.cspad_detector_formats import reverse_timestamp
@@ -78,7 +80,7 @@ def run(argv=None):
       # up.  Note that discrepancies regarding the image size are
       # fatal.
       if not 'reader' in locals():
-        reader = Registry.find(path)
+        reader = dxtbx.format.Registry.get_format_class_for_file(path)
       img = reader(path)
       if 'detector' in locals():
         test_detector = img.get_detector()
@@ -98,7 +100,7 @@ def run(argv=None):
       else:
         detector = img.get_detector()
 
-      data = [img.get_raw_data()[i].as_1d().as_double() for i in xrange(len(detector))]
+      data = [img.get_raw_data()[i].as_1d().as_double() for i in range(len(detector))]
       wavelength = img.get_beam().get_wavelength()
       distance = flex.mean(flex.double([d.get_directed_distance() for d in detector]))
 
@@ -149,10 +151,10 @@ def run(argv=None):
     tiles = {}
     s, f = 185, 194
 
-    for q_id in xrange(4):
+    for q_id in range(4):
       tiles[0,q_id] = flex.double((flex.grid(s*8, f*2)))
-      for s_id in xrange(8):
-        for a_id in xrange(2):
+      for s_id in range(8):
+        for a_id in range(2):
           asic_idx = (q_id*16) + (s_id*2) + a_id
           asic = data[asic_idx]
           asic.reshape(flex.grid((s, f)))

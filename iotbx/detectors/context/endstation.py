@@ -1,7 +1,18 @@
-from __future__ import division
+from __future__ import absolute_import, division, print_function
 import math,time
 from iotbx.detectors.context.camera_convention import Cameras
 from iotbx.detectors.context.config_detector import ADSC910_at_BioCARS
+import six
+
+if six.PY3:
+  def change_keys_to_strings(item):
+    erase_keys = []
+    for key in item:
+      if isinstance(key,six.binary_type):
+        erase_keys.append(key)
+    for key in erase_keys:
+      item[key.decode("UTF-8")]=item[key]
+      del item[key]
 
 class EndStation:
   def __init__(self):
@@ -65,20 +76,21 @@ rotation_lookup = {
 #rmin 5 rmax 188.0 ymax 188.0 xmax 188.0 xscan 188.0 yscan 188.0
 
 def EndStation_from_ImageObject(imageobject,phil_params):
+  if six.PY3:
+    change_keys_to_strings(imageobject.parameters)
   endstation = EndStation()
   endstation.set_camera_convention(1)
   endstation.set_rotation_axis("ROTATION HORIZ ANTI")
 
-  import six
-  if isinstance(imageobject.parameters["DETECTOR_SN"],six.string_types) and \
+  if isinstance(imageobject.parameters.get("DETECTOR_SN",None),six.string_types) and \
     "S/N E-32-0105" in imageobject.parameters["DETECTOR_SN"]:
      # vertical goniometer axis at Max-IV
      endstation.set_rotation_axis("ROTATION VERT ANTI")
-     print "MAX-IV Eiger 16M"
+     print("MAX-IV Eiger 16M")
 
   if imageobject.vendortype == "Bruker Proteus CCD":
      endstation.set_rotation_axis("ROTATION VERT ANTI")
-     print "BRUKER rotation", endstation.rot_axi
+     print("BRUKER rotation", endstation.rot_axi)
 
   if imageobject.vendortype == "RAXIS":
      endstation.set_rotation_axis("ROTATION VERT CLOCK")
@@ -116,10 +128,10 @@ def EndStation_from_ImageObject(imageobject,phil_params):
      imageobject.serial_number in [414] and \
      phil_params.goniometer_rotation.lower().find(
        'pringle-shen')>=0 and \
-     imageobject.parameters.has_key('AXIS') and \
+     'AXIS' in imageobject.parameters and \
      imageobject.parameters['AXIS']=='phi':
        endstation.set_rotation_axis("ROTATION VERT ANTI")
-       if imageobject.parameters.has_key('OMEGA') and \
+       if 'OMEGA' in imageobject.parameters and \
           imageobject.parameters['OMEGA'] != 0.0 :
           omega = imageobject.parameters['OMEGA']
           from iotbx.detectors import rotate_vector_around
@@ -245,7 +257,7 @@ ADCOFFSet 5
        #  (above 32767).  Otherwise MOSFLM can crash with SERIOUS ERROR message.
 
      # Both DTrek and Raxis formats have "RAXIS" vendortype but only Raxis has "head" attribute
-     if imageobject.__dict__.has_key("head") and \
+     if "head" in imageobject.__dict__ and \
         imageobject.head['Device'].lower().find('r-axis2')==0:
        endstation.mos['mosflm_detector']=endstation.mos['mosflm_detector']+\
                                          'detector raxis'

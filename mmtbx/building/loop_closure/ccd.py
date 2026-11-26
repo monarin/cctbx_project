@@ -1,4 +1,4 @@
-from __future__ import division
+from __future__ import absolute_import, division, print_function
 
 from libtbx import adopt_init_args
 import mmtbx.utils
@@ -11,16 +11,18 @@ from scitbx.array_family import flex
 from libtbx.test_utils import approx_equal
 from libtbx.utils import null_out
 
-import boost.python
-ext = boost.python.import_ext("mmtbx_validation_ramachandran_ext")
+import boost_adaptbx.boost.python as bp
+from six.moves import zip,range
+ext = bp.import_ext("mmtbx_validation_ramachandran_ext")
 from mmtbx_validation_ramachandran_ext import rama_eval
 
-ext2 = boost.python.import_ext("mmtbx_building_loop_closure_ext")
+ext2 = bp.import_ext("mmtbx_building_loop_closure_ext")
 from mmtbx_building_loop_closure_ext import ccd_cpp
 
-class _(boost.python.injector, ccd_cpp):
+@bp.inject_into(ccd_cpp)
+class _():
 
-  def run(self, direction_forward=True, save_states=False):
+  def run(self, direction_forward=True, save_states=False, avoid_allowed_region=False):
     if save_states:
       self.states = mmtbx.utils.states(pdb_hierarchy=self.moving_h)
       self.states.add(sites_cart=self.moving_h.atoms().extract_xyz())
@@ -63,22 +65,22 @@ class _(boost.python.injector, ccd_cpp):
 
           angle_modified = self._modify_angle(ccd_angle)
           # angle_modified = ccd_angle
-          # print "ccd_angle", ccd_angle, angle_modified
+          # print ("  ccd_angle", ccd_angle, angle_modified)
           # angle_modified = - angle_modified
 
           phi_psi_angles = utils.get_pair_angles(phi_psi_pair)
           # print "phi_psi_angles", phi_psi_angles
           before_rotation_rama_score = utils.get_rama_score(phi_psi_pair, self.r, rama_key, round_coords=True)
-          if (ramalyze.evalScore(rama_key, before_rotation_rama_score) == RAMALYZE_OUTLIER):
-            # or ramalyze.evalScore(rama_key, before_rotation_rama_score) == RAMALYZE_ALLOWED):
+          if (ramalyze.evalScore(rama_key, before_rotation_rama_score) == RAMALYZE_OUTLIER
+            or (avoid_allowed_region and ramalyze.evalScore(rama_key, before_rotation_rama_score) == RAMALYZE_ALLOWED)):
             # assert i == 0
             if i != 0:
               # this is a error, we should spot rama outliers on the first angle
-              print "i", i
-              print pair_info(phi_psi_pair)
-              print "rama_key", rama_key
-              print "before_rotation_rama_score", before_rotation_rama_score,
-              print ramalyze.evalScore(rama_key, before_rotation_rama_score)
+              print("i", i)
+              print(pair_info(phi_psi_pair))
+              print("rama_key", rama_key)
+              print("before_rotation_rama_score", before_rotation_rama_score, end=' ')
+              print(ramalyze.evalScore(rama_key, before_rotation_rama_score))
               break
 
             # correct it to the nearest non-outlier region
@@ -118,7 +120,9 @@ class _(boost.python.injector, ccd_cpp):
           after_rotation_rama_score = utils.get_rama_score(phi_psi_pair, self.r, rama_key, round_coords=True)
           # print "before/after rotation rama:", before_rotation_rama_score, after_rotation_rama_score
           # if before_rotation_rama_score > after_rotation_rama_score:
-          if ramalyze.evalScore(rama_key, after_rotation_rama_score) == RAMALYZE_OUTLIER:
+          eval_score_after_rotation = ramalyze.evalScore(rama_key, after_rotation_rama_score)
+          if eval_score_after_rotation == RAMALYZE_OUTLIER or \
+             eval_score_after_rotation == RAMALYZE_ALLOWED:
             # rotate back!!! / not always
             # print "  rotate back"
             if True: # always
@@ -126,6 +130,8 @@ class _(boost.python.injector, ccd_cpp):
                   angle=-angle_modified,direction_forward=direction_forward)
           s = utils.get_rama_score(phi_psi_pair, self.r, rama_key,round_coords=True)
           assert utils.rama_score_evaluate(rama_key, s) != RAMALYZE_OUTLIER, s
+          if avoid_allowed_region:
+            assert utils.rama_score_evaluate(rama_key, s) != RAMALYZE_ALLOWED, "%s, %s" % (s, after_rotation_rama_score)
 
         # new rama score:
         after_rama_score = utils.get_rama_score(phi_psi_pair, self.r, rama_key)
@@ -287,11 +293,11 @@ class ccd_python():
             # assert i == 0
             if i != 0:
               # this is a error, we should spot rama outliers on the first angle
-              print "i", i
-              print pair_info(phi_psi_pair)
-              print "rama_key", rama_key
-              print "before_rotation_rama_score", before_rotation_rama_score,
-              print ramalyze.evalScore(rama_key, before_rotation_rama_score)
+              print("i", i)
+              print(pair_info(phi_psi_pair))
+              print("rama_key", rama_key)
+              print("before_rotation_rama_score", before_rotation_rama_score, end=' ')
+              print(ramalyze.evalScore(rama_key, before_rotation_rama_score))
               break
 
             # correct it to the nearest non-outlier region

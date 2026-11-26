@@ -1,9 +1,11 @@
-from __future__ import division
+from __future__ import absolute_import, division, print_function
 from libtbx import test_utils
 import libtbx.load_env
 
-tst_list = (
+tst_list = [
+  "$D/regression/tst_sf_low_res_accuracy.py",
   "$D/regression/tst_miller_double_step_filtration.py",
+  "$D/regression/tst_map_is_periodic.py",
   "$D/miller/tst_reindexing.py",
   "$D/miller/tst_map_to_asu_isym.py",
   "$D/regression/tst_miller_data_manipulation.py",
@@ -15,8 +17,9 @@ tst_list = (
   ["$D/symmetry_search/tests/tst_from_map.py", "P312"],
   "$D/regression/tst_adp_aniso_restraints.py",
   "$D/math/boost_python/tst_math.py",
-  "$D/xray/boost_python/tst_xray.py",
   "$D/xray/boost_python/tst_targets_fd.py",
+  "$D/xray/boost_python/tst_xray.py",
+  ["$D/regression/tst_xray.py", "I41/acd"],
   "$D/xray/targets/tst_r1.py",
   "$D/xray/targets/tst_shelxl_wght_ls.py",
   "$D/xray/boost_python/tst_f_model.py",
@@ -27,6 +30,8 @@ tst_list = (
   "$D/sgtbx/boost_python/tst_N_fold_rot.py",
   "$D/crystal/tst_ext.py",
   "$D/crystal/tst_distance_based_connectivity.py",
+  "$D/crystal/tst_super_cell.py",
+  ["$D/crystal/tst_sym_equiv_near_sites.py", "I41/acd"],
   "$D/adptbx/boost_python/tst_adptbx.py",
   #["$D/adptbx/boost_python/tst_hirshfeld.py", "--fix-random-seeds"],
   "$D/miller/boost_python/tst_miller.py",
@@ -42,16 +47,19 @@ tst_list = (
   "$D/eltbx/tests/tst_formula.py",
   "$D/eltbx/tests/tst_attenuation_coefficient.py",
   "$D/maptbx/boost_python/tst_maptbx.py",
+  "$D/maptbx/tst_loft.py",
+  "$D/maptbx/tst_MapPeakLocator.py",
   "$D/dmtbx/boost_python/tst_dmtbx.py",
   "$D/translation_search/boost_python/tst_translation_search.py",
   "$D/geometry_restraints/tst_ext.py",
   "$D/geometry_restraints/tst_proxy_registry.py",
-  "$D/geometry_restraints/tst_nonbonded_overlaps.py",
+  "$D/geometry_restraints/tst_process_nonbonded_proxies.py",
   "$D/geometry_restraints/tst_angle_derivs.py",
   "$D/geometry_restraints/tst_motif.py",
   "$D/adp_restraints/tst_ext.py",
   "$D/regression/tst_math_module.py",
   ["$D/regression/tst_krivy_gruber.py", "--Quick"],
+  "$D/regression/tst_niggli_reduction_cpp.py",
   "$D/regression/tst_sgtbx.py",
   "$D/regression/tst_itvb_2001_table_a1427_hall_symbols.py",
   "$D/regression/tst_space_group_type_tidy_cb_op_t.py",
@@ -74,9 +82,9 @@ tst_list = (
   "$D/regression/tst_crystal_asu_clusters.py",
   "$D/regression/tst_coordination_sequences.py",
   ["$D/regression/tst_crystal_close_packing.py", "R-3mr"],
-  ["$D/regression/tst_xray.py", "I41/acd"],
   ["$D/regression/tst_fourier_transform_real_part_at_x.py", "P31"],
   ["$D/regression/tst_miller.py", "P31"],
+  "$D/regression/tst_match_bijvoet_mates.py",
   "$D/regression/tst_mem.py",
   "$D/regression/tst_mem_2.py",
   ["$D/regression/tst_reciprocal_space_asu.py", "P312"],
@@ -101,6 +109,8 @@ tst_list = (
   ["$D/regression/tst_grouped_data.py", "P31"],
   ["$D/regression/tst_miller_fft_map.py", "P31"],
   ["$D/regression/tst_sampled_model_density.py", "P31"],
+  "$D/regression/tst_sf_fft_smoothness.py",
+  "$D/regression/tst_xray_sf_of_parts.py",
   ["$D/regression/tst_fast_nv1995.py", "F222"],
   "$D/regression/tst_geometry_restraints.py",
   "$D/regression/tst_geometry_restraints_lbfgs.py",
@@ -129,23 +139,52 @@ tst_list = (
    "$D/xray/observations/tst_observations.py",
    "$D/maptbx/tst_ccp.py",
    "$D/maptbx/tst_mask.py",
+   "$D/regression/tst_maptbx_mask.py",
    "$D/maptbx/tst_map_peak_3d_as_2d.py",
    "$D/maptbx/tst_asymmetric_map.py",
    "$D/maptbx/tst_peak_volume_estimate.py",
    "$D/maptbx/tst_resolution_from_map_and_model.py",
-   "$D/maptbx/tst_atom_curves.py",
    "$D/maptbx/tst_atom_radius_as_central_peak_width.py",
    "$D/maptbx/tst_get_percentile_cutoffs.py",
+   "$D/regression/tst_maptbx_box.py",
+   "$D/regression/tst_create_models_or_maps.py",
    "$D/regression/tst_sphericity.py",
    "$D/regression/tst_miller_statistics.py",
    "$D/merging/brehm_diederichs.py",
    #
+   "$D/maptbx/tst_atom_curves.py",
+   "$D/maptbx/tst_bcr.py",
+   "$D/maptbx/bcr/tst_example.py",
+   "$D/maptbx/bcr/tst_qmap_02.py",
+   "$D/maptbx/bcr/tst_table.py",
+   "$D/maptbx/bcr/tst_two_atoms.py",
+   "$D/maptbx/bcr/tst_vrm.py",
+   "$D/maptbx/bcr/tst_vrm2.py",
+   #
    "$D/multipolar/regression/tst_multipolar.py",
    "$D/regression/tst_connectivity.py",
+   "$D/regression/tst_connectivity_allsym.py",
    "$D/regression/tst_diffuse.py",
    "$D/regression/tst_grm_modifications.py",
-   "$D/regression/tst_grm.py"
-  )
+   "$D/regression/tst_grm_modifications_rm.py",
+   "$D/regression/tst_prepare_map_for_docking.py",
+   "$D/regression/tst_wavelength_units.py",
+  ]
+
+try:
+  import torch # test import
+except ImportError:
+  pass
+else:
+  tst_list.extend([
+    "$D/dispersion/tests/tst_kramers_kronig_helper.py",
+    "$D/dispersion/tests/tst_kramers_kronig_optimize.py",
+    "$D/dispersion/tests/tst_kramers_kronig.py",
+    ])
+
+tst_list_expected_unstable = [
+  "$D/regression/tst_fcalc_fft_stability.py",
+  ]
 
 def run():
   build_dir = libtbx.env.under_build("cctbx")

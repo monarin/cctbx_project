@@ -1,20 +1,19 @@
-from __future__ import division
+from __future__ import absolute_import, division, print_function
 
 import wxtbx.phil_controls.floatctrl
-import wx.lib.mixins.listctrl
 import wx
 from libtbx.utils import Sorry
-import sys
+from six.moves import range
 
-class SitesList (wx.ListCtrl,
-                  wx.lib.mixins.listctrl.CheckListCtrlMixin) :
+class SitesList(wx.ListCtrl):
   """
   ListCtrl for displaying and editing heavy-atom sites.  Only the occupancy
-  and the selection of sites may be changed.
+  and the selection of sites may be changed.  Each row carries a native
+  checkbox (wxPython 4.1+) marking whether the site is selected for saving.
   """
-  def __init__ (self, *args, **kwds) :
+  def __init__(self, *args, **kwds):
     wx.ListCtrl.__init__(self, *args, **kwds)
-    wx.lib.mixins.listctrl.CheckListCtrlMixin.__init__(self)
+    self.EnableCheckBoxes()
     self._atoms = None
     self._symm = None
     self.InsertColumn(0, "#", format=wx.LIST_FORMAT_RIGHT, width=64)
@@ -24,27 +23,26 @@ class SitesList (wx.ListCtrl,
     self.InsertColumn(4, "Z", format=wx.LIST_FORMAT_RIGHT, width=80)
     self.InsertColumn(5, "Occupancy", format=wx.LIST_FORMAT_RIGHT, width=120)
 
-  def LoadFile (self, file_name) :
+  def LoadFile(self, file_name):
     """
     Read sites from a PDB file.  An error will be raised if the model contains
     other residue types (protein, NA, water, etc.).
     """
-    from iotbx import file_reader
-    pdb_in = file_reader.any_file(file_name, force_type="pdb")
-    pdb_in.check_file_type("pdb")
-    self._symm = pdb_in.file_object.crystal_symmetry()
-    hierarchy = pdb_in.file_object.hierarchy
+    import iotbx.pdb
+    pdb_in = iotbx.pdb.input(file_name)
+    self._symm = pdb_in.crystal_symmetry()
+    hierarchy = pdb_in.construct_hierarchy()
     counts = hierarchy.overall_counts()
-    if (counts.n_models > 1) :
+    if (counts.n_models > 1):
       raise Sorry("Multi-model PDB files not allowed.")
     elif (("common_amino_acid" in counts.resname_classes) or
           ("common_nucleic_acid" in counts.resname_classes) or
-          ("common_water" in counts.resname_classes)) :
+          ("common_water" in counts.resname_classes)):
       raise Sorry("This PDB file appears to contain non-heavy atoms.")
     atoms = hierarchy.atoms()
     self.LoadAtoms(atoms)
 
-  def LoadAtoms (self, atoms) :
+  def LoadAtoms(self, atoms):
     """
     Populate the list with contents of an atom array.  This assumes that the
     contents have already been checked for suitability.
@@ -53,31 +51,31 @@ class SitesList (wx.ListCtrl,
     self.DeleteAllItems()
     self._atoms = atoms
     for atom in atoms :
-      item = self.InsertStringItem(sys.maxint, atom.serial.strip())
-      self.SetStringItem(item, 1, atom.element.strip())
-      self.SetStringItem(item, 2, "%.3f" % atom.xyz[0])
-      self.SetStringItem(item, 3, "%.3f" % atom.xyz[1])
-      self.SetStringItem(item, 4, "%.3f" % atom.xyz[2])
-      self.SetStringItem(item, 5, "%.2f" % atom.occ)
+      item = self.InsertItem(self.GetItemCount(), atom.serial.strip())
+      self.SetItem(item, 1, atom.element.strip())
+      self.SetItem(item, 2, "%.3f" % atom.xyz[0])
+      self.SetItem(item, 3, "%.3f" % atom.xyz[1])
+      self.SetItem(item, 4, "%.3f" % atom.xyz[2])
+      self.SetItem(item, 5, "%.2f" % atom.occ)
       self.CheckItem(item)
 
-  def SetSymmetry (self, symmetry) :
+  def SetSymmetry(self, symmetry):
     self._symm = symmetry
 
-  def SaveSites (self, file_name) :
-    if (self._atoms is None) or (len(self._atoms) == 0) :
+  def SaveSites(self, file_name):
+    if (self._atoms is None) or (len(self._atoms) == 0):
       raise Sorry("No atoms loaded!")
     from scitbx.array_family import flex
     selection = flex.bool(self._atoms.size(), False)
     assert (len(selection) == self.GetItemCount())
-    for item in range(self.GetItemCount()) :
-      if (self.IsChecked(item)) :
+    for item in range(self.GetItemCount()):
+      if self.IsItemChecked(item):
         selection[item] = True
     atoms_selected = self._atoms.select(selection)
-    if (len(atoms_selected) == 0) :
+    if (len(atoms_selected) == 0):
       raise Sorry("No atoms selected!")
     f = open(file_name, "w")
-    if (self._symm is not None) :
+    if (self._symm is not None):
       from iotbx.pdb import format_cryst1_and_scale_records
       f.write(format_cryst1_and_scale_records(self._symm) + "\n")
     for atom in atoms_selected :
@@ -85,44 +83,47 @@ class SitesList (wx.ListCtrl,
     f.close()
     wx.MessageBox(("%d atoms saved to %s.") % (len(atoms_selected), file_name))
 
-  def ChangeOccupancy (self) :
-    if (self._atoms is None) or (len(self._atoms) == 0) :
+  def ChangeOccupancy(self):
+    if (self._atoms is None) or (len(self._atoms) == 0):
       raise Sorry("No atoms loaded!")
     item = self.GetFirstSelected()
-    if (item < 0) :
+    if (item < 0):
       raise Sorry("Please select a site first.")
     assert (item < len(self._atoms))
     dlg = OccupancyDialog(self, -1, "Set occupancy")
     atom = self._atoms[item]
     dlg.SetOccupancy(atom.occ, atom.serial.strip())
-    if (dlg.ShowModal() == wx.ID_OK) :
+    if (dlg.ShowModal() == wx.ID_OK):
       new_occ = dlg.GetOccupancy()
       assert (0. <= new_occ <= 1.)
       atom.set_occ(new_occ)
-      self.SetStringItem(item, 5, "%.2f" % atom.occ)
+      self.SetItem(item, 5, "%.2f" % atom.occ)
 
-  def OnSaveSites (self, event) :
+  def OnSaveSites(self, event):
     from iotbx import file_reader
     wildcards = file_reader.get_wildcard_strings(["pdb"])
     file_name = wx.FileSelector(
-      flags=wx.SAVE,
-      wildcard=wildcards)
-    if (file_name != "") :
+      "Save selected sites",
+      flags=wx.FD_SAVE,
+      wildcard=wildcards,
+      )
+    if (file_name != ""):
       self.SaveSites(file_name)
 
-  def OnChangeOccupancy (self, event) :
+  def OnChangeOccupancy(self, event):
     self.ChangeOccupancy()
 
-  def OnLoadSites (self, event) :
+  def OnLoadSites(self, event):
     from iotbx import file_reader
     wildcards = file_reader.get_wildcard_strings(["pdb"])
     file_name = wx.FileSelector(
+      "Load heavy-atom sites",
       wildcard=wildcards)
-    if (file_name != "") :
+    if (file_name != ""):
       self.LoadFile(file_name)
 
-class OccupancyDialog (wx.Dialog) :
-  def __init__ (self, *args, **kwds) :
+class OccupancyDialog(wx.Dialog):
+  def __init__(self, *args, **kwds):
     wx.Dialog.__init__(self, *args, **kwds)
     style = self.GetWindowStyle()
     style |= wx.WS_EX_VALIDATE_RECURSIVELY|wx.RAISED_BORDER|wx.CAPTION
@@ -157,7 +158,7 @@ class OccupancyDialog (wx.Dialog) :
     self.Fit()
     self.Centre(wx.BOTH)
 
-  def SetOccupancy (self, occ, serial) :
+  def SetOccupancy(self, occ, serial):
     assert (isinstance(occ, float))
     self.occ_ctrl.SetValue(occ)
     self.msg_text.SetLabel(
@@ -165,39 +166,39 @@ class OccupancyDialog (wx.Dialog) :
       occ))
     self.Refresh()
 
-  def GetOccupancy (self) :
+  def GetOccupancy(self):
     return self.occ_ctrl.GetPhilValue()
 
-  def OnOkay (self, event) :
-    if (not self.Validate()) :
+  def OnOkay(self, event):
+    if (not self.Validate()):
       pass
     else :
       occ = self.GetOccupancy()
       self.EndModal(wx.ID_OK)
 
-  def OnCancel (self, event) :
+  def OnCancel(self, event):
     self.EndModal(wx.ID_CANCEL)
 
-class sites_panel_mixin (object) :
+class sites_panel_mixin(object):
   """
   Mixin class for panel objects which contain a SitesList and buttons to
   trigger editing functions.  Should be subclassed along with wx.Panel,
   wx.Dialog, or similar.
   """
-  def create_sites_list (self,
+  def create_sites_list(self,
                          sizer,
                          label="Heavy atom sites",
-                         show_load_button=False) :
-    if (label is not None) :
+                         show_load_button=False):
+    if (label is not None):
       txt = wx.StaticText(self, -1, label + ":")
-      sizer.Add(txt, 0, wx.ALL|wx.ALIGN_CENTER_VERTICAL, 5)
+      sizer.Add(txt, 0, wx.ALL, 5)
     self.sites_list = SitesList(self, -1,
       size=(540,200),
       style=wx.LC_REPORT|wx.LC_SINGLE_SEL)
-    sizer.Add(self.sites_list, 1, wx.ALL|wx.EXPAND|wx.ALIGN_CENTER_VERTICAL, 5)
+    sizer.Add(self.sites_list, 1, wx.ALL, 5)
     szr2 = wx.BoxSizer(wx.HORIZONTAL)
     sizer.Add(szr2)
-    if (show_load_button) :
+    if (show_load_button):
       btn0 = wx.Button(self, -1, "Load sites...")
       szr2.Add(btn0, 0, wx.TOP|wx.LEFT|wx.BOTTOM, 5)
       self.Bind(wx.EVT_BUTTON, self.sites_list.OnLoadSites)
@@ -208,18 +209,18 @@ class sites_panel_mixin (object) :
     self.Bind(wx.EVT_BUTTON, self.sites_list.OnChangeOccupancy, btn1)
     self.Bind(wx.EVT_BUTTON, self.sites_list.OnSaveSites, btn2)
 
-  def load_sites (self, file_name=None, atoms=None, symmetry=None) :
+  def load_sites(self, file_name=None, atoms=None, symmetry=None):
     assert ([file_name, atoms].count(None) == 1)
-    if (file_name is not None) :
+    if (file_name is not None):
       assert (symmetry is None)
       self.sites_list.LoadFile(file_name)
     else :
       self.sites_list.LoadAtoms(atoms)
-      if (symmetry is not None) :
+      if (symmetry is not None):
         self.sites_list.SetSymmetry(symmetry)
 
-class sites_panel (sites_panel_mixin, wx.Panel) :
-  def __init__ (self, *args, **kwds) :
+class sites_panel(sites_panel_mixin, wx.Panel):
+  def __init__(self, *args, **kwds):
     wx.Panel.__init__(self, *args, **kwds)
     szr = wx.BoxSizer(wx.VERTICAL)
     self.SetSizer(szr)
@@ -227,7 +228,7 @@ class sites_panel (sites_panel_mixin, wx.Panel) :
 
 ########################################################################
 # REGRESSION TESTING
-def exercise () :
+def exercise():
   import iotbx.pdb
   pdb_in = iotbx.pdb.input(source_info=None, lines="""\
 CRYST1   77.324  107.578   84.396  90.00  94.23  90.00 P 1 21 1
@@ -264,5 +265,5 @@ END""")
   frame.Show()
   app.MainLoop()
 
-if (__name__ == "__main__") :
+if (__name__ == "__main__"):
   exercise()

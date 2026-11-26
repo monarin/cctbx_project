@@ -1,4 +1,4 @@
-from __future__ import division
+from __future__ import absolute_import, division, print_function
 from mmtbx.monomer_library import cif_types
 import iotbx.cif
 from iotbx.pdb import residue_name_plus_atom_names_interpreter
@@ -8,9 +8,11 @@ from libtbx.utils import Sorry, format_exception, windows_device_names
 import libtbx.load_env
 import libtbx.path
 import os
+import six
 
 class MonomerLibraryServerError(RuntimeError): pass
 
+# CLIBD_MON no longer supported because of the cascade to GeoStd
 mon_lib_env_vars = ["MMTBX_CCP4_MONOMER_LIB", "CLIBD_MON"]
 
 def load_mon_lib_file(mon_lib_path,
@@ -25,16 +27,23 @@ def load_mon_lib_file(mon_lib_path,
 def find_mon_lib_file(env_vars=mon_lib_env_vars,
                       relative_path_components=[],
                       ):
+  redirect_dir=os.environ.get(env_vars[0], None)
   result = load_mon_lib_file(
-    mon_lib_path=os.environ.get(env_vars[0], None),
+    mon_lib_path=redirect_dir,
     relative_path_components=relative_path_components)
   if (result is not None): return result
-  for relative_path in [
-        "chem_data/geostd",
-        "chem_data/mon_lib",
-        "mon_lib",
-        'geostd',
-        "ext_ref_files/mon_lib"]:
+  relative_paths = [
+    "chem_data/geostd",
+    "chem_data/mon_lib",
+    "mon_lib",
+    'geostd',
+    "ext_ref_files/mon_lib"]
+  if ('mon_lib_list.cif' in relative_path_components
+      # or 'ener_lib.cif' in relative_path_components
+      ):
+    relative_paths.reverse()
+  if redirect_dir and 'geostd_list.cif' in relative_path_components: return None
+  for relative_path in relative_paths:
     result = load_mon_lib_file(
       mon_lib_path=libtbx.env.find_in_repositories(
         relative_path=relative_path),
@@ -77,7 +86,7 @@ def geostd_list_cif(path=None, strict=False):
       path=path,
       relative_path_components=["list", "geostd_list.cif"],
       strict=strict)
-  except MonomerLibraryServerError, e:
+  except MonomerLibraryServerError as e:
     return None
 
 def mon_lib_ener_lib_cif(path=None, strict=False):
@@ -105,7 +114,7 @@ class trivial_html_tag_filter(object):
 
   def next(self):
     while 1:
-      result = self.f.next()
+      result = next(self.f)
       if (result[0] != "<"):
         return result
 
@@ -132,7 +141,7 @@ def convert_list_block(
       for row in list_item_block.iterrows():
         obj_inner = cif_type_inner(**dict(row))
         tabulated_items[obj_inner.id] = obj_inner
-  for key, cif_data in cif_object.iteritems():
+  for key, cif_data in six.iteritems(cif_object):
     if (key.startswith(data_prefix)):
       item_id = key[len(data_prefix):]
       if (data_prefix + item_id == list_name): continue
@@ -143,7 +152,7 @@ def convert_list_block(
       for loop_block,lst_name in outer_mappings:
         rows = cif_data.get('_'+loop_block)
         if (rows is None):
-          d = dict((k, v) for k, v in cif_data.iteritems()
+          d = dict((k, v) for k, v in six.iteritems(cif_data)
                    if k.startswith("_"+loop_block))
           if len(d) > 0:
             lst = getattr(obj_outer, lst_name)
@@ -230,11 +239,11 @@ def merge_and_overwrite_cifs(geostd_list_cif_obj, list_cif, verbose=False):
       geostd_block = geostd_cif[geostd_block_key]
       mon_lib_block = mon_lib_cif.get(geostd_block_key)
       if verbose:
-        print '+'*80
-        print geostd_block_key
-        print '-'*80
-        print mon_lib_block
-        print '+'*80
+        print('+'*80)
+        print(geostd_block_key)
+        print('-'*80)
+        print(mon_lib_block)
+        print('+'*80)
       replace_block=False
       merge_block=False
       if geostd_block_key.endswith("_list"):
@@ -260,7 +269,7 @@ def merge_and_overwrite_cifs(geostd_list_cif_obj, list_cif, verbose=False):
           if count==len(k): return True
           return False
 
-        geostd_loop_keys = geostd_block.keys()
+        geostd_loop_keys = list(geostd_block.keys())
         if not geostd_loop_keys: continue
         done = []
         for geostd_loop_key in geostd_loop_keys:
@@ -271,7 +280,7 @@ def merge_and_overwrite_cifs(geostd_list_cif_obj, list_cif, verbose=False):
           geostd_loop = geostd_block.get(geostd_loop_key)
           mon_lib_loop = mon_lib_block.get(geostd_loop_key)
           if not mon_lib_loop: continue
-          if verbose: print '''
+          if verbose: print('''
 %s
   Merging rows to CIF
     block "%s"
@@ -282,22 +291,22 @@ def merge_and_overwrite_cifs(geostd_list_cif_obj, list_cif, verbose=False):
           geostd_block_key,
           geostd_loop_key,
           "-"*80,
-          )
+          ))
           for row1 in geostd_loop.iterrows():
             if verbose:
               for key in row1:
-                print "    %-20s : %s" % (
+                print("    %-20s : %s" % (
                   key.replace("%s." % geostd_loop_key, ""),
                   row1[key],
-                  )
-              print
+                  ))
+              print()
             for i, row2 in enumerate(mon_lib_loop.iterrows()):
               if _row_match(row1, row2, geostd_loop_key):
                 mon_lib_loop.delete_row(i)
-                mon_lib_loop.add_row(row1.values())
+                mon_lib_loop.add_row(list(row1.values()))
       elif not replace_block:
         # add to loops row-wise
-        geostd_loop_keys = geostd_block.keys()
+        geostd_loop_keys = list(geostd_block.keys())
         if not geostd_loop_keys: continue
         done = []
         for geostd_loop_key in geostd_loop_keys:
@@ -308,7 +317,7 @@ def merge_and_overwrite_cifs(geostd_list_cif_obj, list_cif, verbose=False):
           geostd_loop = geostd_block.get(geostd_loop_key)
           mon_lib_loop = mon_lib_block.get(geostd_loop_key)
           if not mon_lib_loop: continue
-          if verbose: print '''
+          if verbose: print('''
 %s
   Adding rows to CIF
     block "%s"
@@ -319,26 +328,26 @@ def merge_and_overwrite_cifs(geostd_list_cif_obj, list_cif, verbose=False):
           geostd_block_key,
           geostd_loop_key,
           "-"*80,
-          )
+          ))
           for row in geostd_loop.iterrows():
             if verbose:
               for key in row:
-                print "    %-20s : %s" % (
+                print("    %-20s : %s" % (
                   key.replace("%s." % geostd_loop_key, ""),
                   row[key],
-                  )
-              print
-            mon_lib_loop.add_row(row.values())
+                  ))
+              print()
+            mon_lib_loop.add_row(list(row.values()))
       else:
         # add block
         if verbose:
-          print '\n%s\n  Adding/replacing CIF block\n%s' % ("-"*80, "-"*80)
-          print geostd_block
+          print('\n%s\n  Adding/replacing CIF block\n%s' % ("-"*80, "-"*80))
+          print(geostd_block)
         mon_lib_cif[geostd_block_key] = geostd_block
       if verbose:
-        print '+'*80
-        print mon_lib_block
-        print '+'*80
+        print('+'*80)
+        print(mon_lib_block)
+        print('+'*80)
   return list_cif
 
 def print_filtered_cif(cif):
@@ -348,12 +357,12 @@ def print_filtered_cif(cif):
       #outl += "%s\n" % line
       continue
     outl += "%s\n" % line
-  print outl
+  print(outl)
   #assert 0
 
 class process_cif_mixin(object):
 
-  def process_cif_object(self, cif_object, file_name=None, cache=True):
+  def process_cif_object(self, cif_object, file_name=None, cache=True, process_tor=False):
     if (file_name is None):
       source_info = None
     else:
@@ -362,6 +371,7 @@ class process_cif_mixin(object):
       self.convert_all(source_info=source_info,
                        cif_object=cif_object,
                        cache=cache,
+                       process_tor=process_tor,
         )
     except KeyboardInterrupt: raise
     except Exception:
@@ -386,9 +396,9 @@ class process_cif_mixin(object):
 
 class id_dict(dict):
   def __setitem__(self, key, item):
-    print "DICT",key, item
+    print("DICT",key, item)
     if key in self:
-      print 'assert 0'
+      print('assert 0')
       assert 0
     dict.__setitem__(self, key, item)
 
@@ -424,7 +434,10 @@ class server(process_cif_mixin):
                   cif_object,
                   skip_comp_list=False,
                   cache=True,
+                  process_tor=False,
                   ):
+    if process_tor:
+      self.convert_ccp4_tor_list(source_info=source_info, cif_object=cif_object)
     self.convert_deriv_list_dict(cif_object=cif_object)
     self.convert_comp_synonym_list(cif_object=cif_object)
     self.convert_comp_synonym_atom_list(cif_object=cif_object)
@@ -492,10 +505,49 @@ class server(process_cif_mixin):
       self.process_cif(
         file_name=os.path.join(self.geostd_path, "rna_dna", file_name))
 
+  def convert_ccp4_tor_list(self, source_info, cif_object):
+    def get_tor_key(rc):
+      key = [rc['_chem_comp_tor.atom_id_1'],
+             rc['_chem_comp_tor.atom_id_2'],
+             rc['_chem_comp_tor.atom_id_3'],
+             rc['_chem_comp_tor.atom_id_4'],
+             ]
+      key.sort()
+      key=tuple(key)
+      return key
+    for key, block in cif_object.items():
+      if key=='comp_list': continue
+      tors = block.get_loop_or_row('_chem_comp_tor')
+      if tors is None: continue
+      if '_chem_comp_tor.alt_value_angle' in tors.keys(): continue
+      alt_value_angle = {}
+      remove=[]
+      for i, rc in enumerate(tors.iterrows()):
+        key = get_tor_key(rc)
+        tmp = alt_value_angle.setdefault(key, [])
+        if tmp:
+          remove.append(i)
+        if rc['_chem_comp_tor.value_angle'] not in tmp:
+          tmp.append(rc['_chem_comp_tor.value_angle'])
+      remove.reverse()
+      for r in remove:
+        tors.delete_row(r)
+      column = []
+      for row, key in zip(tors.iterrows(), alt_value_angle.keys()):
+        assert key==get_tor_key(row)
+        if len(alt_value_angle[key])==1:
+          column.append('.')
+        else:
+          column.append(','.join(alt_value_angle[key][1:]))
+      tors.add_column('_chem_comp_tor.alt_value_angle', column)
+
   def get_comp_comp_id_direct(self,
                               comp_id,
                               pH_range=None, # low *neutral high
                               specific_residue_restraints=None,
+                              ad_hoc_single_atom_residues=False,
+                              user_supplied_restraints_directory=None,
+                              user_supplied_pre_post=None,
                               return_filename=False,
                              ):
     comp_id = comp_id.strip().upper()
@@ -511,6 +563,8 @@ class server(process_cif_mixin):
       if pH_range in ["neutral"]: rr = ""
       elif pH_range in ["low", "high"]:
         rr = "_pH_%s" % pH_range
+      elif pH_range in ['neutron']:
+        rr = "_%s" % pH_range
       else:
         assert 0, "unknown pH value : %s" % pH_range
       rr_cif_name = "data_%s%s.cif" % (comp_id.upper(), rr)
@@ -526,7 +580,19 @@ class server(process_cif_mixin):
     if (result is not None):
       return result
     std_comp_id = self.comp_synonym_list_dict.get(comp_id, "").strip().upper()
+    def find_user_file(user_path):
+      for trial_comp_id in [std_comp_id, comp_id]:
+        if not trial_comp_id: continue
+        for dir_name in [user_path, os.path.join(user_path, trial_comp_id[0].lower())]:
+          for cif_name in ["%s.cif" % (trial_comp_id),
+                           "data_%s.cif" % (trial_comp_id)]:
+            file_name=os.path.join(dir_name, cif_name)
+            if (os.path.isfile(file_name)): return file_name
+      return None
     def find_file():
+      if user_supplied_restraints_directory and user_supplied_pre_post=='pre':
+        file_name = find_user_file(user_supplied_restraints_directory)
+        if file_name is not None: return file_name
       for i_pass in [0,1]:
         for trial_comp_id in [std_comp_id, comp_id]:
           if (len(trial_comp_id) == 0): continue
@@ -543,11 +609,11 @@ class server(process_cif_mixin):
               cif_name = cif_name.lower()
               for node in os.listdir(dir_name):
                 if (node.lower() != cif_name): continue
-                print 'node',node
-                print 'i_pass'*10,i_pass
-                print dir_name
-                print os.listdir(dir_name)
-                print 'cif_name',cif_name
+                print('node',node)
+                print('i_pass'*10,i_pass)
+                print(dir_name)
+                print(os.listdir(dir_name))
+                print('cif_name',cif_name)
                 assert 0
                 return os.path.join(dir_name, node)
           # check PHENIX Mon Lib
@@ -566,6 +632,9 @@ class server(process_cif_mixin):
               for node in os.listdir(dir_name):
                 if (node.lower() != cif_name): continue
                 return os.path.join(dir_name, node)
+      if user_supplied_restraints_directory:
+        file_name = find_user_file(user_supplied_restraints_directory)
+        if file_name is not None: return file_name
       return None
     if (file_name is None): file_name = find_file()
     if (file_name is None): return None
@@ -596,6 +665,9 @@ class server(process_cif_mixin):
       if (result is not None):
         if (len(std_comp_id) != 0):
           self.comp_comp_id_dict[std_comp_id] = result
+      elif ad_hoc_single_atom_residues:
+        comp_id = comp_id.replace('_EL', '')
+        result = self.comp_comp_id_dict.get(comp_id)
       else:
         or_std_comp_id = ""
         if (len(std_comp_id) > 0):
@@ -610,6 +682,9 @@ class server(process_cif_mixin):
         atom_names,
         translate_cns_dna_rna_residue_names=None,
         specific_residue_restraints=None,
+        ad_hoc_single_atom_residues=False,
+        user_supplied_restraints_directory=None,
+        user_supplied_pre_post=None,
         ):
     # not sure this works with specific_residue_restraints
     rnpani = residue_name_plus_atom_names_interpreter(
@@ -627,6 +702,9 @@ class server(process_cif_mixin):
       self.get_comp_comp_id_direct(
         comp_id=rnpani.work_residue_name,
         specific_residue_restraints=specific_residue_restraints,
+        ad_hoc_single_atom_residues=ad_hoc_single_atom_residues,
+        user_supplied_restraints_directory=user_supplied_restraints_directory,
+        user_supplied_pre_post=user_supplied_pre_post,
         ),
       rnpani.atom_name_interpretation,
       )
@@ -637,7 +715,7 @@ class server(process_cif_mixin):
         sites_cart,
         fine_sampling=False):
     comp_comp_id = self.get_comp_comp_id_direct(comp_id=comp_id)
-    if (comp_comp_id is None) :
+    if (comp_comp_id is None):
       return None
     return comp_comp_id.rotamer_iterator(
       atom_names=atom_names,
@@ -681,6 +759,7 @@ class ener_lib(process_cif_mixin):
                   cif_object,
                   use_neutron_distances=False,
                   cache=True, # not used
+                  process_tor=False, # not used
                   ):
     if (source_info is not None):
       self.source_infos.append(source_info)

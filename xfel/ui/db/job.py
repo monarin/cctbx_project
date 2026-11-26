@@ -1,26 +1,489 @@
-from __future__ import division
-from xfel.ui.db import db_proxy
+from __future__ import absolute_import, division, print_function
+from xfel.ui import settings_dir
+from xfel.ui.db import db_proxy, get_run_path, write_xtc_locator, get_image_mode
+import os, shutil, copy
+from iotbx.phil import parse
 
-known_job_statuses = ["DONE", "ERR", "PEND", "RUN", "SUSP", "PSUSP", "SSUSP", "UNKWN", "EXIT", "DONE", "ZOMBI", "DELETED", "SUBMIT_FAIL", "SUBMITTED"]
-finished_job_statuses = ["DONE", "EXIT", "DELETED", "UNKWN", "ERR", "SUBMIT_FAIL"]
+known_job_statuses = ["DONE", "ERR", "PEND", "RUN", "SUSP", "PSUSP", "SSUSP", "UNKWN", "EXIT", "DONE", "ZOMBI", "DELETED", "SUBMIT_FAIL", "SUBMITTED", "HOLD", "TIMEOUT"]
+finished_job_statuses = ["DONE", "EXIT", "DELETED", "UNKWN", "ERR", "SUBMIT_FAIL", "TIMEOUT"]
+
+class JobFactory(object):
+  @staticmethod
+  def from_job(job, task_type = None):
+    if job.task_id is None:
+      return IndexingJob(job.app, job.id, **job._db_dict)
+
+    if task_type is None:
+      task_type = job.app.get_task(job.task_id).type
+    if task_type == "indexing":
+      return IndexingJob(job.app, job.id, **job._db_dict)
+    if task_type == "ensemble_refinement":
+      return EnsembleRefinementJob(job.app, job.id, **job._db_dict)
+    if task_type == "scaling":
+      return ScalingJob(job.app, job.id, **job._db_dict)
+    if task_type == "merging":
+      return MergingJob(job.app, job.id, **job._db_dict)
+    if task_type == "phenix":
+      return PhenixJob(job.app, job.id, **job._db_dict)
+
+  @staticmethod
+  def from_args(app, job_id = None, **kwargs):
+    if 'task_type' in kwargs:
+      task_type = kwargs.pop('task_type')
+    else:
+      task_type = None
+    return JobFactory.from_job(Job(app, job_id, **kwargs), task_type=task_type)
 
 class Job(db_proxy):
   def __init__(self, app, job_id = None, **kwargs):
     db_proxy.__init__(self, app, "%s_job" % app.params.experiment_tag, id = job_id, **kwargs)
     self.job_id = self.id
+    self._run = None
+    self._rungroup = None
+    self._trial = None
+    self._task = None
+    self._dataset = None
+    self._dataset_version = None
+
+  def __getattr__(self, name):
+    # Called only if the property cannot be found
+    if name in ["run", "rungroup", "trial", "task", "dataset", "dataset_version"]:
+      _name = "_" + name
+      name_id = name + "_id"
+      if getattr(self, _name) is None:
+        if name == "dataset_version":
+          if self.dataset_id is not None:
+            self._dataset_version = self.app.get_job_dataset_version(self.id)
+        elif getattr(self, name_id) is not None:
+          setattr(self, _name, getattr(self.app, "get_" + name)(**{name_id:getattr(self, name_id)}))
+      return getattr(self, _name)
+    elif name == "scope":
+      return task_scope[task_types.index(self.type)]
+    else:
+      return super(Job, self).__getattr__(name)
+
+  def __setattr__(self, name, value):
+    if name in ["run", "rungroup", "trial", "task", "dataset", "dataset_version"]:
+      setattr(self, "_"+name, value)
+    else:
+      super(Job, self).__setattr__(name, value)
 
   def get_log_path(self):
-    from xfel.ui.db import get_run_path
-    import os
-    run_path = str(get_run_path(self.app.params.output_folder, self.trial, self.rungroup, self.run))
-    return os.path.join(run_path, "stdout", "log.out")
+    run_path = get_run_path(self.app.params.output_folder, self.trial, self.rungroup, self.run)
+    return os.path.join(run_path, "stdout", "log.out") if run_path else None
+
+  def submit(self, previous_job = None):
+    raise NotImplementedError("Override me!")
 
   def delete(self, output_only=False):
-    from xfel.ui.db import get_run_path
-    import os, shutil
+    raise NotImplementedError("Override me!")
 
+  def get_output_files(self):
+    # Retrun folder and experiment and reflection table suffixes
+    raise NotImplementedError("Override me!")
+
+  def remove_from_db(self):
+    assert self.status == "DELETED"
+
+    tag = self.app.params.experiment_tag
+
+    print("Listing dataset_version links for job %d"%self.id, end=' ')
+    query = """SELECT dataset_version_id FROM `%s_dataset_version_job`
+               WHERE job_id = %d""" % (tag, self.id)
+    cursor = self.app.execute_query(query)
+    affected_version_ids = [str(row[0]) for row in cursor.fetchall()]
+    print("(%d)"%len(affected_version_ids))
+
+    if affected_version_ids:
+      print("Deleting dataset_version_job entries for job %d"%self.id, end=' ')
+      query = """DELETE dvj FROM `%s_dataset_version_job` dvj
+                 WHERE dvj.job_id = %d""" % (tag, self.id)
+      cursor = self.app.execute_query(query, commit=True)
+      print("(%d)"%cursor.rowcount)
+
+      is_global = self.task is not None and self.task.scope == "global"
+      if not is_global:
+        print("WARNING: the following dataset_version entries have lost an input "
+              "job and may now be incomplete. Their DB rows are being kept so the "
+              "version numbers are not reused (which would collide with existing "
+              "on-disk results):")
+        ids_csv = ",".join(affected_version_ids)
+        query = """SELECT dv.id, dv.version, ds.name
+                   FROM `%s_dataset_version` dv
+                   JOIN `%s_dataset` ds ON ds.id = dv.dataset_id
+                   WHERE dv.id IN (%s)""" % (tag, tag, ids_csv)
+        cursor = self.app.execute_query(query)
+        for dv_id, version, ds_name in cursor.fetchall():
+          print("  dataset_version id=%d (dataset=%s, version=%d)" % (dv_id, ds_name, version))
+
+    print("Removing job %d from the db"%self.id, end=' ')
+    query = """DELETE job FROM `%s_job` job
+               WHERE job.id = %d""" % (
+               tag, self.id)
+    cursor = self.app.execute_query(query, commit=True)
+    print("(%d)"%cursor.rowcount)
+
+  def get_identifier_string(self):
+    if self.app.params.facility.name == 'lcls':
+      s =  "%s_%s_r%04d_t%03d_rg%03d"% \
+        (self.app.params.facility.lcls.experiment, self.app.params.experiment_tag, int(self.run.run), self.trial.trial, self.rungroup.id)
+    else:
+      s =  "%s_%s_t%03d_rg%03d"% \
+        (self.app.params.experiment_tag, self.run.run, self.trial.trial, self.rungroup.id)
+    if self.task is not None:
+      s += "_task%03d"%self.task.id
+    return s
+
+class AveragingJob(Job):
+  def get_identifier_string(self):
+    # Override this function because rungroups are not used for averaging
+    if self.app.params.facility.name == 'lcls':
+      s = "%s_%s_r%04d"% \
+        (self.app.params.facility.lcls.experiment, self.app.params.experiment_tag, int(self.run.run))
+    else:
+      s = "%s_%s"% \
+        (self.app.params.experiment_tag, self.run.run)
+    return s
+
+  def submit(self, previous_job=None):
+    from xfel.command_line.submit_job import Script as submit_script
+    params = copy.deepcopy(self.app.params)
+    params.dispatcher = 'dxtbx.image_average'
+    configs_dir = os.path.join(settings_dir, "cfgs")
+    if not os.path.exists(configs_dir):
+      os.makedirs(configs_dir)
+    identifier_string = self.get_identifier_string()
+
+    # Make an argument list that can be submitted to cctbx.xfel.submit_job.
+    # dxtbx.image_average does not use phil files.
+    extra_args = "-a <output_dir>/avg.cbf -m <output_dir>/max.cbf -s <output_dir>/std.cbf"
+    if self.skip_images > 0:
+      extra_args += f' --skip-images={self.skip_images}'
+    if self.num_images > 0:
+      extra_args += f' --num-images={self.num_images}'
+    self.args = [
+      f'input.run_num = {self.run.run}',
+      'input.dispatcher = dxtbx.image_average',
+      'output.output_dir = {0}'.format(os.path.join(params.output_folder, 'averages')),
+      'output.split_logs = False',
+      'output.add_output_dir_option = False',
+      f'mp.extra_args = {extra_args}',
+      f'mp.method = {params.mp.method}',
+    ]
+    for opt in params.mp.extra_options:
+      self.args.append(f'mp.extra_options = {opt}')
+
+    if params.mp.method != 'local' or (params.mp.method == 'local' and params.facility.name == 'lcls'):
+      mp_args = [
+        f'mp.use_mpi = {params.mp.use_mpi}',
+        f'mp.mpi_command = {params.mp.mpi_command}',
+        f'mp.mpi_option = "--mpi=True"',
+        f'mp.nnodes = {params.mp.nnodes}',
+        f'mp.nproc = {params.mp.nproc}',
+        f'mp.nproc_per_node = {params.mp.nproc_per_node}',
+        f'mp.env_script = {params.mp.env_script[0]}',
+        f'mp.wall_time = {params.mp.wall_time}',
+        f'mp.htcondor.executable_path = {params.mp.htcondor.executable_path}',
+      ]
+      if params.mp.queue:
+        mp_args.append(f'mp.queue = {params.mp.queue}')
+      for arg in mp_args:
+        self.args.append(arg)
+    if params.mp.shifter.shifter_image is not None:
+      shifter_args = [
+        f'mp.shifter.nersc_shifter_image = {params.mp.shifter.shifter_image}',
+        f'mp.shifter.sbatch_script_template = {params.mp.shifter.sbatch_script_template}',
+        f'mp.shifter.srun_script_template = {params.mp.shifter.srun_script_template}',
+        f'mp.shifter.nersc_partition = {params.mp.shifter.partition}',
+        f'mp.shifter.nersc_jobname = {params.mp.shifter.jobname}',
+        f'mp.shifter.nersc_project = {params.mp.shifter.project}',
+        f'mp.shifter.nersc_constraint = {params.mp.shifter.constraint}',
+        f'mp.shifter.nersc_reservation = {params.mp.shifter.reservation}',
+        f'mp.shifter.staging = {params.mp.shifter.staging}',
+      ]
+      for arg in shifter_args:
+        self.args.append(arg)
+
+    if params.facility.name == 'lcls':
+      locator_path = os.path.join(configs_dir, identifier_string + ".loc")
+      self.args.append(f'input.locator = {locator_path}')
+      write_xtc_locator(locator_path, params, self.run, self.rungroup)
+    else:
+      self.args.append(self.run.path)
+    result = submit_script().run(self.args)
+    return result
+
+class IndexingJob(Job):
+  def get_output_files(self):
+    run_path = str(get_run_path(self.app.params.output_folder, self.trial, self.rungroup, self.run))
+    return os.path.join(run_path, 'out'), '_integrated.expt', '_integrated.refl', None, None
+
+  def submit(self, previous_job = None):
+    import libtbx.load_env
+    configs_dir = os.path.join(settings_dir, "cfgs")
+    if not os.path.exists(configs_dir):
+      os.makedirs(configs_dir)
+    identifier_string = self.get_identifier_string()
+
+    target_phil_path = os.path.join(configs_dir, identifier_string + "_params.phil")
+    dispatcher = self.app.params.dispatcher
+    phil_str = self.trial.target_phil_str
+    if phil_str is None: phil_str = ""
+    if self.rungroup.extra_phil_str is not None:
+      phil_str += "\n" + self.rungroup.extra_phil_str
+
+    from xfel.ui import load_phil_scope_from_dispatcher
+    if dispatcher == "cxi.xtc_process":
+      image_format = 'pickle'
+    else:
+      orig_phil_scope = load_phil_scope_from_dispatcher(dispatcher)
+      if os.path.isfile(dispatcher):
+        dispatcher = 'libtbx.python ' + dispatcher
+      if self.rungroup.two_theta_low is not None or self.rungroup.two_theta_high is not None:
+        override_str = """
+        radial_average {
+          enable = True
+          show_plots = False
+          verbose = False
+          output_bins = False
+          mask = %s
+        }
+        """%(self.rungroup.untrusted_pixel_mask_path)
+        phil_scope = orig_phil_scope.fetch(parse(override_str))
+      else:
+        phil_scope = orig_phil_scope
+
+      trial_params = phil_scope.fetch(parse(phil_str)).extract()
+
+      image_format = self.rungroup.format
+      mode = get_image_mode(self.rungroup)
+
+      if hasattr(trial_params, 'format'):
+        trial_params.format.file_format = image_format
+        trial_params.format.cbf.mode = mode
+
+      if hasattr(trial_params.indexing.stills, 'known_orientations') and \
+         len(trial_params.indexing.stills.known_orientations) == 1:
+        try:
+          ko_trial, ko_rungroup = trial_params.indexing.stills.known_orientations[0].split('_')
+          ko_trial = self.app.get_trial(trial_number=int(ko_trial))
+          ko_rungroup = self.app.get_rungroup(int(ko_rungroup.lstrip('rg')))
+        except (IndexError, ValueError):
+          pass
+        else:
+          ko_run_path = get_run_path(self.app.params.output_folder, ko_trial, ko_rungroup, self.run)
+          ko_wildcard = trial_params.output.refined_experiments_filename.replace('%s', '*')
+          trial_params.indexing.stills.known_orientations[0] = os.path.join(ko_run_path, 'out', ko_wildcard)
+
+    if self.rungroup.calib_dir is not None or self.rungroup.config_str is not None or dispatcher == 'cxi.xtc_process' or image_format == 'pickle':
+      config_path = os.path.join(configs_dir, identifier_string + ".cfg")
+    else:
+      config_path = None
+
+    if hasattr(trial_params.dispatch, 'process_percent'):
+      trial_params.dispatch.process_percent = self.trial.process_percent
+
+    # Dictionary for formating the submit phil and, if used, the labelit cfg file
+    d = dict(
+      # Generally for the LABELIT backend or image pickles
+      address                   = self.rungroup.detector_address,
+      default_calib_dir         = libtbx.env.find_in_repositories("xfel/metrology/CSPad/run4/CxiDs1.0_Cspad.0"),
+      dark_avg_path             = self.rungroup.dark_avg_path,
+      dark_stddev_path          = self.rungroup.dark_stddev_path,
+      untrusted_pixel_mask_path = self.rungroup.untrusted_pixel_mask_path,
+      detz_parameter            = self.rungroup.detz_parameter,
+      gain_map_path             = self.rungroup.gain_map_path,
+      gain_mask_level           = self.rungroup.gain_mask_level,
+      beamx                     = self.rungroup.beamx,
+      beamy                     = self.rungroup.beamy,
+      energy                    = self.rungroup.energy,
+      binning                   = self.rungroup.binning,
+      two_theta_low             = self.rungroup.two_theta_low,
+      two_theta_high            = self.rungroup.two_theta_high,
+      # Generally for job submission
+      dry_run                   = self.app.params.dry_run,
+      dispatcher                = dispatcher,
+      cfg                       = config_path,
+      experiment                = self.app.params.facility.lcls.experiment, # LCLS specific parameter
+      run_num                   = self.run.run,
+      output_dir                = self.app.params.output_folder,
+      use_ffb                   = self.app.params.facility.lcls.use_ffb, # LCLS specific parameter
+      # Generally for both
+      trial                     = self.trial.trial,
+      rungroup                  = self.rungroup.rungroup_id,
+      experiment_tag            = self.app.params.experiment_tag,
+      calib_dir                 = self.rungroup.calib_dir,
+      nproc                     = self.app.params.mp.nproc,
+      nnodes                    = self.app.params.mp.nnodes_index or self.app.params.mp.nnodes,
+      nproc_per_node            = self.app.params.mp.nproc_per_node,
+      queue                     = self.app.params.mp.queue or None,
+      env_script                = self.app.params.mp.env_script[0] if self.app.params.mp.env_script is not None and len(self.app.params.mp.env_script) > 0 and len(self.app.params.mp.env_script[0]) > 0 else None,
+      phenix_script             = self.app.params.mp.phenix_script[0] if self.app.params.mp.phenix_script is not None and len(self.app.params.mp.phenix_script) > 0 and len(self.app.params.mp.phenix_script[0]) > 0 else None,
+      method                    = self.app.params.mp.method,
+      wall_time                 = self.app.params.mp.wall_time,
+      htcondor_executable_path  = self.app.params.mp.htcondor.executable_path,
+      nersc_shifter_image       = self.app.params.mp.shifter.shifter_image,
+      sbatch_script_template    = self.app.params.mp.shifter.sbatch_script_template,
+      srun_script_template      = self.app.params.mp.shifter.srun_script_template,
+      nersc_partition           = self.app.params.mp.shifter.partition,
+      nersc_jobname             = self.app.params.mp.shifter.jobname,
+      nersc_project             = self.app.params.mp.shifter.project,
+      nersc_constraint          = self.app.params.mp.shifter.constraint,
+      nersc_reservation         = self.app.params.mp.shifter.reservation,
+      nersc_staging             = self.app.params.mp.shifter.staging,
+      target                    = target_phil_path,
+      host                      = self.app.params.db.host,
+      dbname                    = self.app.params.db.name,
+      user                      = self.app.params.db.user,
+      port                      = self.app.params.db.port,
+      # always use mpi for 'lcls'
+      use_mpi                   = self.app.params.mp.method != 'local' or (self.app.params.mp.method == 'local' and self.app.params.facility.name == 'lcls'),
+      mpi_command               = self.app.params.mp.mpi_command,
+      extra_options             = "\n".join(["extra_options = %s"%opt for opt in self.app.params.mp.extra_options]),
+    )
+    if self.app.params.mp.method == 'sge':
+      d['use_mpi'] = False
+    if self.app.params.db.password is not None and len(self.app.params.db.password) == 0:
+      d['password'] = None
+    else:
+      d['password'] = self.app.params.db.password
+
+    phil = open(target_phil_path, "w")
+
+    if dispatcher == 'cxi.xtc_process':
+      phil.write(phil_str)
+    else:
+      extra_scope = None
+      if hasattr(trial_params, 'format'):
+        if image_format == "cbf":
+          trial_params.input.address = self.rungroup.detector_address
+          trial_params.format.cbf.detz_offset = self.rungroup.detz_parameter
+          trial_params.format.cbf.override_energy = self.rungroup.energy
+          trial_params.format.cbf.invalid_pixel_mask = self.rungroup.untrusted_pixel_mask_path
+          if mode == 'cspad':
+            trial_params.format.cbf.cspad.gain_mask_value = self.rungroup.gain_mask_level
+          elif mode == 'rayonix':
+            trial_params.format.cbf.rayonix.bin_size = self.rungroup.binning
+            trial_params.format.cbf.rayonix.override_beam_x = self.rungroup.beamx
+            trial_params.format.cbf.rayonix.override_beam_y = self.rungroup.beamy
+
+        if trial_params.input.known_orientations_folder is not None:
+          trial_params.input.known_orientations_folder = trial_params.input.known_orientations_folder.format(run=self.run.run)
+      else:
+        if trial_params.spotfinder.lookup.mask is None:
+          trial_params.spotfinder.lookup.mask = self.rungroup.untrusted_pixel_mask_path
+        if trial_params.integration.lookup.mask is None:
+          trial_params.integration.lookup.mask = self.rungroup.untrusted_pixel_mask_path
+
+        if self.app.params.facility.name == 'lcls':
+          locator_path = os.path.join(configs_dir, identifier_string + ".loc")
+          write_xtc_locator(locator_path, self.app.params, self.run, self.rungroup)
+          if mode == 'rayonix':
+            from xfel.cxi.cspad_ana import rayonix_tbx
+            pixel_size = rayonix_tbx.get_rayonix_pixel_size(self.rungroup.binning)
+            extra_scope = parse("geometry { detector { panel { origin = (%f, %f, %f) } } }"%(-self.rungroup.beamx * pixel_size,
+                                                                                              self.rungroup.beamy * pixel_size,
+                                                                                             -self.rungroup.detz_parameter))
+          d['locator'] = locator_path
+        else:
+          d['locator'] = None
+
+      if self.rungroup.two_theta_low is not None or self.rungroup.two_theta_high is not None:
+        try:
+          trial_params.radial_average.two_theta_low = self.rungroup.two_theta_low
+          trial_params.radial_average.two_theta_high = self.rungroup.two_theta_high
+        except AttributeError:
+          pass # not all dispatchers support radial averaging
+
+      working_phil = phil_scope.format(python_object=trial_params)
+      if extra_scope:
+        working_phil = working_phil.fetch(extra_scope)
+      diff_phil = orig_phil_scope.fetch_diff(source=working_phil)
+
+      phil.write(diff_phil.as_str())
+    phil.close()
+
+    if config_path is not None:
+      if dispatcher != 'cxi.xtc_process':
+        d['untrusted_pixel_mask_path'] = None # Don't pass a pixel mask to mod_image_dict as it will
+                                              # will be used during dials processing directly
+
+      config_str = "[psana]\n"
+      if self.rungroup.calib_dir is not None:
+        config_str += "calib-dir=%s\n"%self.rungroup.calib_dir
+      modules = []
+      if self.rungroup.config_str is not None:
+        for line in self.rungroup.config_str.split("\n"):
+          if line.startswith('['):
+            modules.append(line.lstrip('[').rstrip(']'))
+      if dispatcher == 'cxi.xtc_process':
+        modules.insert(0, 'my_ana_pkg.mod_radial_average')
+        modules.extend(['my_ana_pkg.mod_hitfind:index','my_ana_pkg.mod_dump:index'])
+      elif image_format == 'pickle':
+        modules.insert(0, 'my_ana_pkg.mod_radial_average')
+        modules.extend(['my_ana_pkg.mod_image_dict'])
+      if self.app.params.facility.lcls.dump_shots:
+        modules.insert(0, 'my_ana_pkg.mod_dump:shot')
+
+      if len(modules) > 0:
+        config_str += "modules = %s\n"%(" ".join(modules))
+
+      if self.rungroup.config_str is not None:
+        config_str += self.rungroup.config_str + "\n"
+
+      if dispatcher == 'cxi.xtc_process' or image_format == 'pickle':
+        d['address'] = d['address'].replace('.','-').replace(':','|') # old style address
+        if dispatcher == 'cxi.xtc_process':
+          template = open(os.path.join(libtbx.env.find_in_repositories("xfel/ui/db/cfgs"), "index_all.cfg"))
+        elif image_format == 'pickle':
+          template = open(os.path.join(libtbx.env.find_in_repositories("xfel/ui/db/cfgs"), "image_dict.cfg"))
+        for line in template.readlines():
+          config_str += line.format(**d)
+        template.close()
+        d['address'] = self.rungroup.detector_address
+
+      cfg = open(config_path, 'w')
+      cfg.write(config_str)
+      cfg.close()
+
+      if dispatcher != 'cxi.xtc_process':
+        d['untrusted_pixel_mask_path'] = self.rungroup.untrusted_pixel_mask_path
+
+    submit_phil_path = os.path.join(configs_dir, identifier_string + "_submit.phil")
+    submit_root = libtbx.env.find_in_repositories("xfel/ui/db/cfgs")
+    if dispatcher in ['cxi.xtc_process', 'cctbx.xfel.xtc_process']:
+      template = open(os.path.join(submit_root, "submit_xtc_process.phil"))
+    else:
+      test_root = os.path.join(submit_root, "submit_" + dispatcher + ".phil")
+      if os.path.exists(test_root):
+        template = open(test_root)
+      else:
+        if hasattr(trial_params, 'format'):
+          template = open(os.path.join(submit_root, "submit_xtc_process.phil"))
+        else:
+          template = open(os.path.join(submit_root, "submit_xfel_process.phil"))
+    phil = open(submit_phil_path, "w")
+
+    if dispatcher == 'cxi.xtc_process':
+      d['target'] = None # any target phil will be in mod_hitfind
+
+    for line in template.readlines():
+      phil.write(line.format(**d))
+
+    d['target'] = target_phil_path
+
+    template.close()
+    phil.close()
+
+    from xfel.command_line.submit_job import Script as submit_script
+    args = [submit_phil_path]
+    if self.app.params.facility.name not in ['lcls']:
+      args.append(self.run.path)
+    return submit_script().run(args)
+
+  def delete(self, output_only=False):
     if self.status not in finished_job_statuses:
-      print "Job is not finished (status = %s)"%self.status
+      print("Job is not finished (status = %s)"%self.status)
       return
 
     if self.status == "DELETED":
@@ -28,19 +491,19 @@ class Job(db_proxy):
 
     job_folder = get_run_path(self.app.params.output_folder, self.trial, self.rungroup, self.run)
     if os.path.exists(job_folder):
-      print "Deleting job folder for job", self.id
+      print("Deleting job folder for job", self.id)
       shutil.rmtree(job_folder)
     else:
-      print "Cannot find job folder (%s)"%job_folder
+      print("Cannot find job folder (%s)"%job_folder)
 
     # Have to be careful to delete from the tables in the right order
     tag = self.app.params.experiment_tag
 
     def delete_and_commit(query):
       cursor = self.app.execute_query(query, commit=True)
-      print "(%d)"%cursor.rowcount
+      print("(%d)"%cursor.rowcount)
 
-    print "Deleting cell_bin entries",
+    print("Deleting cell_bin entries", end=' ')
     query = """DELETE cell_bin FROM `%s_cell_bin` cell_bin
                JOIN `%s_crystal` crystal ON crystal.id = cell_bin.crystal_id
                JOIN `%s_experiment` expr ON expr.crystal_id = crystal.id
@@ -53,7 +516,7 @@ class Job(db_proxy):
 
     ids = {}
     for item in "crystal", "beam", "detector":
-      print "Listing %s ids"%item,
+      print("Listing %s ids"%item, end=' ')
       query = """SELECT %s.id FROM `%s_%s` %s
                  JOIN `%s_experiment` expr ON expr.%s_id = %s.id
                  JOIN `%s_imageset` imgset ON imgset.id = expr.imageset_id
@@ -63,11 +526,11 @@ class Job(db_proxy):
                  item, tag, item, item, tag, item, item, tag, tag, tag, self.run.id, self.trial.id, self.rungroup.id)
       cursor = self.app.execute_query(query)
       item_ids = ["%d"%i[0] for i in cursor.fetchall()]
-      print "(%d)"%len(item_ids)
+      print("(%d)"%len(item_ids))
       ids[item] = ",".join(item_ids)
 
     if len(self.trial.isoforms) == 0:
-      print "Listing bin entries",
+      print("Listing bin entries", end=' ')
       query = """SELECT bin.id FROM `%s_bin` bin
                  JOIN `%s_cell` cell ON bin.cell_id = cell.id
                  JOIN `%s_crystal` crystal ON crystal.cell_id = cell.id
@@ -80,10 +543,10 @@ class Job(db_proxy):
                  tag, tag, tag, tag, tag, tag, tag, self.run.id, self.trial.id, self.rungroup.id)
       cursor = self.app.execute_query(query)
       item_ids = ["%d"%i[0] for i in cursor.fetchall()]
-      print "(%d)"%len(item_ids)
+      print("(%d)"%len(item_ids))
       bin_ids = ",".join(item_ids)
 
-      print "Listing cell entries",
+      print("Listing cell entries", end=' ')
       query = """SELECT cell.id FROM `%s_cell` cell
                  JOIN `%s_crystal` crystal ON crystal.cell_id = cell.id
                  JOIN `%s_experiment` expr ON expr.crystal_id = crystal.id
@@ -95,10 +558,10 @@ class Job(db_proxy):
                  tag, tag, tag, tag, tag, tag, self.run.id, self.trial.id, self.rungroup.id)
       cursor = self.app.execute_query(query)
       item_ids = ["%d"%i[0] for i in cursor.fetchall()]
-      print "(%d)"%len(item_ids)
+      print("(%d)"%len(item_ids))
       cell_ids = ",".join(item_ids)
 
-    print "Deleting experiment entries",
+    print("Deleting experiment entries", end=' ')
     query = """DELETE expr FROM `%s_experiment` expr
                JOIN `%s_imageset` imgset ON imgset.id = expr.imageset_id
                JOIN `%s_imageset_event` ie_e ON ie_e.imageset_id = imgset.id
@@ -109,27 +572,27 @@ class Job(db_proxy):
 
     for item in "crystal", "beam", "detector":
       if len(ids[item]) > 0:
-        print "Deleting %s entries"%item,
+        print("Deleting %s entries"%item, end=' ')
         query = """DELETE %s FROM `%s_%s` %s
                    WHERE %s.id IN (%s)""" % (
                    item, tag, item, item, item, ids[item])
         delete_and_commit(query)
 
     if len(self.trial.isoforms) == 0 and len(bin_ids) > 0:
-      print "Deleting bin entries",
+      print("Deleting bin entries", end=' ')
       query = """DELETE bin FROM `%s_bin` bin
                  WHERE bin.id IN (%s)""" % (
                  tag, bin_ids)
       delete_and_commit(query)
 
     if len(self.trial.isoforms) == 0 and len(cell_ids) > 0:
-      print "Deleting cell entries",
+      print("Deleting cell entries", end=' ')
       query = """DELETE cell FROM `%s_cell` cell
                  WHERE cell.id IN (%s)""" % (
                  tag, cell_ids)
       delete_and_commit(query)
 
-    print "Listing imageset entries",
+    print("Listing imageset entries", end=' ')
     query = """SELECT imgset.id FROM `%s_imageset` imgset
                JOIN `%s_imageset_event` ie_e ON ie_e.imageset_id = imgset.id
                JOIN `%s_event` evt ON evt.id = ie_e.event_id
@@ -137,10 +600,10 @@ class Job(db_proxy):
                tag, tag, tag, self.run.id, self.trial.id, self.rungroup.id)
     cursor = self.app.execute_query(query)
     item_ids = ["%d"%i[0] for i in cursor.fetchall()]
-    print "(%d)"%len(item_ids)
+    print("(%d)"%len(item_ids))
     imageset_ids = ",".join(item_ids)
 
-    print "Deleting imageset_event entries",
+    print("Deleting imageset_event entries", end=' ')
     query = """DELETE is_e FROM `%s_imageset_event` is_e
                JOIN `%s_event` evt ON evt.id = is_e.event_id
                WHERE evt.run_id = %d AND evt.trial_id = %d AND evt.rungroup_id = %d""" % (
@@ -148,13 +611,13 @@ class Job(db_proxy):
     delete_and_commit(query)
 
     if len(imageset_ids) > 0:
-      print "Deleting imageset entries",
+      print("Deleting imageset entries", end=' ')
       query = """DELETE imgset FROM `%s_imageset` imgset
                  WHERE imgset.id IN (%s)""" % (
                  tag, imageset_ids)
       delete_and_commit(query)
 
-    print "Deleting event entries",
+    print("Deleting event entries", end=' ')
     query = """DELETE evt FROM `%s_event` evt
                WHERE evt.run_id = %d AND evt.trial_id = %d AND evt.rungroup_id = %d""" % (
                tag, self.run.id, self.trial.id, self.rungroup.id)
@@ -162,304 +625,901 @@ class Job(db_proxy):
 
     self.status = "DELETED"
 
-  def remove_from_db(self):
-    assert self.status == "DELETED"
+class EnsembleRefinementJob(Job):
+  def delete(self, output_only=False):
+    job_folder = get_run_path(self.app.params.output_folder, self.trial, self.rungroup, self.run, self.task)
+    if os.path.exists(job_folder):
+      print("Deleting job folder for job", self.id)
+      shutil.rmtree(job_folder)
+    else:
+      print("Cannot find job folder (%s)"%job_folder)
+    self.status = "DELETED"
 
-    print "Removing job %d from the db"%self.id,
-    tag = self.app.params.experiment_tag
-    query = """DELETE job FROM `%s_job` job
-               WHERE job.id = %d""" % (
-               tag, self.id)
-    cursor = self.app.execute_query(query, commit=True)
-    print "(%d)"%cursor.rowcount
+  def get_output_files(self):
+    run_path = get_run_path(self.app.params.output_folder, self.trial, self.rungroup, self.run, self.task)
+    return os.path.join(run_path, 'combine_experiments_t%03d'%self.trial.trial, 'intermediates', "*reintegrated*"), '.expt', '.refl', None, None
+
+  def get_log_path(self):
+    run_path = get_run_path(self.app.params.output_folder, self.trial, self.rungroup, self.run, self.task)
+    return os.path.join(run_path, 'combine_experiments_t%03d'%self.trial.trial, 'intermediates',
+      "combine_t%03d_rg%03d_chunk000.out"%(self.trial.trial, self.rungroup.id)) # XXX there can be multiple chunks or multiple clusters
+
+  def submit(self, previous_job = None):
+    from xfel.command_line.time_varying_refinement import Script, phil_scope
+    from xfel.command_line.submit_job import get_submission_id
+    from libtbx import easy_run
+
+    if self.task and self.task.parameters and "striping" in self.task.parameters:
+      raise RuntimeError("The striping parameter has been renamed to time_varying_refinement. Edit your ensemble_refinement task (no need to create a new one).")
+
+    configs_dir = os.path.join(settings_dir, "cfgs")
+    identifier_string = self.get_identifier_string()
+    target_phil_path = os.path.join(configs_dir, identifier_string + "_params.phil")
+    with open(target_phil_path, 'w') as f:
+      if self.task.parameters:
+        f.write(self.task.parameters)
+
+    pre_split = phil_scope.fetch(parse(self.task.parameters)).extract().time_varying_refinement.pre_split if self.task.parameters else False
+    chunk_size = 2000 if pre_split else 64
+
+    path = get_run_path(self.app.params.output_folder, self.trial, self.rungroup, self.run, self.task)
+    os.mkdir(path)
+
+    if self.app.params.facility.name == 'lcls':
+      import psana
+      psana2_mode = getattr(psana, 'xtc_version', None) == 2
+    else:
+      psana2_mode = False
+
+    arguments = """
+    mp.queue={}
+    mp.nnodes={}
+    mp.nproc_per_node={}
+    mp.method={}
+    {}
+    {}
+    mp.wall_time={}
+    mp.use_mpi=False
+    mp.mpi_command={}
+    {}
+    mp.shifter.submit_command={}
+    mp.shifter.shifter_image={}
+    mp.shifter.sbatch_script_template={}
+    mp.shifter.srun_script_template={}
+    mp.shifter.partition={}
+    mp.shifter.jobname={}
+    mp.shifter.project={}
+    mp.shifter.reservation={}
+    mp.shifter.constraint={}
+    mp.shifter.staging={}
+    time_varying_refinement.results_dir={}
+    time_varying_refinement.trial={}
+    time_varying_refinement.rungroup={}
+    time_varying_refinement.run={}
+    {}
+    time_varying_refinement.chunk_size={}
+    time_varying_refinement.pre_split={}
+    time_varying_refinement.stripe=False
+    time_varying_refinement.dry_run=True
+    time_varying_refinement.output_folder={}
+    reintegration.integration.lookup.mask={}
+    reintegration.mp.psana2_mode={}
+    mp.local.include_mp_in_command=False
+    """.format(self.app.params.mp.queue if len(self.app.params.mp.queue) > 0 else None,
+               self.app.params.mp.nnodes_tder or self.app.params.mp.nnodes,
+               self.app.params.mp.nproc_per_node,
+               self.app.params.mp.method,
+               '\n'.join(['mp.env_script={}'.format(p) for p in self.app.params.mp.env_script if p]),
+               '\n'.join(['mp.phenix_script={}'.format(p) for p in self.app.params.mp.phenix_script if p]),
+               self.app.params.mp.wall_time,
+               self.app.params.mp.mpi_command,
+               "\n".join(["mp.extra_options={}".format(opt) for opt in self.app.params.mp.extra_options]),
+               self.app.params.mp.shifter.submit_command,
+               self.app.params.mp.shifter.shifter_image,
+               self.app.params.mp.shifter.sbatch_script_template,
+               self.app.params.mp.shifter.srun_script_template,
+               self.app.params.mp.shifter.partition,
+               self.app.params.mp.shifter.jobname,
+               self.app.params.mp.shifter.project,
+               self.app.params.mp.shifter.reservation,
+               self.app.params.mp.shifter.constraint,
+               self.app.params.mp.shifter.staging,
+               self.app.params.output_folder,
+               self.trial.trial,
+               self.rungroup.id,
+               self.run.run,
+               target_phil_path,
+               chunk_size,
+               pre_split,
+               path,
+               self.rungroup.untrusted_pixel_mask_path,
+               psana2_mode,
+               ).split('\n')
+    arguments = [arg.strip() for arg in arguments]
+
+    try:
+      commands = Script(arguments).run()
+    except Exception as e:
+      if 'no DIALS integration results found' in str(e):
+        print("No DIALS integration results found")
+        self.status = "EXIT"
+        return
+      else: raise
+    submission_ids = []
+    if self.app.params.mp.method == 'local':
+      self.status = "RUNNING"
+    for command in commands:
+      try:
+        result = easy_run.fully_buffered(command=command)
+        result.raise_if_errors()
+      except Exception as e:
+        if not "Warning: job being submitted without an AFS token." in str(e):
+          raise e
+      submission_ids.append(get_submission_id(result, self.app.params.mp.method))
+    if self.app.params.mp.method == 'local':
+      self.status = "DONE"
+    else:
+      return ",".join(submission_ids)
+
+class ScalingJob(Job):
+  def delete(self, output_only=False):
+    job_folder = get_run_path(self.app.params.output_folder, self.trial, self.rungroup, self.run, self.task)
+    if os.path.exists(job_folder):
+      print("Deleting job folder for job", self.id)
+      shutil.rmtree(job_folder)
+    else:
+      print("Cannot find job folder (%s)"%job_folder)
+    self.status = "DELETED"
+
+  def get_output_files(self):
+    run_path = get_run_path(self.app.params.output_folder, self.trial, self.rungroup, self.run, self.task)
+    return os.path.join(run_path, 'out'), ".expt", ".refl", None, None
+
+  def write_submit_phil(self, submit_phil_path, target_phil_path):
+    import libtbx.load_env
+    from xfel.ui.db.task import task_types, task_dispatchers
+
+    submit_root = libtbx.env.find_in_repositories("xfel/ui/db/cfgs")
+    d =  dict(
+      dry_run                   = self.app.params.dry_run,
+      dispatcher                = task_dispatchers[task_types.index(self.task.type)],
+      run_num                   = self.run.run,
+      output_dir                = self.app.params.output_folder,
+      trial                     = self.trial.trial,
+      rungroup                  = self.rungroup.rungroup_id,
+      task                      = self.task.id,
+      nproc                     = self.app.params.mp.nproc,
+      nproc_per_node            = self.app.params.mp.nproc_per_node,
+      queue                     = self.app.params.mp.queue or None,
+      env_script                = self.app.params.mp.env_script[0] if len(self.app.params.mp.env_script) > 0 and len(self.app.params.mp.env_script[0]) > 0 else None,
+      phenix_script                = self.app.params.mp.phenix_script[0] if len(self.app.params.mp.phenix_script) > 0 and len(self.app.params.mp.phenix_script[0]) > 0 else None,
+      method                    = self.app.params.mp.method,
+      htcondor_executable_path  = self.app.params.mp.htcondor.executable_path,
+      nersc_shifter_image       = self.app.params.mp.shifter.shifter_image,
+      sbatch_script_template    = self.app.params.mp.shifter.sbatch_script_template,
+      srun_script_template      = self.app.params.mp.shifter.srun_script_template,
+      nersc_partition           = self.app.params.mp.shifter.partition,
+      nersc_jobname             = self.app.params.mp.shifter.jobname,
+      nersc_project             = self.app.params.mp.shifter.project,
+      nersc_constraint          = self.app.params.mp.shifter.constraint,
+      nersc_reservation         = self.app.params.mp.shifter.reservation,
+      nersc_staging             = self.app.params.mp.shifter.staging,
+      target                    = target_phil_path,
+      # cctbx.xfel.merge is mpi only, and has no mp.nproc to be parallelized with
+      # instead, so it runs under mpirun whatever the multiprocessing method is.
+      # Local mode is included: it still runs mpirun, just on this machine.
+      use_mpi                   = True,
+      mpi_command               = self.app.params.mp.mpi_command,
+      nnodes                    = self.app.params.mp.nnodes_scale or self.app.params.mp.nnodes,
+      wall_time                 = self.app.params.mp.wall_time,
+      extra_options             = "\n".join(["extra_options = %s"%opt for opt in self.app.params.mp.extra_options]),
+    )
+
+    with open(submit_phil_path, "w") as phil:
+      for line in open(os.path.join(submit_root, "submit_xfel_merge.phil")).readlines():
+        phil.write(line.format(**d))
+
+  def submit(self, previous_job = None):
+    from xfel.command_line.submit_job import Script as submit_script
+
+    output_path = os.path.join(get_run_path(self.app.params.output_folder, self.trial, self.rungroup, self.run, self.task), 'out')
+
+    configs_dir = os.path.join(settings_dir, "cfgs")
+    if not os.path.exists(configs_dir):
+      os.makedirs(configs_dir)
+    identifier_string = self.get_identifier_string()
+    submit_phil_path = os.path.join(configs_dir, identifier_string + "_submit.phil")
+
+    target_phil_path = os.path.join(configs_dir, identifier_string + "_params.phil")
+    input_folder, expt_suffix, refl_suffix, _, _ = previous_job.get_output_files()
+
+    with open(target_phil_path, 'w') as f:
+      f.write("input.path=%s\n"%input_folder)
+      f.write("input.experiments_suffix=%s\n"%expt_suffix)
+      f.write("input.reflections_suffix=%s\n"%refl_suffix)
+      f.write("output.output_dir=%s\n"%output_path)
+      f.write("output.prefix=%s_%d\n"%(self.task.type, self.task.id))
+      f.write(self.task.parameters)
+
+    self.write_submit_phil(submit_phil_path, target_phil_path)
+
+    args = [submit_phil_path]
+    return submit_script().run(args)
+
+class MergingJob(Job):
+  def get_global_path(self):
+    if self.dataset_version is None:
+      return None
+    return self.dataset_version.output_path()
+
+  def get_log_path(self):
+    return self.get_global_path()
+
+  def get_identifier_string(self):
+    return "%s_%s%03d_v%03d"%(self.dataset.name, self.task.type, self.task.id, self.dataset_version.version)
+
+  def delete(self, output_only=False):
+    job_folder = self.get_global_path()
+    if job_folder and os.path.exists(job_folder):
+      print("Deleting job folder for job", self.id)
+      shutil.rmtree(job_folder)
+    else:
+      print("Cannot find job folder (%s)"%job_folder)
+    self.status = "DELETED"
+
+  def get_output_files(self):
+    path = self.get_global_path()
+    return path, None, None, "%s_v%03d_all.mtz"%(self.dataset.name, self.dataset_version.version), None
+
+  def submit(self, previous_job = None):
+    from xfel.command_line.submit_job import do_submit
+
+    output_path = self.get_global_path()
+    if not os.path.exists(output_path):
+      os.makedirs(output_path)
+    identifier_string = self.get_identifier_string()
+    target_phil_path = os.path.join(output_path, identifier_string + "_params.phil")
+
+    with open(target_phil_path, 'w') as f:
+      expt_suffix = refl_suffix = None
+      for job in self.dataset_version.jobs:
+        if not (job.task and job.task.scope == 'local'):
+          continue
+        input_folder, _expt_suffix, _refl_suffix, _, _ = job.get_output_files()
+        if expt_suffix is None: expt_suffix = _expt_suffix
+        else: assert expt_suffix == _expt_suffix
+        if refl_suffix is None: refl_suffix = _refl_suffix
+        else: assert refl_suffix == _refl_suffix
+        f.write("input.path=%s\n"%input_folder)
+
+      f.write("input.experiments_suffix=%s\n"%expt_suffix)
+      f.write("input.reflections_suffix=%s\n"%refl_suffix)
+      f.write("output.output_dir=%s\n"%output_path)
+      f.write("output.prefix=%s_v%03d\n"%(self.dataset.name, self.dataset_version.version))
+      f.write(self.task.parameters)
+
+    command = "cctbx.xfel.merge %s"%target_phil_path
+    submit_path = os.path.join(output_path, identifier_string + "_submit.sh")
+
+    # Copied rather than used directly because use_mpi is overridden below and
+    # these params are shared with the rest of the GUI.
+    params = copy.deepcopy(self.app.params.mp)
+    if params.nnodes_merge:
+      params.nnodes = params.nnodes_merge
+    # cctbx.xfel.merge is mpi only, as for the scaling job above
+    params.use_mpi = True
+
+    return do_submit(command, submit_path, output_path, params, log_name="out.log", err_name="err.log", job_name=identifier_string)
+
+class PhenixJob(Job):
+  def get_global_path(self):
+    if self.dataset_version is None:
+      return None
+    return os.path.join(self.dataset_version.output_path(), self.get_identifier_string())
+
+  def get_log_path(self):
+    return self.get_global_path()
+
+  def get_identifier_string(self):
+    return "%s_%s%03d_v%03d"%(self.dataset.name, self.task.type, self.task.id, self.dataset_version.version)
+
+  def delete(self, output_only=False):
+    try:
+      job_folder = self.get_global_path()
+    except AttributeError: # If job fails to submit for example
+      job_folder = None
+    if job_folder and os.path.exists(job_folder):
+      print("Deleting job folder for job", self.id)
+      shutil.rmtree(job_folder)
+    else:
+      print("Cannot find job folder (%s)"%job_folder)
+    self.status = "DELETED"
+
+  def get_output_files(self):
+    path = self.get_global_path()
+    return path, None, None, ".mtz", ".pdb"
+
+  def submit(self, previous_job = None):
+    from xfel.command_line.submit_job import do_submit
+
+    output_path = self.get_global_path()
+    if not os.path.exists(output_path):
+      os.makedirs(output_path)
+    identifier_string = self.get_identifier_string()
+    target_phil_path = os.path.join(output_path, identifier_string + "_params.phil")
+    input_folder, _, _, input_mtz, _ = previous_job.get_output_files()
+
+    def replace_keywords(input_str):
+      input_str = input_str.replace('<PREVIOUS_TASK_MTZ>', os.path.join(input_folder, input_mtz))
+      input_str = input_str.replace('<PREVIOUS_TASK_FOLDER>', input_folder)
+      input_str = input_str.replace('<DATASET_NAME>', self.dataset.name)
+      input_str = input_str.replace('<DATASET_VERSION>', str(self.dataset_version.version))
+      return input_str
+
+    command = replace_keywords(self.task.parameters.split('\n')[0])
+    phil_params = replace_keywords('\n'.join(self.task.parameters.split('\n')[1:]))
+
+    with open(target_phil_path, 'w') as f:
+      f.write(phil_params)
+
+    command = "%s %s"%(command, target_phil_path)
+    submit_path = os.path.join(output_path, identifier_string + "_submit.sh")
+
+    params = copy.deepcopy(self.app.params.mp)
+    if params.nnodes_merge:
+      params.nnodes = params.nnodes_merge
+    params.use_mpi = False
+    params.shifter.staging = None
+    if not('upload' in command or 'evaluate_anom' in command):
+      params.env_script = params.phenix_script
+      if not params.extra_options:
+        params.extra_options = ""
+      params.extra_options.append("--export=None")
+    params.nnodes = 1
+    params.nproc_per_node = 1
+
+    if params.method == 'shifter' and 'upload' not in command:
+       import libtbx.load_env
+       params.shifter.sbatch_script_template = os.path.join( \
+         libtbx.env.find_in_repositories("xfel/ui/db/cfgs"), "phenix_sbatch.sh")
+       params.shifter.srun_script_template = os.path.join( \
+         libtbx.env.find_in_repositories("xfel/ui/db/cfgs"), "phenix_srun.sh")
+
+    return do_submit(command, submit_path, output_path, params, log_name="out.log", err_name="err.log", job_name=identifier_string)
 
 # Support classes and functions for job submission
 
 class _job(object):
-  """Used to represent a job that may not have been submitted into the cluseter or database  yet"""
-  def __init__(self, trial, rungroup, run):
+  """Used to represent a job that may not have been submitted into the cluster or database yet"""
+  def __init__(self, trial, rungroup, run, task=None, dataset=None, dataset_version=None):
     self.trial = trial
     self.rungroup = rungroup
     self.run = run
+    self.task = task
+    self.dataset = dataset
+    self.dataset_version = dataset_version
+
+  def __str__(self):
+    s = "Job: Trial %s, rg %s, run %s"%(str(self.trial.trial) if self.trial else 'None',
+                                        str(self.rungroup.id) if self.rungroup else 'None',
+                                        self.run.run if self.run else 'None')
+    if self.task:
+      s += ", task %d %s"%(self.task.id, self.task.type)
+    if self.dataset:
+      s += ", dataset %d %s"%(self.dataset.id, self.dataset.name)
+    if self.dataset_version:
+      s += ", dataset_version %d %d"%(self.dataset_version.id, self.dataset_version.version)
+    return s
+
+  @staticmethod
+  def job_hash(job):
+    ret = []
+    check = ['trial', 'rungroup', 'run', 'task', 'dataset', 'dataset_version']
+    for subitem_name in check:
+      subitem = getattr(job, subitem_name)
+      if subitem is None:
+        ret.append(None)
+      else:
+        ret.append(subitem.id)
+    return tuple(ret)
 
   def __eq__(self, other):
-    return self.trial.id == other.trial_id and \
-           self.rungroup.id == other.rungroup_id and \
-           self.run.id == other.run_id
+    return _job.job_hash(self) == _job.job_hash(other)
+
+def predict_dataset_jobs(app, dataset = None, trial = None, tags = None, tag_operator = None, tasks = None,
+                         runs_rungroups = None, submitted_jobs = None, planned = None, merge_mode = None):
+  """ The jobs submit_all_jobs would submit for a dataset once it is active, as
+      an ordered dict of counts by task type, in pipeline order. Takes an
+      existing dataset and/or the pieces of a new or revised one; a piece not
+      given comes from the dataset. The dataset supplies the versions already
+      run, which decide whether the global stages run again.
+
+      Local counts are exact: one job per tagged run and local task that has no
+      job yet (indexing jobs belong to the trial and are not counted). Global
+      counts assume every local job finishes and one set of global jobs is then
+      submitted, one job per global task, plus any global job missing from a
+      version that would still be filled in. A dataset merging after every run
+      (merge_mode 'per_run', taken from the dataset when not given) instead
+      gets one set per run not yet in the latest version. Otherwise the order
+      in which the local jobs finish decides how many versions, and so how many global jobs,
+      there are.
+      @param runs_rungroups: (run, rungroup) pairs to use as the dataset's run
+      selection instead of querying it by tags; predict_trial_jobs passes a
+      selection from run groups that may not exist yet.
+      @param submitted_jobs: the job hash dict, if the caller already has it.
+      @param planned: hashes of jobs an earlier prediction in the same call
+      already counted; a local job two datasets share is submitted once. """
+  import collections
+  if tasks is None:
+    tasks = dataset.tasks
+  if tags is None:
+    tags = dataset.tags
+  if tag_operator is None:
+    tag_operator = dataset.tag_operator
+  if trial is None:
+    trial = next((t.trial for t in tasks if t.trial is not None), None)
+  counts = collections.OrderedDict()
+  for task in tasks:
+    counts.setdefault(task.type, 0)
+  if trial is None or not tasks:
+    return counts
+
+  if runs_rungroups is None:
+    trial_tag_ids = [t.id for t in trial.tags]
+    dataset_tags = [t for t in tags if t.id in trial_tag_ids]
+    if not dataset_tags or len(dataset_tags) < len(tags):
+      return counts
+    runs_rungroups = []
+    for rungroup in trial.rungroups:
+      runs_rungroups.extend([(run, rungroup) for run in app.get_rungroup_runs_by_tags(rungroup, dataset_tags, tag_operator)])
+  if not runs_rungroups:
+    return counts
+  if submitted_jobs is None:
+    submitted_jobs = {_job.job_hash(j):j for j in app.get_all_jobs()}
+
+  local_tasks = [t for t in tasks if t.scope == 'local']
+  global_tasks = [t for t in tasks if t.scope == 'global']
+  merge_mode = merge_mode or getattr(dataset, 'merge_mode', None) or 'incremental'
+  new_local = False
+  new_final = 0 # runs whose last local job does not exist yet
+  final_local_job_ids = set() # existing jobs of the last local task, which feed the global stages
+  for run, rungroup in runs_rungroups:
+    for task in local_tasks:
+      job = _job(trial, rungroup, run, None if task.type == 'indexing' else task)
+      job_hash = _job.job_hash(job)
+      existing = submitted_jobs.get(job_hash)
+      if existing is None:
+        new_local = True
+        if task is local_tasks[-1]:
+          new_final += 1
+        if task.type != 'indexing' and (planned is None or job_hash not in planned):
+          counts[task.type] += 1
+          if planned is not None:
+            planned.add(job_hash)
+      elif task is local_tasks[-1]:
+        # A job that failed never feeds a merge (submit_all_jobs takes DONE and
+        # EXIT only); one still queued or running is assumed to finish
+        if existing.status in finished_job_statuses and existing.status not in ('DONE', 'EXIT'):
+          continue
+        final_local_job_ids.add(existing.id)
+  if not global_tasks:
+    return counts
+
+  # Mirror the version handling in submit_all_jobs: versions set up under the
+  # current tasks and runs get any global job they lack; a new version rolls
+  # when the local jobs feeding the global stages are not the latest version's.
+  current_task_ids = {t.id for t in tasks}
+  current_local_task_ids = {t.id for t in local_tasks}
+  current_run_ids = {run.id for run, rungroup in runs_rungroups}
+  versions = dataset.versions if dataset is not None else []
+  latest = None
+  for version in versions:
+    if latest is None or version.version > latest.version:
+      latest = version
+    local_inputs = [j for j in version.jobs if j.task and j.task.scope == 'local']
+    if not local_inputs: continue
+    if not all(j.task_id in current_local_task_ids for j in local_inputs): continue
+    if not all(j.run_id in current_run_ids for j in local_inputs): continue
+    if any(j.task and j.task.scope == 'global' and j.task_id not in current_task_ids for j in version.jobs): continue
+    present = {j.task_id for j in version.jobs}
+    for task in global_tasks:
+      if task.id not in present:
+        counts[task.type] += 1
+  if latest is None:
+    roll = True
+    latest_local_ids = set()
+  else:
+    latest_local = [j for j in latest.jobs if j.task and j.task.scope == 'local']
+    latest_local_ids = {j.id for j in latest_local}
+    roll = new_local or \
+      any(job_id not in latest_local_ids for job_id in final_local_job_ids) or \
+      any(j.run_id not in current_run_ids for j in latest_local) or \
+      any(j.task and j.task.scope == 'global' and j.task_id not in current_task_ids for j in latest.jobs)
+  if roll:
+    sets = 1
+    if merge_mode == 'per_run':
+      # A version per run not yet merged in, plus the corrective version of the
+      # runs already merged when a run was tagged out or a global stage edited
+      added = new_final + len(final_local_job_ids - latest_local_ids)
+      corrective = latest is not None and (
+        any(j.run_id not in current_run_ids for j in latest_local) or
+        any(j.task and j.task.scope == 'global' and j.task_id not in current_task_ids for j in latest.jobs))
+      sets = max(1, added + (1 if corrective and (final_local_job_ids & latest_local_ids) else 0))
+    for task in global_tasks:
+      counts[task.type] += sets
+  return counts
+
+def predict_trial_jobs(app, trial, rungroups = None):
+  """ The jobs submit_all_jobs would submit for a trial once active, as an
+      ordered dict of counts by task type: the indexing jobs for the runs of
+      its active run groups, then, for every active dataset on the trial, the
+      jobs predict_dataset_jobs expects for the runs the dataset selects from
+      those run groups.
+      @param rungroups: (rungroup, runs) pairs standing in for the trial's
+      active run groups, for a run group being created or edited. A rungroup
+      of None is one that does not exist yet, so every run of it is new (a run
+      group that replaces another reprocesses its runs). The default is the
+      trial's active run groups and their current runs. """
+  import collections
+  if rungroups is None:
+    rungroups = [(rungroup, rungroup.runs) for rungroup in trial.rungroups]
+  submitted_jobs = {_job.job_hash(j):j for j in app.get_all_jobs()}
+  counts = collections.OrderedDict([('indexing', 0)])
+  runs_rungroups = []
+  for rungroup, runs in rungroups:
+    for run in runs:
+      runs_rungroups.append((run, rungroup))
+      if rungroup is None or _job.job_hash(_job(trial, rungroup, run)) not in submitted_jobs:
+        counts['indexing'] += 1
+  if not runs_rungroups:
+    return counts
+
+  trial_tag_ids = {t.id for t in trial.tags}
+  run_tag_ids = {}
+  planned = set()
+  for dataset in app.get_all_datasets():
+    if not dataset.active: continue
+    tasks = dataset.tasks
+    if not tasks or not any(t.trial_id == trial.id for t in tasks): continue
+    tags = dataset.tags
+    if not tags or not all(t.id in trial_tag_ids for t in tags): continue
+    tag_ids = {t.id for t in tags}
+    selected = []
+    for run, rungroup in runs_rungroups:
+      if run.id not in run_tag_ids:
+        run_tag_ids[run.id] = {t.id for t in run.tags}
+      if dataset.tag_operator == 'union':
+        hit = bool(tag_ids & run_tag_ids[run.id])
+      else:
+        hit = tag_ids <= run_tag_ids[run.id]
+      if hit:
+        selected.append((run, rungroup))
+    dataset_counts = predict_dataset_jobs(app, dataset = dataset, trial = trial, tasks = tasks,
+                                          runs_rungroups = selected, submitted_jobs = submitted_jobs,
+                                          planned = planned)
+    for task_type, n in dataset_counts.items():
+      counts[task_type] = counts.get(task_type, 0) + n
+  return counts
 
 def submit_all_jobs(app):
+  submitted_jobs = {_job.job_hash(j):j for j in app.get_all_jobs()}
+  if app.params.mp.method == 'local': # only run one job at a time
+    for job in submitted_jobs.values():
+      if job.status in ['RUN', 'UNKWN', 'SUBMITTED']: return
+
+  if app.params.mp.max_queued is not None:
+    running_jobs = sum([1 for job in submitted_jobs.values() if job.status in ['RUN', 'SUBMITTED', 'PEND']])
+    if running_jobs >= app.params.mp.max_queued:
+      print("Waiting for space in the queue to submit next job")
+      return
+
   runs = app.get_all_runs()
-  submitted_jobs = app.get_all_jobs()
   trials = app.get_all_trials(only_active = True)
 
   needed_jobs = []
   for trial in trials:
     for rungroup in trial.rungroups:
       assert rungroup.active
-      rg_start = app.get_run(run_number=rungroup.startrun)
-      if rungroup.endrun is None:
-        # open ended run group
-        rg_runs = [r for r in runs if r.run >= rg_start.run]
-      else:
-        # closed run group
-        rg_end = app.get_run(run_number=rungroup.endrun)
-        rg_runs = [r for r in runs if r.run >= rg_start.run and r.run <= rg_end.run]
-      for run in rg_runs:
+      for run in rungroup.runs:
         needed_jobs.append(_job(trial, rungroup, run))
 
-  all_jobs = [j for j in submitted_jobs] # shallow copy
   for job in needed_jobs:
-    if job in submitted_jobs:
+    if _job.job_hash(job) in submitted_jobs:
       continue
 
-    print "Submitting job: trial %d, rungroup %d, run %d"%(job.trial.trial, job.rungroup.id, job.run.run)
+    print("Submitting job: trial %d, rungroup %d, run %s"%(job.trial.trial, job.rungroup.id, job.run.run))
 
-    j = app.create_job(trial_id = job.trial.id,
-                       rungroup_id = job.rungroup.id,
-                       run_id = job.run.id,
-                       status = "SUBMITTED")
-    all_jobs.append(j)
+    j = JobFactory.from_args(app,
+                             trial_id = job.trial.id,
+                             rungroup_id = job.rungroup.id,
+                             run_id = job.run.id,
+                             status = "SUBMITTED")
+    j.trial = job.trial; j.rungroup = job.rungroup; j.run = job.run
     try:
-      j.submission_id = submit_job(app, job)
-    except Exception, e:
-      print "Couldn't submit job:", str(e)
+      j.submission_id = j.submit()
+    except Exception as e:
+      print("Couldn't submit job:", str(e))
       j.status = "SUBMIT_FAIL"
       raise
 
-def submit_job(app, job):
-  import os, libtbx.load_env
-  from xfel.ui import settings_dir
-  configs_dir = os.path.join(settings_dir, "cfgs")
-  if not os.path.exists(configs_dir):
-    os.makedirs(configs_dir)
-  target_phil_path = os.path.join(configs_dir, "%s_%s_r%04d_t%03d_rg%03d_params.phil"%
-    (app.params.experiment, app.params.experiment_tag, job.run.run, job.trial.trial, job.rungroup.id))
-  dispatcher = app.params.dispatcher
+    submitted_jobs[_job.job_hash(job)] = j  # keep in-call dict current
 
-  phil_str = job.trial.target_phil_str
-  if job.rungroup.extra_phil_str is not None:
-    phil_str += "\n" + job.rungroup.extra_phil_str
+    if app.params.mp.method == 'local': # only run one job at a time
+      return
 
-  from xfel.ui import known_dials_dispatchers
-  if dispatcher in known_dials_dispatchers:
-    import importlib
-    orig_phil_scope = importlib.import_module(known_dials_dispatchers[dispatcher]).phil_scope
-    from iotbx.phil import parse
-    if job.rungroup.two_theta_low is not None or job.rungroup.two_theta_high is not None:
-      override_str = """
-      radial_average {
-        enable = True
-        show_plots = False
-        verbose = False
-        output_bins = False
-      }
-      """
-      phil_scope = orig_phil_scope.fetch(parse(override_str))
-    else:
-      phil_scope = orig_phil_scope
+    if app.params.mp.max_queued is not None:
+      running_jobs += 1
+      if running_jobs >= app.params.mp.max_queued:
+        print("Waiting for space in the queue to submit next job")
+        return
 
-    trial_params = phil_scope.fetch(parse(phil_str)).extract()
+  datasets = app.get_all_datasets()
+  for dataset_idx, dataset in enumerate(datasets):
+    if not dataset.active: continue
 
-    image_format = job.rungroup.format
-    assert image_format in ['cbf', 'pickle']
-    if image_format == 'cbf':
-      if "rayonix" in job.rungroup.detector_address.lower():
-        mode = "rayonix"
-      elif "cspad" in job.rungroup.detector_address.lower():
-        mode = "cspad"
-      elif "jungfrau" in job.rungroup.detector_address.lower():
-        mode = "jungfrau"
+    # one of the tasks will have a trial, otherwise we don't know where to save the data
+    trial = None
+    tasks = dataset.tasks
+    for task in tasks:
+      if task.trial is not None:
+        if trial is None:
+          trial = task.trial
+        else:
+          assert trial.id == task.trial.id, "Found multiple trials, don't know where to save the results"
+    assert trial, "No trial found in task list, don't know where to save the results"
+    trial_tags_ids = [t.id for t in trial.tags]
+    dataset_tags = [t for t in dataset.tags if t.id in trial_tags_ids]
+    if not dataset_tags or len(dataset_tags) < len(dataset.tags): continue
+    runs_rungroups = []
+    for rungroup in trial.rungroups:
+      runs_rungroups.extend([(run, rungroup) for run in app.get_rungroup_runs_by_tags(rungroup, dataset_tags, dataset.tag_operator)])
+
+    # Datasets always start with indexing
+    global_tasks = {}
+    # Runs whose local chain is not finished: a job waiting or running, or one
+    # still to be submitted. A run whose chain failed is not pending; by design
+    # it never holds the merging schedule up. See merge_mode below.
+    pending_runs = set()
+    for run, rungroup in runs_rungroups:
+      submit_next_task = False
+      last_task_status = ""
+      previous_job = None
+      for task_idx, task in enumerate(tasks):
+        if task.scope == 'global':
+          if previous_job.status in ["DONE", "EXIT"]:
+            key = (dataset_idx, task_idx)
+            if key not in global_tasks:
+              global_tasks[key] = []
+            global_tasks[key].append(previous_job)
+          continue
+        if task.type == 'indexing':
+          job = _job(trial, rungroup, run)
+        else:
+          job = _job(trial, rungroup, run, task)
+        try:
+          submitted_job = submitted_jobs[_job.job_hash(job)]
+        except KeyError:
+          if not submit_next_task:
+            print("Warning, expected to find submitted %s job: trial %d, rungroup %d, run %s, task %d"% \
+              (task.type, trial.trial, rungroup.id, run.run, task.id))
+            pending_runs.add(run.id)
+            break
+        else:
+          if not task_idx+1 < len(tasks): break # no more tasks to do after this one
+          next_task = tasks[task_idx+1]
+          if submitted_job.status not in finished_job_statuses or submitted_job.status == "UNKWN":
+            print ("Task %s waiting on job %d (%s) for trial %d, rungroup %d, run %s, task %d" % \
+              (next_task.type, submitted_job.id, submitted_job.status, trial.trial, rungroup.id, run.run, next_task.id))
+            pending_runs.add(run.id)
+            break
+          if submitted_job.status not in ["DONE"]:
+            if submitted_job.status != "EXIT":
+              print ("Task %s cannot start due to unexpected status for job %d (%s) for trial %d, rungroup %d, run %s, task %d" % \
+                (next_task.type, submitted_job.id, submitted_job.status, trial.trial, rungroup.id, run.run, next_task.id))
+            break
+          if submitted_job.status in ("SUBMIT_FAIL", "DELETED", "UNKWN") and job.task and job.task.type == "ensemble_refinement":
+            break # XXX need a better way to indicate that a job has failed and shouldn't go through the pipeline due to no data
+          submit_next_task = True
+          previous_job = submitted_job
+          continue
+
+        print("Submitting %s job: trial %d, rungroup %d, run %s, task %d"% \
+          (task.type, trial.trial, rungroup.id, run.run, task.id))
+
+        j = JobFactory.from_args(app,
+                                 trial_id = trial.id,
+                                 rungroup_id = rungroup.id,
+                                 run_id = run.id,
+                                 task_id = task.id,
+                                 status = "SUBMITTED")
+        j.trial = job.trial; j.rungroup = job.rungroup; j.run = job.run; j.task = job.task
+        try:
+          j.submission_id = j.submit(previous_job)
+        except Exception as e:
+          print("Couldn't submit job:", str(e))
+          j.status = "SUBMIT_FAIL"
+          raise
+
+        submitted_jobs[_job.job_hash(job)] = j  # keep in-call dict current
+        pending_runs.add(run.id)
+
+        previous_job = j
+
+        if app.params.mp.method == 'local': # only run one job at a time
+          return
+        if app.params.mp.max_queued is not None:
+          running_jobs += 1
+          if running_jobs >= app.params.mp.max_queued:
+            print("Waiting for space in the queue to submit next job")
+            return
+        break # job submitted so don't look for more in this run for this dataset
+
+    versions = dataset.versions
+    for task_idx, task in enumerate(tasks):
+      if task.scope == 'local':
+        # only global tasks follow global tasks
+        if task_idx: assert tasks[task_idx-1].scope != 'global'
+        continue
+      assert task.scope == 'global' # only two task scopes
+      assert task_idx # first task cannot be global
+      prev_task = tasks[task_idx-1]
+      # Submit a job for this task for any version that is missing it. For a
+      # non-first global task (e.g. phenix) the predecessor is the previous
+      # global-task job linked to the version. For the first global task (e.g.
+      # merging) the predecessor is the set of local input jobs already linked
+      # to the version -- this also covers resubmitting a merge whose job the
+      # user deleted, since the on-disk folder was removed by delete() and the
+      # new submission writes to the same path under the same version number.
+      current_task_ids = {t.id for t in tasks}
+      current_local_task_ids = {t.id for t in tasks if t.scope == 'local'}
+      current_run_ids = {run.id for run, rungroup in runs_rungroups}
+      def ran_task_no_longer_in_dataset(version):
+        # Tasks are content-addressed, so editing a global stage's parameters
+        # gives the dataset a different task. A version that ran the old task
+        # is a result of the old settings; it is left as it is, and the new
+        # settings get a version of their own (see below).
+        return any(j.task and j.task.scope == 'global' and j.task_id not in current_task_ids
+                   for j in version.jobs)
+      for version in versions:
+        # Only process versions created under the current task list. If any
+        # local input belongs to a task no longer in the dataset's task list,
+        # the version was set up under a previous configuration -- leave it
+        # alone so we don't apply the new pipeline to old data.
+        local_inputs = [j for j in version.jobs if j.task and j.task.scope == 'local']
+        if not local_inputs:
+          continue
+        if not all(j.task_id in current_local_task_ids for j in local_inputs):
+          continue
+        # Likewise, leave alone any version whose local inputs include a run
+        # that is no longer tagged into this dataset. Such a version reflects a
+        # run selection that has since changed (e.g. runs were re-tagged);
+        # resubmitting it as-is would merge the wrongly-tagged runs. The new
+        # dataset version created below picks up only the currently-tagged runs.
+        if not all(j.run_id in current_run_ids for j in local_inputs):
+          continue
+        if ran_task_no_longer_in_dataset(version):
+          continue
+
+        if any(j.task_id == task.id for j in version.jobs):
+          continue
+
+        if prev_task.scope == 'global':
+          prev_job = next((j for j in version.jobs if j.task_id == prev_task.id), None)
+          if not (prev_job and prev_job.status == 'DONE'):
+            continue
+          submit_args = (prev_job,)
+        else:
+          print("Resubmitting %s job for existing dataset_version %d (version %d)" % (
+            task.type, version.id, version.version))
+          submit_args = ()
+
+        j = JobFactory.from_args(app,
+                                 task_id = task.id,
+                                 dataset_id = dataset.id,
+                                 status = "SUBMITTED")
+        j.task = task; j.dataset = dataset; j.dataset_version = version
+
+        try:
+          j.submission_id = j.submit(*submit_args)
+        except Exception as e:
+          print("Couldn't submit job:", str(e))
+          j.status = "SUBMIT_FAIL"
+          raise
+        version.add_job(j)
+
+        if app.params.mp.method == 'local': # only run one job at a time
+          return
+        if app.params.mp.max_queued is not None:
+          running_jobs += 1
+          if running_jobs >= app.params.mp.max_queued:
+            print("Waiting for space in the queue to submit next job")
+            return
+
+      key = dataset_idx, task_idx
+      if key not in global_tasks: continue # no jobs ready yet
+      pool = global_tasks[key] # every finished final local job of the dataset
+      latest_version = dataset.latest_version
+      first_global = prev_task.scope != 'global'
+      # The dataset's merging schedule, see MERGE_MODE_LABELS in the dialogs:
+      # 'incremental' cuts one version per pass from whatever has finished,
+      # 'per_run' one version per newly finished run, 'complete' a single
+      # version once no run of the dataset is still processing.
+      merge_mode = getattr(dataset, 'merge_mode', None) or 'incremental'
+      if first_global and merge_mode == 'complete' and pending_runs:
+        print("Dataset %s merges once all runs finish; %d still processing" % (dataset.name, len(pending_runs)))
+        continue
+      corrective = False
+      if latest_version is None:
+        new_jobs, base = list(pool), []
       else:
-        assert False, "Couldn't figure out what kind of detector is specified by address %s"%job.rungroup.detector_address
-    if dispatcher == 'cctbx.xfel.xtc_process':
-      trial_params.format.file_format = image_format
-      trial_params.format.cbf.mode = mode
-  elif dispatcher == "cxi.xtc_process":
-    image_format = 'pickle'
-  else:
-    raise RuntimeError("Unknown dispatcher: %s"%dispatcher)
+        latest_version_local_jobs = [j for j in latest_version.jobs if j.task and j.task.scope == 'local']
+        latest_local_job_ids = {j.id for j in latest_version_local_jobs}
+        new_jobs = [j for j in pool if j.id not in latest_local_job_ids]
+        base = [j for j in pool if j.id in latest_local_job_ids]
+        # Additions (new_jobs) roll a new version as runs finish. For the first
+        # global task, also roll one when the latest version was built from a run
+        # that is no longer tagged into the dataset (e.g. runs were re-tagged
+        # out). A removal doesn't show up as a new job, so without this the
+        # corrected run selection would never get its own version. Restricted to
+        # the first global task because only it seeds a version from local jobs;
+        # later global tasks (e.g. phenix) key off the version's merge job.
+        removed_runs = prev_task.scope != 'global' and \
+          any(j.run_id not in current_run_ids for j in latest_version_local_jobs)
+        # Also roll one when a global stage's parameters were edited since the
+        # latest version ran: that version is frozen above, so the new task
+        # needs a version of its own, built from the same local jobs.
+        edited_global_task = prev_task.scope != 'global' and \
+          ran_task_no_longer_in_dataset(latest_version)
+        # Note: the new version's local-input set may duplicate that of an older
+        # version (e.g. de-tagging C from {A,B,C} reproduces an earlier {A,B}
+        # version). This is intentional -- keeping the latest version correct is
+        # worth the extra reprocessing -- so do NOT add a "skip if a matching
+        # version already exists" guard here. Only one corrective version is
+        # created: on the next pass latest == the corrected set with no removed
+        # runs, so it is not repeated.
+        corrective = removed_runs or edited_global_task
 
-  if job.rungroup.calib_dir is not None or job.rungroup.config_str is not None or dispatcher == 'cxi.xtc_process' or image_format == 'pickle':
-    config_path = os.path.join(configs_dir, "%s_%s_r%04d_t%03d_rg%03d.cfg"%
-      (app.params.experiment, app.params.experiment_tag, job.run.run, job.trial.trial, job.rungroup.id))
-  else:
-    config_path = None
+      # The local job sets of the versions to create now, in order. One version
+      # with everything finished, or, merging after every run, one per new job
+      # in the dataset's run order, each adding that run to what came before.
+      # A correction (a run tagged out, a global stage edited) is one version of
+      # the runs already merged that are still selected; merging after every
+      # run, the new runs then follow one version each rather than riding
+      # along in it.
+      batches = []
+      if new_jobs or corrective:
+        if first_global and merge_mode == 'per_run':
+          run_order = {run.id: i for i, (run, rungroup) in enumerate(runs_rungroups)}
+          ordered = sorted(new_jobs, key=lambda j: run_order.get(j.run_id, len(run_order)))
+          batches = ([base] if corrective and base else []) + [base + ordered[:i+1] for i in range(len(ordered))]
+        else:
+          batches = [pool]
 
-  # Dictionary for formating the submit phil and, if used, the labelit cfg file
-  d = dict(
-    # Generally for the LABELIT backend or image pickles
-    address                   = job.rungroup.detector_address,
-    default_calib_dir         = libtbx.env.find_in_repositories("xfel/metrology/CSPad/run4/CxiDs1.0_Cspad.0"),
-    dark_avg_path             = job.rungroup.dark_avg_path,
-    dark_stddev_path          = job.rungroup.dark_stddev_path,
-    untrusted_pixel_mask_path = job.rungroup.untrusted_pixel_mask_path,
-    detz_parameter            = job.rungroup.detz_parameter,
-    gain_map_path             = job.rungroup.gain_map_path,
-    gain_mask_level           = job.rungroup.gain_mask_level,
-    beamx                     = job.rungroup.beamx,
-    beamy                     = job.rungroup.beamy,
-    energy                    = job.rungroup.energy,
-    binning                   = job.rungroup.binning,
-    two_theta_low             = job.rungroup.two_theta_low,
-    two_theta_high            = job.rungroup.two_theta_high,
-    # Generally for job submission
-    dry_run                   = app.params.dry_run,
-    dispatcher                = app.params.dispatcher,
-    cfg                       = config_path,
-    experiment                = app.params.experiment,
-    run_num                   = job.run.run,
-    output_dir                = app.params.output_folder,
-    use_ffb                   = app.params.use_ffb,
-    # Generally for both
-    trial                     = job.trial.trial,
-    rungroup                  = job.rungroup.rungroup_id,
-    experiment_tag            = app.params.experiment_tag,
-    calib_dir                 = job.rungroup.calib_dir,
-    nproc                     = app.params.mp.nproc,
-    queue                     = app.params.mp.queue,
-    target                    = target_phil_path,
-    host                      = app.params.db.host,
-    dbname                    = app.params.db.name,
-    user                      = app.params.db.user,
-  )
-  if app.params.db.password is not None and len(app.params.db.password) == 0:
-    d['password'] = None
-  else:
-    d['password'] = app.params.db.password
+      for batch in batches:
+        next_version = 0 if latest_version is None else latest_version.version + 1
+        latest_version = app.create_dataset_version(dataset_id = dataset.id, version=next_version)
+        print("Created a new dataset version", next_version, "with jobs", [j.id for j in batch])
+        for job in batch:
+          latest_version.add_job(job)
 
-  phil = open(target_phil_path, "w")
+        j = JobFactory.from_args(app,
+                                 task_id = task.id,
+                                 dataset_id = dataset.id,
+                                 status = "SUBMITTED")
+        j.task = task; j.dataset = dataset; j.dataset_version = latest_version
 
-  if dispatcher == 'cxi.xtc_process':
-    phil.write(phil_str)
-  elif dispatcher in known_dials_dispatchers:
-    extra_scope = None
-    if dispatcher == 'cctbx.xfel.xtc_process':
-      if image_format == "cbf":
-        trial_params.input.address = job.rungroup.detector_address
-        trial_params.format.cbf.detz_offset = job.rungroup.detz_parameter
-        trial_params.format.cbf.override_energy = job.rungroup.energy
-        trial_params.format.cbf.invalid_pixel_mask = job.rungroup.untrusted_pixel_mask_path
-        if mode == 'cspad':
-          trial_params.format.cbf.cspad.gain_mask_value = job.rungroup.gain_mask_level
-        elif mode == 'rayonix':
-          trial_params.format.cbf.rayonix.bin_size = job.rungroup.binning
-          trial_params.format.cbf.rayonix.override_beam_x = job.rungroup.beamx
-          trial_params.format.cbf.rayonix.override_beam_y = job.rungroup.beamy
-      trial_params.dispatch.process_percent = job.trial.process_percent
+        try:
+          j.submission_id = j.submit()
+        except Exception as e:
+          print("Couldn't submit job:", str(e))
+          j.status = "SUBMIT_FAIL"
+          raise
+        latest_version.add_job(j)
 
-      if trial_params.input.known_orientations_folder is not None:
-        trial_params.input.known_orientations_folder = trial_params.input.known_orientations_folder.format(run=job.run.run)
-    else:
-      trial_params.spotfinder.lookup.mask = job.rungroup.untrusted_pixel_mask_path
-      trial_params.integration.lookup.mask = job.rungroup.untrusted_pixel_mask_path
-
-      locator_path = os.path.join(configs_dir, "%s_%s_r%04d_t%03d_rg%03d.loc"%
-                                  (app.params.experiment, app.params.experiment_tag, job.run.run, job.trial.trial, job.rungroup.id))
-      locator = open(locator_path, 'w')
-      locator.write("experiment=%s\n"%app.params.experiment)
-      locator.write("run=%d\n"%job.run.run)
-      locator.write("detector_address=%s\n"%job.rungroup.detector_address)
-
-      if image_format == "cbf":
-        if mode == 'rayonix':
-          from xfel.cxi.cspad_ana import rayonix_tbx
-          pixel_size = rayonix_tbx.get_rayonix_pixel_size(job.rungroup.binning)
-          fast, slow = rayonix_tbx.get_rayonix_detector_dimensions(job.rungroup.binning)
-          extra_scope = parse("geometry { detector { panel { origin = (%f, %f, %f) } } }"%(-job.rungroup.beamx * pixel_size,
-                                                                                            job.rungroup.beamy * pixel_size,
-                                                                                           -job.rungroup.detz_parameter))
-          locator.write("rayonix.bin_size=%s\n"%job.rungroup.binning)
-      locator.close()
-      d['locator'] = locator_path
-
-
-    if job.rungroup.two_theta_low is not None or job.rungroup.two_theta_high is not None:
-      try:
-        trial_params.radial_average.two_theta_low = job.rungroup.two_theta_low
-        trial_params.radial_average.two_theta_high = job.rungroup.two_theta_high
-      except AttributeError:
-        pass # not all dispatchers support radial averaging
-
-    working_phil = phil_scope.format(python_object=trial_params)
-    if extra_scope:
-      working_phil = working_phil.fetch(extra_scope)
-    diff_phil = orig_phil_scope.fetch_diff(source=working_phil)
-
-    phil.write(diff_phil.as_str())
-  phil.close()
-
-  if config_path is not None:
-    if dispatcher != 'cxi.xtc_process':
-      d['untrusted_pixel_mask_path'] = None # Don't pass a pixel mask to mod_image_dict as it will
-                                            # will be used during dials processing directly
-
-    config_str = "[psana]\n"
-    if job.rungroup.calib_dir is not None:
-      config_str += "calib-dir=%s\n"%job.rungroup.calib_dir
-    modules = []
-    if job.rungroup.config_str is not None:
-      for line in job.rungroup.config_str.split("\n"):
-        if line.startswith('['):
-          modules.append(line.lstrip('[').rstrip(']'))
-    if dispatcher == 'cxi.xtc_process':
-      modules.insert(0, 'my_ana_pkg.mod_radial_average')
-      modules.extend(['my_ana_pkg.mod_hitfind:index','my_ana_pkg.mod_dump:index'])
-    elif image_format == 'pickle':
-      modules.insert(0, 'my_ana_pkg.mod_radial_average')
-      modules.extend(['my_ana_pkg.mod_image_dict'])
-    if app.params.dump_shots:
-      modules.insert(0, 'my_ana_pkg.mod_dump:shot')
-
-    if len(modules) > 0:
-      config_str += "modules = %s\n"%(" ".join(modules))
-
-    if job.rungroup.config_str is not None:
-      config_str += job.rungroup.config_str + "\n"
-
-    if dispatcher == 'cxi.xtc_process' or image_format == 'pickle':
-      d['address'] = d['address'].replace('.','-').replace(':','|') # old style address
-      if dispatcher == 'cxi.xtc_process':
-        template = open(os.path.join(libtbx.env.find_in_repositories("xfel/ui/db/cfgs"), "index_all.cfg"))
-      elif image_format == 'pickle':
-        template = open(os.path.join(libtbx.env.find_in_repositories("xfel/ui/db/cfgs"), "image_dict.cfg"))
-      for line in template.readlines():
-        config_str += line.format(**d)
-      template.close()
-      d['address'] = job.rungroup.detector_address
-
-    cfg = open(config_path, 'w')
-    cfg.write(config_str)
-    cfg.close()
-
-    if dispatcher != 'cxi.xtc_process':
-      d['untrusted_pixel_mask_path'] = job.rungroup.untrusted_pixel_mask_path
-
-  submit_phil_path = os.path.join(configs_dir, "%s_%s_r%04d_t%03d_rg%03d_submit.phil"%
-    (app.params.experiment, app.params.experiment_tag, job.run.run, job.trial.trial, job.rungroup.id))
-
-  submit_root = libtbx.env.find_in_repositories("xfel/ui/db/cfgs")
-  if dispatcher in ['cxi.xtc_process', 'cctbx.xfel.xtc_process']:
-    template = open(os.path.join(submit_root, "submit_xtc_process.phil"))
-  elif dispatcher == 'cctbx.xfel.process':
-    template = open(os.path.join(submit_root, "submit_xfel_process.phil"))
-  else:
-    test_root = os.path.join(submit_root, "submit_" + dispatcher + ".phil")
-    if os.path.exists(test_root):
-      template = open(test_root)
-    else:
-      template = open(os.path.joins(submit_root, "submit.phil"))
-  phil = open(submit_phil_path, "w")
-
-  if dispatcher == 'cxi.xtc_process':
-    d['target'] = None # any target phil will be in mod_hitfind
-
-  for line in template.readlines():
-    phil.write(line.format(**d))
-
-  d['target'] = target_phil_path
-
-  template.close()
-  phil.close()
-
-  from xfel.command_line.cxi_mpi_submit import Script as submit_script
-  return submit_script().run([submit_phil_path])
+        if app.params.mp.method == 'local': # only run one job at a time
+          return
+        if app.params.mp.max_queued is not None:
+          running_jobs += 1
+          if running_jobs >= app.params.mp.max_queued:
+            print("Waiting for space in the queue to submit next job")
+            return

@@ -1,4 +1,4 @@
-from __future__ import division
+from __future__ import absolute_import, division, print_function
 
 # see also xmlrpc_server_example.py
 
@@ -55,17 +55,50 @@ from __future__ import division
 # --------------------------------------------------------------------
 
 from libtbx import adopt_init_args
-from libtbx.utils import to_str
-import xmlrpclib
-import httplib
+from libtbx import launchd_process
+from libtbx.utils import to_bytes, to_str
+try:
+  import xmlrpclib
+except ImportError:
+  import xmlrpc.client as xmlrpclib
+try:
+  import httplib
+except ImportError:
+  import http.client as httplib
+import errno
 import socket
 import subprocess
 import threading
 import time
-import string
 import random
 import os
 import sys
+from six.moves import range
+
+# use unicode check to avoid bytes in Python 3
+check_type = bytes
+if sys.version_info.major == 2:
+  check_type = unicode
+
+class NoSelfConnectHTTPConnection(httplib.HTTPConnection):
+  """
+  An HTTP connection that refuses to be connected to itself.
+
+  With nothing listening on a localhost port inside the range the operating
+  system uses for automatically chosen local ports (32768-60999 on Linux,
+  which holds the viewer ports of external_program_server), a connection
+  attempt can be given that same port as its local port and connect to
+  itself (TCP simultaneous open). The request is then read back as the
+  reply, which raises BadStatusLine("POST /RPC2 HTTP/1.1"). Such a
+  connection is closed and reported as refused, which ServerProxy retries.
+  """
+  def connect(self):
+    httplib.HTTPConnection.connect(self)
+    if (self.sock.getsockname() == self.sock.getpeername()):
+      self.close()
+      raise socket.error(errno.ECONNREFUSED,
+        "connected to itself; nothing is listening on %s:%s" %
+        (self.host, self.port))
 
 # http://stackoverflow.com/questions/372365/set-timeout-for-xmlrpclib-serverproxy
 class TimeoutTransport(xmlrpclib.Transport):
@@ -73,20 +106,20 @@ class TimeoutTransport(xmlrpclib.Transport):
     xmlrpclib.Transport.__init__(self, *args, **kwargs)
     self.timeout = timeout
 
-  def make_connection (self, host) :
+  def make_connection(self, host):
     if self._connection and host == self._connection[0]:
       return self._connection[1]
     # create a HTTP connection object from a host descriptor
     chost, self._extra_headers, x509 = self.get_host_info(host)
     #store the host argument along with the connection object
-    self._connection = host, httplib.HTTPConnection(chost,
+    self._connection = host, NoSelfConnectHTTPConnection(chost,
       timeout=self.timeout)
     return self._connection[1]
 
 default_timeout = 5.0
-if (sys.platform == "win32") :
+if (sys.platform == "win32"):
   default_timeout = 1.0
-class ServerProxy (object) :
+class ServerProxy(object):
   def __init__(self, uri, transport=None, encoding=None, verbose=0,
                allow_none=0, use_datetime=0, timeout=default_timeout,
                raise_errors=True):
@@ -94,16 +127,18 @@ class ServerProxy (object) :
     # establish a "logical" server connection
 
     # get the url
-    import urllib
-    type, uri = urllib.splittype(uri)
-    if type not in ("http", "https"):
-      raise IOError, "unsupported XML-RPC protocol"
-    self.__host, self.__handler = urllib.splithost(uri)
+    from six.moves.urllib.parse import urlparse
+    parsed_url = urlparse(uri)
+    scheme = parsed_url.scheme
+    self.__host = parsed_url.netloc
+    self.__handler = parsed_url.path
+    if scheme not in ("http", "https"):
+      raise IOError("unsupported XML-RPC protocol")
     if not self.__handler:
       self.__handler = "/RPC2"
 
     if transport is None:
-      if type == "https":
+      if scheme == "https":
         transport = xmlrpclib.SafeTransport(use_datetime=use_datetime)
       else:
         transport = TimeoutTransport(timeout=timeout,
@@ -121,19 +156,19 @@ class ServerProxy (object) :
     self._pending.append((methodname, params))
     return self.flush_requests()
 
-  def flush_requests (self, show_timings=False) :
+  def flush_requests(self, show_timings=False):
     t1 = time.time()
     result = None
     while len(self._pending) > 0 :
       (methodname, params) = self._pending.pop(0)
 
       # remove any unicode types in params
-      if (isinstance(params, unicode)):
+      if (isinstance(params, check_type)):
         params = to_str(params)
       elif (isinstance(params, list) or isinstance(params, tuple)):
         new_params = list(params)
-        for i in xrange(len(params)):
-          if (isinstance(params[i], unicode)):
+        for i in range(len(params)):
+          if (isinstance(params[i], check_type)):
             new_params[i] = to_str(params[i])
           else:
             new_params[i] = params[i]
@@ -150,7 +185,7 @@ class ServerProxy (object) :
         response = self.__transport.request(
             self.__host,
             self.__handler,
-            request,
+            to_bytes(request),
             verbose=self.__verbose
         )
 
@@ -158,32 +193,32 @@ class ServerProxy (object) :
           result = response[0]
       except KeyboardInterrupt :
         raise
-      except Exception, e :
+      except Exception as e :
         msg = to_str(e)
-        if (hasattr(e, "errno")) :
-          if (e.errno in [32,54,61,104,111,10054,10061]) :
+        if (hasattr(e, "errno")):
+          if (e.errno in [32,54,61,104,111,10054,10061]):
             self._pending.insert(0, (methodname, params))
             t = time.strftime("%H:%M:%S", time.localtime())
             self._errors.append("%s -- %s" % (t, msg))
             break
-        if ("timed out" in msg) :
-          print "XMLRPC timeout, ignoring request"
+        if ("timed out" in msg):
+          print("XMLRPC timeout, ignoring request")
           self._timeouts += 1
-        elif msg.startswith("<ProtocolError ") :
+        elif msg.startswith("<ProtocolError "):
           self._pending = []
           break
-        elif ("exceptions.SystemExit" in msg) :
+        elif ("exceptions.SystemExit" in msg):
           self._pending = []
           break
         else :
           msg = "XMLRPC error: %s\nMethod: %s\nParams: %s\n" % \
             (msg, to_str(methodname), ", ".join([ to_str(p) for p in params ]))
-          if (not self.raise_errors) :
-            print >> sys.stderr, msg
+          if (not self.raise_errors):
+            print(msg, file=sys.stderr)
           else :
             raise RuntimeError(msg)
     t2 = time.time()
-    if (show_timings) :
+    if (show_timings):
       sys.stderr.write("flush_requests: %.3fs\n" % (t2-t1))
     return result
 
@@ -203,28 +238,65 @@ class ServerProxy (object) :
     # magic method dispatcher
     return xmlrpclib._Method(self.__request, name)
 
-  def number_of_timeout_errors (self) :
+  def number_of_timeout_errors(self):
     return self._timeouts
 
-  def get_error_messages (self) :
+  def get_error_messages(self):
     return self._errors
 
 #-----------------------------------------------------------------------
-class external_program_thread (threading.Thread) :
-  def __init__ (self, command_args, program_id, log=None,
-      intercept_output=True) :
+def _copy_output(readers, sinks, final=False):
+  """Pass what each reader has gained since the last call to its sink;
+  ``final`` tells the sinks nothing more will come."""
+  for reader, sink in zip(readers, sinks):
+    data = reader.read()
+    if data or final:
+      sink(data, final)
+
+def _write_fd(fd, data):
+  """Write all of ``data`` to file descriptor ``fd``, dropping it if ``fd``
+  is closed or broken (as a Popen child writing there would lose it)."""
+  try:
+    while data:
+      data = data[os.write(fd, data):]
+  except OSError:
+    pass
+
+class external_program_thread(threading.Thread):
+  def __init__(self, command_args, program_id, log=None,
+      intercept_output=True, use_env = False):
     adopt_init_args(self, locals())
     if self.log is None :
       self.log = sys.stdout
     threading.Thread.__init__(self)
     self._alive = True
+    # Whether what this thread last wrote, to the log or to file descriptors
+    # 1 and 2 (where the log usually goes too), ended a line.
+    self._log_ends_line = True
 
-  def run (self) :
-    if self.intercept_output :
-      p = subprocess.Popen(args=self.command_args, stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE, shell=True)
-    else :
-      p = subprocess.Popen(args=self.command_args, shell=True)
+  def run(self):
+    try:
+      if not (launchd_process.use_launchd() and self._run_launchd()):
+        self._run_popen()
+    finally:
+      self._alive = False
+
+  def _run_popen(self):
+    if self.use_env:
+      # Allow specifically sending the environment (including CCTBX_COOT_PORT)
+      #  and do not depend on details of the operating system
+      local_env = os.environ.copy()
+      if self.intercept_output :
+        p = subprocess.Popen(args=self.command_args, stdout=subprocess.PIPE,
+          stderr=subprocess.PIPE, shell=True, env = local_env)
+      else :
+        p = subprocess.Popen(args=self.command_args, shell=True, env = local_env)
+    else: # usual
+      if self.intercept_output :
+        p = subprocess.Popen(args=self.command_args, stdout=subprocess.PIPE,
+          stderr=subprocess.PIPE, shell=True)
+      else :
+        p = subprocess.Popen(args=self.command_args, shell=True)
     while True :
       if p.poll() is not None :
         break
@@ -235,31 +307,112 @@ class external_program_thread (threading.Thread) :
         if output is not None and output != "" :
           self.log.write(output)
           self.log.flush()
-    self._alive = False
+
+  def _run_launchd(self):
+    """macOS 26+: run the program as a launchd job, in a coalition of its own
+    (see libtbx.launchd_process), through /bin/sh -c as shell=True would.
+
+    A job can neither hand back pipes nor inherit this process's stdout and
+    stderr, so its output goes through files, copied as it arrives: with
+    intercept_output, stdout and stderr together into the log; otherwise
+    stdout and stderr to this process's file descriptors 1 and 2, where a
+    Popen child would have written them. A program that exits before
+    launchd reports its pid has run, as a Popen child that exits at once
+    has: its output is passed on and nothing is raised. Any other launch
+    failure is written to the log, since an exception out of this thread
+    would reach nobody. Returns False, having warned, if there is no GUI
+    session to start the job in, so that run() falls back to Popen."""
+    import codecs
+    import tempfile
+    command = self.command_args
+    if isinstance(command, str):
+      command = [command]
+    if self.intercept_output:
+      decoder = codecs.getincrementaldecoder("utf-8")("replace")
+      sinks = [lambda data, final=False: self._write_log(
+        decoder.decode(data, final))]
+    else:
+      sinks = [lambda data, final=False: self._write_out(1, data),
+               lambda data, final=False: self._write_out(2, data)]
+    paths, readers = [], []
+    try:
+      try:
+        for _ in sinks:
+          fd, path = tempfile.mkstemp(prefix="cctbx_external_",
+                                      suffix=".log")
+          os.close(fd)
+          paths.append(path)
+          readers.append(open(path, "rb"))
+        p = launchd_process.launch(
+          ["/bin/sh", "-c"] + list(command),
+          env=os.environ.copy() if self.use_env else None,
+          log_path=paths[0], stderr_path=paths[-1],
+          label_prefix="org.cctbx.xmlrpc", name=self.program_id,
+          warn=lambda msg: self._write_log(msg + "\n"))
+      except launchd_process.LaunchdRefused as exc:
+        self._write_log(
+          launchd_process.refused_warning(self.program_id, exc) + "\n")
+        return False
+      except launchd_process.ExitedAtOnce:
+        return True
+      except Exception as exc:         # a thread's exception reaches nobody
+        _copy_output(readers, sinks, final=True)   # what it wrote comes first
+        self._write_log("%sWARNING: could not start %s: %s\n"
+                        % ("" if self._log_ends_line else "\n",
+                           self.program_id, exc))
+        return True
+      while p.poll() is None:
+        time.sleep(0.5)
+        _copy_output(readers, sinks)
+      return True
+    finally:
+      try:
+        # what the program wrote last, or before it failed to start
+        _copy_output(readers, sinks, final=True)
+      finally:
+        for reader in readers:
+          reader.close()
+        for path in paths:
+          try:
+            os.remove(path)
+          except OSError:
+            pass
+
+  def _write_out(self, fd, data):
+    if data:
+      _write_fd(fd, data)
+      self._log_ends_line = data.endswith(b"\n")
+
+  def _write_log(self, text):
+    if text:
+      self.log.write(text)
+      self.log.flush()
+      self._log_ends_line = text.endswith("\n")
 
   # XXX: this is probably a bad idea
-  def is_alive (self) :
+  def is_alive(self):
     return self._alive
 
-class external_program_server (object) :
+class external_program_server(object):
   port_ranges = [ (40001, 40840),
                   (46000, 46999) ]
-  def __init__ (self, command_args, program_id, timeout, cache_requests=False,
-                local_port=None, log=None, intercept_output=False) :
+  def __init__(self, command_args, program_id, timeout, cache_requests=False,
+                local_port=None, log=None, intercept_output=False,
+                use_env = False):
     adopt_init_args(self, locals())
     assert isinstance(command_args, list) or isinstance(command_args, tuple)
     self._process = None
     self._server = None
     self.initialize_server()
 
-  def initialize_server (self) :
+  def initialize_server(self):
     if self._process is None and self._server is None :
       valid_ports = []
       for (start, end) in self.port_ranges :
         valid_ports.extend([ n for n in range(start, end) ])
       i = int(random.random() * (len(valid_ports) - 1))
       self._port = valid_ports[i]
-      prog_port_env = "CCTBX_%s_PORT" % string.upper(self.program_id)
+      prog_port_env = "CCTBX_%s_PORT" % self.program_id.upper()
       os.environ[prog_port_env] = str(self._port)
       if self.timeout is not None :
         os.environ["CCTBX_XMLRPC_TIMEOUT"] = str(self.timeout)
@@ -269,7 +422,8 @@ class external_program_server (object) :
         command_args=self.command_args,
         program_id=self.program_id,
         log=self.log,
-        intercept_output=self.intercept_output)
+        intercept_output=self.intercept_output,
+        use_env = self.use_env)
       self._process.start()
       if self.cache_requests :
         proxy_class = ServerProxy
@@ -278,18 +432,18 @@ class external_program_server (object) :
       self._server = proxy_class(uri="http://127.0.0.1:%d/RPC2" %
                                              self._port)
 
-  def flush_requests (self, *args, **kwds) :
+  def flush_requests(self, *args, **kwds):
     if not self.cache_requests :
       return False
     elif self._server is not None :
       return self._server.flush_requests(*args, **kwds)
 
-  def restart (self) :
+  def restart(self):
     self._process = None
     self._server = None
     self.initialize_server()
 
-  def is_alive (self) :
+  def is_alive(self):
     if self._process is None or self._server is None :
       return False
     try :
@@ -304,13 +458,13 @@ class external_program_server (object) :
       else :
         return True
 
-  def get_port (self) :
+  def get_port(self):
     return self._port
 
-  def _ignore (self, *args, **kwds) :
+  def _ignore(self, *args, **kwds):
     return True
 
-  def __getattr__ (self, name) :
+  def __getattr__(self, name):
     if self._process is None or self._server is None :
       return self._ignore
     else :

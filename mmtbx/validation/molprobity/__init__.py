@@ -6,7 +6,9 @@ mmtbx.validation, which use the same APIs for storing and displaying results.
 
 # TODO combine with some parts of mmtbx.kinemage.validation
 
-from __future__ import division
+from __future__ import absolute_import, division, print_function
+from iotbx.cli_parser import CCTBXParser
+from libtbx.program_template import ProgramTemplate
 from mmtbx.rotamer import rotamer_eval
 from mmtbx.validation import validation, residue
 from mmtbx.validation import model_properties
@@ -23,7 +25,7 @@ from mmtbx.validation import sequence
 from libtbx.str_utils import make_header, make_sub_header, format_value
 from libtbx import slots_getstate_setstate, \
     slots_getstate_setstate_default_initializer
-from libtbx.utils import null_out, to_str, Sorry
+from libtbx.utils import multi_out, null_out, show_times, to_str, Sorry
 import iotbx.pdb
 import libtbx.load_env
 import libtbx.phil
@@ -62,13 +64,13 @@ xtriage = False
   .type = bool
 """
 
-def molprobity_flags () :
+def molprobity_flags():
   """
   Default flags for analyses to perform (all True).
   """
   return libtbx.phil.parse(master_phil_str).extract()
 
-class molprobity (slots_getstate_setstate) :
+class molprobity(slots_getstate_setstate):
   """
   Comprehensive validation.  At a minimum this performs the standard MolProbity
   analyses (ramalyze, rotalyze, cbetadev, clashscore).  If a geometry
@@ -122,6 +124,8 @@ class molprobity (slots_getstate_setstate) :
     "pdb_hierarchy",
     "crystal_symmetry",
     "model_stats",
+    "model_stats_new",
+    "adp_stats",
     "waters",
     "header_info",
     "merging",
@@ -140,13 +144,15 @@ class molprobity (slots_getstate_setstate) :
 
   # backwards compatibility with saved results
   def __setstate__(self, state):
+    if sys.version_info.major > 2:
+      from libtbx.easy_pickle import fix_py2_pickle
+      state = fix_py2_pickle(state)
     for name,value in state.items(): setattr(self, name, value)
     for name in self.__slots__ :
       if not hasattr(self, name) : setattr(self, name, None)
 
-  def __init__ (self,
+  def __init__(self,
       model,
-      pdb_hierarchy=None,   # keep for mmtbx.validation_summary (multiple models)
       fmodel=None,
       fmodel_neutron=None,
       sequences=None,
@@ -167,19 +173,33 @@ class molprobity (slots_getstate_setstate) :
       file_name=None,
       ligand_selection=None,
       rotamer_library="8000",
-      map_params=None) :
+      map_params=None):
     assert rotamer_library == "8000", "data_version given to RotamerEval not recognized."
     for name in self.__slots__ :
       setattr(self, name, None)
 
     # use objects from model
     self.model = model
+    if(not self.model.processed()):
+      self.model.process(make_restraints=True)
+    if(self.model is None and pdb_hierarchy is not None):
+      import mmtbx.model
+      self.model = mmtbx.model.manager(
+        pdb_hierarchy = pdb_hierarchy)
+      self.model.process(make_restraints=True)
+
+    pdb_hierarchy = self.model.get_hierarchy()
+    if(nuclear):
+      self.model.setup_scattering_dictionaries(scattering_table="neutron")
+
     if (self.model is not None):
+      if(self.model.get_restraints_manager() is None):
+        self.model.process(make_restraints=True)
       pdb_hierarchy = self.model.get_hierarchy()
       xray_structure = self.model.get_xray_structure()
       geometry_restraints_manager = self.model.get_restraints_manager().geometry
       crystal_symmetry = self.model.crystal_symmetry()
-      all_chain_proxies = self.model.all_chain_proxies
+      all_chain_proxies = None
     else:
       assert (pdb_hierarchy is not None)
       xray_structure = None
@@ -190,14 +210,14 @@ class molprobity (slots_getstate_setstate) :
     # very important - the i_seq attributes may be extracted later
     pdb_hierarchy.atoms().reset_i_seq()
     self.pdb_hierarchy = pdb_hierarchy
-    if (xray_structure is None) :
-      if (fmodel is not None) :
+    if (xray_structure is None):
+      if (fmodel is not None):
         xray_structure = fmodel.xray_structure
-      elif (crystal_symmetry is not None) :
+      elif (crystal_symmetry is not None):
         xray_structure = pdb_hierarchy.extract_xray_structure(
           crystal_symmetry=crystal_symmetry)
     self.crystal_symmetry = crystal_symmetry
-    if (crystal_symmetry is None) and (fmodel is not None) :
+    if (crystal_symmetry is None) and (fmodel is not None):
       self.crystal_symmetry = fmodel.f_obs().crystal_symmetry()
 
     # use maps (fmodel is not used)
@@ -223,50 +243,74 @@ class molprobity (slots_getstate_setstate) :
           molprobity_map_params=map_params.input.maps)
 
     self.header_info = header_info
-    if (flags is None) :
+    if (flags is None):
       flags = molprobity_flags()
-    import mmtbx.model.statistics
-    self.model_statistics_geometry = mmtbx.model.statistics.geometry(
-      pdb_hierarchy               = pdb_hierarchy,
-      geometry_restraints_manager = geometry_restraints_manager,
-      use_hydrogens               = keep_hydrogens,
-      use_nuclear                 = nuclear)
+
+    self.model_statistics_geometry = self.model.geometry_statistics(
+      use_hydrogens=keep_hydrogens, condensed_probe=False, fast_clash=False)
     self.model_statistics_geometry_result = \
       self.model_statistics_geometry.result()
+    # reduce2 (use_old_reduce()==False): clash() is a non-adding observer, so for an
+    # H-less model clash.clashes is None and there is no clashscore. Comprehensive
+    # validation adds H on a COPY and scores the clash on its hierarchy -- matching
+    # reduce1, which added H for the clash only, leaving bond/angle/rama H-less.
+    # clashscore needs only a hierarchy (no restraints), so add_hydrogens' own
+    # processing suffices -- no second model.process() here. self.model stays H-less
+    # (faithful bond/angle + picklable result, no riding-H). No-op under reduce1.
+    from mmtbx import hydrogens as reduce_switch
+    gr = self.model_statistics_geometry_result
+    if (not reduce_switch.use_old_reduce()) and (gr.clash.clashes is None) \
+       and (not self.model.has_hd()):
+      from libtbx import group_args
+      from mmtbx.validation.utils import molprobity_score
+      hmodel = reduce_switch.add_hydrogens(
+        self.model.deep_copy(), nuclear=nuclear, log=null_out())
+      cs = clashscore.clashscore(
+        pdb_hierarchy=hmodel.get_hierarchy(), keep_hydrogens=True,
+        fast=False, condensed_probe=False, nuclear=nuclear)
+      gr.clash = group_args(score=cs.get_clashscore(), clashes=cs)
+      gr.molprobity_score = molprobity_score(
+        clashscore = gr.clash.score,
+        rota_out   = gr.rotamer.outliers,
+        rama_fav   = gr.ramachandran.favored)
     self.ramalyze  = self.model_statistics_geometry_result.ramachandran.ramalyze
     self.omegalyze = self.model_statistics_geometry_result.omega.omegalyze
     self.rotalyze  = self.model_statistics_geometry_result.rotamer.rotalyze
     self.cbetadev  = self.model_statistics_geometry_result.c_beta.cbetadev
     self.clashes   = self.model_statistics_geometry_result.clash.clashes
-    if pdb_hierarchy.contains_protein() :
+    if pdb_hierarchy.contains_protein():
       self.find_missing_atoms(out=null_out())
-      if (flags.nqh) :
+      if (flags.nqh):
         self.nqh_flips = clashscore.nqh_flips(
           pdb_hierarchy=pdb_hierarchy)
-    if (pdb_hierarchy.contains_rna() and flags.rna and
-        libtbx.env.has_module(name="suitename")) :
-      if (geometry_restraints_manager is not None) :
+    if (pdb_hierarchy.contains_rna() and flags.rna):
+      if (geometry_restraints_manager is not None):
         self.rna = rna_validate.rna_validation(
           pdb_hierarchy=pdb_hierarchy,
           geometry_restraints_manager=geometry_restraints_manager,
           outliers_only=outliers_only,
           params=None)
-    if (flags.model_stats) and (xray_structure is not None) :
+    if (flags.model_stats) and (self.model is not None):
+      # keep for backwards compatibility
       self.model_stats = model_properties.model_statistics(
         pdb_hierarchy=pdb_hierarchy,
         xray_structure=xray_structure,
         all_chain_proxies=all_chain_proxies,
         ignore_hd=(not nuclear),
         ligand_selection=ligand_selection)
-    if (geometry_restraints_manager is not None) and (flags.restraints) :
+      # ligand_selection is no longer available
+      self.model_stats_new = self.model.composition()
+      self.adp_stats = self.model.adp_statistics()
+    if (geometry_restraints_manager is not None) and (flags.restraints):
       assert (xray_structure is not None)
       self.restraints = restraints.combined(
         pdb_hierarchy=pdb_hierarchy,
         xray_structure=xray_structure,
         geometry_restraints_manager=geometry_restraints_manager,
         ignore_hd=(not nuclear),
+        reverse_sort=True,
         cdl=getattr(all_chain_proxies, "use_cdl", None))
-    if (sequences is not None) and (flags.seq) :
+    if (sequences is not None) and (flags.seq):
       self.sequence = sequence.validation(
         pdb_hierarchy=pdb_hierarchy,
         sequences=sequences,
@@ -274,12 +318,13 @@ class molprobity (slots_getstate_setstate) :
         include_secondary_structure=True,
         extract_coordinates=True)
 
-    if (fmodel is not None) :
-      if (use_pdb_header_resolution_cutoffs) and (header_info is not None) :
+    if (fmodel is not None):
+      if (use_pdb_header_resolution_cutoffs) and (header_info is not None):
         fmodel = fmodel.resolution_filter(
           d_min=header_info.d_min,
           d_max=header_info.d_max)
-      if (flags.rfactors) :
+        fmodel.update_all_scales(mosaic=True)
+      if (flags.rfactors):
         self.data_stats = experimental.data_statistics(fmodel,
           raw_data=raw_data,
           n_bins=n_bins_data,
@@ -291,14 +336,14 @@ class molprobity (slots_getstate_setstate) :
             model=model,
             fmodel=fmodel,
             cc_min=min_cc_two_fofc)
-        if (flags.waters) :
+        if (flags.waters):
           self.waters = waters.waters(
             pdb_hierarchy=pdb_hierarchy,
             xray_structure=xray_structure,
             fmodel=fmodel,
             collect_all=True)
 
-      if (unmerged_data is not None) :
+      if (unmerged_data is not None):
         self.merging = experimental.merging_and_model_statistics(
           f_obs=fmodel.f_obs(),
           f_model=fmodel.f_model(),
@@ -307,10 +352,10 @@ class molprobity (slots_getstate_setstate) :
           anomalous=count_anomalous_pairs_separately,
           use_internal_variance=use_internal_variance,
           n_bins=n_bins_data)
-      if (flags.xtriage) :
+      if (flags.xtriage):
         import mmtbx.scaling.xtriage
         f_model = abs(fmodel.f_model()).set_observation_type_xray_amplitude()
-        if (raw_data is not None) :
+        if (raw_data is not None):
           f_model, obs = f_model.common_sets(other=raw_data)
         else :
           obs = fmodel.f_obs()
@@ -319,11 +364,11 @@ class molprobity (slots_getstate_setstate) :
           miller_calc=f_model,
           unmerged_obs=unmerged_data, # XXX some redundancy here...
           text_out=null_out())
-    if (fmodel_neutron is not None) and (flags.rfactors) :
+    if (fmodel_neutron is not None) and (flags.rfactors):
       self.neutron_stats = experimental.data_statistics(fmodel_neutron,
         n_bins=n_bins_data,
         count_anomalous_pairs_separately=False)
-    if (pdb_hierarchy.models_size() == 1) :
+    if (pdb_hierarchy.models_size() == 1):
       self._multi_criterion = multi_criterion_view(pdb_hierarchy)
 
     # wilson B
@@ -354,29 +399,29 @@ class molprobity (slots_getstate_setstate) :
         raise Sorry('%s could not be written correctly.\n%s' %
                     (save_probe_unformatted_file, err))
 
-  def show (self, out=sys.stdout, outliers_only=True, suppress_summary=False,
-      show_percentiles=False) :
+  def show(self, out=sys.stdout, outliers_only=True, suppress_summary=False,
+      show_percentiles=False):
     """
     Comprehensive output with individual outlier lists, plus summary.
     """
-    if (self.xtriage is not None) :
+    if (self.xtriage is not None):
       self.xtriage.summarize_issues().show(out=out)
-    if (self.data_stats is not None) :
+    if (self.data_stats is not None):
       make_header("Experimental data", out=out)
       self.data_stats.show(out=out, prefix="  ")
-      if (self.real_space is not None) :
+      if (self.real_space is not None):
         make_sub_header("Residues with poor real-space CC", out=out)
         self.real_space.show(out=out, prefix="  ")
-      if (self.waters is not None) :
+      if (self.waters is not None):
         make_sub_header("Suspicious water molecules", out=out)
         self.waters.show(out=out, prefix="  ")
-    if (self.model_stats is not None) :
+    if (self.model_stats_new is not None):
       make_header("Model properties", out=out)
-      self.model_stats.show(prefix="  ", out=out)
+      self.model_stats_new.show(out, prefix="  ")
     if (self.sequence is not None):
       make_header("Sequence validation", out=out)
       self.sequence.show(out=out)
-    if (self.restraints is not None) :
+    if (self.restraints is not None):
       make_header("Geometry restraints", out=out)
       self.restraints.show(out=out, prefix="  ")
     if (self.hydrogens is not None):
@@ -384,14 +429,14 @@ class molprobity (slots_getstate_setstate) :
       self.hydrogens.print_results(prefix='  ', log=out)
 
     make_header("Molprobity validation", out=out)
-    self.model_statistics_geometry.show(log=out, prefix="  ", lowercase=True)
-    if (self.nqh_flips is not None) :
+    self.model_statistics_geometry.show(log=out, prefix="  ", uppercase=False)
+    if (self.nqh_flips is not None):
       make_sub_header("Asn/Gln/His flips", out=out)
       self.nqh_flips.show(out=out, prefix="  ")
-    if (self.rna is not None) :
+    if (self.rna is not None):
       make_header("RNA validation", out=out)
       self.rna.show(out=out, prefix="  ", outliers_only=outliers_only)
-    if (not suppress_summary) :
+    if (not suppress_summary):
       make_header("Summary", out=out)
       self.show_summary(out=out, prefix="  ",
         show_percentiles=show_percentiles)
@@ -427,13 +472,13 @@ class molprobity (slots_getstate_setstate) :
       r_free            = r_free,
       program           = getattr(self.header_info, "refinement_program", None))
 
-  def show_summary (self, *args, **kwds) :
+  def show_summary(self, *args, **kwds):
     """
     Print summary of outliers or scores for each analysis.
     """
     return self.summarize().show(*args, **kwds)
 
-  def find_missing_atoms (self, out=None) :
+  def find_missing_atoms(self, out=None):
     '''
     Function for finding missing protein atoms
     Derived from run_find_missing function in phenix/validation/__init__.py
@@ -448,8 +493,8 @@ class molprobity (slots_getstate_setstate) :
         ignore_hydrogens=True,
         report_whole_res=True,
         return_ca_pos=True)
-    except Exception, e :
-      print >> out, to_str(e)
+    except Exception as e :
+      print(to_str(e), file=out)
     else :
       for (res_info, missing_atoms, xyz) in missing_list :
         if len(missing_atoms) == 0 :
@@ -458,9 +503,9 @@ class molprobity (slots_getstate_setstate) :
         try :
           resseq = int(res_info[2:6])
         except ValueError : # FIXME use hybrid36?
-          print >> out, "  warning: indecipherable residue number '%s'" % \
-            res_info[2:6]
-          print res_info
+          print("  warning: indecipherable residue number '%s'" % \
+            res_info[2:6], file=out)
+          print(res_info)
           continue
         alt = res_info[-4]
         resname = res_info[-3:]
@@ -469,29 +514,29 @@ class molprobity (slots_getstate_setstate) :
           alt, ", ".join(missing_atoms),
           "chain '%s' and resseq %s" % (chain_id, str(resseq)), xyz))
 
-  def r_work (self, outer_shell=False) :
-    if (outer_shell) :
+  def r_work(self, outer_shell=False):
+    if (outer_shell):
       return getattr(self.data_stats, "r_work_outer", None)
     else :
       return getattr(self.data_stats, "r_work",
         getattr(self.header_info, "r_work", None))
 
-  def r_free (self, outer_shell=False) :
-    if (outer_shell) :
+  def r_free(self, outer_shell=False):
+    if (outer_shell):
       return getattr(self.data_stats, "r_free_outer", None)
     else :
       return getattr(self.data_stats, "r_free",
         getattr(self.header_info, "r_free", None))
 
-  def d_min (self) :
-    if (self.data_stats is not None) :
+  def d_min(self):
+    if (self.data_stats is not None):
       return self.data_stats.d_min
-    elif (self.header_info is not None) :
+    elif (self.header_info is not None):
       return self.header_info.d_min
 
-  def d_max_min (self, outer_shell=False) :
-    if (self.data_stats is not None) :
-      if (outer_shell) :
+  def d_max_min(self, outer_shell=False):
+    if (self.data_stats is not None):
+      if (outer_shell):
         return self.data_stats.d_max_outer, self.data_stats.d_min_outer
       else :
         return self.data_stats.d_max, self.data_stats.d_min
@@ -523,23 +568,22 @@ class molprobity (slots_getstate_setstate) :
   def molprobity_score(self):
     return self.model_statistics_geometry_result.molprobity_score
 
-  def b_iso_mean (self) :
-    overall_stats = getattr(self.model_stats, "all", None)
-    return getattr(overall_stats, "b_mean", None)
+  def b_iso_mean(self):
+    return self.adp_stats.result().overall.mean
 
-  def space_group (self) :
+  def space_group(self):
     return getattr(self.crystal_symmetry, "space_group", lambda: None)()
 
-  def space_group_info (self) :
+  def space_group_info(self):
     return getattr(self.crystal_symmetry, "space_group_info", lambda: None)()
 
-  def unit_cell (self) :
+  def unit_cell(self):
     return getattr(self.crystal_symmetry, "unit_cell", lambda: None)()
 
-  def twin_law (self) :
+  def twin_law(self):
     return getattr(self.data_stats, "twin_law", None)
 
-  def fmodel_statistics_by_resolution (self) :
+  def fmodel_statistics_by_resolution(self):
     """
     Returns the resolution bins containing F(model) statistics; see
     mmtbx.f_model.f_model_info for details.
@@ -547,60 +591,103 @@ class molprobity (slots_getstate_setstate) :
     fmodel_info = getattr(self.data_stats, "info", None)
     return getattr(fmodel_info, "bins", None)
 
-  def fmodel_statistics_graph_data (self) :
+  def fmodel_statistics_graph_data(self):
     """
     Wrapper for fmodel_statistics_by_resolution(), returns object suitable for
     routines in wxtbx.plots.
     """
     bins = self.fmodel_statistics_by_resolution()
-    if (bins is not None) :
+    if (bins is not None):
       from mmtbx.f_model.f_model_info import export_bins_table_data
       return export_bins_table_data(bins)
     return None
 
-  def atoms_to_observations_ratio (self, assume_riding_hydrogens=True) :
-    n_atoms = self.model_stats.n_atoms
-    if (assume_riding_hydrogens) :
-      n_atoms -= self.model_stats.n_hydrogens
+  def atoms_to_observations_ratio(self, assume_riding_hydrogens=True):
+    n_atoms = self.model_stats_new.result().n_atoms
+    if (assume_riding_hydrogens):
+      n_atoms -= self.model_stats_new.result().n_hd
     n_refl = self.data_stats.n_refl
     assert (n_refl > 0)
     return n_atoms / n_refl
 
-  def as_mmcif_records (self) : # TODO
+  def as_mmcif_records(self) : # TODO
     raise NotImplementedError()
 
-  def as_multi_criterion_view (self) :
-    if (self._multi_criterion is None) :
+  def real_space_results_by_type(self):
+    """
+    Real-space results split the way the GUI residue-type menu does:
+    protein, other (nucleic acids, ligands, ions), water, everything.
+    """
+    protein = other = water = []
+    if self.real_space is not None:
+      protein = list(self.real_space.protein)
+      other = list(self.real_space.other)
+    if self.waters is not None:
+      water = list(self.waters.results)
+    return {
+      "protein" : protein,
+      "other" : other,
+      "water" : water,
+      "everything" : protein + other + water,
+    }
+
+  def _populate_multi_criterion(self, view, real_space_results,
+      log=sys.stderr):
+    view.process_outliers(real_space_results, log=log)
+    if self.waters is not None:
+      view.process_outliers(self.waters.results, log=log)
+    msr = self.model_statistics_geometry_result
+    view.process_outliers(msr.ramachandran.ramalyze.results, log=log)
+    view.process_outliers(msr.rotamer.rotalyze.results, log=log)
+    view.process_outliers(msr.c_beta.cbetadev.results, log=log)
+    view.process_outliers(msr.clash.clashes.results, log=log)
+
+  def as_multi_criterion_view(self, residue_type=None):
+    """
+    Residues and their outliers for the multi-criterion plot.  By default this
+    is the (cached) view over the protein and nucleic-acid chains.  With
+    residue_type ("protein", "other", "water" or "everything") a new view is
+    built from the real-space results of that type only, i.e. the residues
+    listed in the corresponding GUI table; it may be empty.
+    """
+    if residue_type is not None:
+      by_type = self.real_space_results_by_type()
+      if residue_type not in by_type:
+        raise ValueError("Unknown residue type '%s' (expected one of %s)" %
+          (residue_type, ", ".join(sorted(by_type.keys()))))
+      results = by_type[residue_type]
+      view = multi_criterion_view.from_results(results)
+      # outliers of other residue types are expected to be missing here
+      self._populate_multi_criterion(view, results, log=null_out())
+      return view
+    if (self._multi_criterion is None):
       return None
-    if (not self._multi_criterion.is_populated) :
-      if (self.real_space is not None) :
-        self._multi_criterion.process_outliers(self.real_space.results)
-      if (self.waters is not None) :
-        self._multi_criterion.process_outliers(self.waters.results)
-      msr = self.model_statistics_geometry_result
-      self._multi_criterion.process_outliers(msr.ramachandran.ramalyze.results)
-      self._multi_criterion.process_outliers(msr.rotamer.rotalyze.results)
-      self._multi_criterion.process_outliers(msr.c_beta.cbetadev.results)
-      self._multi_criterion.process_outliers(msr.clash.clashes.results)
+    if (not self._multi_criterion.is_populated):
+      real_space_results = []
+      if (self.real_space is not None):
+        # real_space.results only holds the protein residues (the GUI swaps
+        # it between residue types); the plot covers nucleic acids as well
+        real_space_results = self.real_space.protein + self.real_space.other
+      self._populate_multi_criterion(self._multi_criterion, real_space_results)
     return self._multi_criterion
 
-  def display_wx_plots (self) :
-    if (self.ramalyze is not None) :
+  def display_wx_plots(self):
+    if (self.ramalyze is not None):
       self.ramalyze.display_wx_plots()
-    if (self.rotalyze is not None) :
+    if (self.rotalyze is not None):
       self.rotalyze.display_wx_plots()
     mc = self.as_multi_criterion_view()
     mc.display_wx_plots()
 
-  def write_coot_script (self, file_name) :
+  def write_coot_script(self, file_name):
     """
     Write a Python script for displaying outlier lists with click-to-recenter
     enabled.
     """
     coot_script = libtbx.env.find_in_repositories(
-      relative_path="cctbx_project/cootbx/validation_lists.py",
+      relative_path="cootbx/validation_lists.py",
       test=os.path.isfile)
-    if (coot_script is None) :
+    if (coot_script is None):
       raise Sorry("Can't find template Python script for Coot.")
     f = open(file_name, "w")
     f.write("# script auto-generated by phenix.molprobity\n")
@@ -621,7 +708,7 @@ class molprobity (slots_getstate_setstate) :
     f.write("gui = coot_molprobity_todo_list_gui(data=data)\n")
     f.close()
 
-  def get_polygon_statistics (self, stat_names) :
+  def get_polygon_statistics(self, stat_names):
     # missing keys from polygon.keys_to_show:
     #   r_work_cutoffs, r_free_cutoffs
     #   completeness_in_range, completeness_d_min_inf, completeness_6A_inf
@@ -632,8 +719,8 @@ class molprobity (slots_getstate_setstate) :
       if (name == "r_work") : val = self.r_work()
       elif (name == "r_free") : val = self.r_free()
       elif (name == "adp_mean_all") : val = self.b_iso_mean()
-      elif (name == "adp_min_all"): val = self.model_stats.all.b_min
-      elif (name == "adp_max_all"): val = self.model_stats.all.b_max
+      elif (name == "adp_min_all"): val = self.adp_stats.result().overall.min
+      elif (name == "adp_max_all"): val = self.adp_stats.result().overall.max
       elif (name == "wilson_b") : val = self.wilson_b
       elif (name == "bond_rmsd") : val = self.rms_bonds()
       elif (name == "bond_max_deviation"):
@@ -661,7 +748,7 @@ class molprobity (slots_getstate_setstate) :
       stats[name] = val
     return stats
 
-  def get_statistics_for_phenix_gui (self) :
+  def get_statistics_for_phenix_gui(self):
     mp = self
     stats = [
       ("R-work", format_value("%.4f", mp.r_work())),
@@ -671,14 +758,14 @@ class molprobity (slots_getstate_setstate) :
       ("Clashscore", format_value("%.2f", mp.clashscore())),
       ("MolProbity score", format_value("%.3f", mp.molprobity_score())),
     ]
-    if (self.neutron_stats is not None) :
+    if (self.neutron_stats is not None):
       stats.extend([
         ("R-work (neutron)", format_value("%.4f", self.neutron_stats.r_work)),
         ("R-free (neutron)", format_value("%.4f", self.neutron_stats.r_free)),
       ])
     return stats
 
-class summary (slots_getstate_setstate_default_initializer) :
+class summary(slots_getstate_setstate_default_initializer):
   """
   Simplified container for overall statistics; replaces class of the same
   name in mmtbx.command_line.validation_summary.  The more complete molprobity
@@ -718,27 +805,37 @@ class summary (slots_getstate_setstate_default_initializer) :
     "%6.2f", "%8.4f", "%8.4f", "%s",
   ]
 
-  def show (self, out=sys.stdout, prefix="  ", show_percentiles=False) :
-    def fs (format, value) :
+  def show(self, out=sys.stdout, prefix="  ", show_percentiles=False):
+    def fs(format, value):
       return format_value(format, value, replace_none_with=("(none)"))
     maxlen = max([ len(label) for label in self.labels ])
     percentiles = {}
-    if (show_percentiles) :
+    if (show_percentiles):
       perc_attr = ["clashscore", "mpscore", "r_work", "r_free"]
       stats = dict([ (name, getattr(self, name)) for name in perc_attr ])
-    for k, name in enumerate(self.__slots__) :
+      from mmtbx.polygon import get_statistics_percentiles
+      percentiles = get_statistics_percentiles(self.d_min, stats)
+    for k, name in enumerate(self.__slots__):
       format = "%%s%%-%ds = %%s" % maxlen
-      if (k < 3) :
+      if (k < 3):
         format += " %%"
       percentile_info = ""
-      format += "%s"
+      if (show_percentiles):
+        percentile = percentiles.get(name, None)
+        if (percentile is not None):
+          format += " (percentile: %s)"
+          percentile_info = "%.1f" % percentile
+        else :
+          format += "%s"
+      else :
+        format += "%s"
       value = getattr(self, name)
-      if (value is not None) :
-        print >> out, format % (prefix, self.labels[k], fs(self.formats[k],
-          value), percentile_info)
+      if (value is not None):
+        print(format % (prefix, self.labels[k], fs(self.formats[k],
+          value), percentile_info), file=out)
     return self
 
-  def iter_molprobity_gui_fields (self) :
+  def iter_molprobity_gui_fields(self):
     stats = [
       ("Ramachandran outliers","%6.2f%%",self.rama_outliers,0.5,0.2,"< 0.2%"),
       ("Ramachandran favored", "%6.2f%%",self.rama_favored,95,98,"> 98%"),
@@ -752,108 +849,109 @@ class summary (slots_getstate_setstate_default_initializer) :
 
 ########################################################################
 
-class pdb_header_info (slots_getstate_setstate) :
+class pdb_header_info(slots_getstate_setstate):
   """
   Container for information extracted from the PDB header (if available).
   """
   __slots__ = ["d_min", "d_max", "r_work", "r_free", "rms_bonds", "rms_angles",
     "refinement_program", "n_tls_groups"]
-  def __init__ (self, pdb_file, pdb_hierarchy=None) :
+  def __init__(self, pdb_file, pdb_hierarchy=None):
     for name in self.__slots__ :
       setattr(self, name, None)
-    if (pdb_file is not None) :
-      import iotbx.pdb.hierarchy
+    if (pdb_file is not None):
+      import iotbx.pdb
       from iotbx.pdb import extract_rfactors_resolutions_sigma
-      pdb_in = iotbx.pdb.hierarchy.input(file_name=pdb_file)
+      pdb_in = iotbx.pdb.input(file_name=pdb_file)
       published_results = extract_rfactors_resolutions_sigma.extract(
-        file_lines=pdb_in.input.remark_section(), file_name=None)
-      if (published_results is not None) :
+        file_lines=pdb_in.remark_section(), file_name=None)
+      if (published_results is not None):
         self.r_work = published_results.r_work
         self.r_free = published_results.r_free
         self.d_min = published_results.high
         self.d_max = published_results.low
-      self.refinement_program = pdb_in.input.get_program_name()
+      self.refinement_program = pdb_in.get_program_name()
       # XXX phenix.refine hack, won't work for other programs
-      lines = open(pdb_file).readlines()
+      with open(pdb_file) as f:
+        lines = f.readlines()
       for line in lines :
-        if (line.startswith("REMARK Final:")) :
+        if (line.startswith("REMARK Final:")):
           fields = line.strip().split()
           self.rms_bonds = float(fields[-4])
           self.rms_angles = float(fields[-1])
           break
-      if (pdb_hierarchy is not None) :
-        tls_groups = pdb_in.input.extract_tls_params(pdb_hierarchy).tls_params
-        if (tls_groups is not None) :
+      if (pdb_hierarchy is not None):
+        tls_groups = pdb_in.extract_tls_params(pdb_hierarchy).tls_params
+        if (tls_groups is not None):
           self.n_tls_groups = len(tls_groups)
 
-  def is_phenix_refinement (self) :
+  def is_phenix_refinement(self):
     return (self.refinement_program is not None and
             "phenix" in self.refinement_program.lower())
 
-  def show (self, out=sys.stdout, prefix="", include_r_factors=True,
-      include_rms_geom=True) :
-    if (self.refinement_program is not None) :
-      print >> out, "%sRefinement program    = %s" % (prefix,
-        self.refinement_program)
-    if (include_r_factors) :
-      if (self.d_min is not None) :
-        print >> out, "%sHigh resolution       = %6.2f" % (prefix, self.d_min)
-      if (self.r_work is not None) :
-        print >> out, "%sR-work                = %8.4f" % (prefix, self.r_work)
-      if (self.r_free is not None) :
-        print >> out, "%sR-free                = %8.4f" % (prefix, self.r_free)
-    if (include_rms_geom) :
-      if (self.rms_bonds is not None) :
-        print >> out, "%sRMS(bonds)            = %8.4f" % (prefix,
-          self.rms_bonds)
-      if (self.rms_angles is not None) :
-        print >> out, "%sRMS(angles)           = %6.2f" % (prefix,
-          self.rms_angles)
+  def show(self, out=sys.stdout, prefix="", include_r_factors=True,
+      include_rms_geom=True):
+    if (self.refinement_program is not None):
+      print("%sRefinement program    = %s" % (prefix,
+        self.refinement_program), file=out)
+    if (include_r_factors):
+      if (self.d_min is not None):
+        print("%sHigh resolution       = %6.2f" % (prefix, self.d_min), file=out)
+      if (self.r_work is not None):
+        print("%sR-work                = %8.4f" % (prefix, self.r_work), file=out)
+      if (self.r_free is not None):
+        print("%sR-free                = %8.4f" % (prefix, self.r_free), file=out)
+    if (include_rms_geom):
+      if (self.rms_bonds is not None):
+        print("%sRMS(bonds)            = %8.4f" % (prefix,
+          self.rms_bonds), file=out)
+      if (self.rms_angles is not None):
+        print("%sRMS(angles)           = %6.2f" % (prefix,
+          self.rms_angles), file=out)
 
-class residue_multi_criterion (residue) :
+class residue_multi_criterion(residue):
   """
   Container for multiple outliers associated with a single residue.  If data
   are used, this may include real-space statistics regardless of whether the
   residue is technically an outlier or not.
   """
   __slots__ = residue.__slots__ + ["outliers", "n_confs", "i_seq"]
-  def __init__ (self, **kwds) :
+  def __init__(self, **kwds):
     residue.__init__(self, **kwds)
     self.outliers = []
 
-  def add_outlier (self, outlier) :
-    if isinstance(outlier, residue) :
+  def add_outlier(self, outlier):
+    if isinstance(outlier, residue):
       assert self.is_same_residue_group(outlier)
     self.outliers.append(outlier)
 
-  def _find_outlier_type (self, outlier_type=None, outlier_types=(),
-      retrieve_all=False) :
+  def _find_outlier_type(self, outlier_type=None, outlier_types=(),
+      retrieve_all=False):
     assert (outlier_type is not None) or (len(outlier_types) > 0)
     for outlier in self.outliers :
-      if (not outlier.is_outlier()) and (not retrieve_all) :
+      if (not outlier.is_outlier()) and (not retrieve_all):
         continue
       otype = type(outlier).__name__
-      if (otype == outlier_type) or (otype in outlier_types) :
+      if (otype == outlier_type) or (otype in outlier_types):
         return True
     return False
 
-  def is_ramachandran_outlier (self) :
+  def is_ramachandran_outlier(self):
     return self._find_outlier_type("ramachandran")
 
-  def is_rotamer_outlier (self) :
+  def is_rotamer_outlier(self):
     return self._find_outlier_type("rotamer")
 
-  def is_cbeta_outlier (self) :
+  def is_cbeta_outlier(self):
     return self._find_outlier_type("cbeta")
 
-  def is_clash_outlier (self) :
+  def is_clash_outlier(self):
     return self._find_outlier_type("clash")
 
-  def is_geometry_outlier (self) :
+  def is_geometry_outlier(self):
     return self._find_outlier_type(
       outlier_types=["bond","angle","dihedral","chirality","planarity"])
 
-  def __str__ (self) :
+  def __str__(self):
     outliers = []
     if self.is_ramachandran_outlier() : outliers.append("rama")
     if self.is_rotamer_outlier() : outliers.append("rota")
@@ -863,32 +961,50 @@ class residue_multi_criterion (residue) :
     if (len(outliers) == 0) : outliers = ["---"]
     return "%s  %s" % (self.id_str(), ",".join(outliers))
 
-  def __hash__ (self) :
+  def __hash__(self):
     return self.residue_group_id_str().__hash__()
 
-  def __cmp__ (self, other) :
+  def __cmp__(self, other):
     return cmp(self.i_seq, other.i_seq)
 
-  def get_real_space_plot_values (self, use_numpy_NaN=True) :
+  def __eq__(self, other):
+    return self.i_seq == other.i_seq
+
+  def __ne__(self, other):
+    return self.i_seq != other.i_seq
+
+  def __lt__(self, other):
+    return self.i_seq < other.i_seq
+
+  def __le__(self, other):
+    return self.i_seq <= other.i_seq
+
+  def __gt__ (self, other):
+    return self.i_seq > other.i_seq
+
+  def __ge__(self, other):
+    return self.i_seq >= other.i_seq
+
+  def get_real_space_plot_values(self, use_numpy_NaN=True):
     for outlier in self.outliers :
-      if (type(outlier).__name__ == 'residue_real_space') :
+      if type(outlier).__name__ in ('residue_real_space', 'water'):
         values = [ outlier.b_iso, outlier.cc, outlier.two_fofc, outlier.fmodel ]
         return values
-    if (use_numpy_NaN) :
+    if (use_numpy_NaN):
       import numpy
-      return [ numpy.NaN ] * 4
+      return [ numpy.nan ] * 4
     else :
       return [ None ] * 4
 
-  def is_map_outlier (self, cc_min=0.8) :
+  def is_map_outlier(self, cc_min=0.8):
     b_iso, cc, two_fofc, fmodel = self.get_real_space_plot_values(False)
-    if (cc is None) :
+    if (cc is None):
       return None
-    elif (cc < cc_min) :
+    elif (cc < cc_min):
       return True
     return False
 
-  def get_outlier_plot_values (self, use_numpy_NaN=True) :
+  def get_outlier_plot_values(self, use_numpy_NaN=True):
     y = []
     if self.is_ramachandran_outlier() : y.append(1)
     else : y.append(None)
@@ -898,30 +1014,58 @@ class residue_multi_criterion (residue) :
     else : y.append(None)
     if self.is_clash_outlier() : y.append(1)
     else : y.append(None)
-    if (use_numpy_NaN) :
+    if (use_numpy_NaN):
       import numpy
       y_ = []
       for yval in y :
-        if (yval is None) : y_.append(numpy.NaN)
+        if (yval is None) : y_.append(numpy.nan)
         else :              y_.append(yval)
       return y_
     return y
 
-class multi_criterion_view (slots_getstate_setstate) :
+class multi_criterion_view(slots_getstate_setstate):
   """
   Container for generating multi-criterion plots and tables from separate lists
   of outliers.
   """
   __slots__ = ["residues", "is_populated"]
-  def __init__ (self, pdb_hierarchy, include_all=False) :
+
+  @classmethod
+  def from_results(cls, results):
+    """
+    Build the view from single-residue validation results (e.g. the
+    real-space results of one residue type, including waters) instead of a
+    hierarchy.  Residues keep the order of the results; duplicates (e.g.
+    alternate conformations) are collapsed onto the first one.
+    """
+    self = cls.__new__(cls)
+    self.is_populated = False
+    self.residues = {}
+    for result in results:
+      id_str = result.residue_group_id_str()
+      if id_str in self.residues:
+        continue
+      combined = residue_multi_criterion(
+        chain_id=result.chain_id,
+        resseq=result.resseq,
+        icode=result.icode,
+        resname=result.resname,
+        altloc="",
+        i_seq=len(self.residues),
+        n_confs=1)
+      combined.xyz = result.xyz
+      self.residues[id_str] = combined
+    return self
+
+  def __init__(self, pdb_hierarchy, include_all=False):
     self.is_populated = False
     self.residues = {}
     i_seq = 0
-    for chain in pdb_hierarchy.only_model().chains() :
-      if (not include_all) :
-        if (not chain.is_protein()) and (not chain.is_na()) :
+    for chain in pdb_hierarchy.only_model().chains():
+      if (not include_all):
+        if (not chain.is_protein()) and (not chain.is_na()):
           continue
-      for residue_group in chain.residue_groups() :
+      for residue_group in chain.residue_groups():
         atom_group = residue_group.atom_groups()[0]
         resname = atom_group.resname
         if (resname == "HOH") : continue
@@ -939,61 +1083,167 @@ class multi_criterion_view (slots_getstate_setstate) :
         self.residues[id_str] = combined
         i_seq += 1
 
-  def process_outliers (self, outliers, log=sys.stderr) :
+  def process_outliers(self, outliers, log=sys.stderr):
     self.is_populated = True
     for outlier in outliers :
-      if outlier.is_single_residue_object() :
-        if (outlier.resname == "HOH") : continue
+      if outlier.is_single_residue_object():
         id_str = outlier.residue_group_id_str()
-        if (id_str in self.residues) :
+        if (id_str in self.residues):
           self.residues[id_str].add_outlier(outlier)
-        else :
-          print >> log, "missing residue group '%s'" % id_str
+        elif outlier.resname != "HOH": # waters are usually not in the view
+          print("missing residue group '%s'" % id_str, file=log)
       else :
         have_ids = set([])
         for atom in outlier.atoms_info :
           id_str = atom.residue_group_id_str()
-          if (atom.resname == "HOH") or (id_str in have_ids) : continue
-          if (id_str in self.residues) :
+          if id_str in have_ids: continue
+          if (id_str in self.residues):
             self.residues[id_str].add_outlier(outlier)
             have_ids.add(id_str)
-          else :
-            print >> log, "missing residue group '%s'" % id_str
+          elif atom.resname != "HOH":
+            print("missing residue group '%s'" % id_str, file=log)
 
-  def get_residue_group_data (self, residue_group) :
+  def get_residue_group_data(self, residue_group):
     residue_validation = self.residues.get(residue_group.id_str(), None)
-    if (residue_validation is None) :
+    if (residue_validation is None):
       raise RuntimeError("Can't find residue '%s'" % residue_group.id_str())
     return residue_validation
 
-  def data (self) :
+  def data(self):
     return sorted(self.residues.values())
 
-  def binned_data (self) :
+  def binned_data(self):
     from mmtbx.validation import graphics
     return graphics.residue_binner(self.data())
 
-  def get_y_limits (self) :
+  def get_y_limits(self):
     import numpy
     values = []
-    for outlier in self.data() :
-      values.append(outlier.get_real_space_plot_values(False))
+    for outlier in self.data():
+      values.append(outlier.get_real_space_plot_values(True))
     values = numpy.array(values).transpose()
     if (len(values) > 0):
+      def widen(y_min, y_max):
+        # a single residue gives (nearly) identical limits, which make the
+        # plot axis singular; enforce a minimum range around the values
+        min_range = abs(y_max) * 0.1 or 1.0
+        if (y_max - y_min) < min_range:
+          pad = (min_range - (y_max - y_min)) / 2
+          y_min, y_max = y_min - pad, y_max + pad
+        return (y_min, y_max)
       rho_min = min(min(values[2]), min(values[3]))
       rho_max = max(max(values[2]), max(values[3]))
       return {
-        "rho" : (rho_min, rho_max),
-        "b" : (min(values[0]), max(values[0])),
-        "cc" : (min(values[1]), max(values[1])),
+        "rho" : widen(rho_min, rho_max),
+        "b" : widen(min(values[0]), max(values[0])),
+        "cc" : widen(min(values[1]), max(values[1])),
       }
-    else:
-      raise Sorry('No residues (usually protein or nucleic acid) are available for generating plots.')
+    else: # no residues: the plot is drawn empty
+      return {
+        "rho" : (None, None),
+        "b" : (None, None),
+        "cc" : (None, None),
+      }
 
-  def display_wx_plots (self, parent=None) :
+  def display_wx_plots(self, parent=None, title="MolProbity multi-criterion plot"):
     import wxtbx.plots.molprobity
     frame = wxtbx.plots.molprobity.multi_criterion_frame(
       parent=parent,
-      title="MolProbity multi-criterion plot",
+      title=title,
       validation=self)
     frame.Show()
+
+# =============================================================================
+# MolProbity ProgramTemplate
+class MolProbityTemplate(ProgramTemplate):
+
+  def get_results_as_PDB_JSON(self):
+    return None
+
+# MolProbity CLI Parser
+class MolProbityParser(CCTBXParser):
+
+  def add_default_options(self):
+    super(MolProbityParser, self).add_default_options()
+
+    # add extra CLI option for PDB JSON
+    self.add_argument(
+      '--write-pdb-json', '--write_pdb_json', action='store_true',
+      help='write output in JSON file for PDB'
+    )
+
+# MolProbity run_program function
+# Since the JSON output comes at the end, there is no easy way to modify the
+# default run_program function
+# But, this can be the basis for running other MolProbity validation tools
+# that can output a JSON file specific for the PDB.
+def run_molprobity_program(program_class=None, custom_process_arguments=None,
+                           args=None, logger=None):
+  '''
+  Function for running programs using CCTBXParser and the program template
+
+  :param program_class:  ProgramTemplate type (required)
+  :param custom_process_arguments:
+                         Custom function to parse unknown arguments (optional)
+  :param args:           list of command-line arguments (optional)
+  :param logger:         logger (e.g. multi_out) for output (optional)
+  :rtype:                whatever is returned from program_class.get_results()
+  '''
+
+  assert (program_class is not None)
+
+  if (args is None):
+    args = sys.argv[1:]
+
+  # create logger
+  if (logger is None):
+    logger = multi_out()
+    logger.register('stdout', sys.stdout)
+
+  # start timer
+  t = show_times(out=logger)
+
+  # create parser
+  parser = MolProbityParser(program_class=program_class,
+                            custom_process_arguments=custom_process_arguments,
+                            logger=logger)
+  namespace = parser.parse_args(args)
+
+  # start program
+  print('Starting job', file=logger)
+  print('='*79, file=logger)
+  task = program_class(parser.data_manager, parser.working_phil.extract(),
+                       master_phil=parser.master_phil,
+                       logger=logger)
+
+  # custom constructor (optional)
+  task.custom_init()
+
+  # validate inputs
+  task.validate()
+
+  # run program
+  task.run()
+
+  # clean up (optional)
+  task.clean_up()
+
+  # output JSON file for PDB
+  if (namespace.write_pdb_json):
+    filename, ext = os.path.splitext(
+      os.path.basename(parser.data_manager.get_default_model_name()))
+    filename += '_pdb.json'
+    json_text = task.get_results_as_PDB_JSON()
+    print('\nJSON output')
+    print('-'*79, file=logger)
+    print('  Writing results in JSON format to %s.' % filename, file=logger)
+    parser.data_manager._write_text(None, json_text, filename=filename,
+                                    overwrite=namespace.overwrite)
+
+  # stop timer
+  print('', file=logger)
+  print('='*79, file=logger)
+  print('Job complete', file=logger)
+  t()
+
+  return task.get_results()

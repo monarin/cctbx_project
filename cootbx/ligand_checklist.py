@@ -1,14 +1,16 @@
 
-from __future__ import division
+from __future__ import absolute_import, division, print_function
 import time
 import os
 import sys
 
 from libtbx.utils import to_str
+from six.moves import range
+from six.moves import zip
 
 t_wait = 250
 
-def start_coot_and_wait (
+def start_coot_and_wait(
     pdb_file,
     map_file,
     ligand_files,
@@ -16,8 +18,8 @@ def start_coot_and_wait (
     cif_files=(),
     work_dir=None,
     coot_cmd="coot",
-    log=None) :
-  from iotbx import file_reader
+    log=None):
+  import iotbx.pdb
   from libtbx.str_utils import make_header
   from libtbx import easy_run
   import cootbx
@@ -25,18 +27,17 @@ def start_coot_and_wait (
   if (log is None) : log = sys.stdout
   cwd = os.getcwd()
   if (work_dir is None) : work_dir = cwd
-  if (not os.path.isdir(work_dir)) :
+  if (not os.path.isdir(work_dir)):
     os.makedirs(work_dir)
   os.chdir(work_dir)
   base_script = __file__.replace(".pyc", ".py")
   ligand_xyzs = []
   for pdb_file in ligand_files :
     pdb_file = to_str(pdb_file)
-    pdb_in = file_reader.any_file(pdb_file, force_type="pdb")
-    pdb_in.assert_file_type("pdb")
-    coords = pdb_in.file_object.atoms().extract_xyz()
+    pdb_in = iotbx.pdb.input(pdb_file)
+    coords = pdb_in.atoms().extract_xyz()
     ligand_xyzs.append(coords.mean())
-  ligand_info = zip(ligand_files, ligand_ccs, ligand_xyzs)
+  ligand_info = list(zip(ligand_files, ligand_ccs, ligand_xyzs))
   f = open("edit_in_coot.py", "w")
   f.write(open(base_script).read())
   f.write("\n")
@@ -51,14 +52,14 @@ def start_coot_and_wait (
   make_header("Ligand selection in Coot", log)
   rc = easy_run.call("\"%s\" --no-state-script --script edit_in_coot.py &" %
     coot_cmd)
-  if (rc != 0) :
+  if (rc != 0):
     raise RuntimeError("Launching Coot failed with status %d" % rc)
-  print >> log, "  Waiting for user input at %s" % str(time.asctime())
+  print("  Waiting for user input at %s" % str(time.asctime()), file=log)
   out_file = ".COOT_LIGANDS"
   output_files = output_ccs = None
-  while (True) :
-    if (os.path.isfile(out_file)) :
-      print >> log, "  Coot editing complete at %s" % str(time.asctime())
+  while (True):
+    if (os.path.isfile(out_file)):
+      print("  Coot editing complete at %s" % str(time.asctime()), file=log)
       ligand_indices = [ int(i) for i in open(out_file).read().split() ]
       output_files = []
       for i in ligand_indices :
@@ -72,8 +73,8 @@ def start_coot_and_wait (
   os.chdir(cwd)
   return output_files, output_ccs
 
-class manager (object) :
-  def __init__ (self, ligand_file_info) :
+class manager(object):
+  def __init__(self, ligand_file_info):
     import gtk
     import coot # import dependency
     title = "Select ligand(s)"
@@ -121,15 +122,15 @@ class manager (object) :
     outside_vbox.pack_end(continue_btn, False, False, 0)
     self.window.show_all()
 
-  def OnToggle (self, cell, path, model):
+  def OnToggle(self, cell, path, model):
     model[path][0] = not model[path][0]
 
-  def OnContinue (self, *args) :
+  def OnContinue(self, *args):
     import gtk
     selected = []
-    for i_lig in range(len(self.ligand_file_info)) :
-      if (self.model[i_lig][0]) :
-        print "  selected ligand %d" % (i_lig+1)
+    for i_lig in range(len(self.ligand_file_info)):
+      if (self.model[i_lig][0]):
+        print("  selected ligand %d" % (i_lig+1))
         pdb_out = "coot_ligand_out_%d.pdb" % (i_lig+1)
         save_coordinates(self.ligand_imols[i_lig], pdb_out)
         selected.append(str(i_lig))

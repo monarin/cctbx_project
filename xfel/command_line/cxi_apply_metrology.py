@@ -1,4 +1,5 @@
-from __future__ import division
+from __future__ import absolute_import, division, print_function
+from six.moves import range
 # LIBTBX_SET_DISPATCHER_NAME cxi.apply_metrology
 # $Id
 #
@@ -31,7 +32,7 @@ if (__name__ == "__main__") :
     else :
       try :
         user_phil.append(libtbx.phil.parse(arg))
-      except RuntimeError, e :
+      except RuntimeError as e :
         raise Sorry("Unrecognized argument '%s' (error: %s)" % (arg, str(e)))
 
   params = master_phil.fetch(sources=user_phil).extract()
@@ -42,11 +43,11 @@ if (__name__ == "__main__") :
     master_phil.show()
     raise Usage("dest_cbf must be a file (either dest_cbf=XXX, or the file path(s) alone).")
 
-  print "Source file:", params.source_cbf
-  print "Destination file(s):",
+  print("Source file:", params.source_cbf)
+  print("Destination file(s):", end=' ')
   for path in params.dest_cbf:
-    print path,
-  print
+    print(path, end=' ')
+  print()
 
   # categories required to match between the two files.  Tuples of category names
   # and table column names which are keys, I.E., there should be only one row in the
@@ -81,27 +82,27 @@ if (__name__ == "__main__") :
   src_cbf.read_widefile(params.source_cbf, pycbf.MSG_DIGEST)
 
   # verify all the categories are present in the source cbf
-  print "Testing for required categories in source:"
+  print("Testing for required categories in source:")
   src_cbf.select_category(0)
   n_found = 0
   while True:
     if src_cbf.category_name() in req_names:
-      print "Found", src_cbf.category_name()
+      print("Found", src_cbf.category_name())
       n_found += 1
     else:
       if src_cbf.category_name() not in opt_names:
         raise Sorry("%s not a recognized category"%src_cbf.category_name())
     try:
       src_cbf.next_category()
-    except Exception, e:
-      assert "CBF_NOTFOUND" in e.message
+    except Exception as e:
+      assert "CBF_NOTFOUND" in str(e)
       break
   assert n_found == len(req_names)
-  print "OK"
+  print("OK")
 
   # iterate through the files, validate the required tables and copy the others
   for path in params.dest_cbf:
-    print "Validating %s..."%os.path.basename(path),
+    print("Validating %s..."%os.path.basename(path), end=' ')
 
     dst_cbf = pycbf.cbf_handle_struct()
     dst_cbf.read_widefile(path, pycbf.MSG_DIGEST)
@@ -114,7 +115,7 @@ if (__name__ == "__main__") :
       assert src_cbf.count_columns() == dst_cbf.count_columns()
       assert src_cbf.count_rows() == dst_cbf.count_rows()
 
-      for j in xrange(src_cbf.count_rows()):
+      for j in range(src_cbf.count_rows()):
         src_cbf.rewind_column()
         dst_cbf.rewind_column()
 
@@ -129,7 +130,7 @@ if (__name__ == "__main__") :
           dst_cbf.find_column(key)
           dst_cbf.find_row(src_cbf.get_value())
 
-        for i in xrange(src_cbf.count_columns()):
+        for i in range(src_cbf.count_columns()):
           src_cbf.select_column(i)
           dst_cbf.find_column(src_cbf.column_name())
           if src_cbf.get_value() != dst_cbf.get_value():
@@ -143,7 +144,7 @@ if (__name__ == "__main__") :
       assert src_cbf.count_columns() == dst_cbf.count_columns()
       assert src_cbf.count_rows() == dst_cbf.count_rows()
 
-      for j in xrange(src_cbf.count_rows()):
+      for j in range(src_cbf.count_rows()):
         src_cbf.rewind_column()
         dst_cbf.rewind_column()
 
@@ -157,7 +158,7 @@ if (__name__ == "__main__") :
         dst_cbf.find_column(key)
         dst_cbf.find_row(src_cbf.get_value())
 
-        for i in xrange(src_cbf.count_columns()):
+        for i in range(src_cbf.count_columns()):
           src_cbf.select_column(i)
           dst_cbf.find_column(src_cbf.column_name())
 
@@ -166,17 +167,17 @@ if (__name__ == "__main__") :
           else:
             dst_cbf.set_value(src_cbf.get_value())
 
-    print "writing cbf...",
+    print("writing cbf...", end=' ')
 
     t = tempfile.NamedTemporaryFile(delete=False)
     destpath = t.name
     t.close()
 
-    dst_cbf.write_widefile(destpath,pycbf.CBF,\
+    dst_cbf.write_widefile(destpath.encode(),pycbf.CBF,\
                            pycbf.MIME_HEADERS|pycbf.MSG_DIGEST|pycbf.PAD_4K,0)
 
     del dst_cbf
 
     shutil.move(destpath, path)
 
-    print "Done"
+    print("Done")

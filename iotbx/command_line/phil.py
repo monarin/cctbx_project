@@ -1,4 +1,5 @@
-from __future__ import division
+"""Analyze a PHIL file"""
+from __future__ import absolute_import, division, print_function
 import iotbx.phil
 import libtbx.command_line.phil
 import sys

@@ -1,7 +1,7 @@
-from __future__ import division
+from __future__ import absolute_import, division, print_function
 
-import boost.python
-ext = boost.python.import_ext("mmtbx_validation_ramachandran_ext")
+import boost_adaptbx.boost.python as bp
+ext = bp.import_ext("mmtbx_validation_ramachandran_ext")
 from mmtbx_validation_ramachandran_ext import rama_eval
 
 # maps programatic name to file name
@@ -38,7 +38,7 @@ class RamachandranEval:
     # assert self.check_table_name(aaName)
     return self.rama_eval.get_score(aaName, phiPsi[0],phiPsi[1])
 
-  def evaluate_sites (self, aaName, phi_psi_i_seqs, sites_cart) :
+  def evaluate_sites(self, aaName, phi_psi_i_seqs, sites_cart):
     # assert self.check_table_name(aaName)
     (phi, psi) = mmtbx.rotamer.phi_psi_from_sites(
       i_seqs=phi_psi_i_seqs,

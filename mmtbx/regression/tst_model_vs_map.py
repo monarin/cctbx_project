@@ -1,4 +1,4 @@
-from __future__ import division
+from __future__ import absolute_import, division, print_function
 
 import time
 from libtbx import easy_run
@@ -12,7 +12,7 @@ SCALE1      0.028639  0.000000  0.000000        0.00000
 SCALE2      0.000000  0.044952  0.000000        0.00000
 SCALE3      0.000000  0.000000  0.022718        0.00000
 """
-# taken from phenix_regression/refinement/ncs/tst_ncs_0.py
+# taken from phenix_regression/refinement/tst_189.py
 # ncs-related chain omitted
 pdb_str = """\
 ATOM      1  N   ALA A   1      27.344  16.348  30.784  1.00 10.00           N
@@ -133,7 +133,7 @@ def exercise(prefix="tst_model_vs_data1"):
       "%s_start.pdb" % prefix,
       "output_file_name_prefix=%s.map" % prefix,
       ">%s_mm.log" % prefix])
-  print cmd
+  print(cmd)
   assert not easy_run.call(cmd)
   cmd = " ".join([
       "phenix.model_vs_map",
@@ -141,7 +141,7 @@ def exercise(prefix="tst_model_vs_data1"):
       "%s.map.ccp4" % prefix,
       "resolution=5",
       ">%s_mvsm_ccp4.log" % prefix])
-  print cmd
+  print(cmd)
   assert not easy_run.call(cmd)
   # xplor is not supported...
   # cmd = " ".join([
@@ -156,5 +156,5 @@ def exercise(prefix="tst_model_vs_data1"):
 if (__name__ == "__main__"):
   t0 = time.time()
   exercise()
-  print
-  print "Time:", round(time.time()-t0, 3)
+  print()
+  print("Time:", round(time.time()-t0, 3))

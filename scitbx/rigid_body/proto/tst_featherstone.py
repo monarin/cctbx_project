@@ -1,4 +1,5 @@
-from __future__ import division
+from __future__ import absolute_import, division, print_function
+from six.moves import zip
 try:
   import scitbx
 except ImportError:
@@ -9,10 +10,10 @@ if (scitbx is not None):
   from scitbx import matrix
   from libtbx.test_utils import approx_equal
 else:
-  import featherstone as fs
+  from scitbx.rigid_body.proto import featherstone as fs
   import scitbx_matrix as matrix
   def approx_equal(a1, a2): return True
-  print "libtbx.test_utils not available: approx_equal() disabled"
+  print("libtbx.test_utils not available: approx_equal() disabled")
   def sum(l):
     result = 0
     for e in l: result += e
@@ -34,7 +35,8 @@ def exercise_basic():
     I=matrix.sym(sym_mat3=(2,3,4,0.1,0.2,0.3)))), 21.306)
 
 def write_matlab_script(label, precision, code):
-  open("tst_featherstone_exercise_%s.m" % label, "w").write("""\
+  with open("tst_featherstone_exercise_%s.m" % label, "w") as f:
+    f.write("""\
 split_long_rows(0);
 output_precision(%d);
 
@@ -350,7 +352,7 @@ def run(args):
   exercise_ID_FDab()
   if (scitbx is not None):
     exercise_standalone()
-  print "OK"
+  print("OK")
 
 if (__name__ == "__main__"):
   run(sys.argv[1:])

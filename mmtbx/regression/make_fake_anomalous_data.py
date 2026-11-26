@@ -1,13 +1,13 @@
 
-from __future__ import division
+from __future__ import absolute_import, division, print_function
 from mmtbx.ions.utils import anonymize_ions
-from iotbx.file_reader import any_file
 from libtbx.utils import null_out
 from libtbx import group_args
 from libtbx import easy_run
+import iotbx.pdb
 import os
 
-def generate_calcium_inputs (file_base="ca_frag", anonymize=True) :
+def generate_calcium_inputs(file_base="ca_frag", anonymize=True, d_min=1.5):
   """
   Generate both a PDB file and an MTZ file for the calcium-bound structure,
   with the calcium optionally  replaced by solvent after F(model) was
@@ -21,6 +21,8 @@ def generate_calcium_inputs (file_base="ca_frag", anonymize=True) :
   file_base : str, optional
   anonymize : bool, optional
       Replace all ions in the returned pdb file with waters.
+  d_min : float, optional
+      High-resolution limit of the simulated data.
 
   Returns
   -------
@@ -30,23 +32,23 @@ def generate_calcium_inputs (file_base="ca_frag", anonymize=True) :
   pdb_file = write_pdb_input_calcium_binding(file_base=file_base)
   mtz_file = generate_mtz_file(
     file_base=file_base,
-    d_min=1.5,
+    d_min=d_min,
     anomalous_scatterers=[
       group_args(selection="element CA", fp=0.25, fdp=0.5)
       ])
   assert (os.path.isfile(pdb_file)) and (os.path.isfile(mtz_file))
   if anonymize:
-    pdb_in = any_file(pdb_file)
-    hierarchy = pdb_in.file_object.hierarchy
+    pdb_in = iotbx.pdb.input(pdb_file)
+    hierarchy = pdb_in.construct_hierarchy()
     hierarchy, n = anonymize_ions(hierarchy, log=null_out())
     pdb_file = file_base + "_hoh.pdb"
     hierarchy.write_pdb_file(
       file_name=pdb_file,
-      crystal_symmetry=pdb_in.file_object.crystal_symmetry())
+      crystal_symmetry=pdb_in.crystal_symmetry())
     assert os.path.isfile(pdb_file)
   return os.path.abspath(mtz_file), os.path.abspath(pdb_file)
 
-def generate_cd_cl_inputs (file_base="cd_cl_frag") :
+def generate_cd_cl_inputs(file_base="cd_cl_frag"):
   """
   Creates a fake model and reflection data for a structure containing cadmium
   and chloride ions.
@@ -71,8 +73,8 @@ def generate_cd_cl_inputs (file_base="cd_cl_frag") :
   assert (os.path.isfile(pdb_file)) and (os.path.isfile(mtz_file))
   return mtz_file, pdb_file
 
-def generate_zinc_inputs (file_base="zn_frag", anonymize=True,
-    wavelength=None) :
+def generate_zinc_inputs(file_base="zn_frag", anonymize=True,
+    wavelength=None):
   """
   Generate both a PDB file and an MTZ file for the zinc-bound structure,
   with the zinc optionally replaced by solvent after F(model) was
@@ -90,7 +92,7 @@ def generate_zinc_inputs (file_base="zn_frag", anonymize=True,
   pdb_path : str
   """
   anom = None
-  if (wavelength is None) :
+  if (wavelength is None):
     fp = -1.3
     fdp = 0.47
     anom = [ group_args(selection="element ZN", fp=fp, fdp=fdp), ]
@@ -102,17 +104,17 @@ def generate_zinc_inputs (file_base="zn_frag", anonymize=True,
     wavelength=wavelength)
   assert os.path.isfile(pdb_file) and os.path.isfile(mtz_file)
   if anonymize:
-    pdb_in = any_file(pdb_file)
-    hierarchy = pdb_in.file_object.hierarchy
+    pdb_in = iotbx.pdb.input(pdb_file)
+    hierarchy = pdb_in.construct_hierarchy()
     hierarchy, n = anonymize_ions(hierarchy, log=null_out())
     pdb_file = file_base + "_hoh.pdb"
     hierarchy.write_pdb_file(
       file_name=pdb_file,
-      crystal_symmetry=pdb_in.file_object.crystal_symmetry())
+      crystal_symmetry=pdb_in.crystal_symmetry())
     assert os.path.isfile(pdb_file)
   return os.path.abspath(mtz_file), os.path.abspath(pdb_file)
 
-def generate_magnessium_inputs (file_base="mg_frag", anonymize=True) :
+def generate_magnessium_inputs(file_base="mg_frag", anonymize=True):
   """
   Creates a fake model and reflection data for a structure containing magnesium
   ions.
@@ -134,18 +136,18 @@ def generate_magnessium_inputs (file_base="mg_frag", anonymize=True) :
     d_min=1.5)
   assert os.path.isfile(pdb_file) and os.path.isfile(mtz_file)
   if anonymize:
-    pdb_in = any_file(pdb_file)
-    hierarchy = pdb_in.file_object.hierarchy
+    pdb_in = iotbx.pdb.input(pdb_file)
+    hierarchy = pdb_in.construct_hierarchy()
     hierarchy, n = anonymize_ions(hierarchy, log=null_out())
     pdb_file = file_base + "_hoh.pdb"
     hierarchy.write_pdb_file(
       file_name=pdb_file,
-      crystal_symmetry=pdb_in.file_object.crystal_symmetry())
+      crystal_symmetry=pdb_in.crystal_symmetry())
     assert os.path.isfile(pdb_file)
   return os.path.abspath(mtz_file), os.path.abspath(pdb_file)
 
-def generate_mtz_file (file_base, d_min, anomalous_scatterers=None,
-    wavelength=None) :
+def generate_mtz_file(file_base, d_min, anomalous_scatterers=None,
+    wavelength=None):
   """
   Create an MTZ file containing amplitudes (and R-free-flags) calculated from
   the PDB file, at the specified resolution and with enumerated anomalous
@@ -174,19 +176,18 @@ def generate_mtz_file (file_base, d_min, anomalous_scatterers=None,
   >>> assert os.path.isfile(pdb_file) and os.path.isfile(mtz_file)
   """
   mtz_file = file_base + ".mtz"
-  if (os.path.isfile(mtz_file)) :
+  if (os.path.isfile(mtz_file)):
     os.remove(mtz_file)
   params = """
     high_resolution = %g
     r_free_flags_fraction = 0.1
     add_sigmas = True
-    pdb_file = %s.pdb
     wavelength = %s
     output {
       label = F
       type = *real complex
       file_name = %s.mtz
-    }\n""" % (d_min, file_base, wavelength, file_base)
+    }\n""" % (d_min, wavelength, file_base)
   if anomalous_scatterers is not None:
     params += "anomalous_scatterers {\n"
     for group in anomalous_scatterers :
@@ -199,11 +200,11 @@ def generate_mtz_file (file_base, d_min, anomalous_scatterers=None,
   eff_file = file_base + "_fmodel.eff"
   with open(eff_file, "w") as f:
     f.write(params)
-  assert (easy_run.fully_buffered("phenix.fmodel %s" % eff_file,
+  assert (easy_run.fully_buffered("phenix.fmodel %s.pdb %s" % (file_base, eff_file),
     ).raise_if_errors().return_code == 0)
   return mtz_file
 
-def write_pdb_input_calcium_binding (file_base="ca_frag", write_files=True) :
+def write_pdb_input_calcium_binding(file_base="ca_frag", write_files=True):
   """
   Outputs a selection of atoms from a structure of a calcium-binding fold.
   Original data: d_min=1.4, wavelength=1.116
@@ -219,8 +220,7 @@ def write_pdb_input_calcium_binding (file_base="ca_frag", write_files=True) :
   -------
   str or tuple of iotbx.pdb.hierarchy.root, cctbx.xray.structure.structure
   """
-  import iotbx.pdb.hierarchy
-  pdb_in = iotbx.pdb.hierarchy.input(source_info=None, pdb_string="""\
+  pdb_in = iotbx.pdb.input(source_info=None, lines="""\
 ATOM      1  N   ASP A  37      10.710  14.456   9.568  1.00 15.78           N
 ATOM      2  CA  ASP A  37       9.318  14.587   9.999  1.00 18.38           C
 ATOM      3  C   ASP A  37       8.402  13.523   9.395  1.00 15.46           C
@@ -346,19 +346,19 @@ HETATM  122 CA   CA  S   1       5.334   8.357   8.032  1.00  5.89          CA+2
 HETATM  123  O   HOH S   2       5.396  15.243  10.734  1.00 22.95           O
 HETATM  124  O   HOH S   3       3.629   8.994  14.414  1.00 25.28           O
 END""")
-  xrs = pdb_in.input.xray_structure_simple(cryst1_substitution_buffer_layer=5)
-  if (write_files) :
+  xrs = pdb_in.xray_structure_simple(cryst1_substitution_buffer_layer=5)
+  if (write_files):
     pdb_file = file_base + ".pdb"
-    if (os.path.exists(pdb_file)) :
+    if (os.path.exists(pdb_file)):
       os.remove(pdb_file)
     f = open(pdb_file, "w")
-    f.write(pdb_in.hierarchy.as_pdb_string(crystal_symmetry=xrs))
+    f.write(pdb_in.construct_hierarchy().as_pdb_string(crystal_symmetry=xrs))
     f.close()
     return pdb_file
   else :
     return pdb_in, xrs
 
-def write_pdb_input_cd_cl (file_base="cd_cl_frag") :
+def write_pdb_input_cd_cl(file_base="cd_cl_frag"):
   """
   Outputs a selection of atoms from a structure crystallized in cadmium cloride.
   Original data: d_min=1.37, wavelength=1.116
@@ -371,8 +371,7 @@ def write_pdb_input_cd_cl (file_base="cd_cl_frag") :
   -------
   str
   """
-  import iotbx.pdb.hierarchy
-  pdb_in = iotbx.pdb.hierarchy.input(source_info=None, pdb_string="""\
+  pdb_in = iotbx.pdb.input(source_info=None, lines="""\
 ATOM      1  N   GLU A  18     -13.959  12.159  -6.598  1.00 10.08           N
 ATOM      2  CA  GLU A  18     -13.297  13.465  -6.628  1.00  9.83           C
 ATOM      3  C   GLU A  18     -11.946  13.282  -7.309  1.00  9.18           C
@@ -458,13 +457,13 @@ HETATM   82  O   HOH S 204     -17.671  15.077  -3.159  1.00 42.64           O
 HETATM   84 CD   CD  X   2     -14.095  16.409  -0.841  1.00 15.00      ION CD2+
 HETATM   86 CL   CL  Y   3     -16.374  16.899  -0.285  1.00 10.22      ION CL1-
 END""")
-  xrs = pdb_in.input.xray_structure_simple(cryst1_substitution_buffer_layer=5)
+  xrs = pdb_in.xray_structure_simple(cryst1_substitution_buffer_layer=5)
   pdb_file = file_base + ".pdb"
-  if (os.path.exists(pdb_file)) :
+  if (os.path.exists(pdb_file)):
     os.remove(pdb_file)
   f = open(pdb_file, "w")
   f.write("""REMARK 200  WAVELENGTH OR RANGE        (A) : 1.116\n""")
-  f.write(pdb_in.hierarchy.as_pdb_string(crystal_symmetry=xrs))
+  f.write(pdb_in.construct_hierarchy().as_pdb_string(crystal_symmetry=xrs))
   f.close()
   return pdb_file
 
@@ -483,10 +482,9 @@ def write_pdb_input_zinc_binding(file_base="zn_frag", write_files=True):
   -------
   str or tuple of iotbx.pdb.hierarchy.root, cctbx.xray.structure.structure
   """
-  import iotbx.pdb.hierarchy
   # XXX extracted from 2whz (thermolysin, wavelength = 1.54A), but with an
   # incomplete coordination shell
-  pdb_in = iotbx.pdb.hierarchy.input(source_info=None, pdb_string="""\
+  pdb_in = iotbx.pdb.input(source_info=None, lines="""\
 ATOM      1  OD1 ASN A 112      34.902  38.381  -2.709  1.00 12.10           O
 ATOM      2  C   ALA A 113      31.533  40.581  -3.237  1.00 12.06           C
 ATOM      3  O   ALA A 113      32.560  40.184  -3.842  1.00 12.75           O
@@ -606,18 +604,18 @@ END
 """)
 # XXX this is the missing water
 #HETATM  124  O   HOH A2351      36.007  42.038  -6.782  1.00 10.54           O
-  xrs = pdb_in.input.xray_structure_simple(cryst1_substitution_buffer_layer=5)
+  xrs = pdb_in.xray_structure_simple(cryst1_substitution_buffer_layer=5)
   if write_files:
     pdb_file = file_base + ".pdb"
-    if (os.path.exists(pdb_file)) :
+    if (os.path.exists(pdb_file)):
       os.remove(pdb_file)
     with open(pdb_file, "w") as f:
-      f.write(pdb_in.hierarchy.as_pdb_string(crystal_symmetry=xrs))
+      f.write(pdb_in.construct_hierarchy().as_pdb_string(crystal_symmetry=xrs))
     return pdb_file
   else:
     return pdb_in, xrs
 
-def write_pdb_input_magnessium_binding (file_base="mg_frag", write_files=True):
+def write_pdb_input_magnessium_binding(file_base="mg_frag", write_files=True):
   """
   Outputs a selection of atoms from a structure crystallized with magnesium.
 
@@ -632,8 +630,7 @@ def write_pdb_input_magnessium_binding (file_base="mg_frag", write_files=True):
   -------
   str or tuple of iotbx.pdb.hierarchy.root, cctbx.xray.structure.structure
   """
-  import iotbx.pdb.hierarchy
-  pdb_in = iotbx.pdb.hierarchy.input(source_info=None, pdb_string="""\
+  pdb_in = iotbx.pdb.input(source_info=None, lines="""\
 REMARK  fragment derived from 3ip0
 ATOM      1  N   ASP A  95     -12.581   4.250  10.804  1.00  5.08           N
 ATOM      2  CA  ASP A  95     -11.950   3.273   9.927  1.00  5.04           C
@@ -729,13 +726,13 @@ HETATM   91  O  CHOH A 504      -9.119   6.099   7.366  0.25  7.90           O
 HETATM   92 MG   MG  A 161     -10.440   0.924   6.059  1.00  5.29      MG  MG
 HETATM   93 MG   MG  A 162      -7.326   2.422   6.749  1.00  5.40      MG  MG
 """)
-  xrs = pdb_in.input.xray_structure_simple(cryst1_substitution_buffer_layer=5)
+  xrs = pdb_in.xray_structure_simple(cryst1_substitution_buffer_layer=5)
   if write_files:
     pdb_file = file_base + ".pdb"
-    if (os.path.exists(pdb_file)) :
+    if (os.path.exists(pdb_file)):
       os.remove(pdb_file)
     with open(pdb_file, "w") as f:
-      f.write(pdb_in.hierarchy.as_pdb_string(crystal_symmetry=xrs))
+      f.write(pdb_in.construct_hierarchy().as_pdb_string(crystal_symmetry=xrs))
     return pdb_file
   else:
     return pdb_in, xrs

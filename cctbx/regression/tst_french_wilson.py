@@ -1,9 +1,10 @@
-from __future__ import division
+from __future__ import absolute_import, division, print_function
 from cctbx import french_wilson
 from cctbx.development import random_structure
 from scitbx.array_family import flex
-import boost.python
-fw_ext = boost.python.import_ext("cctbx_french_wilson_ext")
+import boost_adaptbx.boost.python as bp
+from six.moves import zip
+fw_ext = bp.import_ext("cctbx_french_wilson_ext")
 from libtbx.utils import null_out, Sorry
 from libtbx.test_utils import Exception_expected
 import random
@@ -29,7 +30,7 @@ def exercise_00():
     ba.append(b)
   fw_ext.is_FrenchWilson(F=xa, SIGF=ya, is_centric=ba, eps=0.001)
 
-def exercise_01 () :
+def exercise_01():
   """
   Sanity check - don't crash when mean intensity for a bin is zero.
   """
@@ -59,4 +60,4 @@ def exercise_01 () :
 if (__name__ == "__main__"):
   exercise_00()
   exercise_01()
-  print "OK"
+  print("OK")

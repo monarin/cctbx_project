@@ -1,4 +1,4 @@
-from __future__ import division
+from __future__ import absolute_import, division, print_function
 
 # basic window for displaying a list of features of interest - these could
 # be ligands, difference map peaks, validation outliers, etc. (adapted from
@@ -6,7 +6,7 @@ from __future__ import division
 # with the actual data of interest, plus whatever additional commands we want
 # to run in Coot.
 
-def draw_simple_zoom_list (title, items, zoom_level=30) :
+def draw_simple_zoom_list(title, items, zoom_level=30):
   import gtk
   import coot # import dependency
   window = gtk.Window(gtk.WINDOW_TOPLEVEL)
@@ -24,7 +24,7 @@ def draw_simple_zoom_list (title, items, zoom_level=30) :
   vbox = gtk.VBox(False, 0)
   inside_vbox.pack_start(frame, False, False, 2)
   frame.add(vbox)
-  def callback_recenter (widget, xyz) :
+  def callback_recenter(widget, xyz):
     set_rotation_centre(*xyz)
     set_zoom(zoom_level)
   for feature, xyz in items :

@@ -1,0 +1,98 @@
+# Script for downloading conda packages
+# This lowers the chances of network failures by consolidating downloads.
+# Also, wget will automatically retry downloads.
+#
+# Variables:
+#   OS: linux-64, osx-64, win-64
+#   PYTHON_VERSION: py27, py37, py38, py39, py310
+
+jobs:
+- job: conda_packages
+  pool:
+    vmImage: ubuntu-latest
+  timeoutInMinutes: 120
+  strategy:
+    maxParallel: 3
+    matrix:
+      linux_py310:
+        OS: linux-64
+        PYTHON_VERSION: py310
+      linux_py311:
+        OS: linux-64
+        PYTHON_VERSION: py311
+      linux_py312:
+        OS: linux-64
+        PYTHON_VERSION: py312
+      linux_py313:
+        OS: linux-64
+        PYTHON_VERSION: py313
+      linux_py314:
+        OS: linux-64
+        PYTHON_VERSION: py314
+      macos_py310:
+        OS: osx-64
+        PYTHON_VERSION: py310
+      macos_py311:
+        OS: osx-64
+        PYTHON_VERSION: py311
+      macos_py312:
+        OS: osx-64
+        PYTHON_VERSION: py312
+      macos_py313:
+        OS: osx-64
+        PYTHON_VERSION: py313
+      macos_py314:
+        OS: osx-64
+        PYTHON_VERSION: py314
+      win_py310:
+        OS: win-64
+        PYTHON_VERSION: py310
+      win_py311:
+        OS: win-64
+        PYTHON_VERSION: py311
+      win_py312:
+        OS: win-64
+        PYTHON_VERSION: py312
+      win_py313:
+        OS: win-64
+        PYTHON_VERSION: py313
+      win_py314:
+        OS: win-64
+        PYTHON_VERSION: py314
+
+  steps:
+
+  - checkout: self
+    path: ./modules/cctbx_project
+
+  - script: |
+      set -xe
+
+      cd $(Pipeline.Workspace)
+      mkdir -p $(PYTHON_VERSION)_$(OS)
+      cd $(PYTHON_VERSION)_$(OS)
+      rm -f filenames.txt
+      for url in `grep https $(Pipeline.Workspace)/modules/cctbx_project/libtbx/auto_build/conda_envs/cctbx_$(PYTHON_VERSION)_$(OS).txt`; do
+        filename=${url##*/}
+        filename=${filename%#*}
+        directory=`echo ${url} | cut -f5 -d"/"`
+        if [ "${directory}" = "main" ]; then
+          directory=`echo ${url} | cut -f6 -d"/"`
+        fi
+        mkdir -p ${directory}
+        cd ${directory}
+        echo Downloading ${filename} to ${directory}
+        wget --no-clobber --retry-connrefused --no-http-keep-alive --retry-on-http-error=500,502,503,520,524,525 ${url}
+        cd ..
+        if [ "$(OS)" = "win-64" ]; then
+          echo ${directory}\\${filename} >> filenames.txt
+        else
+          echo ${directory}/${filename} >> filenames.txt
+        fi
+      done
+      ls
+    displayName: Download conda packages
+    retryCountOnTaskFailure: 3
+
+  - publish: $(Pipeline.Workspace)/$(PYTHON_VERSION)_$(OS)
+    artifact: $(PYTHON_VERSION)_$(OS)

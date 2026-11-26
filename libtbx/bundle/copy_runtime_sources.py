@@ -1,4 +1,4 @@
-from __future__ import division
+from __future__ import absolute_import, division, print_function
 import libtbx.bundle.utils
 import libtbx.load_env
 import libtbx.path
@@ -6,7 +6,8 @@ import re
 import shutil
 import sys, os
 
-def copy_dist_files((exclude_from_binary_bundle, dist_copy), dirname, names):
+def copy_dist_files(bundle_options, dirname, names):
+  (exclude_from_binary_bundle, dist_copy) = bundle_options
   create_target_dir = True
   names_keep = []
   for file_name in names:
@@ -50,13 +51,17 @@ def run(target_root):
   abs_target_root = os.path.normpath(os.path.abspath(target_root))
   for module in libtbx.env.module_list:
     for name,dist_path in module.name_and_dist_path_pairs():
-      #if (name == "boost"): continue
+      if (name == "boost"): continue
       dist_path = abs(dist_path)
       dist_copy = libtbx.path.norm_join(
         abs_target_root, os.path.basename(dist_path))
+      if not os.path.exists(dist_path):
+        print("Warning - could not locate: %s, skipping" %dist_path)
+        continue
       os.chdir(dist_path)
-      os.path.walk(
-        ".", copy_dist_files, (module.exclude_from_binary_bundle, dist_copy))
+      options = (module.exclude_from_binary_bundle, dist_copy)
+      for root, dirs, files in os.walk("."):
+        copy_dist_files(options, root, files)
   libtbx.bundle.utils.write_bundle_info(abs_target_root)
   os.chdir(cwd)
 

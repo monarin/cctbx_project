@@ -1,11 +1,11 @@
-from __future__ import division
+from __future__ import absolute_import, division, print_function
+from six.moves import range
 from dials.array_family import flex # implicit dependency
 import libtbx.load_env # implicit dependency
-import cPickle as pickle
+from six.moves import cPickle as pickle
 from cctbx.crystal import symmetry
 from scitbx.matrix import col
 from rstbx.bandpass import parameters_bp3, use_case_bp3
-import cPickle as pickle
 from libtbx import easy_pickle
 from libtbx.phil import parse
 from spotfinder.applications.xfel.cxi_phil import cxi_basic_start
@@ -62,7 +62,7 @@ def extend_predictions(pdata, int_pickle_path, image_info, dmin=1.5, dump=False,
   ybeam = pdata['ybeam']
   wavelength = pdata['wavelength']
 
-  if 'effective_tiling' in pdata.keys():
+  if 'effective_tiling' in pdata:
     tm_int = pdata['effective_tiling']
   else:
     tiling = image_info.tiling_from_image(detector_phil=detector_phil)
@@ -123,12 +123,12 @@ def extend_predictions(pdata, int_pickle_path, image_info, dmin=1.5, dump=False,
   # active_area_object = active_area_filter(active_areas)
   # aa_predicted, aa_hkllist = active_area_object(predicted, hkllist, 0.11)
   # extended_mapped_predictions = flex.vec2_double()
-  # for i in xrange(len(aa_predicted)):
+  # for i in range(len(aa_predicted)):
   # extended_mapped_predictions.append(aa_predicted[i][0:2])
 
   # return predictions without re-applying an active area filter
   newpreds = flex.vec2_double()
-  for i in xrange(len(predicted)):
+  for i in range(len(predicted)):
     newpreds.append((predicted[i][0]/pixel_size, img_size-predicted[i][1]/pixel_size))
   # finally, record new predictions as member data
   pdata['mapped_predictions_to_edge'] = newpreds

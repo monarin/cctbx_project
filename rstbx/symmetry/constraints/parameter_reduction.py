@@ -1,4 +1,4 @@
-from __future__ import division
+from __future__ import absolute_import, division, print_function
 from cctbx import sgtbx
 from cctbx.uctbx import unit_cell
 from rstbx.symmetry.constraints import AGconvert
@@ -31,9 +31,9 @@ class symmetrize_reduce_enlarge(object):
       from cctbx.crystal_orientation import crystal_orientation
       which_setting = [crystal_orientation(orientation,True),
                        crystal_orientation(orientation,False)]
-      #kludgy test for space setting: unit cell volume is never < 70 Angstroms^3
+      #kludgy test for space setting: unit cell volume is never < 40 Angstroms^3
       conversion_to_A3 = (length_unit*length_unit*length_unit)/1.E-30
-      select = [a.unit_cell().volume()*conversion_to_A3 > 70.
+      select = [a.unit_cell().volume()*conversion_to_A3 > 40.
                 for a in which_setting]
       self.orientation = which_setting[select.index(True)]
 
@@ -83,10 +83,7 @@ class symmetrize_reduce_enlarge(object):
 
 
 if __name__=="__main__":
-  try:
-    import cPickle as pickle
-  except ImportError:
-    import pickle
+  from six.moves import cPickle as pickle
   import os
   from labelit.symmetry import metricsym
   from cctbx.sgtbx.bravais_types import bravais_lattice
@@ -106,7 +103,7 @@ if __name__=="__main__":
 
   for case in cases:
       orient,cs,symmetry = case
-      print orient,cs,symmetry.space_group().type().lookup_symbol()
+      print(orient,cs,symmetry.space_group().type().lookup_symbol())
       S = symmetrize_reduce_enlarge(space_group=symmetry.space_group())
       S.set_orientation(orientation=orient,length_unit=1.E-9)
       S.symmetrize()
@@ -122,4 +119,4 @@ if __name__=="__main__":
   reference_types = ["aP","mP","mC","oP","oC","oI","oF","tP","tI","hP","hR","cP","cI","cF"]
   encountered_types.sort(); reference_types.sort()
   assert encountered_types == reference_types
-  print "OK"
+  print("OK")

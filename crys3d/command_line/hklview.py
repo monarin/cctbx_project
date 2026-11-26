@@ -1,9 +1,9 @@
+"""View pseudo-precession planes through a dataset"""
 # LIBTBX_SET_DISPATCHER_NAME phenix.data_viewer
 # LIBTBX_SET_DISPATCHER_NAME cctbx.data_viewer
 # LIBTBX_PRE_DISPATCHER_INCLUDE_SH export PHENIX_GUI_ENVIRONMENT=1
-# LIBTBX_PRE_DISPATCHER_INCLUDE_SH export BOOST_ADAPTBX_FPE_DEFAULT=1
 
-from __future__ import division
+from __future__ import absolute_import, division, print_function
 from crys3d.hklview.frames import *
 from cctbx.miller.display import master_phil
 from wxtbx import icons
@@ -51,3 +51,4 @@ def run (args) :
 
 if (__name__ == "__main__") :
   run(sys.argv[1:])
+

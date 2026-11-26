@@ -1,16 +1,16 @@
-from __future__ import division
+from __future__ import absolute_import, division, print_function
 
 from gltbx import gl
 
 class display_lists_owner:
 
-  def __init__(self, range):
-    self.range = range
-    self.list = gl.glGenLists(range=range)
+  def __init__(self, range_values):
+    self.range_values = range_values
+    self.list = gl.glGenLists(range_values)
 
   def __del__(self):
-    try: gl.glDeleteLists(list=self.list, range=self.range)
-    except RuntimeError, e:
+    try: gl.glDeleteLists(self.list, self.range_values)
+    except RuntimeError as e:
       if (str(e) != 'OpenGL: invalid operation'): raise
       # else: apparently the GL context was destroyed already
 
@@ -19,10 +19,10 @@ class display_list:
   def __init__(self, index=0, owner=None):
     if (owner is None):
       assert index == 0
-      self.owner = display_lists_owner(range=1)
+      self.owner = display_lists_owner(range_values=1)
       self.gl_index = self.owner.list
     else:
-      assert index < self.owner.range
+      assert index < self.owner.range_values
       self.owner = owner
       self.gl_index = self.owner.list + index
 
@@ -31,18 +31,18 @@ class display_list:
       mode = gl.GL_COMPILE_AND_EXECUTE
     else:
       mode = gl.GL_COMPILE
-    gl.glNewList(list=self.gl_index, mode=mode)
+    gl.glNewList(self.gl_index, mode)
 
   def end(self):
     gl.glEndList()
 
   def call(self):
-    gl.glCallList(list=self.gl_index)
+    gl.glCallList(self.gl_index)
 
 class display_lists:
 
-  def __init__(self, range):
-    self.owner = display_lists_owner(range=range)
+  def __init__(self, range_values):
+    self.owner = display_lists_owner(range_values=range_values)
 
   def __getitem__(self, index):
     return display_list(index=index, owner=self.owner)
@@ -73,7 +73,7 @@ class material_model(object):
     self.specular_focus = specular_focus
 
   def execute(self, specular=True):
-    from gl import glMaterialfv, glMaterialf
+    from gltbx.gl import glMaterialfv, glMaterialf
     glMaterialfv(gl.GL_BACK, gl.GL_AMBIENT, self.ambient_back_colour)
     glMaterialfv(gl.GL_FRONT, gl.GL_AMBIENT, self.ambient_front_colour)
     glMaterialfv(gl.GL_BACK, gl.GL_DIFFUSE, self.diffuse_back_colour)

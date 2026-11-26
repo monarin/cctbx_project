@@ -1,16 +1,17 @@
-from __future__ import division
-import copy,re
+from __future__ import absolute_import, division, print_function
+import copy
+import re
 from iotbx.detectors.detectorbase import DetectorImageBase
 from iotbx.detectors import ImageException
 
 try:
   import bz2
-except: # intentional
+except ImportError:
   bz2 = None
 
 try:
   import gzip
-except: # intentional
+except ImportError:
   gzip = None
 
 class PilatusImage(DetectorImageBase):
@@ -35,35 +36,35 @@ class PilatusImage(DetectorImageBase):
   def is_bz2(filename):
     '''Check if a file pointed at by filename is bzip2 format.'''
 
-    if not '.bz2' in filename[-4:]:
+    if not filename.endswith('.bz2'):
       return False
 
-    return 'BZh' in open(filename, 'rb').read(3)
+    with open(filename, 'rb') as fh:
+      return b'BZh' == fh.read(3)
 
   @staticmethod
   def is_gzip(filename):
     '''Check if a file pointed at by filename is gzip compressed.'''
 
-    if not '.gz' in filename[-3:]:
+    if not filename.endswith('.gz'):
       return False
 
-    magic = open(filename, 'rb').read(2)
+    with open(filename, 'rb') as fh:
+      return fh.read(2) == b"\x1f\x8b"
 
-    return ord(magic[0]) == 0x1f and ord(magic[1]) == 0x8b
-
-  @classmethod
-  def open_file(cls, filename, mode='rb'):
+  @staticmethod
+  def open_file(filename, mode='rb'):
     '''Open file for reading, decompressing silently if necessary,
        caching transparently if possible.'''
 
     if PilatusImage.is_bz2(filename):
       if bz2 is None:
-        raise RuntimeError, 'bz2 file provided without bz2 module'
+        raise RuntimeError('bz2 file provided without bz2 module')
       fh_func = lambda: bz2.BZ2File(filename, mode)
 
     elif PilatusImage.is_gzip(filename):
       if gzip is None:
-        raise RuntimeError, 'gz file provided without gzip module'
+        raise RuntimeError('gz file provided without gzip module')
       fh_func = lambda: gzip.GzipFile(filename, mode)
 
     else:
@@ -92,30 +93,28 @@ class PilatusImage(DetectorImageBase):
              ).uncompress_data(self.size1,self.size2)
       self.bin_safe_set_data( data )
 
-    except Exception, e:
+    except Exception as e:
       raise ImageException(
           "unable to read miniCBF data; contact authors; error=\"%s\"" % \
           str(e).strip())
 
   def readHeader(self,maxlength=12288): # usually 1024 is OK; require 12288 for ID19
     if not self.parameters:
-      rawdata = self.open_file(self.filename,"rb").read(maxlength)
+      with self.open_file(self.filename,"rb") as fh:
+        rawdata = fh.read(maxlength)
 
       # The tag _array_data.header_convention "SLS_1.0" could be with/without quotes "..."
-      SLS_pattern = re.compile(r'''_array_data.header_convention[ "]*SLS''')
-      SLS_match = SLS_pattern.findall(rawdata)
-      PILATUS_pattern = re.compile(r'''_array_data.header_convention[ "]*PILATUS''')
-      PILATUS_match = PILATUS_pattern.findall(rawdata)
+      # SLS_match = re.findall(b'_array_data.header_convention[ "]*SLS', rawdata)
+      # PILATUS_match = re.findall(b'_array_data.header_convention[ "]*PILATUS', rawdata)
       #assert len(SLS_match) + len(PILATUS_match)>=1
 
       # read SLS header
-      headeropen = rawdata.index("_array_data.header_contents")
-      headerclose= rawdata.index("_array_data.data")
-      self.header = rawdata[headeropen+1:headerclose]
+      headeropen = rawdata.index(b"_array_data.header_contents")
+      headerclose = rawdata.index(b"_array_data.data")
+      self.header = rawdata[headeropen+1:headerclose].decode("latin-1")
       self.headerlines = [x.strip() for x in self.header.split("#")]
-      for idx in xrange(len(self.headerlines)):
-        for character in '\r\n,();':
-          self.headerlines[idx] = self.headerlines[idx].replace(character,'')
+      character_filter = re.compile(r"[\r\n,\(\);]")
+      self.headerlines = [character_filter.sub("", x) for x in self.headerlines]
 
       self.parameters={'CCD_IMAGE_SATURATION':65535}
       for tag,search,idx,datatype in [
@@ -159,7 +158,7 @@ class PilatusImage(DetectorImageBase):
       # read array size
       header_lines = []
       found_array_data_data = False
-      for record in rawdata.splitlines():
+      for record in rawdata.decode("latin-1").splitlines():
         if "_array_data.data" in record:
           found_array_data_data = True
         elif not found_array_data_data:
@@ -172,9 +171,7 @@ class PilatusImage(DetectorImageBase):
         header_lines.append(record)
       self.header = "\n".join(header_lines)
       self.headerlines = [x.strip() for x in self.header.split("\n")]
-      for idx in xrange(len(self.headerlines)):
-        for character in '\r\n,();':
-          self.headerlines[idx] = self.headerlines[idx].replace(character,'')
+      self.headerlines = [character_filter.sub("", x) for x in self.headerlines]
 
       for tag,search,idx,datatype in [
           ('SIZE1','X-Binary-Size-Second-Dimension',-1,int),
@@ -197,6 +194,6 @@ if __name__=='__main__':
   i = sys.argv[1]
   a = PilatusImage(i)
   a.read()
-  print a
-  print a.parameters
-  print a.rawdata, len(a.rawdata), a.size1*a.size2
+  print(a)
+  print(a.parameters)
+  print(a.rawdata, len(a.rawdata), a.size1*a.size2)

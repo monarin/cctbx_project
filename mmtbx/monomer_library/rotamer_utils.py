@@ -1,4 +1,4 @@
-from __future__ import division
+from __future__ import absolute_import, division, print_function
 import scitbx.rigid_body
 import scitbx.graph.tardy_tree
 import scitbx.math
@@ -7,6 +7,7 @@ from libtbx.str_utils import show_string
 from libtbx.utils import sequence_index_dict
 from libtbx.utils import Sorry
 import math
+from six.moves import zip
 
 rotamer_info_master_phil_str = """\
 tor_ids = None
@@ -229,7 +230,7 @@ def build_angle_start_by_tor_id(
       d_sites.append(sites_cart[i])
       atom_ids.append(str(atom_id))
     dihe = scitbx.math.dihedral_angle(sites=d_sites, deg=True)
-    if (dihe is None) :
+    if (dihe is None):
       raise Sorry(("scitbx.math.dihedral_angle returned None!\n"+
         "Atom IDs: %s\nSites: %s\n") % (", ".join(atom_ids),
         ", ".join([ str(xyz) for xyz in d_sites ])))
@@ -315,11 +316,11 @@ class rotamer_iterator(object):
   def __iter__(O):
     return O
 
-  def next(O):
-    rotamer = O.__iterates.next()
+  def __next__(O):
+    rotamer = next(O.__iterates)
     if O.rotamer_info.fine_sampling == False:
       while(rotamer.frequency_annotation == "for more uniform sampling"):
-        rotamer = O.__iterates.next()
+        rotamer = next(O.__iterates)
     q_packed_work = flex.double(O.tardy_model.q_packed_size, 0)
     for tor_id,angle in zip(O.rotamer_info.tor_ids, rotamer.angles):
       i_q_packed = O.i_q_packed_by_tor_id.get(tor_id)
@@ -328,3 +329,5 @@ class rotamer_iterator(object):
           angle - O.angle_start_by_tor_id[tor_id])
     O.tardy_model.unpack_q(q_packed=q_packed_work)
     return rotamer, O.tardy_model.sites_moved()
+
+  next = __next__

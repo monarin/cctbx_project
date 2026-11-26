@@ -1,4 +1,4 @@
-from __future__ import division
+from __future__ import absolute_import, division, print_function
 import os
 import sys
 import libtbx.load_env
@@ -10,14 +10,15 @@ from iotbx.file_reader import any_file, sort_by_file_type, group_files
 from cctbx import miller
 from cctbx import crystal
 from cctbx.array_family import flex
-import cPickle
+from six.moves import cPickle as pickle
+from six.moves import zip
 
 if (libtbx.env.has_module("ccp4io")):
   from iotbx import mtz
 else:
   mtz = None
 
-def exercise_cif () :
+def exercise_cif():
   #--- CIF
   cif_data = """
 data_comp_list
@@ -121,7 +122,7 @@ ATOM   6    O  OG    . SER A 1 1 23.683  -70.569 17.703  1.00 24.00 108 SER A OG
 HETATM 2650 MN MN    . MN  F 4 . 9.296   -44.783 -6.320  1.00 44.18 505 MN  A MN    1
 """
   f = open_tmp_file(suffix="cif", mode="w")
-  print >> f, input_4edr
+  print(input_4edr, file=f)
   f.close()
   mmcif = any_file(f.name)
   mmcif.assert_file_type("pdb")
@@ -135,7 +136,7 @@ HETATM 2650 MN MN    . MN  F 4 . 9.296   -44.783 -6.320  1.00 44.18 505 MN  A MN
   remarks = mmcif.file_object.input.remark_section()
   assert (len(remarks) == 0)
 
-def exercise_pdb () :
+def exercise_pdb():
   pdb_data = """
 HEADER    HYDROLASE(METALLOPROTEINASE)            17-NOV-93   1THL
 ATOM      1  N   ILE     1       9.581  51.813  -0.720  1.00 31.90      1THL 158
@@ -179,7 +180,8 @@ END
   pdb_data_symm = """\
 CRYST1   21.937    4.866   23.477  90.00 107.08  90.00 P 1 21 1      2
 """ + pdb_data
-  open("tmp_file_reader2.pdb", "w").write(pdb_data_symm)
+  with open("tmp_file_reader2.pdb", "w") as f:
+    f.write(pdb_data_symm)
   pdb = any_file("tmp_file_reader2.pdb").assert_file_type("pdb")
   symm = pdb.crystal_symmetry()
   assert (str(symm.space_group_info()) == "P 1 21 1")
@@ -196,13 +198,13 @@ END"""
   f.close()
   try :
     pdb = any_file("tmp1_bad.pdb", raise_sorry_if_not_expected_format=True)
-  except Sorry, e :
+  except Sorry as e :
     pass
   else :
     raise Exception_expected
   try :
     pdb = any_file("tmp1_bad.pdb", force_type="phil")
-  except RuntimeError, e :
+  except RuntimeError as e :
     pass
   else :
     raise Exception_expected
@@ -210,17 +212,17 @@ END"""
     pdb = any_file("tmp1_bad.pdb",
       force_type="pdb",
       raise_sorry_if_errors=True)
-  except Sorry, e :
+  except Sorry as e :
     assert ("Couldn't read 'tmp1_bad.pdb' as file type 'pdb'" in str(e))
   else :
     raise Exception_expected
 
-def exercise_phil () :
+def exercise_phil():
   phil_data = """\
 refinement {
   input {
-    include scope mmtbx.utils.neutron_data_str
-    include scope mmtbx.utils.xray_data_str
+    include scope iotbx.extract_xtal_data.neutron_data_str
+    include scope iotbx.extract_xtal_data.xray_data_str
   }
   refine {
     strategy = *individual_adp *individual_sites *tls occupancies group_adp
@@ -257,10 +259,10 @@ refinement {
   else :
     raise Exception_expected
 
-def exercise_pickle () :
+def exercise_pickle():
   f = open("tmp1.pkl", "wb")
   e = OSError(2001, "Hello, world!", "tmp1.phil")
-  cPickle.dump(e, f)
+  pickle.dump(e, f)
   f.close()
   pkl = any_file("tmp1.pkl")
   assert pkl.file_type == "pkl"
@@ -268,7 +270,33 @@ def exercise_pickle () :
   assert (exception.errno == 2001)
   os.remove("tmp1.pkl")
 
-def exercise_sequence () :
+def exercise_sequence2():
+  answer = """>BtSA
+MDTVFVHQTQIPILIERQDNVLFYFRLDAKESRMMDEIVLDFGKSVNLSDVQAVKLYYGGTEALQDKGKKRFAPVDYISS
+HRPGNTLAAIPSYSIKCAEALQPSAKVVLKSHYKLFPGINFFWISLQMKPETSLFTKISSELQSVKIDGKEAICEERSPK
+DIIHRMAVGVRHAGDDGSASFRIPGLVTSNKGTLLGVYDVRYNSSVDLQEYVDVGLSRSTDGGKTWEKMRLPLSFGEYDG
+LPAAQNGVGDPSILVDTQTNTIWVVAAWTHGMGNQRAWWSSHPGMDLYQTAQLVMAKSTDDGKTWSKPINITEQVKDPSW
+YFLLQGPGRGITMSDGTLVFPTQFIDSTRVPNAGIMYSKDRGKTWKMHNMARTNTTEAQVVETEPGVLMLNMRDNRGGSR
+AVAITKDLGKTWTEHPSSRKALQEPVCMASLIHVEAEDNVLDKDILLFSNPNTTRGRNHITIKASLDDGLTWLPEHQLML
+DEGEGWGYSCLTMIDRETIGILYESSAAHMTFQAVKLKDLIRGNSSSVDKLAAALEHHHHHH"""
+  txt="""
+%s
+>>>
+"""%answer
+  file_name = "tst_file_reader_exercise_sequence2"
+  with open(file_name,"w") as fo:
+    fo.write(txt)
+  seq_file = file_reader.any_file(
+    file_name,
+    force_type = "seq",
+    raise_sorry_if_errors=True)
+  sequence = seq_file.file_object
+  assert len(sequence) == 1
+  s1 = "".join([s.strip() for s in str(sequence[0])])
+  s2 = "".join([s.strip() for s in answer])
+  assert s1 == s2
+
+def exercise_sequence():
   seqs = ["AAKDVKFGVNVLADAV",
           "AAKDVKFGNDARVKML",
           "AVKDVRYGNEARVKIL"]
@@ -302,7 +330,7 @@ def exercise_sequence () :
   assert (f.file_type == "seq")
   os.remove("sequence.fa")
   f = open("sequences.fa", "w")
-  for header, seq in zip(headers, seqs) :
+  for header, seq in zip(headers, seqs):
     f.write("""\
 > %s
 %s
@@ -310,11 +338,11 @@ def exercise_sequence () :
   f.close()
   f = any_file("sequences.fa")
   assert (f.file_type == "seq")
-  for i, seq_object in enumerate(f.file_object) :
+  for i, seq_object in enumerate(f.file_object):
     assert (seq_object.sequence == seqs[i])
   os.remove("sequences.fa")
 
-def exercise_alignment () :
+def exercise_alignment():
   aln1 = """\
 >1mru_A
 -----------------GSHMTTPSHLSD-----RYELGEILGFGGMSEVHLARDLRLHR
@@ -330,7 +358,8 @@ NGVDLAAMLRRQGPLAPPRAVAIVRQIGSALDAAHAAGATHRDVKPENILVSADDFAYLV
 DFGIASATTD--EKLTQLGNTVGTLYYMAPERFSESHATYRADIYALTCVLYECLTGSPP
 YQGDQ-LSVMGAHINQAIPRPSTVRPGIPVAFDAVIARGMAKNPEDRYVTCGDLSA----
 -----AAHAALATADQDRATDILR--------R"""
-  open("seqs.aln", "w").write(aln1)
+  with open("seqs.aln", "w") as f:
+    f.write(aln1)
   f = any_file("seqs.aln")
   f.assert_file_type("aln")
   assert (f.file_object.names == ["1mru_A", "2h34_A"])
@@ -345,32 +374,33 @@ MUSCLE (3.8) multiple sequence alignment
 1mru_A          DVAVKVLRADLARDPSFYLRFRREAQNAAALNHPAIVAVYDTGEAETPAGPLPYIVMEYV
 2h34_A          IVALKLMSETLSSDPVFRTRMQREARTAGRLQEPHVVPIHDFGEID---GQL-YVDMRLI
                  **:*::   *: ** *  *:.***..*. *: * :*.::* ** :   * * *: *  :"""
-  open("seqs.aln", "w").write(aln2)
+  with open("seqs.aln", "w") as f:
+    f.write(aln2)
   f = any_file("seqs.aln")
   f.assert_file_type("aln")
   assert (f.file_object.names == ["1mru_A", "2h34_A"])
 
-def exercise_hhr () :
+def exercise_hhr():
   hhr_file = libtbx.env.find_in_repositories(
     relative_path="phenix_regression/misc/hewl.hhr",
     test=os.path.isfile)
-  if (hhr_file is not None) :
+  if (hhr_file is not None):
     f = any_file(hhr_file, valid_types=["seq","aln","hhr","txt"])
     assert (f.file_type == "hhr")
     assert (type(f.file_object).__name__ == "hhsearch_parser")
 
-def exercise_xml () :
+def exercise_xml():
   xml_file = libtbx.env.find_in_repositories(
     relative_path="phenix_regression/misc/hewl.xml",
     test=os.path.isfile)
-  if (xml_file is not None) :
+  if (xml_file is not None):
     f = any_file(xml_file, valid_types=["seq","aln","hhr","xml","txt"])
     assert (f.file_type == "xml")
     assert (f.file_object.nodeName == "#document")
     assert (len(f.file_object.childNodes) == 2)
     assert (f.file_object.childNodes[1].nodeName == "BlastOutput")
 
-def exercise_maps () :
+def exercise_maps():
   xplor_map = libtbx.env.find_in_repositories(
     relative_path="phenix_regression/misc/cns.map",
     test=os.path.isfile)
@@ -383,7 +413,7 @@ def exercise_maps () :
   f = any_file(ccp4_map)
   assert f.file_type == "ccp4_map"
 
-def exercise_hkl () :
+def exercise_hkl():
   #--- HKL
   crystal_symmetry = crystal.symmetry(
     unit_cell=(10,11,12,85,95,100),
@@ -404,26 +434,26 @@ def exercise_hkl () :
   assert hkl.file_server.miller_arrays[0].info().labels == ["F0"]
   os.remove("tmp1.mtz")
 
-def exercise_misc () :
+def exercise_misc():
   file_names = ["foo.pdb", "foo.mtz", "bar.pdb", "bar.mtz", "seq.dat"]
   file_types = ["pdb", "hkl", "pdb", "hkl", "seq"]
-  for i, file_name in enumerate(file_names) :
+  for i, file_name in enumerate(file_names):
     f = open(file_name, "w")
     f.write("1")
     f.close()
     input_file = file_reader.any_file_fast(file_name)
     assert (input_file.file_type == file_types[i])
-    if (input_file.file_type == "hkl") :
+    if (input_file.file_type == "hkl"):
       assert (input_file.file_object.file_type() == "CCP4 MTZ")
   file_names = sort_by_file_type(file_names, sort_order=["pdb","hkl","seq"])
   assert (file_names == ['foo.pdb','bar.pdb','foo.mtz','bar.mtz','seq.dat'])
   wc = file_reader.get_wildcard_strings(["hkl","pdb","seq"])
-  if (sys.platform == "darwin") :
-    assert (wc == """Reflections file (*.mtz, *.hkl, *.sca, *.cns, *.xplor, *.cv, *.ref, *.fobs)|*.mtz;*.hkl;*.sca;*.cns;*.xplor;*.cv;*.ref;*.fobs|Model file (*.pdb, *.ent)|*.pdb;*.ent|Sequence file (*.fa, *.faa, *.seq, *.pir, *.dat, *.fasta)|*.fa;*.faa;*.seq;*.pir;*.dat;*.fasta|All files (*.*)|*.*""")
+  if (sys.platform == "darwin"):
+    assert (wc == """Reflections file (*.mtz, *.hkl, *.sca, *.cns, *.xplor, *.cv, *.ref, *.fobs)|*.mtz;*.hkl;*.sca;*.cns;*.xplor;*.cv;*.ref;*.fobs|Model file (*.pdb, *.ent, *.cif)|*.pdb;*.ent;*.cif|Sequence file (*.fa, *.faa, *.seq, *.pir, *.dat, *.fasta)|*.fa;*.faa;*.seq;*.pir;*.dat;*.fasta|All files (*.*)|*.*""")
   wc = file_reader.get_wildcard_strings([])
   assert (wc == """All files (*.*)|*.*""")
 
-def exercise_groups () :
+def exercise_groups():
   files = [
     "/data/user/project1/p1.sca",
     "/data/user/project2/p2.pdb",
@@ -483,7 +513,8 @@ def exercise_groups () :
       '/data/user/project5/model2.pdb']
   ])
 
-def exercise () :
+def exercise():
+  exercise_sequence2()
   exercise_mmcif()
   exercise_groups()
   exercise_misc()
@@ -497,10 +528,10 @@ def exercise () :
   exercise_xml()
   exercise_maps()
   if mtz is None :
-    print "Skipping mtz file tests"
+    print("Skipping mtz file tests")
   else :
     exercise_hkl()
-  print "OK"
+  print("OK")
 
 if __name__ == "__main__" :
   exercise()

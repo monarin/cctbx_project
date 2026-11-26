@@ -1,4 +1,4 @@
-from __future__ import division
+from __future__ import absolute_import, division, print_function
 
 from libtbx.utils import null_out
 from mmtbx import monomer_library
@@ -84,25 +84,41 @@ END """
   work_params.reference_model.use_starting_model_as_reference=True
   model = mmtbx.model.manager(
       model_input = iotbx.pdb.input(source_info=None, lines=pdb_str.split('\n')),
-      pdb_interpretation_params=work_params,
-      build_grm=True,
       log=null_out())
+  model.process(pdb_interpretation_params=work_params,
+    make_restraints=True)
   n_ref_dih_prox = model.get_restraints_manager().geometry.get_n_reference_dihedral_proxies()
-  assert n_ref_dih_prox == 34, "expected 34, got %d" % n_ref_dih_prox
+  # side_chain defaults to False, so the default is main chain only.
+  assert n_ref_dih_prox == 18, "expected 18, got %d" % n_ref_dih_prox
 
+  model = mmtbx.model.manager(
+      model_input = iotbx.pdb.input(source_info=None, lines=pdb_str.split('\n')),
+      log=null_out())
+  model.process(pdb_interpretation_params=work_params,
+    make_restraints=False)
   work_params = mmtbx.model.manager.get_default_pdb_interpretation_params()
   work_params.reference_model.enabled=True
   work_params.reference_model.use_starting_model_as_reference=True
   work_params.reference_model.main_chain=False
-  model.set_pdb_interpretation_params(work_params)
+  # side_chain must be requested explicitly, otherwise both filters are off
+  # and no proxies are generated at all.
+  work_params.reference_model.side_chain=True
+  model.process(make_restraints=True,
+    pdb_interpretation_params=work_params)
   n_ref_dih_prox = model.get_restraints_manager().geometry.get_n_reference_dihedral_proxies()
   assert n_ref_dih_prox == 16, "expected 16, got %d" % n_ref_dih_prox
 
+  model = mmtbx.model.manager(
+      model_input = iotbx.pdb.input(source_info=None, lines=pdb_str.split('\n')),
+      log=null_out())
+  model.process(pdb_interpretation_params=work_params,
+    make_restraints=False)
   work_params = mmtbx.model.manager.get_default_pdb_interpretation_params()
   work_params.reference_model.enabled=True
   work_params.reference_model.use_starting_model_as_reference=True
   work_params.reference_model.side_chain=False
-  model.set_pdb_interpretation_params(work_params)
+  model.process(make_restraints=True,
+    pdb_interpretation_params=work_params)
   n_ref_dih_prox = model.get_restraints_manager().geometry.get_n_reference_dihedral_proxies()
   assert n_ref_dih_prox == 18, "expected 18, got %d" % n_ref_dih_prox
 
@@ -115,10 +131,10 @@ def exercise():
     mon_lib_srv = monomer_library.server.server()
     ener_lib = monomer_library.server.ener_lib()
   except: # intentional
-    print "Can not initialize monomer_library, skipping test."
+    print("Can not initialize monomer_library, skipping test.")
   if mon_lib_srv is not None and ener_lib is not None:
     exercise_reference_model_restraints(mon_lib_srv, ener_lib)
 
 if (__name__ == "__main__"):
   exercise()
-  print "OK"
+  print("OK")

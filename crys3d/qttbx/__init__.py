@@ -1,4 +1,4 @@
-from __future__ import division
+from __future__ import absolute_import, division, print_function
 from libtbx import adopt_optional_init_args
 import gltbx
 import gltbx.util
@@ -9,11 +9,12 @@ from PyQt4.QtCore import *
 from PyQt4.QtGui import *
 from scitbx import matrix as mat
 import math
+from six.moves import zip
 
 class widget_with_fp_exception_trapping_off_mixin(object):
 
   def show(self):
-    from boost.python import ext
+    from boost_adaptbx.boost.python import ext
     try:
       division_by_zero = ext.is_division_by_zero_trapped()
       invalid = ext.is_invalid_trapped()

@@ -1,9 +1,10 @@
-from __future__ import division
+from __future__ import absolute_import, division, print_function
 import cctbx.array_family.flex # import dependency
 import scitbx.array_family.shared # import dependency
 
-import boost.python
-ext = boost.python.import_ext("cctbx_uctbx_ext")
+import boost_adaptbx.boost.python as bp
+from six.moves import zip
+ext = bp.import_ext("cctbx_uctbx_ext")
 from cctbx_uctbx_ext import *
 
 from scitbx import matrix
@@ -53,7 +54,13 @@ class unit_cell(ext.unit_cell):
     else:
       ext.unit_cell.__init__(self, parameters=[])
 
-ext.unit_cell.metrical_matrix.__func__.__doc__ = """
+def update_docstring(obj, string):
+  try:
+    obj.__doc__ = string # Py3
+  except AttributeError:
+    obj.__func__.__doc__ = string # Py2
+
+update_docstring(ext.unit_cell.metrical_matrix, """
 Access to the metrical matrix:
 
 .. math::
@@ -65,9 +72,9 @@ Access to the metrical matrix:
 
 :returns: the metrical matrix
 :rtype: tuple
-"""
+""")
 
-ext.unit_cell.orthogonalization_matrix.__func__.__doc__ = """
+update_docstring(ext.unit_cell.orthogonalization_matrix, """
 Matrix for the conversion of fractional to Cartesian coordinates:
 
 .. math::
@@ -75,9 +82,9 @@ Matrix for the conversion of fractional to Cartesian coordinates:
 
 :returns: the orthogonalization matrix
 :rtype: tuple
-"""
+""")
 
-ext.unit_cell.fractionalization_matrix.__func__.__doc__ = """
+update_docstring(ext.unit_cell.fractionalization_matrix, """
 Matrix for the conversion of fractional to Cartesian coordinates:
 
 .. math::
@@ -85,9 +92,9 @@ Matrix for the conversion of fractional to Cartesian coordinates:
 
 :returns: the fractionalization matrix
 :rtype: tuple
-"""
+""")
 
-ext.unit_cell.orthogonalize.__func__.__doc__ = """
+update_docstring(ext.unit_cell.orthogonalize, """
 Conversion of fractional coordinates to Cartesian coordinates.
 
 :param sites_frac: The fractional coordinates.
@@ -96,9 +103,9 @@ Conversion of fractional coordinates to Cartesian coordinates.
 
 :returns: the Cartesian coordinates
 :rtype: 3-tuple or flex.vec3_double
-"""
+""")
 
-ext.unit_cell.fractionalize.__func__.__doc__ = """
+update_docstring(ext.unit_cell.fractionalize, """
 Conversion of Cartesian coordinates to fractional coordinates.
 
 :param sites_cart: The Cartesian coordinates.
@@ -107,20 +114,23 @@ Conversion of Cartesian coordinates to fractional coordinates.
 
 :returns: the fractional coordinates
 :rtype: 3-tuple or flex.vec3_double
-"""
+""")
 
-
-class _(boost.python.injector, ext.unit_cell):
+@bp.inject_into(ext.unit_cell)
+class _():
 
   def __str__(self):
     return format(self, "({:.6g}, {:.6g}, {:.6g}, {:.6g}, {:.6g}, {:.6g})")
+
+  def __repr__(self):
+    return format(self, "uctbx.unit_cell(({}, {}, {}, {}, {}, {}))")
 
   def __format__(self, format_spec="({:.6g}, {:.6g}, {:.6g}, {:.6g}, {:.6g}, {:.6g})"):
     return format_spec.format(*self.parameters())
 
   def show_parameters(self, f=None, prefix="Unit cell: "):
     if (f is None): f = sys.stdout
-    print >> f, prefix + str(self)
+    print(prefix + str(self), file=f)
 
   def is_conventional_hexagonal_basis(self,
         absolute_length_tolerance=1e-3,
@@ -181,8 +191,11 @@ class _(boost.python.injector, ext.unit_cell):
     return gruber_parameterization(self, relative_epsilon).is_niggli_cell()
 
   def niggli_reduction(self, relative_epsilon=None, iteration_limit=None):
-    from cctbx.uctbx import krivy_gruber_1976
-    return krivy_gruber_1976.reduction(self, relative_epsilon, iteration_limit)
+    if relative_epsilon is None:
+      relative_epsilon = 1.e-5
+    if iteration_limit is None:
+      iteration_limit = 1000
+    return ext.niggli_reduction(self, relative_epsilon, iteration_limit)
 
   def niggli_cell(self,
         relative_epsilon=None,
@@ -286,6 +299,7 @@ class _(boost.python.injector, ext.unit_cell):
       h, u_star, exp_arg_limit, truncate_exp_arg)
 
   debye_waller_factor = debye_waller_factors
+
 
 def non_crystallographic_buffer_layer(
       sites_cart_min,

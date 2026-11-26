@@ -1,6 +1,7 @@
+"""Sort atoms in residues so they will be in the same order in all residues"""
 # LIBTBX_SET_DISPATCHER_NAME iotbx.pdb.sort_atoms
 
-from __future__ import division
+from __future__ import absolute_import, division, print_function
 from libtbx.utils import Usage
 import sys
 import iotbx.pdb
@@ -41,7 +42,7 @@ def run(args):
   out_fn = out_fn_prefix + "_sorted"
 
   txt = ""
-  if model.input_format_was_cif():
+  if model.input_model_format_cif():
     out_fn += ".cif"
     txt = model.model_as_mmcif()
   else:
@@ -50,5 +51,5 @@ def run(args):
   with open(out_fn, 'w') as f:
     f.write(txt)
 
-if (__name__ == "__main__") :
+if (__name__ == "__main__"):
   run(sys.argv[1:])

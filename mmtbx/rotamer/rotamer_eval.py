@@ -1,6 +1,5 @@
-from __future__ import division
+from __future__ import absolute_import, division, print_function
 import libtbx.load_env
-from mmtbx.rotamer.n_dim_table import NDimTable
 from libtbx import easy_pickle
 from libtbx import dlite
 from libtbx.utils import Sorry
@@ -11,6 +10,7 @@ from cctbx.array_family import flex
 import weakref
 import sys, os
 import iotbx.pdb
+from six.moves import range
 
 def find_rotarama_data_dir(optional=False):
   result = libtbx.env.find_in_repositories(
@@ -23,15 +23,17 @@ def find_rotarama_data_dir(optional=False):
       if result is None and not optional:
         raise Sorry("""\
 Can't find chem_data/rotarama_data/ directory:
-  Please run
-    svn co svn://quiddity.biochem.duke.edu:21/phenix/rotarama_data
+  Inside chem_data, please run
+    svn --quiet --non-interactive --trust-server-cert export https://github.com/rlabduke/reference_data.git/trunk/Top8000/Top8000_rotamer_pct_contour_grids rotarama_data
+    svn --quiet --non-interactive --trust-server-cert --force export https://github.com/rlabduke/reference_data.git/trunk/Top8000/Top8000_ramachandran_pct_contour_grids rotarama_data
+    mmtbx.rebuild_rotarama_cache
   to resolve this problem.""")
   return result
 
 def open_rotarama_dlite(rotarama_data_dir=None):
   if (rotarama_data_dir is None):
     rotarama_data_dir = find_rotarama_data_dir()
-  return dlite.target_db(os.path.join(rotarama_data_dir, "rotarama.dlite"))
+  return dlite.try_loading_db(os.path.join(rotarama_data_dir, "rotarama.dlite"))
 
 # maps aa name to file name
 aminoAcids = {
@@ -61,7 +63,7 @@ def mon_lib_query(residue, mon_lib_srv):
   if (get_func is not None): return get_func(comp_id=residue)
   return mon_lib_srv.get_comp_comp_id_direct(comp_id=residue)
 
-def eval_residue_completeness (residue, mon_lib_srv, ignore_hydrogens=True):
+def eval_residue_completeness(residue, mon_lib_srv, ignore_hydrogens=True):
   atom_list = []
   for atom in residue.atoms():
     atom_list.append(atom.name.strip().upper())
@@ -173,7 +175,7 @@ class RotamerEval:
                     target_path=pickle_file,
                     path_prefix=rotamer_data_dir)
       if (((pair_info.needs_update) and (not no_update)) or not
-          os.path.exists(os.path.join(rotamer_data_dir, pickle_file)))  :
+          os.path.exists(os.path.join(rotamer_data_dir, pickle_file))):
         raise Sorry(
           "chem_data/rotarama_data/*.pickle files are missing or out of date.\n"
           "  Please run\n"
@@ -206,7 +208,7 @@ class RotamerEval:
         atom_dict[atom.name] = atom
     return atom_dict
 
-  def chi_angles (self, residue) :
+  def chi_angles(self, residue):
     atom_dict = self.get_atom_dict(residue)
     return self.sidechain_angles.measureChiAngles(
       res=residue,
@@ -311,7 +313,7 @@ class RotamerID:
   names = {}
 
   def __init__(self):
-    if (len(self.names) == 0) :
+    if (len(self.names) == 0):
       source_dir = self.find_source_dir()
       #f = PropertyFile()
       # can't use f.properties to read in rotamer_names.props
@@ -354,8 +356,8 @@ Can't seem to find mmtbx/rotamer/ directory.
     rotaList = []
     try:
       f = open(fileLoc)
-    except ImportError, e:
-      print fileLoc+" file not found"
+    except ImportError as e:
+      print(fileLoc+" file not found")
       sys.exit()
     for line in f:
       if (line.startswith("#") or line == "\n"): continue
@@ -402,13 +404,15 @@ class NamedRot:
   def __init__(self, aa, rotamer_name, bounds):
     self.aa_name = aa
     self.rotamer_name = rotamer_name
-    self.bounds = map(int, bounds.split(", "))
+    self.bounds = [int(b) for b in bounds.split(", ")]
 
   def __str__(self):
     return str(self.rotamer_name) + "=" + str(self.bounds)
 
   def contains(self, angles):
     for i in range(0, len(self.bounds), 2):
+      if (angles[i//2] is None ) or (self.bounds[i] is None): # XXX FIX OK?
+        return False
       if (   angles[i//2] < self.bounds[i]
           or angles[i//2] > self.bounds[i+1]): return False
     return True
@@ -417,7 +421,7 @@ class NamedRot:
 ########################################################################
 def exercise(args):
   if (find_rotarama_data_dir(optional=True) is None):
-    print "Skipping exercise(): rotarama_data directory not available"
+    print("Skipping exercise(): rotarama_data directory not available")
   else:
     from mmtbx.command_line import rebuild_rotarama_cache
     rebuild_rotarama_cache.run()
@@ -518,8 +522,8 @@ def exercise(args):
     ]:
       r_eval = 100*r.evaluate(aminoAcid, chiAngles)
       if (verbose):
-        print aminoAcid, "%4.1f %4.1f %4.1f" % (
-          r_eval, molpValue, r_eval-molpValue)
+        print(aminoAcid, "%4.1f %4.1f %4.1f" % (
+          r_eval, molpValue, r_eval-molpValue))
         #print '      ("%s",' % aminoAcid, chiAngles, ',', "%4.1f)," % r_eval
     # assert approx_equal(r_eval, molpValue, eps=0.9)
     #
@@ -532,7 +536,7 @@ def exercise(args):
     for aa,ndt_weakref in RotamerEval.aaTables.items():
       assert ndt_weakref() is None
     #
-  print "OK"
+  print("OK")
 
 if (__name__ == "__main__"):
     exercise(sys.argv[1:])

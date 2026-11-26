@@ -1,6 +1,7 @@
 #ifndef FEM_DATA_OF_TYPE_HPP
 #define FEM_DATA_OF_TYPE_HPP
 
+#include <noexcept_false.hpp>
 #include <fem/arr.hpp>
 #include <fem/str_arr_ref.hpp>
 #include <fem/utils/misc.hpp>
@@ -23,7 +24,7 @@ namespace fem {
       value_index(0)
     {}
 
-    ~data_of_type() { TBXX_ASSERT(value_index == values_size); }
+    ~data_of_type() NOEXCEPT_FALSE { TBXX_ASSERT(value_index == values_size); }
 
 #define FEM_LOC(V) \
     data_of_type& \
@@ -72,7 +73,7 @@ namespace fem {
       value_index(0)
     {}
 
-    ~data_of_type_str() { TBXX_ASSERT(value_index == values_size); }
+    ~data_of_type_str() NOEXCEPT_FALSE { TBXX_ASSERT(value_index == values_size); }
 
     data_of_type_str&
     operator,(

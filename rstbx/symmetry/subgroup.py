@@ -1,8 +1,5 @@
-from __future__ import division
-try:
-  import cPickle as pickle
-except ImportError:
-  import pickle
+from __future__ import absolute_import, division, print_function
+from six.moves import cPickle as pickle
 from libtbx import adopt_init_args
 from cctbx.sgtbx import subgroups
 from scitbx.array_family import flex
@@ -13,6 +10,7 @@ from cctbx import sgtbx
 from rstbx.symmetry.sgtbx_adaptor import get_patterson_group
 from cctbx.sgtbx.lattice_symmetry import metric_supergroup,metric_subgroups as base_subgroups
 from cctbx.sgtbx import bravais_types,change_of_basis_op
+from six.moves import zip
 find_max_delta = sgtbx.lattice_symmetry_find_max_delta
 
 #For LABELIT, the derive from the iotbx subgroup list such that the
@@ -101,7 +99,7 @@ class metric_subgroups(base_subgroups):
         cb_op_corr = cb_op_inp_best.inverse()
         try:
           best_subsym_corr = best_subsym.change_basis(cb_op_corr)
-        except RuntimeError, e:
+        except RuntimeError as e:
           if (str(e).find("Unsuitable value for rational rotation matrix.") < 0):
             raise
         else:
@@ -177,12 +175,12 @@ class metric_subgroups(base_subgroups):
   def parse_reference(self):
     try:
       o_file = ('crystal_orientation')
-      f = open(o_file,'r')
+      f = open(o_file,'rb')
       reference_ori = pickle.load(f)
       self.reference_subgroups = pickle.load(f)
       f.close()
 
-    except Exception:
+    except FileNotFoundError:
       self.reference_subgroups = None
 
 class MetricSubgroup(dict):

@@ -1,8 +1,8 @@
 
-from __future__ import division
+from __future__ import absolute_import, division, print_function
 from libtbx import easy_run
 
-def exercise () :
+def exercise():
   pdb_in = """\
 CRYST1   25.015   29.415   52.761  89.54  86.10  82.39 P 1
 ATOM      1  N   LEU A   4      24.685  46.025  13.868  1.00 21.07           N
@@ -22,7 +22,8 @@ ANISOU    7  CD1 LEU A   4     3049   3450   2083    277   -581   -559       C
 ATOM      8  CD2 LEU A   4      23.972  42.321  12.770  1.00 22.51           C
 ANISOU    8  CD2 LEU A   4     3022   3432   2100    219   -528   -600       C
 """
-  open("tmp_rigid_bond_test.pdb", "w").write(pdb_in)
+  with open("tmp_rigid_bond_test.pdb", "w") as f:
+    f.write(pdb_in)
   result = easy_run.fully_buffered(
     "mmtbx.rigid_bond_test tmp_rigid_bond_test.pdb").raise_if_errors()
   assert (result.return_code == 0)
@@ -30,7 +31,7 @@ ANISOU    8  CD2 LEU A   4     3022   3432   2100    219   -528   -600       C
   assert ("""  pdb=" N   LEU A   4 " pdb=" CA  LEU A   4 "     24.957""" in
           result.stdout_lines)
   assert ("""    mean = 52.797""" in result.stdout_lines)
-  print "OK"
+  print("OK")
 
-if (__name__ == "__main__") :
+if (__name__ == "__main__"):
   exercise()

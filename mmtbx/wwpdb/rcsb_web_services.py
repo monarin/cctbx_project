@@ -1,134 +1,287 @@
 
 """
 Module for querying the RCSB web server using the REST API, as described here:
-http://www.rcsb.org/pdb/software/rest.do
-
-There is some overlap with iotbx.pdb.fetch, which really should have gone here
-instead, but this module is intended to be used in higher-level automation
-pipelines.
+https://search.rcsb.org/index.html#search-api
 """
 
-from __future__ import division
+from __future__ import absolute_import, division, print_function
 import libtbx.utils
-from xml.dom.minidom import parseString
-import sys
+import json
+import requests
+from requests.adapters import HTTPAdapter, Retry
 
-url_base = "http://www.rcsb.org/pdb/rest"
-url_search = url_base + "/search"
+search_base_url = "https://search.rcsb.org/rcsbsearch/v2/query?json="
+report_base_url = "https://data.rcsb.org/graphql"
 
-def post_query (query_xml, xray_only=True, d_max=None, d_min=None,
-    protein_only=False, data_only=False, identity_cutoff=None, log=None,
-    sort_by_resolution=False) :
+# RCSB GraphQL caps `entries(entry_ids: [...])` at 1000 ids per request.
+report_entry_ids_chunk_size = 1000
+
+def value_attribute_filter(attribute_name, operator, value):
+  assert operator in ["greater", "less", "less_or_equal", "greater_or_equal", "exact_match"]
+  filt = {
+    "type": "terminal",
+    "service": "text",
+    "parameters": {
+      "attribute": attribute_name,
+      "operator": operator,
+      "value" : value
+    }
+  }
+  return filt
+
+def data_only_filter():
+  return value_attribute_filter(
+      "rcsb_accession_info.has_released_experimental_data", "exact_match", "Y")
+
+def xray_only_filter():
+  return value_attribute_filter(
+      "exptl.method", "exact_match", "X-RAY DIFFRACTION")
+
+def polymeric_type_filter(value="Protein (only)"):
+  assert value in ["Protein (only)", "Protein/NA", "Nucleic acid (only)", "Other"]
+  return value_attribute_filter(
+      "rcsb_entry_info.selected_polymer_entity_types", "exact_match", value)
+
+def clashscore_filter(operator, value):
+  return value_attribute_filter(
+      "pdbx_vrpt_summary_geometry.clashscore", operator, value)
+
+def rama_outliers_filter(operator, value):
+  return value_attribute_filter(
+      "pdbx_vrpt_summary_geometry.percent_ramachandran_outliers", operator, value)
+
+def rota_outliers_filter(operator, value):
+  return value_attribute_filter(
+      "pdbx_vrpt_summary_geometry.percent_rotamer_outliers", operator, value)
+
+def resolution_filter(operator, value):
+  return value_attribute_filter(
+      "rcsb_entry_info.diffrn_resolution_high.value", operator, value)
+
+sort_by_res = \
+    {
+      "sort_by": "rcsb_entry_info.resolution_combined",
+      "direction": "asc"
+    }
+
+def add_nodes_to_query_if_needed_in_place(query_json):
+  if "nodes" not in query_json["query"].keys():
+    query_json["query"]["type"] = "group"
+    query_json["query"]["logical_operator"] = "and"
+    del query_json["query"]["service"]
+    query_json["query"]["nodes"] = []
+
+def post_query(query_json=None, xray_only=True, d_max=None, d_min=None,
+    protein_only=False, data_only=False, log=None,
+    sort_by_resolution=False, clashscore_range=None,
+    rama_outliers_range=None, rota_outliers_range=None,
+    n_retries_on_no_results=2):
+  """  Make request to RCSB search API and return list of PDB ids, optionally with
+  chain IDs. If query_json is not supplied, generic one will be used which
+  searches for everything in PDB. It will be enhanced according to other parameters.
+
+
+  Args:
+      query_json (dict, optional): _description_. Defaults to None.
+      xray_only (bool, optional): Return only xray structures. Defaults to True.
+      d_max (_type_, optional): Max resolution. Defaults to None.
+      d_min (_type_, optional): Min resolution. Defaults to None.
+      protein_only (bool, optional): Return only protein entries. Defaults to False.
+      data_only (bool, optional): Return only entries with experimental data. Defaults to False.
+      log (_type_, optional): Handler for log. Defaults to None.
+      sort_by_resolution (bool, optional): Sort by entry resolution. Defaults to False.
+      clashscore_range (tuple): tuple of min and max clashscore, e.g. (0,10) or None
+
+  Returns:
+      list: PDB ids
   """
-  Generate the full XML for a multi-part query with generic search options,
-  starting from the basic query passed by another function, post it to the
-  RCSB's web service, and return a list of matching PDB IDs.
+  if query_json is None:
+    query_json = {
+        "query": {
+          "type": "terminal",
+          "service": "text"
+        },
+        "return_type": "entry",
+        "request_options": {
+          "return_all_hits": True,
+        }
+      }
+  if d_max is not None and d_min is not None:
+    assert d_max > d_min
 
-  Parameters
-  ----------
-  query_xml : str or None
-  xray_only : bool, optional
-  d_max : float, optional
-  d_min : float, optional
-  protein_only : bool, optional
-  data_only : bool, optional
-  identity_cutoff : int, optional
-      Apply sequence filtering to remove structures with greater than this
-      percentage sequence identity. Must be one of 100, 95, 90, 70, 50, 40, 30.
-  log : file, optional
-  sort_by_resolution : bool, optional
-  """
-  if (log is None) :
+  if (log is None):
     log = libtbx.utils.null_out()
-  queries = []
-  if (query_xml is not None) :
-    queries.append(query_xml)
-  print >> log, "Setting up RCSB server query:"
-  if (xray_only) :
-    print >> log, "  limiting to X-ray structures"
-    xray_query = "<queryType>org.pdb.query.simple.ExpTypeQuery</queryType>\n"+\
-      "<mvStructure.expMethod.value>X-RAY</mvStructure.expMethod.value>"
-    if (data_only) :
-      xray_query += "\n<mvStructure.hasExperimentalData.value>Y</mvStructure.hasExperimentalData.value>"
-    queries.append(xray_query)
-  if (d_max is not None) or (d_min is not None) :
-    base_clause = "<queryType>org.pdb.query.simple.ResolutionQuery</queryType>"
-    base_clause += "\n<refine.ls_d_res_high.comparator>between" + \
-      "</refine.ls_d_res_high.comparator>"
-    if (d_min is not None) :
-      assert (d_min >= 0)
-      print >> log, "  applying resolution cutoff d_min > %f" % d_min
-      base_clause += \
-        "\n<refine.ls_d_res_high.min>%f</refine.ls_d_res_high.min>" % d_min
-    if (d_max is not None) :
-      assert (d_max >= 0)
-      print >> log, "  applying resolution cutoff d_min < %f" % d_max
-      base_clause += \
-        "\n<refine.ls_d_res_high.max>%f</refine.ls_d_res_high.max>" % d_max
-    queries.append(base_clause)
-  if (protein_only) :
-    print >> log, "  excluding non-protein models"
-    queries.append(
-      "<queryType>org.pdb.query.simple.ChainTypeQuery</queryType>\n" +
-      "<containsProtein>Y</containsProtein>")
-  if (identity_cutoff is not None) :
-    print >> log, "  filtering based on sequence identity < %d %%" % \
-      int(identity_cutoff)
-    assert (identity_cutoff > 0) and (identity_cutoff <= 100)
-    queries.append(
-      "<queryType>org.pdb.query.simple.HomologueReductionQuery</queryType>\n"+
-      "<identityCutoff>%d</identityCutoff>" % int(identity_cutoff))
-  if (len(queries) == 0) :
-    raise RuntimeError("No queries specified!")
-  queries_string = ""
-  k = 0
-  for clause in queries :
-    queries_string += """
-        <queryRefinement>
-          <queryRefinementLevel>%d</queryRefinementLevel>
-          <conjunctionType>and</conjunctionType>
-          <orgPdbQuery>
-            %s
-          </orgPdbQuery>
-        </queryRefinement>""" % (k, clause)
-    k += 1
-  query_str = """\
-<orgPdbCompositeQuery version="1.0">
-  %s
-</orgPdbCompositeQuery>
-""" % (queries_string)
-  parsed = parseString(query_str)
-  url_final = url_search
-  if (sort_by_resolution) :
-    url_final += "/?sortfield=Resolution"
-    print >> log, "  will sort by resolution"
-  print >> log, "  executing HTTP request..."
-  result = libtbx.utils.urlopen(url_final, query_str).read()
-  return result.splitlines()
+  print("Setting up RCSB server query:", file=log)
+  if (xray_only):
+    print("  limiting to X-ray structures", file=log)
+    add_nodes_to_query_if_needed_in_place(query_json)
+    query_json["query"]["nodes"].append(xray_only_filter())
+    if (data_only):
+      add_nodes_to_query_if_needed_in_place(query_json)
+      query_json["query"]["nodes"].append(data_only_filter())
+  if d_max is not None:
+    add_nodes_to_query_if_needed_in_place(query_json)
+    query_json["query"]["nodes"].append(resolution_filter("less", d_max))
+  if d_min is not None:
+    add_nodes_to_query_if_needed_in_place(query_json)
+    query_json["query"]["nodes"].append(resolution_filter("greater", d_min))
+  if clashscore_range is not None:
+    add_nodes_to_query_if_needed_in_place(query_json)
+    query_json["query"]["nodes"].append(clashscore_filter("greater", clashscore_range[0]))
+    query_json["query"]["nodes"].append(clashscore_filter("less", clashscore_range[1]))
+  if rama_outliers_range is not None:
+    add_nodes_to_query_if_needed_in_place(query_json)
+    query_json["query"]["nodes"].append(rama_outliers_filter("greater", rama_outliers_range[0]))
+    query_json["query"]["nodes"].append(rama_outliers_filter("less", rama_outliers_range[1]))
+  if rota_outliers_range is not None:
+    add_nodes_to_query_if_needed_in_place(query_json)
+    query_json["query"]["nodes"].append(rota_outliers_filter("greater", rota_outliers_range[0]))
+    query_json["query"]["nodes"].append(rota_outliers_filter("less", rota_outliers_range[1]))
+  if (protein_only):
+    add_nodes_to_query_if_needed_in_place(query_json)
+    query_json["query"]["nodes"].append(polymeric_type_filter("Protein (only)"))
+  if (sort_by_resolution):
+    if "sort" not in query_json["request_options"].keys():
+      query_json["request_options"]["sort"] = []
+    query_json["request_options"]["sort"].append(sort_by_res)
+    print("  will sort by resolution", file=log)
+  if "results_verbosity" not in query_json["request_options"].keys():
+    query_json["request_options"]["results_verbosity"] = "compact"
+  print("  executing HTTP request...", file=log)
+  # print(json.dumps(query_json, indent=4))
+  res_ids = []
+  attempt_number = 0
+  while len(res_ids) == 0 and attempt_number < n_retries_on_no_results:
+    if attempt_number > 0:
+      print("  Retry # %d to get non empty result from RCSB" % attempt_number, file=log)
+    s = requests.Session()
+    retries = Retry(
+        total=5,
+        connect=5,
+        read=5,
+        other=5,
+        backoff_factor=0.1,
+        status_forcelist=[ 500, 502, 503, 504 ],
+        allowed_methods=frozenset(["POST"]),
+        raise_on_status=False)
+    s.mount('https://', HTTPAdapter(max_retries=retries))
+    r = s.post(search_base_url, json=query_json)
+    # print('r.status_code', r.status_code)
+    retry_state = r.raw.retries              # urllib3.util.retry.Retry
+    num_retries = len(retry_state.history)   # how many retry events occurred
+    if num_retries > 0:
+      print("  Number of retries for RCSB query: %d" % num_retries, file=log)
+    if r.status_code == 200:
+      r_json = r.json()
+      # print(json.dumps(r_json, indent=4))
+      res_ids = r_json["result_set"]
+    attempt_number += 1
+  return res_ids
 
-def sequence_search (sequence, **kwds) :
-  search_type = kwds.pop("search_type", "blast")
-  expect = kwds.pop("expect", 0.01)
-  min_identity = kwds.pop("min_identity", 0.0)
-  if (min_identity <= 1) :
-    min_identity *= 100
+def sequence_search(
+    sequence,
+    identity_cutoff=90,
+    target="pdb_protein_sequence",
+    e_value_cutoff=1000000,
+    **kwds):
   """
   Homology search for an amino acid sequence.  The advantage of using this
   service over the NCBI/EBI BLAST servers (in iotbx.pdb.fetch) is the ability
   to exclude non-Xray structures.
-  """
-  assert (search_type in ["blast", "fasta", "psiblast"])
-  query_str = """\
-    <queryType>org.pdb.query.simple.SequenceQuery</queryType>
-      <description>Sequence Search (expect = %g, search = %s)</description>
-      <sequence>%s</sequence>
-      <eCutOff>%g</eCutOff>
-      <sequenceIdentityCutoff>%g</sequenceIdentityCutoff>
-    <searchTool>%s</searchTool>""" % (expect, search_type, sequence, expect,
-      min_identity, search_type)
-  return post_query(query_str, **kwds)
 
-def chemical_id_search (resname, **kwds) :
+  identity_cutoff : int, optional
+      Apply sequence filtering to remove structures with greater than this
+      percentage sequence identity.
+  e_value_cutoff : float, optional
+      Hits with an E-Value above the cutoff value are filtered out
+  """
+  sequence_query = """
+{
+  "query": {
+    "type": "group",
+    "logical_operator": "and",
+    "nodes": [
+      {
+        "type": "terminal",
+        "service": "sequence",
+        "parameters": {
+          "evalue_cutoff": %s,
+          "identity_cutoff": %s,
+          "target": "%s",
+          "value": "%s"
+        }
+      }
+    ]
+  },
+  "return_type": "polymer_entity",
+  "request_options": {
+    "return_all_hits": true,
+    "scoring_strategy": "sequence",
+    "sort": [
+      {
+        "sort_by": "score",
+        "direction": "desc"
+      }
+    ],
+    "results_verbosity":"minimal"
+  }
+}"""
+  assert target in ["pdb_protein_sequence", "pdb_dna_sequence", "pdb_rna_sequence"]
+  assert 0 < identity_cutoff < 100
+  sqr = sequence_query % (e_value_cutoff, identity_cutoff/100, target, sequence)
+  jsq = json.loads(sqr)
+  return post_query(query_json=jsq, **kwds)
+
+
+def reference_chain_search(sequence, identity_cutoff=0.9, include_xray=True, include_csm=False, **kwds):
+  """ Searches sequence optionally include computed models,
+  returns pdb_id with chain id that matches.
+
+  Args:
+      sequence (str): _description_
+      identity_cutoff (float, optional): _description_. Defaults to 0.9.
+  """
+  model_choice = ""
+  if include_xray:
+    model_choice = '"experimental"'
+  if include_csm and include_xray:
+    model_choice += ', "computational"'
+  if include_csm and not include_xray:
+    model_choice = '"computational"'
+
+  query= """
+{
+  "query": {
+    "type": "terminal",
+    "service": "sequence",
+    "parameters": {
+      "evalue_cutoff": 0.1,
+      "identity_cutoff": %s,
+      "sequence_type": "protein",
+      "value": "%s"
+    }
+  },
+  "return_type": "polymer_instance",
+  "request_options": {
+    "return_all_hits": true,
+    "results_content_type": [ %s ],
+    "scoring_strategy": "combined",
+    "sort": [
+      {
+        "sort_by": "reflns.d_resolution_high",
+        "direction": "asc"
+      }
+    ]
+  }
+}
+"""
+  sqr = query % (identity_cutoff, sequence, model_choice)
+  # print(sqr)
+  jsq = json.loads(sqr)
+  return post_query(query_json=jsq, xray_only=False, **kwds)
+
+
+def chemical_id_search(resname, **kwds):
   """
   Find all entry IDs with the specified chemical ID.
 
@@ -141,75 +294,270 @@ def chemical_id_search (resname, **kwds) :
   Examples
   --------
   >>> from mmtbx.wwpdb.rcsb_web_services import chemical_id_search
-  >>> len(chemical_id_search("ZN", data_only=True, identity_cutoff=70))
+  >>> len(chemical_id_search("ZN", data_only=True))
   2874
   """
-  assert (1 <= len(resname) <= 3)
-  polymeric_type = kwds.pop("polymeric_type", "Any")
-  assert (polymeric_type in ["Any", "Free", "Polymeric"])
-  polymer_limit = "<polymericType>%s</polymericType>" % polymeric_type
-  query_str = """\
-    <queryType>org.pdb.query.simple.ChemCompIdQuery</queryType>
-    <description>Chemical ID: %s</description>
-    <chemCompId>%s</chemCompId>
-    %s""" % (resname, resname, polymer_limit)
-  return post_query(query_str, **kwds)
+  chem_comp_query = """
+{
+  "query": {
+    "type": "group",
+    "nodes": [
+      {
+        "type": "group",
+        "logical_operator": "or",
+        "nodes": [
+          {
+            "type": "terminal",
+            "service": "text",
+            "parameters": {
+              "attribute": "rcsb_nonpolymer_entity_container_identifiers.nonpolymer_comp_id",
+              "operator": "exact_match",
+              "value": "%s"
+            }
+          },
+          {
+            "type": "terminal",
+            "service": "text",
+            "parameters": {
+              "attribute": "rcsb_polymer_entity_container_identifiers.chem_comp_monomers",
+              "operator": "exact_match",
+              "value": "%s"
+            }
+          }
+        ]
+      }
+    ],
+    "logical_operator": "and"
+  },
+  "return_type": "entry",
+  "request_options": {
+    "return_all_hits": true,
+    "scoring_strategy": "combined",
+    "sort": [
+      {
+        "sort_by": "score",
+        "direction": "desc"
+      }
+    ]
+  }
+}
+"""
+  assert (1 <= len(resname) <= 3) or (len(resname)==5)
+  sqr = chem_comp_query % (resname, resname)
+  jsq = json.loads(sqr)
+  return post_query(query_json=jsq, **kwds)
 
-def get_custom_report_table (pdb_ids, columns, log=sys.stdout,
-    prefix="dimStructure", check_for_missing=True) :
-  """Given a list of PDB IDs and a list of attribute identifiers, returns a
-  Python list of lists for the IDs and attributes."""
-  assert (len(columns) > 0)
-  if (len(pdb_ids) == 0) : return []
-  url_base = "http://www.rcsb.org/pdb/rest/customReport?"
-  url = url_base + "pdbids=%s" % ",".join(pdb_ids)
-  all_columns = ["structureId"] + columns
-  url += "&customReportColumns=%s" % ",".join(all_columns)
-  result = libtbx.utils.urlopen(url).read()
-  # The RCSB's custom report follows this format (using the high-resolution
-  # limit as an example):
-  #
-  # <?xml version='1.0' standalone='no' ?>
-  # <dataset>
-  #   <record>
-  #     <dimStructure.structureId>1A0I</dimStructure.structureId>
-  #     <dimStructure.highResolutionLimit>2.6</dimStructure.highResolutionLimit>
-  #   </record>
-  # </dataset>
-  #
-  # XXX note that 'dimStructure' is substituted for by 'dimEntity' in the
-  # ligand report (and probably others), and that this table will not
-  # necessarily have one row per PDB ID.
-  xmlrec = parseString(result)
-  table = []
-  report_ids = set([])
-  records = xmlrec.getElementsByTagName("record")
-  for record in records :
-    pdb_id_nodes = record.getElementsByTagName("%s.structureId" % prefix)
-    assert (len(pdb_id_nodes) == 1), record.toxml()
-    pdb_id = pdb_id_nodes[0].childNodes[0].data
-    report_ids.add(pdb_id)
-    row = [ pdb_id ] # pdb_id
-    for col_name in columns :
-      row_col = record.getElementsByTagName("%s.%s" % (prefix, col_name))
-      assert (len(row_col) == 1)
-      row.append(row_col[0].childNodes[0].data)
-    table.append(row)
-  if (check_for_missing) :
-    missing_ids = set(pdb_ids) - report_ids
-    if (len(missing_ids) > 0) :
-      print >> log, "WARNING: missing report info for %d IDs:"%len(missing_ids)
-      print >> log, "  %s" % " ".join(sorted(list(missing_ids)))
-  return table
+def get_high_resolution_for_structures(pdb_ids):
+  with_res_count = get_high_resolution_and_residue_count_for_structures(pdb_ids)
+  result = [r[:2] for r in with_res_count]
+  return result
 
-def get_high_resolution_for_structures (pdb_ids) :
-  return get_custom_report_table(pdb_ids, columns=["highResolutionLimit"])
+def post_report_query_with_pdb_list(query, pdb_ids):
+  merged_entries = []
+  for i in range(0, len(pdb_ids), report_entry_ids_chunk_size):
+    chunk = pdb_ids[i:i + report_entry_ids_chunk_size]
+    pdb_list = "%s" % list(chunk)
+    pdb_list = pdb_list.replace("'", '"')
+    request = query.format(pdb_list=pdb_list)
+    r = requests.post(report_base_url, json={"query":request})
+    r_json = r.json()
+    entries = r_json.get("data", {}).get("entries")
+    if entries is None:
+      raise RuntimeError(
+          "RCSB GraphQL request failed for %d ids (chunk starting at %d): %s" % (
+              len(chunk), i, r_json.get("errors", r_json)))
+    merged_entries.extend(entries)
+  return {"data": {"entries": merged_entries}}
 
-def get_ligand_info_for_structures (pdb_ids) :
+def get_r_work_rfree_for_structures(pdb_ids):
+  """ Get Rwork and Rfree for list of pdb ids
+  Args:
+      pdb_ids (list): pdb ids
+  Returns:
+      list: [[pdb_id, rwork, rfree], [pdb_id, rwork, rfree], ...]
+  """
+  query = """
+  {{
+    entries(entry_ids: {pdb_list} )
+    {{
+      rcsb_id
+      refine
+      {{
+        ls_R_factor_R_free,
+        ls_R_factor_R_work,
+      }}
+    }}
+  }}"""
+  r_json = post_report_query_with_pdb_list(query, pdb_ids)
+  result = []
+  for res in r_json["data"]["entries"]:
+    pdb_id = str(res["rcsb_id"])
+    rwork = None
+    rfree = None
+    if res["refine"] is not None:
+      rwork = res["refine"][0]["ls_R_factor_R_work"]
+      if rwork is not None:
+        rwork = float(rwork)
+      rfree = res["refine"][0]["ls_R_factor_R_free"]
+      if rfree is not None:
+        rfree = float(rfree)
+    result.append([pdb_id, rwork, rfree])
+  return result
+
+def get_high_resolution_and_residue_count_for_structures(pdb_ids):
+  query = """
+  {{
+    entries(entry_ids: {pdb_list} )
+    {{
+      rcsb_id
+      rcsb_entry_info {{
+        deposited_polymer_monomer_count
+      }}
+      refine {{
+        ls_d_res_high
+      }}
+    }}
+  }}"""
+
+  r_json = post_report_query_with_pdb_list(query, pdb_ids)
+  result = []
+  for res in r_json["data"]["entries"]:
+    pdb_id = str(res["rcsb_id"])
+    resol = None
+    n_res = None
+    if res["refine"] is not None:
+      res_resol = res["refine"][0]["ls_d_res_high"]
+      resol = None if res_resol is None else float(res_resol)
+    if res["rcsb_entry_info"] is not None:
+      res_n_res = res["rcsb_entry_info"]["deposited_polymer_monomer_count"]
+      n_res = None if res_n_res is None else int(res_n_res)
+    result.append([pdb_id, resol, n_res])
+  return result
+
+def get_ligand_info_for_structures(pdb_ids):
   """Return a list of ligands in the specified structure(s), including the
-  SMILES strings."""
-  return get_custom_report_table(pdb_ids,
-    columns=["chainId","ligandId","ligandMolecularWeight","ligandFormula",
-      "ligandName","ligandSmiles"],
-    prefix="dimEntity",
-    check_for_missing=False)
+  SMILES strings.
+
+  Returns list of lists with
+  [PDB ID, chain id, lig id, lig MW, lig Formula, lig name, lig SMILES]
+  If the same ligand is present in different chains, it will produce several
+  entries which will be different in chain ids.
+
+  [[u'1MRU', u'A', u'MG', u'24.31', u'Mg 2', u'MAGNESIUM ION', u'[Mg+2]'],
+   [u'1MRU', u'B', u'MG', u'24.31', u'Mg 2', u'MAGNESIUM ION', u'[Mg+2]']]
+
+  """
+  query = """
+  {{
+    entries(entry_ids: {pdb_list} )
+    {{
+      rcsb_id
+      nonpolymer_entities {{
+        nonpolymer_comp {{
+          chem_comp {{
+            formula
+            formula_weight
+            id
+            name
+          }}
+          rcsb_chem_comp_descriptor {{
+            SMILES
+          }}
+        }}
+        rcsb_nonpolymer_entity_container_identifiers {{
+          auth_asym_ids
+        }}
+      }}
+    }}
+  }}"""
+
+  r_json = post_report_query_with_pdb_list(query, pdb_ids)
+  result = []
+  for res in r_json["data"]["entries"]:
+    pdb_id = str(res["rcsb_id"])
+    for npe in res["nonpolymer_entities"]:
+      smiles = str(npe["nonpolymer_comp"]["rcsb_chem_comp_descriptor"]["SMILES"])
+      lig_id = str(npe["nonpolymer_comp"]["chem_comp"]["id"])
+      lig_mw = float(npe["nonpolymer_comp"]["chem_comp"]["formula_weight"])
+      lig_formula = str(npe["nonpolymer_comp"]["chem_comp"]["formula"])
+      lig_name = str(npe["nonpolymer_comp"]["chem_comp"]["name"])
+      for chain_id in npe["rcsb_nonpolymer_entity_container_identifiers"]["auth_asym_ids"]:
+        c_id = str(chain_id)
+        result.append([pdb_id, c_id, lig_id, lig_mw, lig_formula, lig_name, smiles])
+  return result
+
+def get_emdb_id_for_pdb_id(pdb_id):
+  """ Find out EMDB ID given PDB ID by quering RCSB portal.
+
+  Args:
+      pdb_id (str): pdb id
+  Returns:
+    list of emdb ids, e.g. ['EMD-37438'] or None if X-ray, integrative
+    (no exptl block) or not defined
+  """
+
+  graphql_query = '''
+query
+{
+  entry(entry_id:"%s") {
+    exptl {
+      method
+    }
+    rcsb_entry_container_identifiers {
+      emdb_ids
+    }
+  }
+}
+''' % pdb_id
+  r = requests.post(report_base_url, json={"query":graphql_query})
+  data_entry = r.json()['data']['entry']
+  if not data_entry:
+    return None
+  # Integrative (IHM) entries have no exptl block: the field comes back null
+  exptl = data_entry.get('exptl')
+  if not exptl or exptl[0].get('method') != 'ELECTRON MICROSCOPY':
+    return None
+  emdb_ids = data_entry['rcsb_entry_container_identifiers']['emdb_ids']
+  if not emdb_ids:
+    return None
+  return emdb_ids
+
+def get_similar_ligands_via_smiles(smiles, match_type='sub-struct-graph-relaxed-stereo', **kwds):
+  # graph-relaxed-stereo
+  # graph-relaxed
+  # fingerprint-similarity
+  # sub-struct-graph-relaxed-stereo
+  # sub-struct-graph-relaxed
+  similar_ligand_query = '''
+{
+  "query": {
+    "type": "terminal",
+    "service": "chemical",
+    "parameters": {
+      "type": "descriptor",
+      "value": "%s",
+      "descriptor_type": "SMILES",
+      "match_type": "%s"
+    }
+  },
+  "return_type": "mol_definition",
+  "request_options": {
+    "results_verbosity":"minimal",
+    "paginate": {
+      "start": 0,
+      "rows": 100
+    },
+    "sort": [
+      {
+        "sort_by": "score",
+        "direction": "desc"
+      }
+    ],
+    "scoring_strategy": "combined"
+  }
+}
+'''
+  assert (3 <= len(smiles)), 'short SMILES "%s" return too many results' % smiles
+  sqr = similar_ligand_query % (smiles, match_type)
+  jsq = json.loads(sqr)
+  return post_query(query_json=jsq, xray_only=False, **kwds)

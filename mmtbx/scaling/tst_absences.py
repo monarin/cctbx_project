@@ -3,7 +3,7 @@
 Regression tests for mmtbx.scaling.absences
 """
 
-from __future__ import division
+from __future__ import absolute_import, division, print_function
 from mmtbx.scaling.absences import *
 from cctbx.development import random_structure
 from cctbx import sgtbx
@@ -12,7 +12,7 @@ import libtbx.load_env
 import os.path as op
 import random
 
-def exercise_abs_list ():
+def exercise_abs_list():
   tmp = absences()
   assert tmp.check( "2_1 (c)", (0,0,1),True ) == (True, False)
   assert tmp.check( "2_1 (c)", (0,0,4),True ) == (True, True)
@@ -43,7 +43,7 @@ def exercise_abs_list ():
   assert "P 2 21 21" in sg_list
   assert "P 21 21 21" in sg_list
 
-def exercise_analyze_absences () :
+def exercise_analyze_absences():
   """
   Looping over common space groups in macromolecular structures, generate
   synthetic data converted to the derived intensity group with absent
@@ -111,10 +111,10 @@ def exercise_analyze_absences () :
       score = row[-1]
       n_abs_viol = int(row[4])
       n_pres_viol = int(row[5])
-      if (group == str(space_group_info)) :
+      if (group == str(space_group_info)):
         assert (n_abs_viol == 0), row
-        if (n_pres_viol != 0) :
-          print group, n_pres_viol
+        if (n_pres_viol != 0):
+          print(group, n_pres_viol)
           psgc.show()
         # XXX Currently this fails for the following space groups:
         #     I 4
@@ -124,7 +124,7 @@ def exercise_analyze_absences () :
                 (str(space_group_info) in expected_failures))
 
 # XXX depends on phenix_regression
-def exercise_2 () :
+def exercise_2():
   pdb_file = libtbx.env.find_in_repositories(
     relative_path="phenix_regression/pdb/x_001_HD_ricardo_leal.pdb",
     test=op.isfile)
@@ -132,4 +132,4 @@ def exercise_2 () :
 if __name__ == "__main__":
   exercise_abs_list()
   exercise_analyze_absences()
-  print "OK"
+  print("OK")

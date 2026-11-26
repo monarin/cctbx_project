@@ -1,4 +1,4 @@
-from __future__ import division
+from __future__ import absolute_import, division, print_function
 
 import iotbx.pdb
 import mmtbx.model
@@ -7,6 +7,7 @@ import sys
 import libtbx.load_env
 
 pdb_str = """\
+CRYST1   10.000   10.000   10.000  90.00  90.00  90.00 P 1
 ATOM   3486  N   ASP B  60     -68.331  -5.725  16.616  1.00356.89           N
 ATOM   3487  CA  ASP B  60     -67.541  -4.918  17.544  1.00354.36           C
 ATOM   3488  C   ASP B  60     -68.367  -3.945  18.382  1.00349.38           C
@@ -155,6 +156,6 @@ def exercise_insertions(prefix="tst_cablam_insertions"):
 
 if __name__ == '__main__':
   if (not libtbx.env.has_module(name="probe")):
-    print "Skipping: probe not configured"
+    print("Skipping: probe not configured")
   else:
     exercise_insertions()

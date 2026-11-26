@@ -1,6 +1,7 @@
 from __future__ import absolute_import, division, print_function
 from libtbx import object_oriented_patterns as oop
 from libtbx.test_utils import approx_equal, Exception_expected
+from six.moves import range
 
 def exercise_injector():
   class a(object):
@@ -37,7 +38,7 @@ def exercise_injector():
     class d(a): pass
     class d_extension(oop.injector, d):
       def get_square(self): return 0
-  except AssertionError, err:
+  except AssertionError as err:
     assert str(err) == "class d already has attribute 'get_square'"
 
 def exercise_memoize():
@@ -60,13 +61,15 @@ def exercise_memoize():
   assert diagnostic == ['+']*2
   try:
     mf(x=1)
-  except TypeError, e:
+  except TypeError as e:
     pass
   else:
     raise Exception_expected
-  assert mf.__doc__ == """ Documentation for function f """
+  # Python 3.13 automatically strips leading spaces
+  assert mf.__doc__ == """ Documentation for function f """ \
+    or mf.__doc__ == """Documentation for function f """
 
-
+def exercise_memoize_with_injector():
   class foo(object):
     def __init__(self, a):
       self.a = a
@@ -96,7 +99,8 @@ def exercise_memoize():
   assert diagnostic == ['+']*4
   assert o1.f(1) == 2
   assert diagnostic == ['+']*4
-  assert o1.f.__doc__ == " Documentation for method f "
+  assert o1.f.__doc__ == " Documentation for method f " \
+    or o1.f.__doc__ == "Documentation for method f "
 
   class _foo_extension(oop.injector, foo):
     def g(self, n):
@@ -143,7 +147,7 @@ def exercise_journal():
 
   a = test1()
   assert a.x == 9
-  assert approx_equal(a.x_history, range(10))
+  assert approx_equal(a.x_history, list(range(10)))
   try: a.y
   except AttributeError: pass
   else: raise Exception_expected
@@ -155,8 +159,8 @@ def exercise_journal():
   except AttributeError: pass
   else: raise Exception_expected
   b = test2()
-  assert approx_equal(b.x_journal, range(10))
-  assert approx_equal(b.z_journal, range(5))
+  assert approx_equal(b.x_journal, list(range(10)))
+  assert approx_equal(b.z_journal, list(range(5)))
   del b.x
   try: b.x
   except AttributeError: pass
@@ -168,9 +172,11 @@ def exercise_journal():
 
 def run():
   exercise_journal()
-  exercise_injector()
-  exercise_memoize()
   exercise_null()
+  exercise_memoize()
+  # tests for injection with metaclass
+  exercise_injector()
+  exercise_memoize_with_injector()
 
 if __name__ == '__main__':
   run()

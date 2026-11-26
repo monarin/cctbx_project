@@ -12,10 +12,14 @@ See Also
 phenix_dev.ion_identification.nader_ml
 """
 
-from __future__ import division, absolute_import
+from __future__ import absolute_import, division, print_function
 
-from collections import Iterable
-from cStringIO import StringIO
+try:
+  from collections.abc import Iterable
+except ImportError:
+  from collections import Iterable
+from six import string_types
+from six.moves import cStringIO as StringIO
 from ctypes import c_double
 import errno
 import os
@@ -32,11 +36,13 @@ from mmtbx.ions.environment import N_SUPPORTED_ENVIRONMENTS
 from mmtbx.ions.geometry import SUPPORTED_GEOMETRY_NAMES
 import mmtbx.ions.identify
 from mmtbx.ions.svm import utils
+from six.moves import zip
+from six.moves import range
 
 try : # XXX required third-party dependencies
   import numpy as np
-  import svm
-  import svmutil
+  from libsvm import svm
+  from libsvm import svmutil
 except ImportError :
   svm = None
   svmutil = None
@@ -115,6 +121,17 @@ def _get_classifier(svm_name=None):
     _CLASSIFIER_OPTIONS[svm_name] = load(options_path)
 
   vector_options, scaling, features = _CLASSIFIER_OPTIONS[svm_name]
+  from libtbx.utils import to_str
+  tmp = {}
+  for key, item in vector_options.items():
+    key=to_str(key)
+    if key=='elements':
+      tmp[key]=[]
+      for e in item:
+        tmp[key].append(to_str(e))
+    else:
+      tmp[key]=item
+  vector_options=tmp
   return _CLASSIFIER[svm_name], vector_options, scaling, features
 
 def ion_class(chem_env):
@@ -465,8 +482,13 @@ def predict_ion(chem_env, scatter_env, elements=None, svm_name=None):
 
   vector = vector[features]
 
+  # libsvm 3.36 moved the kernel constants into the kernel_names IntEnum
+  if hasattr(svm, "kernel_names"):
+    precomputed = svm.kernel_names.PRECOMPUTED
+  else:
+    precomputed = svm.PRECOMPUTED
   xi = svm.gen_svm_nodearray(
-    list(vector), isKernel=classifier.param.kernel_type == svm.PRECOMPUTED,
+    list(vector), isKernel=classifier.param.kernel_type == precomputed,
     )[0]
 
   nr_class = classifier.get_nr_class()
@@ -477,7 +499,7 @@ def predict_ion(chem_env, scatter_env, elements=None, svm_name=None):
   probs = prob_estimates[:nr_class]
   labels = [ALLOWED_IONS[i] for i in classifier.get_labels()]
 
-  lst = zip(labels, probs)
+  lst = list(zip(labels, probs))
   lst.sort(key=lambda x: -x[-1])
 
   if elements is not None:
@@ -495,7 +517,7 @@ def predict_ion(chem_env, scatter_env, elements=None, svm_name=None):
     # Re-normalize the probabilities
     total = sum(probs)
     probs = [i / total for i in probs]
-    lst = zip(classes, probs)
+    lst = list(zip(classes, probs))
 
   return lst
 
@@ -521,7 +543,7 @@ def _flatten_list(lst):
     """
 
     for item in lst:
-      if isinstance(item, Iterable) and not isinstance(item, basestring):
+      if isinstance(item, Iterable) and not isinstance(item, string_types):
         for sub in _flatten(item):
           yield sub
       else:
@@ -552,7 +574,7 @@ svm
 }
 """
 
-class svm_prediction (slots_getstate_setstate_default_initializer) :
+class svm_prediction(slots_getstate_setstate_default_initializer):
   """
   Contains information about a SVM's prediction of a site's identity.
 
@@ -570,7 +592,7 @@ class svm_prediction (slots_getstate_setstate_default_initializer) :
   __slots__ = ["i_seq", "pdb_id_str", "atom_info_str", "map_stats",
                "atom_types", "scores", "final_choice"]
 
-  def show (self, out=sys.stdout, prefix="") :
+  def show(self, out=sys.stdout, prefix=""):
     """
     Shows information about a SVM's prediction of a site's identity.
 
@@ -579,16 +601,16 @@ class svm_prediction (slots_getstate_setstate_default_initializer) :
     out : file, optional
     prefix : str, optional
     """
-    for line in self.atom_info_str.splitlines() :
-      print >> out, prefix+line.rstrip()
-    print >> out, prefix+"SVM scores:"
+    for line in self.atom_info_str.splitlines():
+      print(prefix+line.rstrip(), file=out)
+    print(prefix+"SVM scores:", file=out)
     scores = sorted(zip(self.atom_types, self.scores), key=lambda x: -x[1])
     for elem, score in scores:
-      print >> out, prefix+"  %4s : %.3f" % (elem, score)
-    if (self.final_choice is not None) :
-      print >> out, prefix+"Final choice: %s" % self.final_choice
+      print(prefix+"  %4s : %.3f" % (elem, score), file=out)
+    if (self.final_choice is not None):
+      print(prefix+"Final choice: %s" % self.final_choice, file=out)
 
-  def show_brief (self, out=sys.stdout, prefix="") :
+  def show_brief(self, out=sys.stdout, prefix=""):
     """
     Shows a brief description of a SVM's prediction of a site's identity, for
     use in output as a table.
@@ -599,21 +621,21 @@ class svm_prediction (slots_getstate_setstate_default_initializer) :
     prefix : str, optional
     """
     final_choice = self.final_choice
-    if (final_choice is None) :
+    if (final_choice is None):
       final_choice = "----"
       best_score = "----"
     else :
-      for atom_type, score in zip(self.atom_types, self.scores) :
-        if (atom_type == final_choice.element) :
+      for atom_type, score in zip(self.atom_types, self.scores):
+        if (atom_type == final_choice.element):
           best_score = "%5.3f" % score
           break
-    print >> out, prefix+"%s   %4s  %5s  %5.2f  %5.2f" % \
+    print(prefix+"%s   %4s  %5s  %5.2f  %5.2f" % \
       (self.pdb_id_str, final_choice.element, best_score,
-       self.map_stats.two_fofc, self.map_stats.fofc)
+       self.map_stats.two_fofc, self.map_stats.fofc), file=out)
 
-class manager (mmtbx.ions.identify.manager) :
-  def analyze_water (self, i_seq, debug=True, candidates=Auto,
-      filter_outputs=True) :
+class manager(mmtbx.ions.identify.manager):
+  def analyze_water(self, i_seq, debug=True, candidates=Auto,
+      filter_outputs=True):
     """
     Analyzes a single water site using a SVM to decide whether to re-assign it
     as an ion.
@@ -631,12 +653,12 @@ class manager (mmtbx.ions.identify.manager) :
     atom_props = mmtbx.ions.identify.AtomProperties(i_seq, self)
     expected_atom_type = atom_props.get_atom_type(
       params=self.params.water)
-    if (expected_atom_type == mmtbx.ions.identify.WATER_POOR) :
+    if (expected_atom_type == mmtbx.ions.identify.WATER_POOR):
       return None
     auto_candidates = candidates is Auto
     if auto_candidates:
       candidates = mmtbx.ions.DEFAULT_IONS
-    elif isinstance(candidates, str) or isinstance(candidates, unicode) :
+    elif isinstance(candidates, string_types):
       candidates = candidates.replace(",", " ").split()
     candidates = [i.strip().upper() for i in candidates]
     if (candidates == ['X']) : # XXX hack for testing - X is "dummy" element
@@ -666,17 +688,17 @@ class manager (mmtbx.ions.identify.manager) :
         chem_env=chem_env,
         scatter_env=scatter_env,
         predictions=predictions)
-    if (predictions is not None) and (len(predictions) > 0) :
+    if (predictions is not None) and (len(predictions) > 0):
       final_choice = None
       predictions.sort(key=lambda x: -x[1])
       best_guess, best_score = predictions[0]
-      if (best_guess != "HOH") :
+      if (best_guess != "HOH"):
         if len(predictions) == 1:
           final_choice = mmtbx.ions.server.get_metal_parameters(best_guess)
         else:
           next_guess, next_score = predictions[1]
           if ((best_score >= self.params.svm.min_score) and
-              (best_score>=(next_score*self.params.svm.min_fraction_of_next))) :
+              (best_score>=(next_score*self.params.svm.min_fraction_of_next))):
             final_choice = mmtbx.ions.server.get_metal_parameters(best_guess)
       atom_info_out = StringIO()
       atom_props.show_properties(identity="HOH", out=atom_info_out)
@@ -691,7 +713,7 @@ class manager (mmtbx.ions.identify.manager) :
       return result
     return None
 
-  def analyze_waters (self, out=sys.stdout, debug=True, candidates=Auto) :
+  def analyze_waters(self, out=sys.stdout, debug=True, candidates=Auto):
     """
     Uses a SVM to analyze all of a model's water sites and decide whether to
     re-assign them as ions.
@@ -707,8 +729,8 @@ class manager (mmtbx.ions.identify.manager) :
     list of svm_prediction
     """
     waters = self._extract_waters()
-    print >> out, "  %d waters to analyze" % len(waters)
-    print >> out, ""
+    print("  %d waters to analyze" % len(waters), file=out)
+    print("", file=out)
     if (len(waters) == 0) : return
     #nproc = easy_mp.get_processes(self.nproc)
     predictions = []
@@ -718,18 +740,18 @@ class manager (mmtbx.ions.identify.manager) :
         debug=debug,
         candidates=candidates,
         filter_outputs=self.params.svm.filtered_outputs)
-      if (prediction is not None) :
+      if (prediction is not None):
         predictions.append(prediction)
     filtered = []
     for result in predictions :
-      if (debug) :
+      if (debug):
         result.show(out=out, prefix="  ")
-        print >> out, ""
-      if (result.final_choice is not None) :
+        print("", file=out)
+      if (result.final_choice is not None):
         filtered.append(result)
-    if (len(filtered) == 0) :
-      print >> out, ""
-      print >> out, "  No waters could be classified as possible ions."
+    if (len(filtered) == 0):
+      print("", file=out)
+      print("  No waters could be classified as possible ions.", file=out)
     else :
       make_sub_header("Predicted ions", out=out)
       for result in filtered :

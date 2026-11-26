@@ -1,9 +1,10 @@
-from __future__ import division
+from __future__ import absolute_import, division, print_function
 import time, random
 from cctbx import maptbx
 from scitbx.array_family import flex
 from libtbx.test_utils import approx_equal
 from libtbx import group_args
+from six.moves import range
 
 def func(f,x,y,z):
   return eval(f)
@@ -33,16 +34,16 @@ def get_interpolated(site_frac, O):
   return group_args(l = l, q = q, t = t)
 
 def set_map(f, n, box=10.):
-  n_real = (n,n,n)
   step = box/n
-  map_data  = flex.double(flex.grid([n,n,n]))
-  for i in xrange(n):
-    x  = i*step
-    for j in xrange(n):
-      y  = j*step
-      for k in xrange(n):
-        z = k*step
-        map_data[i,j,k] = func(f, x=x,y=y,z=z)
+  coords = [i*step for i in range(n)]
+  xs, ys, zs = flex.double(), flex.double(), flex.double()
+  for x in coords:
+    for y in coords:
+      xs.extend(flex.double(n, x))
+      ys.extend(flex.double(n, y))
+      zs.extend(flex.double(coords))
+  map_data = func(f, x=xs, y=ys, z=zs)
+  map_data.reshape(flex.grid([n,n,n]))
   return group_args(
     box=box, step=[step,]*3, map_data=map_data)
 
@@ -58,7 +59,7 @@ def exercise(f,gx,gy,gz,function_type, eps = 1.e-6):
     gxl, gxq, gxt = 0,0,0
     gyl, gyq, gyt = 0,0,0
     gzl, gzq, gzt = 0,0,0
-    for trial in xrange(n_trials):
+    for trial in range(n_trials):
       sx = random.randrange(1,30)/10.*random.choice([-1,0,1])
       sy = random.randrange(1,30)/10.*random.choice([-1,0,1])
       sz = random.randrange(1,30)/10.*random.choice([-1,0,1])
@@ -90,7 +91,7 @@ def exercise(f,gx,gy,gz,function_type, eps = 1.e-6):
     #
     s = "(%10.6f %10.6f %10.6f %10.6f)"
     fmt = " ".join(["%5.3f", s, s, s])
-    print fmt%(O.step[0], tl,gxl,gyl,gzl, tq,gxq,gyq,gzq, tt,gxt,gyt,gzt)
+    print(fmt%(O.step[0], tl,gxl,gyl,gzl, tq,gxq,gyq,gzq, tt,gxt,gyt,gzt))
     #
     cntr=0
     if(function_type=="L"):
@@ -116,9 +117,9 @@ if (__name__ == "__main__"):
   ]
   for it in fgs:
     function_type, f,gx,gy,gz = it
-    print "- using: f=%s, gx=%s, gy=%s, gz=%s"%(f, gx,gy,gz)
-    print " Step                   Linear                                 "\
-          "        Quadratic                              Tricubic"
+    print("- using: f=%s, gx=%s, gy=%s, gz=%s"%(f, gx,gy,gz))
+    print(" Step                   Linear                                 "\
+          "        Quadratic                              Tricubic")
     exercise(f = f, gx = gx, gy = gy, gz = gz, function_type=function_type)
-    print
-  print "Time: %6.2f"%(time.time()-t0)
+    print()
+  print("Time: %6.2f"%(time.time()-t0))

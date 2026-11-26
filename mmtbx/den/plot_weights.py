@@ -1,6 +1,7 @@
-from __future__ import division
+from __future__ import absolute_import, division, print_function
+from six.moves import range
 
-def _plot_weights (figure, gamma, weight, z) :
+def _plot_weights(figure, gamma, weight, z):
   from matplotlib import cm
   assert (len(z[0]) == len(gamma)) and (len(z) == len(weight))
   p = figure.add_subplot(111)
@@ -8,8 +9,8 @@ def _plot_weights (figure, gamma, weight, z) :
   cset = p.contourf(z, 20, cmap=cm.YlGnBu, interpolation='bilinear')
   p.contour(z, 20, colors=[(0.5,0.5,0.5)], linewidth=1)
   figure.colorbar(cset, ax=p)
-  p.set_xticks(range(len(gamma)))
-  p.set_yticks(range(len(weight)))
+  p.set_xticks(list(range(len(gamma))))
+  p.set_yticks(list(range(len(weight))))
   p.set_xticklabels([ "%g" % x for x in gamma ])
   p.set_yticklabels([ "%g" % x for x in weight ])
   p.set_xlabel("gamma")
@@ -17,13 +18,13 @@ def _plot_weights (figure, gamma, weight, z) :
   p.set_title("DEN optimization (R-free)")
   return p
 
-def plot_weights_pyplot (gamma, weight, z) :
+def plot_weights_pyplot(gamma, weight, z):
   from matplotlib import pyplot as plt
   figure = plt.figure()
   _plot_weights(figure, gamma, weight, z)
   plt.show()
 
-def exercise () :
+def exercise():
   grid_results = [
     (0.0, 0.5, 0.2330),
     (0.0, 1.0, 0.2313),
@@ -84,11 +85,11 @@ def exercise () :
   weight = sorted(list(set([ x[1] for x in grid_results ])))
   values = [ [] for x in weight ]
   n = len(weight)
-  for i in range(len(weight)) :
-    for j in range(len(gamma)) :
+  for i in range(len(weight)):
+    for j in range(len(gamma)):
       k = i + j * n
       values[i].append(grid_results[k][2])
   plot_weights_pyplot(gamma, weight, values)
 
-if (__name__ == "__main__") :
+if (__name__ == "__main__"):
   exercise()

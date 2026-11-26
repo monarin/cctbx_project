@@ -1,9 +1,8 @@
-from __future__ import division
+from __future__ import absolute_import, division, print_function
 # -*- Mode: Python; c-basic-offset: 2; indent-tabs-mode: nil; tab-width: 8 -*-
 #
 # LIBTBX_SET_DISPATCHER_NAME cctbx.image_viewer
 # LIBTBX_PRE_DISPATCHER_INCLUDE_SH export PHENIX_GUI_ENVIRONMENT=1
-# LIBTBX_PRE_DISPATCHER_INCLUDE_SH export BOOST_ADAPTBX_FPE_DEFAULT=1
 #
 # $Id$
 
@@ -53,7 +52,7 @@ def run(argv=None):
   work_params = work_phil.work.extract()
 
   app = wx.App(0)
-  wx.SystemOptions.SetOptionInt("osx.openfiledialog.always-show-types", 1)
+  wx.SystemOptions.SetOption("osx.openfiledialog.always-show-types", "1")
   frame = XrayFrame(None, -1, "X-ray image display", size=(800,720))
   frame.Show()
 
@@ -69,7 +68,7 @@ def run(argv=None):
   frame.settings_frame.panel.collect_values()
 
   if (work_params.effective_metrology is not None):
-    from xfel.cftbx.detector.metrology import \
+    from serialtbx.detector.legacy_metrology.metrology import \
       master_phil, metrology_as_transformation_matrices
 
     stream = open(work_params.effective_metrology)
@@ -95,12 +94,10 @@ def run(argv=None):
 
     # from dxtbx.imageset import ImageSetFactory
     # sets = ImageSetFactory.new(paths)
-    from dxtbx.datablock import DataBlockFactory
+    from dxtbx.model.experiment_list import ExperimentListFactory
     from rstbx.slip_viewer.frame import chooser_wrapper
-    db = DataBlockFactory.from_filenames(paths)
-    sets = []
-    for d in db:
-      sets.extend(d.extract_imagesets())
+    experiments = ExperimentListFactory.from_filenames(paths)
+    sets = experiments.imagesets()
 
     for imgset in sets:
       for idx in imgset.indices():

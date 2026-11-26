@@ -1,17 +1,18 @@
-from __future__ import division
+from __future__ import absolute_import, division, print_function
 from mmtbx.monomer_library import pdb_interpretation
 from mmtbx.refinement.occupancies import occupancy_selections
-from mmtbx.command_line import fmodel
+from iotbx.cli_parser import run_program
+from mmtbx.programs import fmodel
 import mmtbx.model
-from iotbx import file_reader
 import iotbx.pdb
 import iotbx.phil
-from libtbx.test_utils import approx_equal, Exception_expected
+from libtbx.test_utils import approx_equal
 from libtbx.utils import format_cpu_times, null_out, Sorry
 import libtbx.load_env
-from cStringIO import StringIO
+from six.moves import cStringIO as StringIO
 import os
 import sys
+from six.moves import zip
 
 def extract_serials(atoms, occ_groups):
   r = []
@@ -38,24 +39,24 @@ def get_model(file_name, log):
           input_string=pdb_interpretation.grand_master_phil_str, process_includes=True).extract()
   pdb_interpretation_params.pdb_interpretation.sort_atoms=False
   pdb_inp = iotbx.pdb.input(file_name=file_name)
-  return mmtbx.model.manager(
+  model = mmtbx.model.manager(
       model_input = pdb_inp,
-      process_input = True,
-      pdb_interpretation_params=pdb_interpretation_params,
       stop_for_unknowns = False,
       log=log)
+  model.process(pdb_interpretation_params=pdb_interpretation_params)
+  return model
 
 def get_model_str(strings, log):
   pdb_interpretation_params = iotbx.phil.parse(
           input_string=pdb_interpretation.grand_master_phil_str, process_includes=True).extract()
   pdb_interpretation_params.pdb_interpretation.sort_atoms=False
   pdb_inp = iotbx.pdb.input(lines=strings, source_info=None)
-  return mmtbx.model.manager(
+  model = mmtbx.model.manager(
       model_input = pdb_inp,
-      process_input = True,
-      pdb_interpretation_params=pdb_interpretation_params,
       stop_for_unknowns = False,
       log=log)
+  model.process(pdb_interpretation_params=pdb_interpretation_params)
+  return model
 
 def exercise_00(verbose):
   pdb_file = libtbx.env.find_in_repositories(
@@ -69,7 +70,7 @@ def exercise_00(verbose):
   res = occupancy_selections(
     model = model,
     as_flex_arrays    = False)
-  res = extract_serials(model.pdb_atoms, res)
+  res = extract_serials(model.get_atoms(), res)
   target = base[:]
   target.insert(3, [[21]])
   target.insert(4, [[23]])
@@ -79,16 +80,16 @@ def exercise_00(verbose):
     model = model,
     add_water         = True,
     as_flex_arrays    = False)
-  res = extract_serials(model.pdb_atoms, res)
+  res = extract_serials(model.get_atoms(), res)
   base_21_23 = target[:]
-  target.extend([[[18]], [[19]], [[20]], [[22]]])
+  target.extend([[[18]], [[19]], [[20]]])
   assert approx_equal(res, target)
   # 1
   res = occupancy_selections(
     model = model,
     as_flex_arrays    = False,
     other_individual_selection_strings = ['resseq 0 and not (altloc A or altloc B)'])
-  res = extract_serials(model.pdb_atoms, res)
+  res = extract_serials(model.get_atoms(), res)
   target = base_21_23[:]
   target.extend([[[0]], [[1]], [[4]], [[5]]])
   assert approx_equal(res, target)
@@ -97,8 +98,8 @@ def exercise_00(verbose):
     add_water         = True,
     as_flex_arrays    = False,
     other_individual_selection_strings = ['resseq 0 and not (altloc A or altloc B)'])
-  res = extract_serials(model.pdb_atoms, res)
-  target.extend([[[18]], [[19]], [[20]], [[22]]])
+  res = extract_serials(model.get_atoms(), res)
+  target.extend([[[18]], [[19]], [[20]]])
   assert approx_equal(res, target)
   # 2
   other_constrained_groups = make_up_other_constrained_groups_obj(
@@ -107,7 +108,7 @@ def exercise_00(verbose):
     model = model,
     as_flex_arrays    = False,
     other_constrained_groups = other_constrained_groups)
-  res = extract_serials(model.pdb_atoms, res)
+  res = extract_serials(model.get_atoms(), res)
   target = base_21_23[:]
   target.extend([[[0, 1]], [[4, 5]]])
   assert approx_equal(res, target)
@@ -118,8 +119,8 @@ def exercise_00(verbose):
     add_water         = True,
     as_flex_arrays    = False,
     other_constrained_groups = other_constrained_groups)
-  res = extract_serials(model.pdb_atoms, res)
-  target.extend([[[18]], [[19]], [[20]], [[22]]])
+  res = extract_serials(model.get_atoms(), res)
+  target.extend([[[18]], [[19]], [[20]]])
   assert approx_equal(res, target)
   # 3
   other_constrained_groups = make_up_other_constrained_groups_obj(
@@ -129,7 +130,7 @@ def exercise_00(verbose):
     as_flex_arrays    = False,
     other_individual_selection_strings = ['resseq 0 and (name S or name O1)'],
     other_constrained_groups = other_constrained_groups)
-  res = extract_serials(model.pdb_atoms, res)
+  res = extract_serials(model.get_atoms(), res)
   target = base_21_23[:]
   target.extend([[[0]], [[1]], [[4, 5]]])
   assert approx_equal(res, target)
@@ -146,7 +147,7 @@ def exercise_01(verbose):
   res = occupancy_selections(
     model = model,
     as_flex_arrays    = False)
-  res = extract_serials(model.pdb_atoms, res)
+  res = extract_serials(model.get_atoms(), res)
   assert approx_equal(res, base)
 
 def exercise_02(verbose):
@@ -157,11 +158,11 @@ def exercise_02(verbose):
   else: log = StringIO()
   model = get_model(pdb_file, log)
   #
-  base = [ [[0,1,2,3,4,5,6,7,8,9,10,11,12], [14,15,16,17,18,19,20,21,22,23,24,25,26]], [[13],[27]] ]
+  base = [ [[0,1,2,3,4,5,6,7,8,9,10,11,12,13], [14,15,16,17,18,19,20,21,22,23,24,25,26,27]] ]
   res = occupancy_selections(
     model = model,
     as_flex_arrays    = False)
-  res = extract_serials(model.pdb_atoms, res)
+  res = extract_serials(model.get_atoms(), res)
   assert approx_equal(res, base)
 
 def exercise_03(verbose):
@@ -176,7 +177,7 @@ def exercise_03(verbose):
   res = occupancy_selections(
     model = model,
     as_flex_arrays    = False)
-  res = extract_serials(model.pdb_atoms, res)
+  res = extract_serials(model.get_atoms(), res)
   assert approx_equal(res, base)
 
 def exercise_05(verbose):
@@ -194,7 +195,7 @@ def exercise_05(verbose):
   res = occupancy_selections(
     model = model,
     as_flex_arrays      = False)
-  res = extract_serials(model.pdb_atoms, res)
+  res = extract_serials(model.get_atoms(), res)
   assert approx_equal(res, base)
 
 def exercise_06(verbose):
@@ -311,8 +312,8 @@ def exercise_10(verbose):
       other_constrained_groups = other_constrained_groups,
       other_individual_selection_strings = ['resseq 0'],
       as_flex_arrays    = False)
-  except Exception, e: pass
-  assert e.__str__() == "Duplicate selection: same atoms selected for individual and group occupancy refinement."
+  except Exception as e:
+    assert str(e) == "Duplicate selection: same atoms selected for individual and group occupancy refinement."
 
 def exercise_11(verbose):
   pdb_file = libtbx.env.find_in_repositories(
@@ -328,8 +329,8 @@ def exercise_11(verbose):
       remove_selection = ['resseq 0'],
       other_individual_selection_strings = ['resseq 0'],
       as_flex_arrays    = False)
-  except Exception, e: pass
-  assert e.__str__() == "Duplicate selection: occupancies of same atoms selected to be fixed and to be refined."
+  except Exception as e:
+    assert str(e) == "Duplicate selection: occupancies of same atoms selected to be fixed and to be refined."
   e = None
   try:
     other_constrained_groups = make_up_other_constrained_groups_obj(
@@ -339,8 +340,8 @@ def exercise_11(verbose):
       other_constrained_groups = other_constrained_groups,
       remove_selection = ['resseq 0'],
       as_flex_arrays    = False)
-  except Exception, e: pass
-  assert e.__str__() == "Duplicate selection: occupancies of same atoms selected to be fixed and to be refined."
+  except Exception as e:
+    assert str(e) == "Duplicate selection: occupancies of same atoms selected to be fixed and to be refined."
 
 def exercise_12(verbose):
   pdb_file = libtbx.env.find_in_repositories(
@@ -497,9 +498,9 @@ def exercise_19(verbose):
       model = model,
       other_constrained_groups = other_constrained_groups,
       as_flex_arrays    = False)
-  except Exception, e: pass
-  assert str(e) == \
-    'Selection string results in empty selection (selects no atoms): "%s"' \
+  except Exception as e:
+    assert str(e) == \
+      'Selection string results in empty selection (selects no atoms): "%s"' \
       % tmp
 
 def exercise_20(verbose):
@@ -546,7 +547,7 @@ def exercise_21(verbose):
   res = occupancy_selections(
     model = model,
     as_flex_arrays    = False)
-  res = extract_serials(model.pdb_atoms, res)
+  res = extract_serials(model.get_atoms(), res)
   assert approx_equal(res, base)
 
 def exercise_22(verbose):
@@ -561,7 +562,7 @@ def exercise_22(verbose):
   res = occupancy_selections(
     model = model,
     as_flex_arrays    = False)
-  res = extract_serials(model.pdb_atoms, res)
+  res = extract_serials(model.get_atoms(), res)
   assert approx_equal(res, base)
 
 def exercise_23(verbose):
@@ -576,7 +577,7 @@ def exercise_23(verbose):
   res = occupancy_selections(
     model = model,
     as_flex_arrays    = False)
-  res = extract_serials(model.pdb_atoms, res)
+  res = extract_serials(model.get_atoms(), res)
   assert approx_equal(res, base)
 
 def exercise_24(verbose):
@@ -1109,10 +1110,10 @@ END
               [24, 25, 26, 27, 28, 29, 30, 32, 33]] ]
   assert approx_equal(res, answer)
 
-def prepare_correlated_occupancy_inputs (
+def prepare_correlated_occupancy_inputs(
     prefix="tst_group_correlated_occupancy",
     create_mtz=False,
-    d_min=1.0) :
+    d_min=1.0):
   pdb_raw = """\
 CRYST1   21.937    4.866   23.477  90.00 107.08  90.00 P 1 21 1
 SCALE1      0.045585  0.000000  0.014006        0.00000
@@ -1204,14 +1205,15 @@ HETATM   83  O   HOH A   8      -6.471   5.227   7.124  1.00 22.62           O
 HETATM   84  O   HOH A   9      10.431   1.858   3.216  1.00 19.71           O
 HETATM   85  O   HOH A  10     -11.286   1.756  -1.468  1.00 17.08           O
 HETATM   86  O  AHOH A  11      11.808   4.179   9.970  0.60 23.99           O
-HETATM   87  O   HOH A  12      13.605   1.327   9.198  1.00 26.17           O
+HETATM   87  O  AHOH A  12      13.605   1.327   9.198  0.60 26.17           O
 HETATM   88  O   HOH A  13      -2.749   3.429  10.024  1.00 39.15           O
 HETATM   89  O   HOH A  14      -1.500   0.682  10.967  1.00 43.49           O
 TER
 """
   pdb_in = "%s_in.pdb" % prefix
-  open(pdb_in, "w").write(pdb_raw)
-  if (create_mtz) :
+  with open(pdb_in, "w") as f:
+    f.write(pdb_raw)
+  if (create_mtz):
     args = [
       pdb_in,
       "high_resolution=%g" % d_min,
@@ -1222,18 +1224,18 @@ TER
       "random_seed=12345",
       "output.file_name=%s.mtz" % prefix,
     ]
-    fmodel.run(args=args, log=null_out())
-  pdb_file = file_reader.any_file(pdb_in)
-  hierarchy = pdb_file.file_object.hierarchy
-  xrs = pdb_file.file_object.xray_structure_simple()
-  for atom in hierarchy.atoms() :
+    run_program(program_class=fmodel.Program, args=args, logger=null_out())
+  pdb_file = iotbx.pdb.input(pdb_in)
+  hierarchy = pdb_file.construct_hierarchy()
+  xrs = pdb_file.xray_structure_simple()
+  for atom in hierarchy.atoms():
     atom.b = 5
-    if (atom.occ < 1.0) :
+    if (atom.occ < 1.0):
       atom.occ = 0.5
-  open("%s_start.pdb" % prefix, "w").write(
-    hierarchy.as_pdb_string(crystal_symmetry=xrs))
+  with open("%s_start.pdb" % prefix, "w") as f:
+    f.write(hierarchy.as_pdb_string(crystal_symmetry=xrs))
 
-def exercise_regroup_3d (verbose) :
+def exercise_regroup_3d(verbose):
   if (verbose): log = sys.stdout
   else: log = StringIO()
   prepare_correlated_occupancy_inputs()
@@ -1243,23 +1245,58 @@ def exercise_regroup_3d (verbose) :
     "tst_group_correlated_occupancy_start.pdb",
     "tst_group_correlated_occupancy_in.pdb",
   ]
-  for i_file, pdb_file in enumerate(pdb_files) :
-    model = get_model(pdb_file, log)
-    try :
-      constraint_groups = occupancy_selections(
-        model = model,
+  #
+  constraint_groups = occupancy_selections(
+        model = get_model("tst_group_correlated_occupancy_start.pdb", log),
         constrain_correlated_3d_groups=True,
         log=null_out())
-    except Sorry, s :
-      if (i_file == 0) :
-        raise
-      else :
-        assert ("Inconsistent occupancies" in str(s)), str(s)
-    else :
-      if (i_file == 1) :
-        raise Exception_expected
-      else :
-        assert (len(constraint_groups) == 1)
+  for g in constraint_groups:
+     assert [ [ggg for ggg in gg] for gg in g ] == \
+       [[29, 30, 31, 32, 33, 34, 35, 36, 37, 55, 56, 57, 58, 59, 60, 61, 62, 63, 64, 65, 66, 67, 84, 85],
+        [38, 39, 40, 41, 42, 43, 44, 45, 46, 68, 69, 70, 71, 72, 73, 74, 75, 76, 77, 78, 79, 80]]
+  #
+  sorry_found = False
+  try:
+    constraint_groups = occupancy_selections(
+      model = get_model("tst_group_correlated_occupancy_in.pdb", log),
+      constrain_correlated_3d_groups=True,
+      log=null_out())
+  except Sorry as s:
+    assert ("Inconsistent occupancies" in str(s)), str(s)
+    sorry_found = True
+  assert sorry_found
+
+def exercise_zero_occ_altloc_water(verbose):
+  # Regression test for a crash in occupancy_selections when add_water=True and
+  # the model contains an alternate-conformation water with a zero-occupancy
+  # conformer. Such an atom satisfies BOTH the "occupancy < 1.e-6" and the
+  # "member of a multi-conformer occupancy group" conditions, which previously
+  # caused water_selection.remove(i) to be called twice -> ValueError.
+  if (verbose): log = sys.stdout
+  else: log = StringIO()
+  pdb_str = """\
+CRYST1   28.950   56.540   27.550  90.00  96.38  90.00 P 1 21 1
+HETATM 2882  O   HOH A 201      28.399  -6.151  12.844  0.92  6.90           O
+HETATM 2883  O   HOH A 202      16.216 -11.974   5.495  0.93  8.93           O
+HETATM 2946  O  1HOH A 262      10.692 -14.603  -0.293  0.59 34.13           O
+HETATM 2947  O  2HOH A 262       9.163 -14.863   1.518  0.41 41.83           O
+HETATM 2948  O  3HOH A 262      10.541 -14.555   0.658  0.00 35.13           O
+"""
+  model = get_model_str(pdb_str, log)
+  # The alternate-conformation water has a zero-occupancy conformer; this must
+  # not raise ValueError.
+  res = occupancy_selections(
+    model          = model,
+    add_water      = True,
+    as_flex_arrays = False)
+  # The three alternate conformers of HOH 262 form one constrained group.
+  assert [[2], [3], [4]] in res, res
+  # The zero-occupancy conformer (i_seq 4) must not also be added as an
+  # individual water occupancy selection.
+  assert [[4]] not in res, res
+  # The two full waters (partial occupancy) are added as individual selections.
+  assert [[0]] in res, res
+  assert [[1]] in res, res
 
 def run():
   verbose = "--verbose" in sys.argv[1:]
@@ -1294,7 +1331,8 @@ def run():
   exercise_29(verbose=verbose)
   exercise_30(verbose=verbose)
   exercise_regroup_3d(verbose=verbose)
-  print format_cpu_times()
+  exercise_zero_occ_altloc_water(verbose=verbose)
+  print(format_cpu_times())
 
 if (__name__ == "__main__"):
   run()

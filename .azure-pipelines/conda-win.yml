@@ -1,0 +1,373 @@
+# Script for building CCTBX
+# Windows image description
+# https://github.com/actions/virtual-environments/blob/main/images/win/Windows2019-Readme.md
+# https://github.com/actions/virtual-environments/blob/main/images/win/Windows2022-Readme.md
+#
+# Parameters:
+#   vmImage: windows-2022
+#   vs: 2022
+#   modules: <modules artifact name>
+#   timeoutInMinutes: <job timeout, default 180>
+
+jobs:
+- job: vs${{ parameters.vs }}
+  pool:
+    vmImage: ${{ parameters.vmImage }}
+  timeoutInMinutes: ${{ coalesce(parameters.timeoutInMinutes, 180) }}
+  strategy:
+    maxParallel: 2
+    matrix:
+      python3.11:
+        OS: win-64
+        PYTHON_VERSION: py311
+        MODULES: ${{ parameters.modules }}
+      python3.12:
+        OS: win-64
+        PYTHON_VERSION: py312
+        MODULES: ${{ parameters.modules }}
+      python3.13:
+        OS: win-64
+        PYTHON_VERSION: py313
+        MODULES: ${{ parameters.modules }}
+      python3.14:
+        OS: win-64
+        PYTHON_VERSION: py314
+        MODULES: ${{ parameters.modules }}
+
+  variables:
+  - name: artifact_name
+    value: vs${{ parameters.vs }}_$(PYTHON_VERSION)
+  - name: day
+    value: $(Get-Date -Format dddd)
+
+  steps:
+  - powershell: |
+      $job_name = "$(Agent.JobName)" -replace ' ', '_'
+      Write-Host "##vso[task.setvariable variable=job_name]$job_name"
+    displayName: Set job_name
+
+  - powershell: |
+      Write-Host $(day)
+      Write-Host "##vso[task.setVariable variable=day]$(day)"
+    displayName: Get day of week
+
+  - powershell: |
+      Write-Host $(job_name)
+      Write-Host $(day)
+    displayName: Check variables
+
+  # download components
+  - checkout: none
+
+  - task: DownloadPipelineArtifact@2
+    displayName: Download modules tarball
+    inputs:
+      source: 'current'
+      artifact: $(MODULES)
+      path: $(Pipeline.Workspace)
+
+  - script: |
+      cd $(Pipeline.Workspace)
+      tar -xf modules.tar
+      del modules.tar
+    displayName: Extract modules tarball
+
+  - script: |
+      cd $(Pipeline.Workspace)
+      copy modules\cctbx_project\libtbx\auto_build\bootstrap.py .
+    displayName: Copy bootstrap.py
+
+  # create conda environment
+  # fresh downloads for "Update build cache" and "Full" pipelines
+  - task: DownloadPipelineArtifact@2
+    displayName: Download conda packages
+    inputs:
+      source: 'current'
+      artifact: $(PYTHON_VERSION)_$(OS)
+      path: $(Pipeline.Workspace)/channel
+    condition: >
+      or(eq(variables['Build.DefinitionName'], 'Update build cache'),
+         eq(variables['Build.DefinitionName'], 'Full'))
+
+  - task: DownloadPipelineArtifact@2
+    inputs:
+      source: 'specific'
+      project: '$(resources.pipeline.build_cache.projectID)'
+      pipeline: '$(resources.pipeline.build_cache.pipelineID)'
+      allowPartiallySucceededBuilds: true
+      allowFailedBuilds: true
+      artifact: $(PYTHON_VERSION)_$(OS)
+      path: $(Pipeline.Workspace)/channel
+    displayName: Download cached conda packages
+    condition: >
+      and(ne(variables['Build.DefinitionName'], 'Update build cache'),
+          ne(variables['Build.DefinitionName'], 'Full'))
+
+  - script: |
+      call %CONDA%\condabin\conda.bat install -y conda-build
+      cd $(Pipeline.Workspace)\channel
+      more filenames.txt
+      dir
+      call %CONDA%\condabin\conda.bat index .
+      echo @EXPLICIT > env.txt
+      for /f "tokens=*" %%f in (filenames.txt) do echo $(Pipeline.Workspace)\channel\%%f >> env.txt
+      more env.txt
+      dir
+    displayName: Build local channel
+
+  # call %CONDA%\condabin\conda.bat create -y -n $(PYTHON_VERSION) --file $(Pipeline.Workspace)\modules\cctbx_project\libtbx\auto_build\conda_envs\cctbx_%PYTHON_VERSION%_%OS%.txt
+  - script: |
+      if exist %CONDA%\envs\$(PYTHON_VERSION) (
+        call %CONDA%\condabin\conda.bat remove -y --all -n $(PYTHON_VERSION)
+        if %errorlevel% neq 0 exit /b %errorlevel%
+      )
+      call %CONDA%\condabin\conda.bat create -y --offline -c $(Pipeline.Workspace)\channel\ --override-channels -n $(PYTHON_VERSION) --file $(Pipeline.Workspace)\channel\env.txt
+      if %errorlevel% neq 0 exit /b %errorlevel%
+      call %CONDA%\condabin\activate.bat %PYTHON_VERSION%
+      pip install junit-xml
+      if %errorlevel% neq 0 exit /b %errorlevel%
+    displayName: Create conda environment
+    retryCountOnTaskFailure: 3
+
+  - script: |
+      rmdir /S /Q $(Pipeline.Workspace)\channel
+    displayName: Clean up conda channel
+
+  # download daily cached build directory for builds
+  # always do builds from scratch for "Update build cache" and "Weekly"
+  # pipelines
+  - task: DownloadPipelineArtifact@2
+    inputs:
+      source: 'specific'
+      project: '$(resources.pipeline.build_cache.projectID)'
+      pipeline: '$(resources.pipeline.build_cache.pipelineID)'
+      allowPartiallySucceededBuilds: true
+      allowFailedBuilds: true
+      artifact: '$(artifact_name)'
+      path: $(Pipeline.Workspace)
+    displayName: Download cached build
+    condition: >
+      and(or(and(eq(variables['Build.DefinitionName'], 'Update build cache'),
+                 ne(variables['day'], 'Sunday')),
+             eq(variables['Build.DefinitionName'], 'CI'),
+             eq(variables['Build.DefinitionName'], 'CI branch'),
+             eq(variables['Build.DefinitionName'], 'Full')),
+          ne(variables['SKIP_CACHED_BUILD'], 'true'))
+    continueOnError: true
+
+  - script: |
+      cd $(Pipeline.Workspace)
+      tar -xf build.tar
+      del build.tar
+    displayName: Extract build tarball
+    condition: >
+      and(or(and(eq(variables['Build.DefinitionName'], 'Update build cache'),
+                 ne(variables['day'], 'Sunday')),
+             eq(variables['Build.DefinitionName'], 'CI'),
+             eq(variables['Build.DefinitionName'], 'CI branch'),
+             eq(variables['Build.DefinitionName'], 'Full')),
+          ne(variables['SKIP_CACHED_BUILD'], 'true'))
+    continueOnError: true
+    failOnStderr: false
+
+  - script: |
+      cd $(Pipeline.Workspace)
+      del /S /Q .\build\lib\_pycbf.pyd
+    displayName: Fix broken cache on Windows
+    condition: >
+      and(or(and(eq(variables['Build.DefinitionName'], 'Update build cache'),
+                ne(variables['day'], 'Sunday')),
+            eq(variables['Build.DefinitionName'], 'CI'),
+            eq(variables['Build.DefinitionName'], 'CI branch'),
+            eq(variables['Build.DefinitionName'], 'Full')),
+          ne(variables['SKIP_CACHED_BUILD'], 'true'))
+    continueOnError: true
+    failOnStderr: false
+
+  - script: |
+      cd $(Pipeline.Workspace)
+      dir
+    displayName: Check disk space
+
+  - script: |
+      cd $(Pipeline.Workspace)
+
+      if exist "C:\Program Files (x86)\Microsoft Visual Studio\${{ parameters.vs }}\Enterprise\VC\Auxiliary\Build\vcvarsall.bat" (
+        call "C:\Program Files (x86)\Microsoft Visual Studio\${{ parameters.vs }}\Enterprise\VC\Auxiliary\Build\vcvarsall.bat" x64
+      )
+      if exist "C:\Program Files\Microsoft Visual Studio\${{ parameters.vs }}\Enterprise\VC\Auxiliary\Build\vcvarsall.bat" (
+        call "C:\Program Files\Microsoft Visual Studio\${{ parameters.vs }}\Enterprise\VC\Auxiliary\Build\vcvarsall.bat" x64
+      )
+      call %CONDA%\condabin\activate.bat %PYTHON_VERSION%
+      python bootstrap.py build ^
+        --builder=cctbx ^
+        --use-conda=%CONDA_PREFIX% ^
+        --config-flags="--cxxstd=c++14" ^
+        --nproc=4
+      call .\build\setpaths.bat
+      call libtbx.configure ^
+        cma_es ^
+        fable ^
+        qttbx ^
+        rstbx ^
+        spotfinder ^
+        cbflib_adaptbx ^
+        phenix_regression ^
+        phenix_examples
+      cd build
+      call libtbx.scons -j 4
+      call libtbx.scons -j 4
+    displayName: Configure and Build
+    retryCountOnTaskFailure: 3
+
+  # install pyDiSCaMB
+  - script: |
+      cd $(Pipeline.Workspace)
+      if exist "C:\Program Files (x86)\Microsoft Visual Studio\${{ parameters.vs }}\Enterprise\VC\Auxiliary\Build\vcvarsall.bat" (
+        call "C:\Program Files (x86)\Microsoft Visual Studio\${{ parameters.vs }}\Enterprise\VC\Auxiliary\Build\vcvarsall.bat" x64
+      )
+      if exist "C:\Program Files\Microsoft Visual Studio\${{ parameters.vs }}\Enterprise\VC\Auxiliary\Build\vcvarsall.bat" (
+        call "C:\Program Files\Microsoft Visual Studio\${{ parameters.vs }}\Enterprise\VC\Auxiliary\Build\vcvarsall.bat" x64
+      )
+      call .\build\setpaths.bat
+      cd .\modules\pyDiSCaMB
+      call libtbx.python -m pip install .
+    displayName: Install pyDiSCaMB
+    retryCountOnTaskFailure: 3
+
+  # test timings from the latest run on master, so that the longest tests
+  # start first; pipelines that set timings_pipeline use them
+  - script: |
+      if not exist "$(Pipeline.Workspace)\timings" mkdir "$(Pipeline.Workspace)\timings"
+    displayName: Create test timings directory
+    condition: ne(variables['timings_pipeline'], '')
+
+  - task: DownloadPipelineArtifact@2
+    inputs:
+      source: 'specific'
+      project: '$(System.TeamProjectId)'
+      pipeline: '$(timings_pipeline)'
+      runVersion: 'latestFromBranch'
+      runBranch: 'refs/heads/master'
+      allowPartiallySucceededBuilds: true
+      allowFailedBuilds: true
+      artifact: timings_$(job_name)
+      path: $(Pipeline.Workspace)\timings
+    displayName: Download test timings
+    condition: ne(variables['timings_pipeline'], '')
+    continueOnError: true
+
+  # test
+  - script: |
+      SET PYTHONLEGACYWINDOWSSTDIO=1
+      cd $(Pipeline.Workspace)
+      if exist "C:\Program Files (x86)\Microsoft Visual Studio\${{ parameters.vs }}\Enterprise\VC\Auxiliary\Build\vcvarsall.bat" (
+        call "C:\Program Files (x86)\Microsoft Visual Studio\${{ parameters.vs }}\Enterprise\VC\Auxiliary\Build\vcvarsall.bat" x64
+      )
+      if exist "C:\Program Files\Microsoft Visual Studio\${{ parameters.vs }}\Enterprise\VC\Auxiliary\Build\vcvarsall.bat" (
+        call "C:\Program Files\Microsoft Visual Studio\${{ parameters.vs }}\Enterprise\VC\Auxiliary\Build\vcvarsall.bat" x64
+      )
+      call .\build\setpaths.bat
+      set TIMINGS=
+      if exist "$(Pipeline.Workspace)\timings\" set TIMINGS=timings=$(Pipeline.Workspace)\timings\timings.csv
+      rmdir /S /Q tests
+      mkdir tests
+      cd tests
+      echo ##vso[task.setvariable variable=tests_failed]false
+      call libtbx.run_tests_parallel ^
+        module=boost_adaptbx ^
+        module=cctbx ^
+        module=xcif ^
+        module=cctbx_website ^
+        module=cma_es ^
+        module=fable ^
+        module=gltbx ^
+        module=iotbx ^
+        module=libtbx ^
+        module=rstbx ^
+        module=scitbx ^
+        module=smtbx ^
+        module=spotfinder ^
+        module=annlib_adaptbx ^
+        module=cbflib_adaptbx ^
+        module=crys3d ^
+        module=qttbx ^
+        max_retries=2 ^
+        nproc=4 ^
+        %TIMINGS%
+      set rc=%errorlevel%
+      if not "%rc%"=="0" echo ##vso[task.setvariable variable=tests_failed]true
+      exit /b %rc%
+    failOnStderr: false
+    displayName: Test
+    retryCountOnTaskFailure: 3
+
+  # only runs on master update the test timings
+  - publish: $(Pipeline.Workspace)\timings
+    artifact: timings_$(job_name)
+    displayName: Save test timings
+    condition: >
+      and(always(),
+          ne(variables['timings_pipeline'], ''),
+          eq(variables['Build.SourceBranch'], 'refs/heads/master'),
+          ne(variables['Build.Reason'], 'PullRequest'))
+    continueOnError: true
+
+  # run pyDiSCaMB tests
+  - script: |
+      cd $(Pipeline.Workspace)
+      call .\build\setpaths.bat
+      cd .\modules\cctbx_project\mmtbx\regression\discamb
+      for %%t in (tst*.py) do (
+        echo %%t
+        echo "============================================================"
+        call libtbx.python %%t
+        if %errorlevel% neq 0 exit /b %errorlevel%
+        echo ""
+      )
+    displayName: Test pyDiSCaMB
+    retryCountOnTaskFailure: 3
+
+  # store tests directory as an artifact
+  - script: |
+      cd $(Pipeline.Workspace)
+      tar -zcf tests_$(job_name).tar.gz ./tests
+    displayName: Save test directory
+    condition: succeededOrFailed()
+    continueOnError: true
+
+  - publish: $(Pipeline.Workspace)/tests_$(job_name).tar.gz
+    artifact: tests_$(job_name)_$(MODULES)
+    condition: and(failed(), eq(variables['tests_failed'], 'true'))
+    continueOnError: true
+
+  # publish test results
+  - task: PublishTestResults@2
+    condition: succeededOrFailed()
+    inputs:
+      testResultsFormat: 'JUnit'
+      testResultsFiles: '$(Pipeline.Workspace)\tests\output.xml'
+
+  # preserve permissions
+  - script: |
+      cd $(Pipeline.Workspace)
+      tar -chf build.tar build
+    displayName: Build tarball
+    condition: >
+      and(eq(variables['Build.DefinitionName'], 'Update build cache'),
+          or(eq(variables['Build.Reason'], 'Schedule'),
+             eq(variables['Build.Reason'], 'Manual')),
+          eq(variables['System.StageAttempt'], 1),
+          eq('${{ parameters.modules }}', 'modules'))
+    continueOnError: true
+
+  # cache build directory every week for regular optimization build
+  - publish: $(Pipeline.Workspace)/build.tar
+    artifact: $(artifact_name)
+    condition: >
+      and(eq(variables['Build.DefinitionName'], 'Update build cache'),
+          or(eq(variables['Build.Reason'], 'Schedule'),
+             eq(variables['Build.Reason'], 'Manual')),
+          eq(variables['System.StageAttempt'], 1),
+          eq('${{ parameters.modules }}', 'modules'))
+    continueOnError: true

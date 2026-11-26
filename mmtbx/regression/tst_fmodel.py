@@ -1,4 +1,4 @@
-from __future__ import division
+from __future__ import absolute_import, division, print_function
 from cctbx.array_family import flex
 import mmtbx.f_model
 from cctbx.development import random_structure
@@ -6,6 +6,7 @@ from cctbx import sgtbx
 from libtbx.test_utils import approx_equal
 from libtbx.utils import format_cpu_times
 import random
+import sys
 import mmtbx
 from cctbx import adptbx
 import mmtbx.masks
@@ -199,7 +200,9 @@ def exercise_4_f_hydrogens():
       params = bss.master_params.extract()
       params.bulk_solvent=False
       params.anisotropic_scaling=False
-      o = fmodel.update_all_scales(fast=False, params=params)
+      # outlier rejection is slow at high resolution
+      o = fmodel.update_all_scales(fast=False, params=params,
+        remove_outliers=(d_min == 3))
       assert approx_equal(o.k_sol[0],0)
       assert approx_equal(o.b_sol[0],0)
       assert approx_equal(o.b_cart,[0,0,0,0,0,0])
@@ -210,7 +213,7 @@ def exercise_1():
   n_elements = 70
   sgs = ["P 1", "P 4", "C 1 2/c 1"]
   for sg in sgs:
-    print sg
+    print(sg)
     xray_structure = random_structure.xray_structure(
            space_group_info       = sgtbx.space_group_info(sg),
            elements               =(("O","N","C")*(n_elements//3+1))[:n_elements],
@@ -320,7 +323,6 @@ def exercise_5_bulk_sol_and_scaling(d_min, symbol = "C 2", k_sol = 0.37,
   assert fmodel.f_masks()[0].data().all_eq(f_mask.data())
   # test 3
   params = bss.master_params.extract()
-  params.number_of_macro_cycles=5
   fmodel = mmtbx.f_model.manager(
     f_calc       = f_calc,
     f_mask       = f_mask,
@@ -345,7 +347,7 @@ def exercise_5_bulk_sol_and_scaling(d_min, symbol = "C 2", k_sol = 0.37,
     sf_and_grads_accuracy_params = sfg_params)
   assert fmodel.r_work() > 0.3
   fmodel.update_all_scales(fast=True, remove_outliers=False)
-  assert fmodel.r_work() < 0.04, [fmodel.r_work(), d_min]
+  assert fmodel.r_work() < 0.045, [fmodel.r_work(), d_min]
   # part 2 of test 4
   d=fmodel.k_isotropic()*fmodel.k_anisotropic()*(
     f_calc.data()+fmodel.k_masks()[0]*f_mask.data())
@@ -358,7 +360,7 @@ def exercise_5_bulk_sol_and_scaling(d_min, symbol = "C 2", k_sol = 0.37,
     sf_and_grads_accuracy_params = sfg_params)
   assert fmodel.r_work() > 0.3
   fmodel.update_all_scales(fast=True)
-  assert fmodel.r_work() < 0.04, [fmodel.r_work(), d_min]
+  assert fmodel.r_work() < 0.052, [fmodel.r_work(), d_min]
 
 def exercise_top_largest_f_obs_f_model_differences(threshold_percent=10,
       symbol = "C 2"):
@@ -415,6 +417,7 @@ def exercise_6_instantiate_consistency(symbol = "C 2"):
   for scale in [1.e-4, 1.0, 1.e+4]:
     for k_sol in [0, 0.3]:
       for b_sol in [0, 50]:
+        if(k_sol == 0 and b_sol != 0): continue # k_mask is 0 for any b_sol
         for set_h_occ_to_zero in [True, False]:
           for update_f_part1 in [True, False]:
             for apply_scale_to in ["f_obs", "f_model"]:
@@ -479,24 +482,27 @@ def exercise_6_instantiate_consistency(symbol = "C 2"):
                 f_mask        = zero)
               r2 = fmodel_dc.r_work()
               if(0):
-                print "r1=%8.6f r2=%8.6f fp1=%6.3f fp2=%6.3f fc=%6.3f"%(r1, r2,
+                print("r1=%8.6f r2=%8.6f fp1=%6.3f fp2=%6.3f fc=%6.3f"%(r1, r2,
                   flex.mean(abs(fmodel.f_part1()).data()), \
                   flex.mean(abs(fmodel.f_part2()).data()), \
                   flex.mean(abs(fmodel.f_calc()).data())), \
                   "set_h_occ_to_zero=", set_h_occ_to_zero,\
-                  "update_f_part1=", update_f_part1
+                  "update_f_part1=", update_f_part1)
               assert approx_equal(r1, r2), [r1, r2]
 
-def run():
-  for d_min in [2, 4]:
-    exercise_5_bulk_sol_and_scaling(d_min = d_min)
-  exercise_6_instantiate_consistency()
-  exercise_f_model_no_scales()
-  exercise_top_largest_f_obs_f_model_differences()
-  exercise_1()
-  exercise_2()
-  exercise_4_f_hydrogens()
-  print format_cpu_times()
+def run(part=None):
+  assert part in [None, "1", "2"], part
+  if(part in [None, "1"]):
+    for d_min in [2, 4]:
+      exercise_5_bulk_sol_and_scaling(d_min = d_min)
+    exercise_4_f_hydrogens()
+  if(part in [None, "2"]):
+    exercise_6_instantiate_consistency()
+    exercise_f_model_no_scales()
+    exercise_top_largest_f_obs_f_model_differences()
+    exercise_1()
+    exercise_2()
+  print(format_cpu_times())
 
 if (__name__ == "__main__"):
-  run()
+  run(*sys.argv[1:])

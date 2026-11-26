@@ -1,4 +1,4 @@
-from __future__ import division
+from __future__ import absolute_import, division, print_function
 from cctbx.xray.structure_factors.misc import quality_factor_from_any
 from cctbx.xray import ext
 from cctbx import maptbx
@@ -34,6 +34,22 @@ class manager(crystal.symmetry):
         d_min = miller_set.d_min()
       else:
         assert d_min < miller_set.d_min() * (1+1e-6)
+    #
+    # Defaults above don't work for ultra-low resolutions (~10-50A and lower).
+    # Customization below makes it work for d_min>10.
+    # For details, see cctbx/regression/tst_sf_low_res_accuracy.py
+    #
+    sc=None
+    if(d_min>=5 and d_min<10): sc=2
+    elif(d_min>=10):           sc=3
+    if(sc is not None and
+       abs(grid_resolution_factor-1/3.)<1.e-3 and
+       wing_cutoff is None and
+       quality_factor is None):
+     quality_factor = 1000
+     wing_cutoff = 1.e-4
+     grid_resolution_factor = sc/d_min
+    #
     crystal.symmetry._copy_constructor(self, crystal_symmetry)
     quality_factor = quality_factor_from_any(
       d_min, grid_resolution_factor, quality_factor, u_base, b_base)
@@ -47,6 +63,7 @@ class manager(crystal.symmetry):
     self._rfft = None
     self._cfft = None
     self._u_base = None
+    self._u_extra_and_rho_cutoff = None
     self.estimate_time_direct = _estimate_time_direct(
       self.space_group().order_z())
     self.estimate_time_fft = _estimate_time_fft()
@@ -119,6 +136,47 @@ class manager(crystal.symmetry):
         self.grid_resolution_factor(),
         self.quality_factor())
     return self._u_base
+
+  def fix_sampling(self, xray_structure):
+    """
+    Make subsequent FFT calculations sample each scatterer exactly as in a
+    calculation for the given structure.
+
+    By default two parameters of sampling depend on all scatterers passed to
+    a calculation. With these fixed, structure factors of parts of a
+    structure add up to those of the whole, and gradients calculated for a
+    part are equal to those calculated for the whole.
+
+    Parameters
+    ----------
+    xray_structure : cctbx.xray.structure
+        The whole structure.
+    """
+    sampling = ext.fast_gradients(
+      unit_cell=xray_structure.unit_cell(),
+      scatterers=xray_structure.scatterers(),
+      scattering_type_registry=xray_structure.scattering_type_registry(),
+      u_base=self.u_base(),
+      wing_cutoff=self.wing_cutoff(),
+      exp_table_one_over_step_size=self.exp_table_one_over_step_size(),
+      tolerance_positive_definite=self.tolerance_positive_definite())
+    self._u_extra_and_rho_cutoff = (sampling.u_extra(), sampling.rho_cutoff())
+
+  def sampling_params(self):
+    """
+    Parameters of sampling of scatterers for FFT calculations.
+
+    Returns
+    -------
+    dict
+        Values of u_base, use_u_base_as_u_extra and rho_cutoff.
+    """
+    if (self._u_extra_and_rho_cutoff is None):
+      return dict(
+        u_base=self.u_base(), use_u_base_as_u_extra=False, rho_cutoff=0)
+    u_extra, rho_cutoff = self._u_extra_and_rho_cutoff
+    return dict(
+      u_base=u_extra, use_u_base_as_u_extra=True, rho_cutoff=rho_cutoff)
 
   def setup_fft(self):
     self.rfft()
@@ -235,7 +293,10 @@ class managed_calculation_base(object):
     if (manager is not None):
       assert xray_structure.unit_cell().is_similar_to(manager.unit_cell())
       assert xray_structure.space_group() == manager.space_group()
-    assert algorithm in ["direct", "fft"]
+
+    from cctbx.xray.structure_factors.algorithm import algorithms
+    assert algorithm in algorithms.keys()
+
 
   def manager(self):
     return self._manager
@@ -249,6 +310,5 @@ class managed_calculation_base(object):
   def algorithm(self, verbose=False):
     if (not verbose):
       return self._algorithm
-    if (self._algorithm == "direct"):
-      return "Direct Summation"
-    return "FFT Approximation"
+    from cctbx.xray.structure_factors.algorithm import algorithms
+    return algorithms[self._algorithm].desc

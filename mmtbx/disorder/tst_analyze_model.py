@@ -1,16 +1,16 @@
 
-from __future__ import division
+from __future__ import absolute_import, division, print_function
 from mmtbx.disorder import analyze_model
 from mmtbx.validation import molprobity
-import iotbx.pdb.hierarchy
+import iotbx.pdb
 from libtbx.utils import null_out
 import libtbx.load_env
 import mmtbx.model
-from cStringIO import StringIO
+from six.moves import cStringIO as StringIO
 
-def analyze_fragment (pdb_str) :
-  pdb_in = iotbx.pdb.hierarchy.input(pdb_string=pdb_str)
-  model = mmtbx.model.manager(pdb_in.input)
+def analyze_fragment(pdb_str):
+  pdb_in = iotbx.pdb.input(source_info=None, lines=pdb_str)
+  model = mmtbx.model.manager(pdb_in)
   validation = molprobity.molprobity(model, outliers_only=False)
   result = analyze_model.process_pdb_hierarchy(
     pdb_hierarchy=model.get_hierarchy(),
@@ -18,7 +18,7 @@ def analyze_fragment (pdb_str) :
     log=null_out())
   return result
 
-def exercise () :
+def exercise():
   # single alternate, split at C-alpha (from 1ytt)
   pdb_str = """\
 CRYST1   65.508   72.216   45.035  90.00  90.00  90.00 P 21 21 21    8
@@ -55,9 +55,9 @@ END
   assert ("atom_group=B CYS  occ=0.45 phi=-111.6 psi=146.7  rot=t" in
     out.getvalue())
 
-if (__name__ == "__main__") :
-  if (not libtbx.env.has_module("probe")) :
-    print "Probe not configured, skipping test"
+if (__name__ == "__main__"):
+  if (not libtbx.env.has_module("probe")):
+    print("Probe not configured, skipping test")
   else :
     exercise()
-    print "OK"
+    print("OK")

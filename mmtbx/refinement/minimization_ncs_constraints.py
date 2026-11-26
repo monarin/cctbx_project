@@ -1,10 +1,11 @@
-from __future__ import division
+from __future__ import absolute_import, division, print_function
 from cctbx import maptbx
 from scitbx.array_family import flex
 from libtbx import adopt_init_args
 import mmtbx.ncs.ncs_utils as nu
 from cctbx import xray
 import scitbx.lbfgs
+from six.moves import zip
 
 def grads_asu_to_one_ncs(
       ncs_restraints_group_list,
@@ -418,14 +419,18 @@ class lbfgs(object):
       self.ncs_restraints_group_list = self.ncs_restraints_group_list.shift_translation_to_center(
           shifts = self.ncs_groups_coordinates_centers)
       self.x = self.ncs_restraints_group_list.concatenate_rot_tran()
+    lbfgs_core_params = scitbx.lbfgs.core_parameters(
+      stpmax = 25.0)
     minimizer = scitbx.lbfgs.run(
       target_evaluator=self,
+      core_params=lbfgs_core_params,
       termination_params=scitbx.lbfgs.termination_parameters(
         max_iterations=max_iterations,
         traditional_convergence_test_eps=traditional_convergence_test_eps),
       exception_handling_params=scitbx.lbfgs.exception_handling_parameters(
         ignore_line_search_failed_rounding_errors=True,
         ignore_line_search_failed_step_at_lower_bound=True,
+        ignore_line_search_failed_step_at_upper_bound=True,
         ignore_line_search_failed_maxfev=True))
     # change transforms to the original coordinate system
     if self.refine_transformations:

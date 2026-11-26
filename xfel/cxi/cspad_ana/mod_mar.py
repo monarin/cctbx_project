@@ -2,13 +2,14 @@
 #
 # $Id$
 
-from __future__ import division
+from __future__ import absolute_import, division, print_function
 
 import logging, os
 
 from xfel.cxi.cspad_ana import cspad_tbx
 from xfel.cxi.cspad_ana import skip_event_flag
 from scitbx.array_family import flex
+from six.moves import range
 
 class mod_mar(object):
   def __init__(self, address, directory, beam_x = None, beam_y = None, template = None):
@@ -95,7 +96,7 @@ class mod_mar(object):
 
 
   def event(self, evt, env):
-    from dxtbx.format.Registry import Registry
+    import dxtbx.format.Registry
     from os.path import exists
     from time import sleep
 
@@ -138,14 +139,14 @@ class mod_mar(object):
     # try determining a new format.  XXX Emits "Couldn't create a
     # detector model for this image".
     if self._fmt is None:
-      self._fmt = Registry.find(self._path)
+      self._fmt = dxtbx.format.Registry.get_format_class_for_file(self._path)
       if self._fmt is None:
         evt.put(skip_event_flag(), "skip_event")
         return
 
     img = self._fmt(self._path)
     if img is None:
-      self._fmt = Registry.find(self._path)
+      self._fmt = dxtbx.format.Registry.get_format_class_for_file(self._path)
       if self._fmt is None:
         evt.put(skip_event_flag(), "skip_event")
         return

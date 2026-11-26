@@ -1,4 +1,4 @@
-from __future__ import division
+from __future__ import absolute_import, division, print_function
 
 import iotbx.pdb
 import mmtbx.model
@@ -18,6 +18,7 @@ SHEET    2   C 2 THR A 329  ILE A 332 -1  O  THR A 331   N  VAL A 324
 """
 
 pdb_str = """\
+CRYST1  100.000  100.000  100.000  90.00  90.00  90.00 P 1
 ATOM   1361  N   VAL A 190     180.789 103.980  72.202  1.00121.81           N
 ATOM   1362  CA  VAL A 190     179.994 104.660  71.186  1.00133.83           C
 ATOM   1363  C   VAL A 190     180.110 106.158  71.432  1.00156.81           C
@@ -251,7 +252,7 @@ def exercise_yes_sidechains(prefix="tst_single_outliers_sur_yes_sidechains"):
 
 if __name__ == '__main__':
   if (not libtbx.env.has_module(name="probe")):
-    print "Skipping: probe not configured"
+    print("Skipping: probe not configured")
   else:
     exercise_no_sidechains()
     exercise_yes_sidechains()

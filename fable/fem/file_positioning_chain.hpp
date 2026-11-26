@@ -1,6 +1,7 @@
 #ifndef FEM_FILE_POSITIONING_CHAIN_HPP
 #define FEM_FILE_POSITIONING_CHAIN_HPP
 
+#include <noexcept_false.hpp>
 #include <fem/io.hpp>
 
 namespace fem {
@@ -36,7 +37,7 @@ namespace fem {
       other.u_ptr = 0;
     }
 
-    ~file_positioning_chain()
+    ~file_positioning_chain() NOEXCEPT_FALSE
     {
       if (u_ptr == 0) {
         throw TBXX_NOT_IMPLEMENTED(); // should open file file

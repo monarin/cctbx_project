@@ -1,10 +1,13 @@
-from __future__ import division
+"""Tests for secondary structure identification"""
+from __future__ import absolute_import, division, print_function
 from libtbx import test_utils
 import sys
 from iotbx.pdb import secondary_structure as ss
 import iotbx
 from scitbx.array_family import flex
 from mmtbx.secondary_structure import sec_str_master_phil
+from libtbx.test_utils import assert_lines_in_text
+from six.moves import cStringIO as StringIO
 
 pdb_1ywf_cutted = """\
 HELIX    1   1 ALA A   16  THR A   18  5                                   3
@@ -1936,7 +1939,7 @@ HELIX    9   9 PROa1  124  HISa1  133  1                                  10"""
   secstr = ss.annotation.from_records(records=lines)
   ss_out = secstr.as_pdb_str()
   assert not test_utils.show_diff(ss_out, two_char_chain_records)
-  print "OK"
+  print("OK")
 
 def tst_pdb_file():
   pdb_inp = iotbx.pdb.input(source_info=None,
@@ -1946,7 +1949,7 @@ def tst_pdb_file():
   new_ss = structure.as_pdb_str()
   old_ss = "\n".join(old_ss)
   assert not test_utils.show_diff(new_ss, old_ss)
-  print "OK"
+  print("OK")
 
 def tst_parsing_phil():
   phil_str = """\
@@ -2051,7 +2054,7 @@ secondary_structure.protein {
       pdb_lines=pdb_1ywf_sample_strings)
   ss_from_phil = annot.as_pdb_str()
   assert ss_from_file == ss_from_phil
-  print "OK"
+  print("OK")
 
 def get_annotation(phil_lines, pdb_lines):
   pdb_inp = iotbx.pdb.input(source_info=None,
@@ -2074,7 +2077,7 @@ def exercise_only_b_altloc():
   new_ss = structure.as_pdb_str()
   old_ss = "\n".join(old_ss)
   assert not test_utils.show_diff(new_ss, old_ss)
-  print "OK"
+  print("OK")
 
 def exercise_multiplication():
   from iotbx.pdb.utils import all_chain_ids
@@ -2095,11 +2098,11 @@ SHEET    2   A 5 LEU A  27  SER A  30 -1  O  ARG A  29   N  ARG A  13
     for s in sh.strands:
       assert sh.sheet_id == s.sheet_id, "%s, %s" % (sh.sheet_id, s.sheet_id)
   ss_lines = secstr.as_pdb_str().split('\n')
-  # print ss_lines[1200]
-  # print ss_lines[6999]
-  # print ss_lines[7000]
+  # print (ss_lines[1200])
+  # print (ss_lines[6999])
+  # print (ss_lines[7000])
   assert ss_lines[1200] == \
-      "HELIX  A5L 120 THR5V   11  ASP5V   39  1                                  29"
+      "HELIX  A5L A5L THR5V   11  ASP5V   39  1                                  29"
   assert ss_lines[6999] == "SHEET    1 AF7 2 ARGHf  13  ASPHf  14  0"
   assert ss_lines[7000] == \
       "SHEET    2 AF7 2 LEUHf  27  SERHf  30 -1  O  ARGHf  29   N  ARGHf  13"
@@ -2110,7 +2113,57 @@ SHEET    2   A 5 LEU A  27  SER A  30 -1  O  ARG A  29   N  ARG A  13
       assert s.sheet_id == strand.sheet_id, "%s, %s" % (s.sheet_id, strand.sheet_id)
   assert ss_back.helices[0].serial == 'A5L'
   assert ss_back.sheets[0].sheet_id == 'AF7'
-  print "OK"
+  print("OK")
+
+def exercise_change_residue_numbering():
+  ss_records = """\
+HELIX   14  14 SER A  252  ALA A  260  1                                   9
+HELIX   15  15 SER A  263  LEU A  275  1                                  13
+SHEET    1   A 5 ARG B  13  ASP B  14  0
+SHEET    2   A 5 LEU B  27  SER B  30 -1  O  ARG B  29   N  ARG B  13
+SHEET    3   A 5 VAL B 156  HIS B 159  1  O  VAL B 156   N  PHE B  28
+SHEET    4   A 5 ASP B  51  ASP B  54  1  N  ALA B  51   O  LEU B 157
+SHEET    5   A 5 ASP B  74  LEU B  77  1  O  HIS B  74   N  VAL B  52
+"""
+  ss_annot = ss.annotation.from_records(records=ss_records.split('\n'))
+  renumbering_dictionary = {
+      'A':{
+        (' 252', ' '): (' 253', 'A'),
+        (' 275', ' '): (' 276', 'A'),
+      },
+      'B':{
+        ('  27', ' '): ('  28', 'C'),
+        ('  13', ' '): ('  13', 'D'),
+      }}
+  ss_annot.change_residue_numbering_in_place(renumbering_dictionary)
+  new_ss_str = ss_annot.as_pdb_str()
+  # print(new_ss_str)
+  assert_lines_in_text(new_ss_str, """\
+HELIX   14  14 SER A  253A ALA A  260  1                                   9
+HELIX   15  15 SER A  263  LEU A  276A 1                                  13
+SHEET    1   A 5 ARG B  13D ASP B  14  0
+SHEET    2   A 5 LEU B  28C SER B  30 -1  O  ARG B  29   N  ARG B  13D
+SHEET    3   A 5 VAL B 156  HIS B 159  1  O  VAL B 156   N  PHE B  28
+SHEET    4   A 5 ASP B  51  ASP B  54  1  N  ALA B  51   O  LEU B 157
+SHEET    5   A 5 ASP B  74  LEU B  77  1  O  HIS B  74   N  VAL B  52
+""".strip())
+
+
+def exercise_cif_sheet_missing_first_strand():
+  """A sheet whose _struct_sheet_range has no row with id 1 is skipped with
+  a 'Bad sheet records.' message; the other sheets are still read."""
+  pdb_str = """\
+SHEET    1   X 2 ALA A  10  ALA A  14  0
+SHEET    2   X 2 VAL A  20  VAL A  24 -1  N  ALA A  11   O  VAL A  21
+SHEET    1   Y 2 ALA A  30  ALA A  34  0
+SHEET    2   Y 2 VAL A  40  VAL A  44  1  N  ALA A  31   O  VAL A  41"""
+  cif_block = ss.annotation.from_records(pdb_str.split("\n")).as_cif_block()
+  cif_block.get_loop("_struct_sheet_range").delete_row(0) # strand 1 of X
+  log = StringIO()
+  ann = ss.annotation.from_cif_block(cif_block, log=log)
+  assert "Bad sheet records." in log.getvalue(), log.getvalue()
+  assert [sh.sheet_id for sh in ann.sheets] == ["Y"], ann.as_pdb_str()
+  assert len(ann.sheets[0].strands) == 2, len(ann.sheets[0].strands)
 
 def exercise(args):
   exercise_single()
@@ -2118,6 +2171,8 @@ def exercise(args):
   tst_parsing_phil()
   exercise_only_b_altloc()
   exercise_multiplication()
+  exercise_change_residue_numbering()
+  exercise_cif_sheet_missing_first_strand()
 
 if (__name__ == "__main__"):
   exercise(sys.argv[1:])

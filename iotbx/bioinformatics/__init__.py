@@ -1,14 +1,23 @@
-from __future__ import division
+"""
+Tools for bioinformatics (reading/writing/comparison of sequence files.)
+"""
+from __future__ import absolute_import, division, print_function
+from operator import itemgetter
 from libtbx.utils import Abort
 from libtbx import group_args
-import cStringIO
+from six.moves import cStringIO as StringIO
 import re
 import operator
 import os.path
 import sys
+from functools import reduce
+from six.moves import range
+from six.moves import zip
+from libtbx.utils import Sorry
 
 # Wrap lines that are longer than 'width'
 def wrap(text, width):
+  """Wrap lines that are longer than 'width'"""
 
   return re.findall( "[^\n]{1,%d}" % width, text )
 
@@ -46,7 +55,7 @@ class ebi_pdb_header(object):
     match = cls.regex.search( data )
 
     if not match:
-      raise ValueError, ( cls.format, str( data ) )
+      raise ValueError( cls.format, str( data ))
 
     ( identifier, chain ) = match.groups()
     return cls( identifier = identifier.upper(), chain = chain.upper() )
@@ -113,8 +122,30 @@ class sequence(object):
 
     return self.format( 70 )
 
+  def __hash__(self):
+    '''
+    Return a UID (hash) for the instanciated object. This method is required
+    to be implemented if __eq__ is implemented and if the object is immutable.
+    Immutable objects can be then used as keys for dictionaries.
+    '''
+
+    #NOTE: To my knowledge objects of this class are used as keyword in a dictionary only
+    #by Sculptor.
+
+    #NOTE: id(self) is already unique but hash(id(self)) distributes better the hashed values
+    #this means that two consecutive id will have very different hash(id(self)) making
+    #hashtable searches more robust when using them as keys of dictionaries. Difference in
+    #performance are irrelevant.
+
+    return hash(id(self))
 
   def __eq__(self, other):
+    '''
+    This method is used any time the equality among two instances of this class must be tested.
+    Two sequences are equal if their sequence attribute is equal. Although self and other are
+    two different objects. In particular two sequences might have a different name but they are equal
+    if they have the same sequence.
+    '''
 
     return isinstance( other, sequence ) and self.sequence == other.sequence
 
@@ -241,7 +272,7 @@ class alignment(object):
 
     # The number of names should match the number of alignments
     if len( alignments ) != len( names ):
-      raise ValueError, (
+      raise ValueError(
         "'alignments' and 'names' do not have the same length"
       )
 
@@ -334,7 +365,7 @@ class alignment(object):
   def extend(self, sequences):
 
     if len( sequences ) != self.multiplicity():
-      raise ValueError, "Inconsistent extension sequence set"
+      raise ValueError("Inconsistent extension sequence set")
 
     pre_alis = []
     pre_gaps = []
@@ -346,7 +377,7 @@ class alignment(object):
       pos = s.find( partial )
 
       if pos == -1:
-        raise ValueError, "Alignment does not match sequence"
+        raise ValueError("Alignment does not match sequence")
 
       assert 0 <= pos
       pre_alis.append( s[:pos] )
@@ -394,7 +425,7 @@ class alignment(object):
   def assign_as_target(self, index):
 
     if index < 0 or self.multiplicity() <= index:
-      raise IndexError, "Sequence not found in alignment"
+      raise IndexError("Sequence not found in alignment")
 
     self.names = ( [ self.names[ index ] ] + self.names[ : index ]
       + self.names[ index + 1 : ] )
@@ -407,7 +438,7 @@ class alignment(object):
     # All alignments should have the same length
     for o in alignments[1:]:
       if (len( alignments[0] ) != len( o )):
-        raise ValueError, "'alignments' do not have the same length"
+        raise ValueError("'alignments' do not have the same length")
 
     self.alignments = alignments
 
@@ -426,7 +457,7 @@ class fasta_alignment(alignment):
 
     # The number of names, types and description should be equal
     if len( names ) != len( descriptions ):
-      raise ValueError, (
+      raise ValueError(
         "Inconsistent 'alignments' and 'descriptions' attributes"
         )
 
@@ -470,7 +501,7 @@ class pir_alignment(alignment):
     # The number of names, types and description should be equal
     if ( len( names ) != len( types )
       or len( names ) != len( descriptions ) ):
-      raise ValueError, (
+      raise ValueError(
         "Inconsistent 'alignments', 'types' and 'descriptions' attributes"
         )
 
@@ -537,7 +568,7 @@ class clustal_alignment(alignment):
         )
 
     elif len( middle_line ) != self.length():
-      raise ValueError, "Incorrect midline length"
+      raise ValueError("Incorrect midline length")
 
     if number_width is None:
       number_width = self.length_digits()
@@ -558,7 +589,7 @@ class clustal_alignment(alignment):
         for line in wrap( middle_line, aln_width ) ]
       )
 
-    def fmt_num():
+    def fmt_num(num):
       if num: return " " + str( num ).rjust( number_width )
       return ""
     return (
@@ -566,7 +597,7 @@ class clustal_alignment(alignment):
       + "\n\n".join(
         [
           "\n".join(
-            [ "%s %s%s" % ( cap, ali, fmt_num() )
+            [ "%s %s%s" % ( cap, ali, fmt_num(num) )
               for ( cap, ali, num ) in zipped_infos ]
             )
           for zipped_infos in zip( *aln_infos )
@@ -634,7 +665,7 @@ class generic_sequence_parser(object):
           non_compliant.append( unknown )
 
         objects.append(
-          self.type( **dict( kwargs.items() + match.groupdict().items() ) )
+          self.type( **dict( list(kwargs.items()) + list(match.groupdict().items()) ) )
           )
 
       else:
@@ -710,14 +741,13 @@ def parse_sequence_str(data, format):
 
   for ( groups, ( n_start, n_end, n_data ) ) in partition:
     if n_data.strip():
-      raise ValueError, (
+      raise ValueError(
         "Uninterpretable block from %s to %s:\nExpected: %s\nFound: %s" % (
           n_start,
           n_end,
           format.expected,
           n_data,
-          )
-        )
+          ))
 
     body = "".join( [ c for c in groups[-1] if not c.isspace() ] )
     yield format.create( headers = groups[:-1], body = body )
@@ -727,7 +757,7 @@ def parse_sequence_str(data, format):
 seq_sequence_parse = generic_sequence_parser(
   regex = re.compile(
     r"""
-    ^ > \s*
+    ^ > [ \t\v\f]*
     (?P<name> [^\n]* ) \n
     (?P<sequence> [^>^*]* )
     \*?\s*
@@ -817,7 +847,7 @@ _tf_split_regex = re.compile(
 
 def tf_sequence_parse(text):
   """
-  Tom's format sequence parser
+  plain text sequence parser used for SOLVE/RESOLVE files
   """
 
   match = _tf_split_regex.search( text )
@@ -843,24 +873,25 @@ _implemented_sequence_parsers = {
   }
 
 def sequence_parser_for(file_name):
-
+  """Identify sequence parser suitable for file_name"""
   ( name, extension ) = os.path.splitext( file_name )
 
   return _implemented_sequence_parsers.get( extension )
 
 
 def sequence_parser_for_extension(extension):
+  """Identify sequence parser suitable for extension"""
 
   return _implemented_sequence_parsers.get( extension )
 
 
 def known_sequence_formats():
-
-  return _implemented_sequence_parsers.keys()
+  """List known sequence formats"""
+  return list(_implemented_sequence_parsers.keys())
 
 
 def parse_sequence(data):
-
+  """Parse a sequence"""
   parsers = [
     fasta_sequence_parse,
     dbfetch_sequence_parse,
@@ -885,83 +916,86 @@ def parse_sequence(data):
   return min( results, key = lambda p: len( p[1] ) )
 
 # XXX test needed
-def any_sequence_format (file_name, assign_name_if_not_defined=False,
-    data=None) :
+def any_sequence_format(file_name, assign_name_if_not_defined=False,
+    data=None):
+  """Parse any sequence from any format"""
   format_parser = sequence_parser_for(file_name)
   if data is None:
-    data = open(file_name, "r").read()
+    with open(file_name, "r") as f:
+      data = f.read()
   seq_object = None
-  if (format_parser is not None) :
+  if (format_parser is not None):
     try :
       objects, non_compliant = format_parser.parse(data)
       assert (len(objects) > 0)
       assert (objects[0].sequence != "")
-    except Exception, e :
+    except Exception as e :
       pass
     else :
-      if (assign_name_if_not_defined) :
+      if (assign_name_if_not_defined):
         base_name = os.path.splitext(os.path.basename(file_name))[0]
-        for k, seq in enumerate(objects) :
-          if (seq.name == "") :
+        for k, seq in enumerate(objects):
+          if (seq.name == ""):
             seq.name = "%s_%d" % (base_name, k+1)
-            print seq.name
+            print(seq.name)
       return objects, non_compliant
   for other_parser in [fasta_sequence_parse.parse, pir_sequence_parse.parse,
                        seq_sequence_parse.parse, tf_sequence_parse] :
-    if (other_parser is not format_parser) :
+    if (other_parser is not format_parser):
       try :
         objects, non_compliant = other_parser(data)
         assert (len(objects) > 0)
         assert (objects[0].sequence != "")
-      except Exception, e :
+      except Exception as e :
         pass
       else :
-        if (assign_name_if_not_defined) :
+        if (assign_name_if_not_defined):
           base_name = os.path.splitext(os.path.basename(file_name))[0]
-          for k, seq in enumerate(objects) :
-            if (seq.name == "") :
+          for k, seq in enumerate(objects):
+            if (seq.name == ""):
               seq.name = "%s_%d" % (base_name, k+1)
-              print seq.name
+              print(seq.name)
         return objects, non_compliant
   # fallback: unformatted
-  data = re.sub("\s", "", data)
-  if (re.search("[^a-zA-Z\*]", data) is None) :
+  data = re.sub(r"\s", "", data)
+  if (re.search(r"[^a-zA-Z\*]", data) is None):
     seq = sequence(data)
     if (assign_name_if_not_defined ):
       seq.name = os.path.splitext(os.path.basename(file_name))[0]
     return [seq], []
   return None, None
 
-def merge_sequence_files (file_names, output_file, sequences=(),
+def merge_sequence_files(file_names, output_file, sequences=(),
     include_non_compliant=False, call_back_on_error=None,
-    force_new_file=False) :
+    force_new_file=False):
+  """Merge a set of sequence files into a single file"""
   assert (len(file_names) > 0) or (len(sequences) > 0)
-  if (len(file_names)==1) and (len(sequences)==0) and (not force_new_file) :
+  if (len(file_names)==1) and (len(sequences)==0) and (not force_new_file):
     return file_names[0]
-  seq_out = cStringIO.StringIO()
+  seq_out = StringIO()
   for seq_file in file_names :
     objects, non_compliant = any_sequence_format(seq_file)
-    if (objects is None) :
+    if (objects is None):
       msg = ("The file '%s' could not be parsed as one of the "+
           "standard formats.  This could either be a problem with the file, "+
           "a non-standard format, or a bug in our code.  For further help, "+
           "please email the developers at help@phenix-online.org.") % seq_file
-      if (hasattr(call_back_on_error, "__call__")) :
+      if (hasattr(call_back_on_error, "__call__")):
         msg += "  (This is not a fatal error, but the combined sequence "+\
                 "file will be incomplete.)"
-        if (not call_back_on_error(msg)) :
+        if (not call_back_on_error(msg)):
           raise Abort()
         continue
       else :
         raise RuntimeError(msg)
     for seq_record in objects :
       name = str(seq_record.name)
-      if (name == "") :
+      if (name == ""):
         name = "none"
       seq_out.write("> %s\n" % name)
       seq_out.write("%s\n" % seq_record.sequence)
-  if (len(sequences) > 0) :
-    for k, seq in enumerate(sequences) :
+  if (len(sequences) > 0):
+    for k, seq in enumerate(sequences):
       seq_out.write("> seq%d\n" % (k+1))
       seq_out.write("%s\n" % seq)
   f = open(output_file, "w")
@@ -1010,6 +1044,7 @@ class generic_alignment_parser(object):
 
 
 def check_alignments_are_valid(alignments):
+  """Check for valid alignments"""
 
   if not alignments:
     return True
@@ -1124,6 +1159,7 @@ def clustal_alignment_parse(text):
 
 
 def read_clustal_block(lines):
+  """Read a block from a clustal-format file"""
 
   names = []
   sequences = []
@@ -1142,7 +1178,7 @@ def read_clustal_block(lines):
 
     else:
       if not CLUSTAL_MIDLINE.search( lines[-1] ):
-        raise ValueError, "Line '%s' does not match expected body or midline formats" % lines[-1]
+        raise ValueError("Line '%s' does not match expected body or midline formats" % lines[-1])
 
     lines.pop()
 
@@ -1150,7 +1186,7 @@ def read_clustal_block(lines):
 
 
 def discard_clustal_empty_lines(lines):
-
+  """Discard empty lines from clustal file"""
   while lines:
     if lines[ -1 ].strip():
       break
@@ -1159,7 +1195,7 @@ def discard_clustal_empty_lines(lines):
 
 
 def hhalign_alignment_parse(text):
-
+  """Parse an HHalign formatted file"""
   try:
     hhalign = hhalign_parser( output = text )
 
@@ -1221,6 +1257,7 @@ _implemented_alignment_parsers = {
   }
 
 def alignment_parser_for(file_name):
+  """Identify alignment parser for file_name"""
 
   ( name, extension ) = os.path.splitext( file_name )
 
@@ -1228,42 +1265,46 @@ def alignment_parser_for(file_name):
 
 
 def alignment_parser_for_extension(extension):
+  """Identify alignment parser for extension"""
 
   return _implemented_alignment_parsers.get( extension )
 
 
 def known_alignment_formats():
+  """List known alignment formats"""
+  return list(_implemented_alignment_parsers.keys())
 
-  return _implemented_alignment_parsers.keys()
-
-def any_alignment_file (file_name) :
+def any_alignment_file(file_name):
+  """Parse any alignment file"""
   base, ext = os.path.splitext(file_name)
-  data = open(file_name).read()
+  with open(file_name) as f:
+    data = f.read()
   parser1 = None
-  if (ext != ".hhr") and (ext in _implemented_alignment_parsers) :
+  if (ext != ".hhr") and (ext in _implemented_alignment_parsers):
     parser1 = _implemented_alignment_parsers.get(ext)
     try :
       aln = parser1(data)[0]
       assert (len(aln.names) != 0)
     except KeyboardInterrupt : raise
-    except Exception, e : pass
+    except Exception as e : pass
     else :
       return aln
   for parser in [pir_alignment_parse, clustal_alignment_parse,
                  fasta_alignment_parse, ali_alignment_parse] :
-    if (parser is parser1) :
+    if (parser is parser1):
       continue
     try :
       aln = parser(data)[0]
       assert (len(aln.names) != 0)
     except KeyboardInterrupt : raise
-    except Exception, e : pass
+    except Exception as e : pass
     else :
       return aln
   raise RuntimeError("Not a recognizeable sequence alignment format!")
 
 
 def any_alignment_string(data, extension = None):
+  """Parse any alignment string"""
 
   tried = None
 
@@ -1360,7 +1401,7 @@ class hhpred_parser(object):
     res = self.SPLIT.search( output )
 
     if not res:
-      raise ValueError, "Incorrect file format"
+      raise ValueError("Incorrect file format")
 
     ( header, linefeed, summary, hits ) = res.groups()
     self.process_header( header = header )
@@ -1372,7 +1413,7 @@ class hhpred_parser(object):
     res = self.HEADER.search( header )
 
     if not res:
-      raise ValueError, "Incorrect header format"
+      raise ValueError("Incorrect header format")
 
     self.query = res.group( 1 )
     self.match_columns = int( res.group( 2 ) )
@@ -1395,7 +1436,7 @@ class hhpred_parser(object):
         unknown = hits[ start : m.start() ].strip()
 
         if unknown:
-          raise ValueError, "Uninterpretable block: %s" % repr( unknown )
+          raise ValueError("Uninterpretable block: %s" % repr( unknown ))
 
       start = m.end()
 
@@ -1405,7 +1446,7 @@ class hhpred_parser(object):
     remaining = hits[ start: ].strip()
 
     if remaining:
-      raise ValueError, "Uninterpretable tail: %s" % repr( remaining )
+      raise ValueError("Uninterpretable tail: %s" % repr( remaining ))
 
 
   def process_blocks(self, blocks):
@@ -1420,7 +1461,7 @@ class hhpred_parser(object):
         unknown = blocks[ start : match.start() ].strip()
 
         if unknown:
-          raise ValueError, "Uninterpretable: %s" % repr( unknown )
+          raise ValueError("Uninterpretable: %s" % repr( unknown ))
 
       start = match.end()
       matches.append( match.groups() )
@@ -1428,10 +1469,10 @@ class hhpred_parser(object):
     remaining = blocks[ start: ].strip()
 
     if remaining:
-      raise ValueError, "Uninterpretable: %s" % repr( remaining )
+      raise ValueError("Uninterpretable: %s" % repr( remaining ))
 
     if not matches:
-      raise ValueError, "Empty homology block"
+      raise ValueError("Empty homology block")
 
     assert all([len( matches[0] ) == len( a ) for a in matches[1:]])
 
@@ -1442,10 +1483,10 @@ class hhpred_parser(object):
 
     for ( s, e ) in zip( starts[1:], ends[:-1] ):
       if s != e + 1:
-        raise ValueError, "Incorrect sequence indices"
+        raise ValueError("Incorrect sequence indices")
 
       if not all([others[0] == o for o in others[1:]]):
-        raise ValueError, "Incorrect sequence indices"
+        raise ValueError("Incorrect sequence indices")
 
     return ( starts[0], ends[-1], others[0] )
 
@@ -1458,7 +1499,7 @@ class hhsearch_parser(hhpred_parser):
   HITS = re.compile(
     r"""
     No \s ( \d+) \s* (?: \n | \r\n | \r )
-    >( [\w]{4} ) _  ( [\w]? ) \s ( [^\n]* )(?: \n | \r\n | \r )
+    >( [\w]{4} ) _  ( [\w]+ ) \s ( [^\n]* )(?: \n | \r\n | \r )
     Probab = ( [+-]? \d+ \. \d* ) \s+
     E-value = ( \d+ \.? \d* )( e[+-]? \d+ )? \s+
     Score = ( [+-]? \d+\.\d+ ) \s+
@@ -1547,14 +1588,14 @@ class hhsearch_parser(hhpred_parser):
 
   def merge_and_process_block_hits(self, matches):
 
-    data = zip( *matches )
+    data = list(zip( *matches ))
     assert len( data ) == 8
 
     sequences = [ data[1], data[5] ]
 
     for index in range( len( matches ) ):
       if len( sequences[0][ index ] ) != len( sequences[1][ index ] ):
-        raise ValueError, "Incorrect alignments"
+        raise ValueError("Incorrect alignments")
 
     mergeds = [ "".join( a ) for a in sequences ]
 
@@ -1583,13 +1624,13 @@ class hhsearch_parser(hhpred_parser):
 
   def hits(self):
 
-    data = zip(
+    data = list(zip(
       self.pdbs,
       self.chains,
       self.annotations,
       self.query_alignments,
       self.hit_alignments,
-      )
+      ))
 
     for ( pdb, chain, annotation, query, hit ) in data:
       alignment = clustal_alignment(
@@ -1691,7 +1732,7 @@ class hhalign_parser(hhpred_parser):
 
   def merge_and_process_block_hits(self, matches):
 
-    data = zip( *matches )
+    data = list(zip( *matches ))
     assert len( data ) == 21
 
     sequences = [
@@ -1703,7 +1744,7 @@ class hhalign_parser(hhpred_parser):
       count = len( alis[0] )
 
       if not all([count == len( c ) for c in alis[1:]]):
-        raise ValueError, "Incorrect alignments"
+        raise ValueError("Incorrect alignments")
 
       midlines.append(
         " " * ( count - len( data[10][ index ] ) ) + data[10][ index ]
@@ -1761,33 +1802,131 @@ class hhalign_parser(hhpred_parser):
       program = "HHPred"
       )
 
-def any_hh_file (file_name) :
-  data = open(file_name).read()
+def any_hh_file(file_name):
+  """Parse any HHalign file"""
+  with open(file_name) as f:
+    data = f.read()
   for parser in [hhalign_parser, hhsearch_parser] :
     try :
       p = parser(data)
     except KeyboardInterrupt : raise
-    except Exception, e :
+    except Exception as e :
       pass
     else :
       return p
   raise RuntimeError("Not an HHpred/HHalign/HHsearch file!")
 
-def composition_from_sequence_file (file_name, log=None) :
-  if (log is None) :
+def any_a3m_file(file_name):
+  """Parse any a3m file"""
+  with open(file_name) as f:
+    data = f.read()
+  try:
+    a3m_info = read_a3m(data)
+  except KeyboardInterrupt : raise
+  except Exception as e :
+    pass
+  else :
+    return a3m_info
+  raise RuntimeError("Not an a3m file")
+
+def read_a3m(text):
+  """ Read text as a3m format
+      Ignore any lines starting with # at top
+      Lines starting with > or blank lines are separators and are ignored
+      Text between separators are sequence info.
+        First line is base sequence.  It cannot contain any lowercase or "-"
+        or "."
+        All other lines contain upper case characters (sequence matches),
+        lower case characters (insertions), and "-" or "." (gaps).
+      The total number of characters in base sequence must equal the
+        number of upper case characters plus number of gap characters, minus
+        the number of insertion characters in each other line.
+  """
+
+  # Get text as utf-8
+  if hasattr(text,'decode'):
+    text = text.decode(encoding='utf-8')
+
+  # Read in line representing each sequence
+  sequences = []
+  new_line = ""
+  for line in text.splitlines():
+    line = line.strip()
+    if not sequences and line.startswith("#"): continue # skip leading # lines
+    if not line or line.startswith(">"):  # separator
+      if new_line:
+        sequences.append(new_line)
+        new_line = ""
+      continue
+    new_line += line.strip().replace(" ","")
+  if new_line:
+    sequences.append(new_line)
+
+
+  # Check for illegal characters and length of lines
+  base_sequence = sequences[0]
+  n = len(base_sequence)
+  import re
+  for s in sequences:
+    if not ok_a3m_sequence(s, n = n, base_sequence = base_sequence):
+      return None
+
+  from libtbx import group_args
+  a3m_info = group_args(group_args_type = 'a3m_info',
+    base_sequence = base_sequence,
+    sequence_length = len(base_sequence),
+    sequences = sequences,
+     )
+  return a3m_info
+
+def ok_a3m_sequence(s, n = None, base_sequence = None):
+  """ Check a sequence and make sure it matches expectations for an a3m line
+  """
+  # Remove blanks/linefeeds and convert . to -
+  s = s.replace(" ","").replace("\r","").replace("\n","")
+  s = s.replace(".","-")
+
+  n_gap_chars = s.count("-")
+  s_all = s
+
+  # Get upper and lowercase
+  s = s.replace("-","")
+  # count lowercase/uppercase
+  n_upper = 0
+  n_lower = 0
+  n_other = 0
+  s_upper = ""
+  for c in s:
+    if c >="A" and c <= "Z":
+      n_upper += 1
+      s_upper += c
+    elif c >="a" and c <= "z":
+      n_lower += 1
+    else:
+      n_other += 1
+
+  if n_other > 0:
+    return False
+  if n_upper + n_gap_chars == n:
+    return True
+  else:
+    return False
+def composition_from_sequence_file(file_name, log=None):
+  """Get composition from a sequence file"""
+  if (log is None):
     log = sys.stdout
   try :
     seq_file, non_compliant = any_sequence_format(file_name)
-    if (seq_file is None) :
+    if (seq_file is None):
       raise ValueError("Could not parse %s" % file_name)
-  except Exception, e :
-    print >> log, str(e)
+  except Exception as e :
+    print(str(e), file=log)
     return None
   else :
-    if (len(non_compliant) > 0) :
-      print >> log, "Warning: non-compliant entries in sequence file"
+    if (len(non_compliant) > 0):
+      print("Warning: non-compliant entries in sequence file", file=log)
       for nc in non_compliant :
-        print >> log, "  " + str(nc)
+        print("  " + str(nc), file=log)
     n_residues = n_bases = 0
     for seq_entry in seq_file :
       (n_res_seq, n_base_seq) = composition_from_sequence(seq_entry.sequence)
@@ -1795,98 +1934,174 @@ def composition_from_sequence_file (file_name, log=None) :
       n_bases += n_base_seq
     return group_args(n_residues=n_residues, n_bases=n_bases)
 
-def composition_from_sequence (sequence) :
+def composition_from_sequence(sequence):
+  """Get composition from a sequence"""
   seq = sequence.upper()
   n_residues = n_bases = 0
   n_valid = len(seq) - seq.count("X")
   n_na = seq.count("A") + seq.count("U") + seq.count("T") + \
     seq.count("G") + seq.count("C")
-  if (n_na >= int(n_valid * 0.9)) :
+  if (n_na >= int(n_valid * 0.9)):
     n_bases += len(seq)
   else :
     n_residues += len(seq)
   return n_residues, n_bases
 
-def clear_empty_lines(text):
-  # make empty lines just a blank line.  Includes >>> etc.
-  new_lines=[]
+def duplicate_multiple_chains(text):
+  """make chains that are marked with >7WZE_1|Chains A, B[Auth X]| or similar
+  N times that many chains"""
+  new_groups = []
+  next_lines = []
+  unused_lines = []
+  previous_line = None
   for line in text.splitlines():
+    line = line.strip()
+    if line.startswith(">"):
+      next_lines = [line]
+      new_groups.append(next_lines)
+    elif not line.strip():
+      next_lines = [">"]
+      new_groups.append(next_lines)
+    elif next_lines:
+      next_lines.append(line)
+    else:
+      unused_lines.append(line)
+    previous_line = line
+  if unused_lines and new_groups:
+    return text # could not do anything with this
+
+  elif unused_lines:
+    return text # nothing to do
+
+  else: # usual
+    new_lines = []
+    for new_group in new_groups:
+      if not new_group or not new_group[0]:
+        continue
+      first_line = new_group[0]
+      n = get_number_of_dups(first_line)
+      lines_in_group= new_group[1:]
+      for i in range(n):
+        new_lines.append(first_line)
+        new_lines.append("".join(lines_in_group))
+    text = "\n".join(new_lines)
+    text = text.replace(">\n\n>",">")
+    text = text.replace(">\n\n>",">")
+    return text
+
+def remove_inside_brackets(text):
+  """ remove everything enclosed in []"""
+  if not text.find("[")>-1:
+    return text
+  new_text = ""
+  found_lb = False
+  for c in text:
+    if c=="[":
+      found_lb = True
+    elif c == "]":
+      found_lb = False
+    elif found_lb:
+      pass # skip it
+    else:
+      new_text += c
+  return new_text
+
+def get_number_of_dups(line):
+  """ Get number of duplicate chains: looks like >7WZE_1|Chains A, B[Auth X]| or similar """
+  if not line.startswith(">"):
+    return 1
+  spl = line.split("|")
+  if len(spl) < 2:
+    return 1
+  text = spl[1].strip()
+  text = remove_inside_brackets(text)
+  if not text.startswith("Chain"):
+    return 1
+  text = text.replace("Chains","").replace("Chain","").replace("=",""
+       ).replace(",","")
+  values = text.split()
+  return max(1, len(values))
+
+def clear_empty_lines(text, apply_duplicate_multiple_chains = False,
+    keep_labels = False):
+  """First duplicate any multiple chains, then clear empty lines."""
+  if apply_duplicate_multiple_chains:
+    text = duplicate_multiple_chains(text)
+  # make empty lines just a blank line.  Includes >>> etc.
+  # If keep_labels, make the starting line for each group start with >
+
+  new_lines=[]
+  prev_line = ""
+  label_line = ""
+  for line in text.splitlines():
+    if keep_labels and line.startswith(">"):
+      label_line = line
     if not line.replace(">","").replace(" ",""):
        line=""
     elif line.startswith(">"):
        line=""
     line=line.replace("?","")
+    if (not line) and (not prev_line):
+      continue # skip blanks if dup or at beginning
+    if line and label_line:
+      new_lines.append(label_line)
+      label_line = ""
     new_lines.append(line)
+    prev_line = line
   return "\n".join(new_lines)+"\n"
 
-
-def get_sequences(file_name=None,text=None,remove_duplicates=None):
-  # return simple list of sequences in this file. duplicates included
-  #  unless remove_duplicates=True
+def get_sequences(file_name=None,text=None,remove_duplicates=None,
+     apply_duplicate_multiple_chains = False,
+     remove_unknowns = False,
+     return_sequences_with_labels = False):
+  """return simple list of sequences in this file. duplicates included
+  unless remove_duplicates=True.
+  remove unknowns (X) if requested.
+  If return_sequences_with_labels,  return sequence objects with labels"""
   if not text:
     if not file_name:
-      from libtbx.utils import Sorry
       raise Sorry("Missing file for get_sequences: %s" %(
         file_name))
-    text=open(file_name).read()
+    with open(file_name) as f:
+      text = f.read()
   # clear any lines that have only > and nothing else
-  text=clear_empty_lines(text)
+  text=clear_empty_lines(text, apply_duplicate_multiple_chains,
+    keep_labels = return_sequences_with_labels)
 
-  chain_types=[]
   ( sequences, unknowns ) = parse_sequence( text )
+
   simple_sequence_list=[]
+  sequence_object_list = []
   for sequence in sequences:
     if remove_duplicates and sequence.sequence in simple_sequence_list:
       continue # it is a duplicate
-    else: # take it
+    elif remove_unknowns: # remove any X and take it
+      sequence.sequence = sequence.sequence.upper().replace("X","")
       simple_sequence_list.append(sequence.sequence)
-  return simple_sequence_list
+      sequence_object_list.append(sequence)
+    else: # take it
+      sequence.sequence = sequence.sequence.upper()
+      simple_sequence_list.append(sequence.sequence)
+      sequence_object_list.append(sequence)
+  if return_sequences_with_labels:
+    return sequence_object_list
+  else:
+    return simple_sequence_list
 
-def get_sequence_from_pdb(file_name=None,text=None,hierarchy=None):
-  if not hierarchy:
-    # read from PDB
-    if not text:
-      if not file_name:
-        from libtbx.utils import Sorry
-        raise Sorry("Missing file for get_sequence_from_pdb: %s" %(
-          file_name))
-      text=open(file_name).read()
-    import iotbx.pdb
-    pdb_inp = iotbx.pdb.input(lines=text.splitlines(),source_info="None")
-    import mmtbx.model
-    mm = mmtbx.model.manager(
-          model_input = pdb_inp,
-          stop_for_unknowns = False)
-    hierarchy=mm.get_hierarchy()
-  chain_sequences=[]
-  from iotbx.pdb import amino_acid_codes as aac
-  one_letter_code_dict = aac.one_letter_given_three_letter
-
-
-  for model in hierarchy.models():
-    for chain in model.chains():
-      chain_sequence=""
-      for rg in chain.residue_groups():
-        for atom_group in rg.atom_groups():
-          chain_sequence+=one_letter_code_dict.get(atom_group.resname,"")
-          break
-      chain_sequences.append(chain_sequence)
-  sequence_as_string=""
-  for chain_sequence in chain_sequences:
-    sequence_as_string+=chain_sequence+"\n"
-  return sequence_as_string
-
-
+#####################################################################
+####   Methods to try and guess chain types from sequences ##########
+#####################################################################
 def guess_chain_types_from_sequences(file_name=None,text=None,
     return_as_dict=False,minimum_fraction=None,
     likely_chain_types=None):
-  # Guess what chain types are in this sequence file
+  """Guess what chain types are in this sequence file"""
   if not text:
     if not file_name:
       from libtbx.utils import Sorry
       raise Sorry("Missing file for guess_chain_types_from_sequences: %s" %(
         file_name))
-    text=open(file_name).read()
+    with open(file_name) as f:
+      text = f.read()
   # clear any lines that have only > and nothing else
   text=clear_empty_lines(text)
 
@@ -1908,7 +2123,8 @@ def guess_chain_types_from_sequences(file_name=None,text=None,
       dd[chain_type].append(sequence)
       dd_n[chain_type]+=len(sequence.sequence)
       total_residues+=len(sequence.sequence)
-  if minimum_fraction and len(chain_types)>1 and total_residues>1: # remove anything < minimum_fraction
+  if minimum_fraction and len(chain_types)>1 and total_residues>1:
+    # remove anything < minimum_fraction
     new_chain_types=[]
     new_dd={}
     new_dd_n={}
@@ -1928,6 +2144,7 @@ def guess_chain_types_from_sequences(file_name=None,text=None,
 
 def text_from_chains_matching_chain_type(file_name=None,text=None,
     chain_type=None,width=80):
+  """Get sequence text from all the chains that match chain_type"""
   dd=guess_chain_types_from_sequences(file_name=file_name,
     text=text,return_as_dict=True,likely_chain_types=[chain_type])
   sequence_text=""
@@ -1940,6 +2157,7 @@ def text_from_chains_matching_chain_type(file_name=None,text=None,
   return sequence_text
 
 def count_letters(letters="",text="",only_count_non_allowed=None):
+  """Count letter in text"""
   n=0
   if only_count_non_allowed: # count the ones that are not there
     for t in text:
@@ -1952,21 +2170,23 @@ def count_letters(letters="",text="",only_count_non_allowed=None):
   return n
 
 def chain_type_and_residues(text=None,chain_type=None,likely_chain_types=None):
-  # guess the type of chain from text string containing 1-letter codes
-  # and count residues
-  # if chain_type is specified, just use it
-  # if likely_chain_types are specified, use them if possible
-  #
-  # Assumptions:
-  #  1. few or no letters that are not part of the correct dict (there
-  #    may be a few like X or other unknowns)
-  #  2. if all letters are are A is is because poly-ala and poly-gly
-  #     are common for unknowns.
-  #  3. otherwise if it can be DNA or protein it is DNA (because chance is
-  #     very high that if it were protein there would be a non-DNA letter)
-  # Method:  Choose the chain-type that matches the most letters in text.
-  #  If a tie, take the chain type that has the fewest letters.
-  #  If likely_chain_types are specified, use one from there first
+  """guess the type of chain from text string containing 1-letter codes
+  and count residues.
+  If chain_type is specified, just use it.
+  If likely_chain_types are specified, use them if possible.
+
+   Assumptions:
+    1. few or no letters that are not part of the correct dict (there
+      may be a few like X or other unknowns)
+    2. if all letters are are A is is because poly-ala and poly-gly
+       are common for unknowns.
+    3. otherwise if it can be DNA or protein it is DNA (because chance is
+       very high that if it were protein there would be a non-DNA letter)
+   Method:  Choose the chain-type that matches the most letters in text.
+    If a tie, take the chain type that has the fewest letters.
+    If likely_chain_types are specified, use one from there first
+
+  """
 
   text=text.replace(" ","").replace("\n","").lower()
   if not text:
@@ -1976,7 +2196,7 @@ def chain_type_and_residues(text=None,chain_type=None,likely_chain_types=None):
     'DNA':"gact",
     'RNA':"gacu",}
   if chain_type not in [None,'None']:
-    for key in letter_dict.keys():
+    for key in list(letter_dict.keys()):
       if key != chain_type:
         del letter_dict[key]
   # Get all allowed letters
@@ -2002,14 +2222,13 @@ def chain_type_and_residues(text=None,chain_type=None,likely_chain_types=None):
     non_allowed_count_dict[chain_type]=count_letters(
       letters=letter_dict[chain_type],
       text=text,only_count_non_allowed=True)
-
   # Take max count_dict. If tie, take minimum non-allowed. If tie take the one
   #  with fewer letters (i.e., DNA instead of protein if matches both except
   #  poly-ala not poly-A)
   score_list=[]
   for chain_type in letter_dict.keys():
     score_list.append([count_dict[chain_type],chain_type])
-  score_list.sort()
+  score_list.sort(key=itemgetter(0))
   score_list.reverse()
   ok_list=[]
   best_score=score_list[0][0]
@@ -2034,7 +2253,7 @@ def chain_type_and_residues(text=None,chain_type=None,likely_chain_types=None):
   score_list=[]
   for chain_type in ok_list:
     score_list.append([non_allowed_count_dict[chain_type],chain_type])
-  score_list.sort()
+  score_list.sort(key=itemgetter(0))
   ok_list=[]
   best_score=score_list[0][0]
   for score,chain_type in score_list:
@@ -2043,14 +2262,14 @@ def chain_type_and_residues(text=None,chain_type=None,likely_chain_types=None):
   if len(ok_list)<1: return None,None
   if len(ok_list)==1: return ok_list[0],residues
 
-  if text==residues*"a" and "PROTEIN" in letter_dict.keys():
+  if text.replace("g","a")==residues*"a" and "PROTEIN" in letter_dict.keys():
     # special case, all Adenine or Ala
     return "PROTEIN",residues
 
   score_list=[]
   for chain_type in ok_list:
     score_list.append([len(letter_dict[chain_type]),chain_type])
-  score_list.sort()
+  score_list.sort(key=itemgetter(0))
   ok_list=[]
   best_score=score_list[0][0]
   for score,chain_type in score_list:
@@ -2060,3 +2279,32 @@ def chain_type_and_residues(text=None,chain_type=None,likely_chain_types=None):
     return None,None
   else:
     return ok_list[0],residues
+
+#####################################################################
+####   END OF methods to try and guess chain types from sequences ###
+#####################################################################
+
+def random_sequence(n_residues=None,residue_basket=None,
+   chain_type = 'PROTEIN'):
+  """Return n_residues random residues"""
+  assert n_residues and (residue_basket or chain_type)
+  if not residue_basket:
+    chain_type = chain_type.upper()
+    if chain_type == "PROTEIN":
+        # Approximate eukaryotic frequencies using W as basic unit
+        residue_basket = "AAAAAACCCEEEEDDDDDGGGGGG"+\
+          "FFFIIIHHKKKKKKMLLLLLLNNNQQQPPPPSSSSSSRRRTTTTTWVVVVVYYY"
+    elif chain_type == "DNA":
+        residue_basket = "GATC"
+    elif chain_type == "RNA":
+        residue_basket = "GAUC"
+    else:
+        raise Sorry("Chain type needs to be RNA/DNA/PROTEIN")
+
+  import random
+  s=""
+  nn=len(residue_basket)-1
+  for i in range(n_residues):
+    id=random.randint(0,nn)
+    s+=residue_basket[id]
+  return s

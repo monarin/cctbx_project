@@ -1,9 +1,10 @@
-from __future__ import division
+from __future__ import absolute_import, division, print_function
 
 import warnings
 
-import boost.python
-ext = boost.python.import_ext("smtbx_refinement_constraints_ext")
+import boost_adaptbx.boost.python as bp
+from six.moves import range
+ext = bp.import_ext("smtbx_refinement_constraints_ext")
 from smtbx_refinement_constraints_ext import *
 
 import scitbx.sparse # import dependency
@@ -39,11 +40,12 @@ class ConflictingConstraintWarning(UserWarning):
 bad_connectivity_msg = "Invalid %s constraint involving %s: bad connectivity"
 
 
-class _(boost.python.injector, ext.parameter):
+@bp.inject_into(ext.parameter)
+class _():
 
   def arguments(self):
     """ An iterator over its arguments """
-    for i in xrange(self.n_arguments):
+    for i in range(self.n_arguments):
       yield self.argument(i)
 
   def __str__(self):
@@ -64,7 +66,8 @@ class _(boost.python.injector, ext.parameter):
       scatt, self.index)
     return lbl
 
-class _(boost.python.injector, ext.reparametrisation):
+@bp.inject_into(ext.reparametrisation)
+class _():
 
   def __str__(self):
     """ String representation using the graphviz DOT language """
@@ -86,8 +89,8 @@ class _(boost.python.injector, ext.reparametrisation):
 #
 #Directions are defined as follows:
 # static id x y z
-# vector id [scatterer idices] - at least 2
-# normal id [scatterer idices] - at least 3
+# vector id [scatterer indices] - at least 2
+# normal id [scatterer indices] - at least 3
 #There are convinience functions for creating static directions:
 #  constraints.static_direction.calc_best_plane_normal
 #  constraints.static_direction.calc_best_line
@@ -127,6 +130,8 @@ class reparametrisation(ext.reparametrisation):
     self.shared_Us = {}
     self.shared_sites = {}
     self.shared_occupancies = {}
+    self.shared_fps = {}
+    self.shared_fdps = {}
 
     # bookkeeping of fixed angles and distances - mainly for CIF output
     self.fixed_distances = {}
@@ -179,10 +184,13 @@ class reparametrisation(ext.reparametrisation):
         self.constrained_parameters |= uniques
         constraint.add_to(self)
 
-    for i_sc in xrange(len(self.asu_scatterer_parameters)):
+    for i_sc in range(len(self.asu_scatterer_parameters)):
       self.add_new_site_parameter(i_sc)
       self.add_new_thermal_displacement_parameter(i_sc)
       self.add_new_occupancy_parameter(i_sc)
+      self.add_new_fp_parameter(i_sc)
+      self.add_new_fdp_parameter(i_sc)
+
     if self.twin_fractions is not None:
       for fraction in self.twin_fractions:
         if fraction.grad:
@@ -238,7 +246,7 @@ class reparametrisation(ext.reparametrisation):
     return self.jacobian_transpose_matching(self.mapping_to_grad_fc)
 
   def add_new_occupancy_parameter(self, i_sc):
-    if self.shared_occupancies.has_key(i_sc):
+    if i_sc in self.shared_occupancies:
       return self.shared_occupancies[i_sc]
     occ = self.asu_scatterer_parameters[i_sc].occupancy
     if occ is None:
@@ -248,7 +256,7 @@ class reparametrisation(ext.reparametrisation):
     return occ
 
   def add_new_site_parameter(self, i_scatterer, symm_op=None):
-    if self.shared_sites.has_key(i_scatterer):
+    if i_scatterer in self.shared_sites:
       return self.shared_sites[i_scatterer]
     s = self.asu_scatterer_parameters[i_scatterer].site
     if s is None:
@@ -264,17 +272,17 @@ class reparametrisation(ext.reparametrisation):
     return s
 
   def add_new_site_proxy_parameter(self, param, i, i_sc):
-    if self.shared_sites.has_key(i_sc):
+    if i_sc in self.shared_sites:
       return self.shared_sites[i_sc]
     self.shared_sites[i_sc] = self.add(rigid_site_proxy, param, i)
 
   def add_new_same_group_site_proxy_parameter(self, param, i, i_sc):
-    if self.shared_sites.has_key(i_sc):
+    if i_sc in self.shared_sites:
       return self.shared_sites[i_sc]
     self.shared_sites[i_sc] = self.add(same_group_site_proxy, param, i)
 
   def add_new_thermal_displacement_parameter(self, i_scatterer):
-    if self.shared_Us.has_key(i_scatterer):
+    if i_scatterer in self.shared_Us:
       return self.shared_Us[i_scatterer]
     u = self.asu_scatterer_parameters[i_scatterer].u
     if u is None:
@@ -286,12 +294,40 @@ class reparametrisation(ext.reparametrisation):
         site_symm = self.site_symmetry_table_.get(i_scatterer)
         if site_symm.is_point_group_1():
           u = self.add(independent_u_star_parameter, sc)
+          if sc.is_anharmonic_adp():
+            anh = self.add(independent_anharmonic_adp_parameter, sc)
+            self.asu_scatterer_parameters[i_scatterer].anharmonic_adp = anh
         else:
           u = self.add(special_position_u_star_parameter,
                        site_symm,
                        sc)
+          if sc.is_anharmonic_adp():
+            anh = self.add(special_position_anharmonic_adp_parameter,
+                         site_symm,
+                         sc)
+            self.asu_scatterer_parameters[i_scatterer].anharmonic_adp = anh
       self.asu_scatterer_parameters[i_scatterer].u = u
     return u
+
+  def add_new_fp_parameter(self, i_sc):
+    if i_sc in self.shared_fps:
+      return self.shared_fps[i_sc]
+    fp = self.asu_scatterer_parameters[i_sc].fp
+    if fp is None:
+      sc = self.structure.scatterers()[i_sc]
+      fp = self.add(independent_fp_parameter, sc)
+      self.asu_scatterer_parameters[i_sc].fp = fp
+    return fp
+
+  def add_new_fdp_parameter(self, i_sc):
+    if i_sc in self.shared_fdps:
+      return self.shared_fdps[i_sc]
+    fdp = self.asu_scatterer_parameters[i_sc].fdp
+    if fdp is None:
+      sc = self.structure.scatterers()[i_sc]
+      fdp = self.add(independent_fdp_parameter, sc)
+      self.asu_scatterer_parameters[i_sc].fdp = fdp
+    return fdp
 
   def add_new_twin_fraction_parameter(self, twin_fraction):
     p = self.add(twin_fraction_parameter, twin_fraction)

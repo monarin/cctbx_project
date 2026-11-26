@@ -1,9 +1,9 @@
-
-from __future__ import division
+from __future__ import absolute_import, division, print_function
 from cctbx.array_family import flex
 from cctbx import geometry_restraints
-import boost.python
-ext = boost.python.import_ext("mmtbx_reference_coordinate_ext")
+from libtbx.utils import Sorry
+import boost_adaptbx.boost.python as bp
+ext = bp.import_ext("mmtbx_reference_coordinate_ext")
 from mmtbx.rotamer.sidechain_angles import collect_residue_torsion_angles
 
 
@@ -15,7 +15,17 @@ def generate_torsion_restraints(
       limit=15.0,
       chi_angles_only=False,
       top_out_potential=False,
-      origin_id=2):
+      origin_id=None):
+  """
+  selection ties up hierarchy with sites cart. Basically, if applied
+    to hierarchy, remaining atoms should correspond to sites_cart.
+    Therefore it is necessary that
+    len(sites_cart) == len(actual_selection) below.
+    This seems to be done this way to make it possible to use sites_cart
+    from another source (reference model) which is not necessary
+    of the same size as hierarchy.
+  """
+  pdb_hierarchy.atoms().reset_i_seq()
   torsion_proxies = geometry_restraints.shared_dihedral_proxy()
   if pdb_hierarchy.atoms_size() < 4:
     return torsion_proxies
@@ -23,13 +33,18 @@ def generate_torsion_restraints(
   bool_pdbh_selection = flex.bool(pdb_hierarchy.atoms_size(), False)
   if (selection is not None):
     if (isinstance(selection, flex.bool)):
+      assert len(selection) == pdb_hierarchy.atoms_size()
       bool_pdbh_selection = selection
     elif (isinstance(selection, flex.size_t)):
       bool_pdbh_selection.set_selected(selection, True)
   if selection is None:
     bool_pdbh_selection = flex.bool(pdb_hierarchy.atoms_size(), True)
   actual_selection = bool_pdbh_selection.iselection()
+
   assert len(sites_cart) == len(actual_selection)
+
+  if abs(sigma) < 1e-6:
+    raise Sorry("Please set non-zero sigma for reference model restraints.")
   weight = 1.0 / (sigma**2)
   selection_to_sites_map = get_selection_to_sites_map(
                              sites_cart=sites_cart,
@@ -70,8 +85,8 @@ def add_coordinate_restraints(
       sigma=0.5,
       limit=1.0,
       top_out_potential=False):
-  import boost.python
-  ext_rcp = boost.python.import_ext("mmtbx_reference_coordinate_ext")
+  import boost_adaptbx.boost.python as bp
+  ext_rcp = bp.import_ext("mmtbx_reference_coordinate_ext")
   result = ext_rcp.shared_reference_coordinate_proxy()
   if (selection is not None):
     if (isinstance(selection, flex.bool)):
@@ -80,6 +95,10 @@ def add_coordinate_restraints(
     selection = flex.bool(
       len(sites_cart),
       True).iselection()
+  # Not clear why this assertion should present. What if we want to restrain
+  # only part of the molecule?
+  # Very likely the mechanics is similar to the above procedure (generate_torsion_restraints),
+  # selection is related to sites_cart.
   assert len(sites_cart) == len(selection)
   weight = 1.0 / (sigma**2)
   for k, i_seq in enumerate(selection):

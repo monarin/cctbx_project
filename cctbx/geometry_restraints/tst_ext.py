@@ -1,4 +1,4 @@
-from __future__ import division
+from __future__ import absolute_import, division, print_function
 from cctbx.array_family import flex
 from cctbx import geometry_restraints
 from cctbx import crystal
@@ -6,13 +6,16 @@ from cctbx import sgtbx
 from cctbx import uctbx
 from cctbx.crystal import direct_space_asu
 from scitbx import matrix
-from libtbx.test_utils import approx_equal, not_approx_equal, eps_eq, show_diff
+from libtbx.test_utils import approx_equal, not_approx_equal, eps_eq, \
+  show_diff, Exception_expected
 from libtbx.utils import null_out
-from cStringIO import StringIO
+from six.moves import cStringIO as StringIO
 import math
 import sys
+from six.moves import range
+from six.moves import zip
 
-def finite_difference_gradients(restraint_type, sites_cart, proxy, unit_cell=None, eps=1.e-8):
+def finite_difference_gradients(restraint_type, sites_cart, proxy, unit_cell=None, eps=1.e-5):
   def residual(restraint_type, sites_cart, proxy, unit_cell):
     if unit_cell is None:
       return restraint_type(
@@ -24,16 +27,18 @@ def finite_difference_gradients(restraint_type, sites_cart, proxy, unit_cell=Non
         sites_cart=sites_cart,
         proxy=proxy).residual()
   result = []
-  for i in xrange(len(sites_cart)):
+  for i in range(len(sites_cart)):
     result_i = []
-    for j in xrange(3):
+    site = matrix.col(sites_cart[i])
+    for j in range(3):
       h = [0,0,0]
       h[j] = eps
       h = matrix.col(h)
-      sites_cart[i]=matrix.col(sites_cart[i]) + h
+      sites_cart[i] = site + h
       qp = residual(restraint_type,sites_cart,proxy,unit_cell)
-      sites_cart[i]=matrix.col(sites_cart[i]) - 2*h
+      sites_cart[i] = site - h
       qm = residual(restraint_type,sites_cart,proxy,unit_cell)
+      sites_cart[i] = site
       dq = (qp-qm)/2.0
       result_i.append(dq/(eps))
     result.append(result_i)
@@ -224,7 +229,7 @@ def exercise_bond():
       weight=1, slack=0, limit=-1, top_out=False, origin_id=0):
     assert p.i_seqs == i_seqs
     if p.rt_mx_ji is not None:
-      assert p.rt_mx_ji.as_double_array == sym_op.as_double_array
+      assert approx_equal(p.rt_mx_ji.as_double_array(), sym_op.as_double_array())
     else:
       assert sym_op is None
     assert approx_equal(p.distance_ideal, distance_ideal)
@@ -430,10 +435,11 @@ def exercise_bond():
 
   tab = geometry_restraints.extract_bond_params(
     n_seq=2, bond_simple_proxies=proxies)
-  assert tab[0].keys() == [1]
-  assert approx_equal(tab[0].values()[0].distance_ideal, 3.5)
-  assert approx_equal(tab[0].values()[0].weight, 1)
-  assert tab[1].keys() == []
+  assert list(tab[0].keys()) == [1]
+  # FIXME: if tab[0] is a dictionary, this might break py2/3 compat, order of values and keys changes depending on py 2/3
+  assert approx_equal(list(tab[0].values())[0].distance_ideal, 3.5)
+  assert approx_equal(list(tab[0].values())[0].weight, 1)
+  assert list(tab[1].keys()) == []
   assert approx_equal(geometry_restraints.bond_distances_model(
     sites_cart=sites_cart,
     proxies=proxies), [14**0.5]*2)
@@ -488,7 +494,7 @@ def exercise_bond():
     asu_mappings=asu_mappings,
     distance_cutoff=5)
   p = geometry_restraints.bond_asu_proxy(
-      pair=pair_generator.next(),
+      pair=next(pair_generator),
       distance_ideal=2,
       weight=10, slack=2, limit=1, top_out=True, origin_id=2)
   p = geometry_restraints.bond_asu_proxy(pair=p, params=p)
@@ -625,11 +631,11 @@ def exercise_bond():
   assert sorted_asu_proxies.asu.size() == 0
   #
   pair_asu_table = crystal.pair_asu_table(asu_mappings=asu_mappings)
-  assert pair_asu_table.table()[0].keys() == []
+  assert list(pair_asu_table.table()[0].keys()) == []
   geometry_restraints.add_pairs(
     pair_asu_table=pair_asu_table,
     bond_simple_proxies=proxies)
-  assert pair_asu_table.table()[0].keys() == [1]
+  assert list(pair_asu_table.table()[0].keys()) == [1]
   #
   pair_asu_table = crystal.pair_asu_table(asu_mappings=asu_mappings)
   sorted_asu_proxies = geometry_restraints.bond_sorted_asu_proxies(
@@ -647,7 +653,7 @@ def exercise_bond():
     return 1
   mt = flex.mersenne_twister(seed=0)
   for slack in [0, 1/3., 2/3., 1]:
-    for ish in xrange(9):
+    for ish in range(9):
       sh = ish / 2.
       site1 = matrix.col((1,2,3)) \
             + sh * matrix.col(mt.random_double_point_on_sphere())
@@ -661,7 +667,7 @@ def exercise_bond():
         b.delta_slack,
         sign(b.delta) * max(0, (abs(b.delta) - b.slack)))
       #
-      for i in xrange(3):
+      for i in range(3):
         rs = []
         eps = 1.e-6
         for signed_eps in [eps, -eps]:
@@ -735,14 +741,14 @@ def exercise_bond():
     weight=400,
     limit=0.6,
     top_out=True)
-  for i in range(200) :
+  for i in range(200):
     sites[1][0] = 1.5 + 0.01 * (i - 100)
     sites_cart = flex.vec3_double(sites) # XXX why isn't this automatic?
     bond1 = geometry_restraints.bond(sites_cart, proxy1)
     bond2 = geometry_restraints.bond(sites_cart, proxy2)
     res1 = bond1.residual()
     res2 = bond2.residual()
-    if (i <= 100) :
+    if (i <= 100):
       assert (res1 == res2)
     else :
       assert (res2 < res1)
@@ -786,7 +792,7 @@ def nb_cos_finite_difference_gradients(nbf, proxy, sites_cart, eps=1.e-6):
   result = []
   for i in proxy.i_seqs:
     sc = list(sites_cart[i])
-    for c in xrange(3):
+    for c in range(3):
       scc0 = sc[c]
       rs = []
       for signed_eps in [eps, -eps]:
@@ -815,8 +821,8 @@ def exercise_nonbonded_cos(verbose=0):
       gradient_array=gradient_array)
     fd_grads = nb_cos_finite_difference_gradients(
       nbf=nbf, proxy=proxy, sites_cart=sites_cart)
-    print >> log, list(gradient_array)
-    print >> log, list(fd_grads)
+    print(list(gradient_array), file=log)
+    print(list(fd_grads), file=log)
     assert approx_equal(gradient_array, fd_grads)
     nc = geometry_restraints.nonbonded_cos(
       sites=list(sites_cart),
@@ -824,13 +830,13 @@ def exercise_nonbonded_cos(verbose=0):
       function=geometry_restraints.cos_repulsion_function(
         max_residual=nbf.max_residual, exponent=nbf.exponent))
     assert approx_equal(nc.residual(), r)
-    print >> log, nc.gradients()
+    print(nc.gradients(), file=log)
     assert approx_equal(nc.gradients(), gradient_array)
-    print >> log
+    print(file=log)
     sc0 = matrix.col(sites_cart[0])
     v01 = matrix.col(sites_cart[1]) - sc0
     v01 *= 1/abs(v01)
-    for i in xrange(21,-1,-1):
+    for i in range(21,-1,-1):
       for eps in [0, 1.e-3, -1.e-3]:
         d = i/10 + eps
         sites_cart[1] = sc0 + d * v01
@@ -839,14 +845,14 @@ def exercise_nonbonded_cos(verbose=0):
           proxy=proxy,
           sites_cart=sites_cart,
           gradient_array=gradient_array)
-        print >> log, "d, r:", d, r
+        print("d, r:", d, r, file=log)
         if (d == 2):
           assert abs(r) <= 1.e-8
         else:
           fd_grads = nb_cos_finite_difference_gradients(
             nbf=nbf, proxy=proxy, sites_cart=sites_cart)
-          print >> log, list(gradient_array)
-          print >> log, list(fd_grads)
+          print(list(gradient_array), file=log)
+          print(list(fd_grads), file=log)
           assert approx_equal(gradient_array, fd_grads)
           nc = geometry_restraints.nonbonded_cos(
             sites=list(sites_cart),
@@ -854,9 +860,9 @@ def exercise_nonbonded_cos(verbose=0):
             function=geometry_restraints.cos_repulsion_function(
               max_residual=nbf.max_residual, exponent=nbf.exponent))
           assert approx_equal(nc.residual(), r)
-          print >> log, nc.gradients()
+          print(nc.gradients(), file=log)
           assert approx_equal(nc.gradients(), gradient_array)
-          print >> log
+          print(file=log)
 
 def exercise_nonbonded():
   params = geometry_restraints.nonbonded_params()
@@ -979,7 +985,7 @@ def exercise_nonbonded():
     asu_mappings=asu_mappings,
     distance_cutoff=5)
   p = geometry_restraints.nonbonded_asu_proxy(
-    pair=pair_generator.next(),
+    pair=next(pair_generator),
     vdw_distance=2)
   assert pair_generator.at_end()
   assert p.i_seq == 0
@@ -1113,14 +1119,14 @@ def exercise_nonbonded():
     assert approx_equal(
       f.residual(vdw_distance=3, delta=3), 12*norm_height_at_vdw_distance)
     assert approx_equal(
-      f.residual(vdw_distance=3, delta=2.9), expected_residuals.next())
+      f.residual(vdw_distance=3, delta=2.9), next(expected_residuals))
     r = geometry_restraints.nonbonded_gaussian(
       sites=list(sites_cart),
       vdw_distance=p.vdw_distance,
       function=f)
     assert approx_equal(r.diff_vec, [-1,-1,-1])
     assert approx_equal(r.delta**2, 3)
-    e = expected_gradients.next()
+    e = next(expected_gradients)
     assert approx_equal(r.gradients(), [[e]*3,[-e]*3])
   #
   sorted_asu_proxies = geometry_restraints.nonbonded_sorted_asu_proxies(
@@ -1203,7 +1209,7 @@ def exercise_angle():
     assert p.i_seqs == i_seqs
     if p.sym_ops is not None:
       for i in range(len(sym_ops)):
-        assert p.sym_ops[i].as_double_array == sym_ops[i].as_double_array
+        assert approx_equal(p.sym_ops[i].as_double_array(), sym_ops[i].as_double_array())
     else:
       assert sym_ops is None # while p.sym_ops IS None
     assert approx_equal(p.angle_ideal, angle_ideal)
@@ -1283,6 +1289,19 @@ def exercise_angle():
     proxies=proxies,
     gradient_array=None)
   assert approx_equal(residual_sum, 2*25)
+  p1 = geometry_restraints.angle_proxy(i_seqs=[0,1,2], proxy=p)
+  p1.origin_id = 1
+  # here their origin ids are 3,1
+  proxies = geometry_restraints.shared_angle_proxy([p,p1])
+  # and we expect only 1 delta in the result
+  assert approx_equal(geometry_restraints.angle_deltas(
+    sites_cart=sites_cart,
+    proxies=proxies,
+    origin_id=1), [5])
+  assert approx_equal(geometry_restraints.angle_deltas(
+    sites_cart=sites_cart,
+    proxies=proxies,
+    origin_id=3), [5])
 
   # test with symmetry operations
   sym_ops = (sgtbx.rt_mx('-1+x,+y,+z'),sgtbx.rt_mx(),sgtbx.rt_mx())
@@ -1317,13 +1336,36 @@ def exercise_angle():
   assert approx_equal(a.angle_model, 90)
   assert approx_equal(a.delta, 5)
   assert approx_equal(a.residual(), a.weight*a.delta**2)
-  p.origin_ud = 0
+  p.origin_id = 0
+  p1 = geometry_restraints.angle_proxy(
+    i_seqs=[0,1,2],
+    proxy=p)
+  p1.origin_id = 2
   proxies = geometry_restraints.shared_angle_proxy()
-  for i in range(10): proxies.append(p)
+  for i in range(10):
+    if i<7:
+      proxies.append(p)
+    else:
+      proxies.append(p1)
   assert approx_equal(geometry_restraints.angle_deltas(
     unit_cell=unit_cell,
     sites_cart=sites_cart,
     proxies=proxies), [5]*10)
+  assert approx_equal(geometry_restraints.angle_deltas(
+    unit_cell=unit_cell,
+    sites_cart=sites_cart,
+    proxies=proxies,
+    origin_id=0), [5]*7)
+  assert approx_equal(geometry_restraints.angle_deltas(
+    unit_cell=unit_cell,
+    sites_cart=sites_cart,
+    proxies=proxies,
+    origin_id=2), [5]*3)
+  assert approx_equal(geometry_restraints.angle_deltas(
+    unit_cell=unit_cell,
+    sites_cart=sites_cart,
+    proxies=proxies,
+    origin_id=1), [])
   assert approx_equal(geometry_restraints.angle_residuals(
     unit_cell=unit_cell,
     sites_cart=sites_cart,
@@ -1506,7 +1548,7 @@ def exercise_dihedral():
       assert p.i_seqs == i_seqs
       if p.sym_ops is not None:
         for i in range(len(p.sym_ops)):
-          assert p.sym_ops[i].as_double_array == sym_ops[i].as_double_array
+          assert approx_equal(p.sym_ops[i].as_double_array(), sym_ops[i].as_double_array())
       else:
         assert sym_ops is None # while p.sym_ops IS None
     else:
@@ -1777,7 +1819,7 @@ def exercise_dihedral():
     (41.818, -0.984, 10.006)))
   r_orig = geometry_restraints.dihedral(
     sites=list(sites_cart), angle_ideal=0, weight=1)
-  perm = flex.size_t(xrange(4))
+  perm = flex.size_t(range(4))
   n_perms = 0
   n_equiv = 0
   n_equiv_direct = 0
@@ -1885,21 +1927,21 @@ def exercise_dihedral():
     assert approx_equal(v, 0)
     return d
   #
-  for periodicity in xrange(1,6):
+  for periodicity in range(1,6):
     f = open("plot_geo_restr_dihedral_periodicity_%d.xy" % periodicity, "w")
     for signed_periodicity in [periodicity, -periodicity]:
-      for angle_model in xrange(0, 720+1, 1):
+      for angle_model in range(0, 720+1, 1):
         d = get_d(
           angle_ideal=70,
           angle_model=angle_model,
           periodicity=signed_periodicity)
-        print >> f, angle_model, d.residual()
-      print >> f, "&"
+        print(angle_model, d.residual(), file=f)
+      print("&", file=f)
     f.close()
   #
   intersection_angle = 120
-  for angle_ideal in xrange(0, 720+5, 5):
-    for periodicity in xrange(1,6):
+  for angle_ideal in range(0, 720+5, 5):
+    for periodicity in range(1,6):
       for signed_periodicity in [periodicity, -periodicity]:
         residuals = []
         for offset in [0, intersection_angle, -intersection_angle]:
@@ -2095,7 +2137,7 @@ def exercise_planarity():
       approx_equal(p.i_seqs, i_seqs)
       if p.sym_ops is not None:
         for i in range(len(p.sym_ops)):
-          assert p.sym_ops[i].as_double_array == sym_ops[i].as_double_array
+          assert approx_equal(p.sym_ops[i].as_double_array(), sym_ops[i].as_double_array())
       else:
         assert sym_ops is None # while p.sym_ops IS None
 
@@ -2200,7 +2242,7 @@ def exercise_planarity():
   p = p.sort_i_seqs()
   assert tuple(p.i_seqs) == (0,1,2,3)
   assert approx_equal(p.weights, weights)
-  for i_constructor in xrange(2):
+  for i_constructor in range(2):
     if (i_constructor == 0):
       l = geometry_restraints.planarity(
         sites=sites_cart,
@@ -2278,7 +2320,7 @@ def exercise_planarity():
   check(selected[1], i_seqs=[2,3,0,4], weights=[4,5,6,7], origin_id=1)
   #
   for i_remove in range(10,15):
-    sel = flex.size_t(range(10,i_remove)+range(i_remove+1,15))
+    sel = flex.size_t(list(range(10,i_remove))+list(range(i_remove+1,15)))
     pp = geometry_restraints.planarity_proxy(
       i_seqs=flex.size_t([10, 11, 12, 13, 14]),
       weights=flex.double(range(5))+13)
@@ -2380,9 +2422,9 @@ def exercise_planarity_top_out():
     sites_cart=sites_cart,
     proxy=p)
   # manual_gradient(planarity)
-  print "Normal:", planarity.normal()
+  print("Normal:", planarity.normal())
   # print dir(planarity)
-  print "deltas:", list(planarity.deltas())
+  print("deltas:", list(planarity.deltas()))
   # res = planarity.residual()
   # print "residual:",res
   sc1 = sites_cart.deep_copy()
@@ -2414,17 +2456,11 @@ def exercise_planarity_top_out():
     sites_cart=sites_cart,
     proxy=p, eps=1.e-5)
   for g,e in zip(gradient_array, fd_grads):
-    print "grads from proxy:", g
-    print "grads from finit:", e
+    print("grads from proxy:", g)
+    print("grads from finit:", e)
     # assert approx_equal(g, e)
 
 def exercise_proxy_show():
-  if sys.platform.startswith("win") and sys.version_info[:2] < (2,6):
-    # This appears to be a windows-specific bug with string formatting
-    # for python versions prior to 2.6, where the exponent is printed
-    # with 3 digits rather than 2.
-    print "Skipping exercise_proxy_show()"
-    return
   # zeolite AHT
   crystal_symmetry = crystal.symmetry(
     unit_cell=(15.794, 9.206, 8.589, 90, 90, 90),
@@ -2444,7 +2480,6 @@ def exercise_proxy_show():
     f=sio)
   assert not show_diff(sio.getvalue(), """\
 Bond restraints: 0
-Sorted by residual:
 """)
   sorted_asu_proxies = geometry_restraints.bond_sorted_asu_proxies(
     pair_asu_table=pair_asu_table)
@@ -2671,11 +2706,19 @@ Dihedral angle restraints: 0
     by_value="residual",
     sites_cart=sites_cart,
     f=sio,
-    max_items=0)
+    max_items=1)
   assert not show_diff(sio.getvalue(), """\
 Dihedral angle restraints: 2
   sinusoidal: 0
     harmonic: 2
+Sorted by residual:
+dihedral 3
+         2
+         0
+         5
+    ideal   model   delta  harmonic     sigma   weight residual
+    99.00   16.67   82.33    -1      3.54e-01 8.00e+00 5.42e+04
+... (remaining 1 not shown)
 """)
   #
   proxies = geometry_restraints.shared_chirality_proxy()
@@ -2755,7 +2798,8 @@ Chirality restraints: 2
     by_value="residual",
     sites_cart=flex.vec3_double(),
     f=sio)
-  assert not show_diff(sio.getvalue(), """\
+  if 0: # n=0 restraints removed
+    assert not show_diff(sio.getvalue(), """\
 Planarity restraints: 0
 """)
   proxies = geometry_restraints.shared_planarity_proxy([
@@ -2810,9 +2854,16 @@ Planarity restraints: 0
     by_value="residual",
     sites_cart=sites_cart,
     f=sio,
-    max_items=0)
+    max_items=1)
   assert not show_diff(sio.getvalue(), """\
 Planarity restraints: 2
+Sorted by residual:
+           delta    sigma   weight rms_deltas residual
+plane 0    0.004 1.80e+00 3.10e-01   1.46e-01 2.52e-02
+      2   -0.196 2.24e+00 2.00e-01
+      4   -0.115 1.80e+00 3.10e-01
+      1    0.184 1.58e+00 4.00e-01
+... (remaining 1 not shown)
 """)
   #
   unit_cell = uctbx.unit_cell([15,11.5,16.25,90,99.5,90])
@@ -3062,10 +3113,10 @@ x,y,z
     gradient_array=grads_ana)
   eps = 1e-6
   grads_fin = flex.vec3_double()
-  for i_site in xrange(sites_cart.size()):
+  for i_site in range(sites_cart.size()):
     sori = sites_cart[i_site]
     gs = []
-    for ix in xrange(3):
+    for ix in range(3):
       fs = []
       for signed_eps in [eps, -eps]:
         seps = list(sori)
@@ -3299,7 +3350,7 @@ def exercise_origin_id_selections_for_bonds():
   pair_generator = crystal.neighbors_fast_pair_generator(
     asu_mappings=asu_mappings,
     distance_cutoff=5)
-  pgn = pair_generator.next()
+  pgn = next(pair_generator)
   p_array = []
   for i in range(10):
     p = geometry_restraints.bond_asu_proxy(
@@ -3327,6 +3378,155 @@ def exercise_origin_id_selections_for_bonds():
   assert len(new_p3) == 10
   assert len(new_p4) == 0
 
+def exercise_n_proxies_excluding():
+  n_excl = geometry_restraints.n_proxies_excluding
+  none = flex.bool(6, False)
+  def excl(*i_seqs):
+    e = flex.bool(6, False)
+    for i in i_seqs: e[i] = True
+    return e
+  # angle
+  proxies = geometry_restraints.shared_angle_proxy()
+  for i_seqs in [(0,1,2), (1,2,3), (2,3,4)]:
+    proxies.append(geometry_restraints.angle_proxy(
+      i_seqs=i_seqs, angle_ideal=100, weight=1))
+  assert n_excl(proxies=proxies, exclude=none) == 3
+  assert n_excl(proxies=proxies, exclude=excl(1)) == 1
+  assert n_excl(proxies=proxies, exclude=excl(1,4)) == 0
+  try:
+    n_excl(proxies=proxies, exclude=flex.bool(1, False))
+  except RuntimeError: pass
+  else: raise Exception_expected
+  # dihedral
+  proxies = geometry_restraints.shared_dihedral_proxy([
+    geometry_restraints.dihedral_proxy(
+      i_seqs=[3,2,1,0], angle_ideal=10, weight=1)])
+  assert n_excl(proxies=proxies, exclude=none) == 1
+  assert n_excl(proxies=proxies, exclude=excl(3)) == 0
+  assert n_excl(proxies=proxies, exclude=excl(4)) == 1
+  # chirality
+  proxies = geometry_restraints.shared_chirality_proxy([
+    geometry_restraints.chirality_proxy(
+      i_seqs=[0,2,3,1], volume_ideal=4, both_signs=False, weight=1)])
+  assert n_excl(proxies=proxies, exclude=none) == 1
+  assert n_excl(proxies=proxies, exclude=excl(2)) == 0
+  assert n_excl(proxies=proxies, exclude=excl(4)) == 1
+  # planarity
+  proxies = geometry_restraints.shared_planarity_proxy([
+    geometry_restraints.planarity_proxy(
+      i_seqs=flex.size_t([0,1,2,3]), weights=flex.double(4, 1))])
+  assert n_excl(proxies=proxies, exclude=none) == 1
+  assert n_excl(proxies=proxies, exclude=excl(3)) == 0
+  assert n_excl(proxies=proxies, exclude=excl(4)) == 1
+  # parallelity: j_seqs count too
+  proxies = geometry_restraints.shared_parallelity_proxy([
+    geometry_restraints.parallelity_proxy(
+      i_seqs=(0,1,2), j_seqs=(3,4,5), weight=1)])
+  assert n_excl(proxies=proxies, exclude=none) == 1
+  assert n_excl(proxies=proxies, exclude=excl(0)) == 0
+  assert n_excl(proxies=proxies, exclude=excl(5)) == 0
+  # bond similarity: both members of each pair count
+  proxies = geometry_restraints.shared_bond_similarity_proxy([
+    geometry_restraints.bond_similarity_proxy(
+      i_seqs=[(0,1),(2,3)], weights=[1,1])])
+  assert n_excl(proxies=proxies, exclude=none) == 1
+  assert n_excl(proxies=proxies, exclude=excl(3)) == 0
+  assert n_excl(proxies=proxies, exclude=excl(4)) == 1
+  # sorted asu proxies: one simple and one asu proxy each
+  sites_cart = flex.vec3_double([[1,2,3],[2,3,4],[5,5,5]])
+  asu_mappings = direct_space_asu.non_crystallographic_asu_mappings(
+    sites_cart=sites_cart)
+  pair_generator = crystal.neighbors_fast_pair_generator(
+    asu_mappings=asu_mappings, distance_cutoff=5)
+  pair = next(pair_generator)
+  assert (pair.i_seq, pair.j_seq) == (0, 1)
+  b_asu = geometry_restraints.bond_asu_proxy(
+    pair=pair, distance_ideal=2, weight=10)
+  b_simple = geometry_restraints.bond_simple_proxy(
+    i_seqs=[1,2], distance_ideal=2, weight=10)
+  sorted_asu_proxies = geometry_restraints.bond_sorted_asu_proxies(
+    asu_mappings=asu_mappings)
+  sorted_asu_proxies.push_back(proxy=b_asu)
+  sorted_asu_proxies.process(proxy=b_simple)
+  assert sorted_asu_proxies.simple.size() == 1
+  assert sorted_asu_proxies.asu.size() == 1
+  assert sorted_asu_proxies.n_total() == 2
+  assert sorted_asu_proxies.n_total_excluding(exclude=flex.bool(3, False)) == 2
+  assert sorted_asu_proxies.n_total_excluding(
+    exclude=flex.bool([True, False, False])) == 1
+  assert sorted_asu_proxies.n_total_excluding(
+    exclude=flex.bool([False, False, True])) == 1
+  assert sorted_asu_proxies.n_total_excluding(
+    exclude=flex.bool([False, True, False])) == 0
+  try:
+    sorted_asu_proxies.n_total_excluding(exclude=flex.bool(1, False))
+  except RuntimeError: pass
+  else: raise Exception_expected
+  n_asu = geometry_restraints.nonbonded_asu_proxy(pair=pair, vdw_distance=2)
+  n_simple = geometry_restraints.nonbonded_simple_proxy(
+    i_seqs=[1,2], vdw_distance=2)
+  sorted_asu_proxies = geometry_restraints.nonbonded_sorted_asu_proxies(
+    asu_mappings=asu_mappings)
+  sorted_asu_proxies.process(proxy=n_asu)
+  sorted_asu_proxies.process(proxy=n_simple)
+  assert sorted_asu_proxies.n_total() == 2
+  assert sorted_asu_proxies.n_total_excluding(exclude=flex.bool(3, False)) == 2
+  assert sorted_asu_proxies.n_total_excluding(
+    exclude=flex.bool([True, False, False])) == 1
+  assert sorted_asu_proxies.n_total_excluding(
+    exclude=flex.bool([False, False, True])) == 1
+  try:
+    sorted_asu_proxies.n_total_excluding(exclude=flex.bool(1, False))
+  except RuntimeError: pass
+  else: raise Exception_expected
+
+def exercise_energies_normalization_exclude():
+  sites_cart = flex.vec3_double([[1,2,3],[2,3,4],[5,5,5]])
+  asu_mappings = direct_space_asu.non_crystallographic_asu_mappings(
+    sites_cart=sites_cart)
+  pair_generator = crystal.neighbors_fast_pair_generator(
+    asu_mappings=asu_mappings, distance_cutoff=5)
+  bond_proxies = geometry_restraints.bond_sorted_asu_proxies(
+    asu_mappings=asu_mappings)
+  bond_proxies.push_back(proxy=geometry_restraints.bond_asu_proxy(
+    pair=next(pair_generator), distance_ideal=2, weight=10))
+  bond_proxies.process(proxy=geometry_restraints.bond_simple_proxy(
+    i_seqs=[1,2], distance_ideal=2, weight=10))
+  angle_proxies = geometry_restraints.shared_angle_proxy([
+    geometry_restraints.angle_proxy(
+      i_seqs=(0,1,2), angle_ideal=100, weight=1)])
+  def get(normalization_exclude):
+    kw = {}
+    if (normalization_exclude is not None):
+      kw["normalization_exclude"] = normalization_exclude
+    from cctbx.geometry_restraints import energies
+    return energies.energies(
+      sites_cart=sites_cart,
+      bond_proxies=bond_proxies,
+      angle_proxies=angle_proxies,
+      compute_gradients=True,
+      normalization=True,
+      **kw)
+  e0 = get(None)
+  assert e0.number_of_restraints == 3
+  e1 = get(flex.bool(3, False))
+  assert e1.number_of_restraints == 3
+  e2 = get(flex.bool([False, False, True]))
+  assert e2.number_of_restraints == 1
+  for e in [e1, e2]:
+    assert e.n_bond_proxies == 2
+    assert e.n_angle_proxies == 1
+    assert approx_equal(e.residual_sum, e0.residual_sum)
+    assert approx_equal(e.bond_residual_sum, e0.bond_residual_sum)
+    assert approx_equal(e.angle_residual_sum, e0.angle_residual_sum)
+  assert approx_equal(e2.target, 3 * e0.target)
+  assert approx_equal(e2.gradients, 3 * e0.gradients)
+  for n in [2, 4]:
+    try:
+      get(flex.bool(n, False))
+    except AssertionError: pass
+    else: raise Exception_expected
+
 def exercise():
   exercise_bond_similarity()
   exercise_bond()
@@ -3341,7 +3541,9 @@ def exercise():
   exercise_proxy_show()
   exercise_parallelity()
   exercise_origin_id_selections_for_bonds()
-  print "OK"
+  exercise_n_proxies_excluding()
+  exercise_energies_normalization_exclude()
+  print("OK")
 
 if (__name__ == "__main__"):
   exercise()

@@ -1,8 +1,8 @@
-from __future__ import division
+from __future__ import absolute_import, division, print_function
 from scitbx.array_family import flex
 from math import floor
 import re
-import types
+from six.moves import range
 
 
 class NDimTable:
@@ -21,13 +21,13 @@ class NDimTable:
     #wBin    = [] # nDim doubles, width of each bin per dimension (nice to precalculate)
     #lookupTable = None # an array of floating point numbers; the actual data
 
-
+    @staticmethod
     def createFromText(infile):
         '''Loads rotamer or Ramachandran data from a text file, returning a new object.
 
         Can pass in either a file handle or a file name'''
-        if isinstance(infile, types.StringTypes):
-            infile = file(infile, 'r')
+        if isinstance(infile, str):
+            infile = open(infile, 'r')
         ndt = NDimTable()
         ndt.ourName = re.search(r': +"(.+)"$', infile.readline()).group(1)
         ndt.nDim = int(re.search(r': +(\d+)$', infile.readline()).group(1))
@@ -66,7 +66,6 @@ class NDimTable:
             ndt.setValueAt( ndt.whereIs(coords), val )
             s = infile.readline()
         return ndt
-    createFromText = staticmethod(createFromText)
 
 
     def whereIs(self, coords):

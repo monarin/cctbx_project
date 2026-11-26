@@ -1,6 +1,8 @@
-from __future__ import division
+from __future__ import absolute_import, division, print_function
+from six.moves import range
 from xfel.ui.db import db_proxy
 from scitbx.array_family import flex
+from six.moves import zip
 
 class Event(db_proxy):
   def __init__(self, app, event_id = None, **kwargs):
@@ -37,14 +39,22 @@ class Imageset(db_proxy):
     self.imageset_id = self.id
 
 class Beam(db_proxy):
-  def __init__(self, app, beam_id = None, beam = None, **kwargs):
-    assert [beam_id, beam].count(None) == 1
+  def __init__(self, app, beam_id = None, beam = None, wavelength = None, **kwargs):
     if beam is not None:
+      assert beam_id is None and wavelength is None
       u_s0 = beam.get_unit_s0()
       kwargs['direction_1'] = u_s0[0]
       kwargs['direction_2'] = u_s0[1]
       kwargs['direction_3'] = u_s0[2]
       kwargs['wavelength'] = beam.get_wavelength()
+    elif wavelength is not None:
+      assert beam_id is None
+      kwargs['direction_1'] = 0
+      kwargs['direction_2'] = 0
+      kwargs['direction_3'] = 0
+      kwargs['wavelength'] = wavelength
+    else:
+      assert beam_id is not None
 
     db_proxy.__init__(self, app, "%s_beam" % app.params.experiment_tag, id=beam_id, **kwargs)
     self.beam_id = self.id
@@ -59,12 +69,12 @@ class Detector(db_proxy):
     self.detector_id = self.id
 
 class Crystal(db_proxy):
-  def __init__(self, app, crystal_id = None, crystal = None, **kwargs):
+  def __init__(self, app, crystal_id = None, crystal = None, make_cell = True, **kwargs):
     from scitbx import matrix
     assert [crystal_id, crystal].count(None) == 1
     if crystal is not None:
       u = matrix.sqr(crystal.get_U())  # orientation matrix
-      for i in xrange(len(u)):
+      for i in range(len(u)):
         kwargs['ori_%d' % (i + 1)] = u[i]
       try:
         kwargs['mosaic_block_rotation'] = crystal.get_half_mosaicity_deg()
@@ -72,22 +82,24 @@ class Crystal(db_proxy):
       except AttributeError:
         pass
 
-      try:
-        isoform_name = crystal.identified_isoform
-      except AttributeError:
+      if hasattr(crystal, 'identified_isoform'):
+        print("Warning, isoforms no longer have custom support in the database logger.")
+        #tag = app.params.experiment_tag
+        #query = """SELECT cell.id from `%s_cell` cell
+        #           JOIN `%s_isoform` isoform ON cell.isoform_id = isoform.id
+        #           JOIN `%s_trial` trial ON isoform.trial_id = trial.id
+        #           WHERE isoform.name = '%s' AND trial.trial = %d""" % (
+        #  tag, tag, tag, isoform_name, app.params.input.trial)
+        #cursor = app.execute_query(query)
+        #results = cursor.fetchall()
+        #assert len(results) == 1
+        #self.cell = Cell(app, cell_id = results[0][0])
+
+      if make_cell:
         self.cell = Cell(app, crystal=crystal, isoform_id = None)
+        kwargs['cell_id'] = self.cell.id
       else:
-        tag = app.params.experiment_tag
-        query = """SELECT cell.id from `%s_cell` cell
-                   JOIN `%s_isoform` isoform ON cell.isoform_id = isoform.id
-                   JOIN `%s_trial` trial ON isoform.trial_id = trial.id
-                   WHERE isoform.name = '%s' AND trial.trial = %d""" % (
-          tag, tag, tag, isoform_name, app.params.input.trial)
-        cursor = app.execute_query(query)
-        results = cursor.fetchall()
-        assert len(results) == 1
-        self.cell = Cell(app, cell_id = results[0][0])
-      kwargs['cell_id'] = self.cell.id
+        self.cell = None
 
     db_proxy.__init__(self, app, "%s_crystal" % app.params.experiment_tag, id=crystal_id, **kwargs)
     self.crystal_id = self.id

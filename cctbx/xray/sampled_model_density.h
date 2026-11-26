@@ -39,7 +39,8 @@ namespace cctbx { namespace xray {
         bool sampled_density_must_be_positive=false,
         FloatType const& tolerance_positive_definite=1.e-5,
         bool use_u_base_as_u_extra=false,
-        int store_grid_indices_for_each_scatterer=0);
+        int store_grid_indices_for_each_scatterer=0,
+        FloatType const& rho_cutoff=0);
 
       real_map_type
       real_map() { return real_map_; }
@@ -87,12 +88,13 @@ namespace cctbx { namespace xray {
     bool sampled_density_must_be_positive,
     FloatType const& tolerance_positive_definite,
     bool use_u_base_as_u_extra,
-    int store_grid_indices_for_each_scatterer)
+    int store_grid_indices_for_each_scatterer,
+    FloatType const& rho_cutoff)
   :
     base_t(unit_cell, scatterers, scattering_type_registry,
            u_base, wing_cutoff,
            exp_table_one_over_step_size, tolerance_positive_definite,
-           use_u_base_as_u_extra)
+           use_u_base_as_u_extra, rho_cutoff)
   {
     FloatType* map_begin = 0;
     if (this->n_anomalous_scatterers_ == 0 && !force_complex) {
@@ -193,16 +195,14 @@ namespace cctbx { namespace xray {
             FloatType d_sq_et = d_sq * exp_table.one_over_step_size_;
             for (std::size_t i=0;i<gaussian_ft.n_rho_real_terms;i++) {
               FloatType xs = gaussian_ft.bs_real_[i] * d_sq_et;
-              std::size_t j = static_cast<std::size_t>(xs+.5);
-              FloatType e;
-              if (j >= exp_tab_size) {
-                exp_table.expand(j + 1);
+              // linear interpolation, see exponent_table
+              std::size_t j = static_cast<std::size_t>(xs);
+              if (j + 1 >= exp_tab_size) {
+                exp_table.expand(j + 2);
                 exp_tab_size = exp_table.table_.size();
-                e = exp_table.table_[j];
               }
-              else {
-                e = exp_table.table_[j];
-              }
+              FloatType e = exp_table.table_[j];
+              e += (xs - j) * (exp_table.table_[j+1] - e);
               contr += gaussian_ft.as_real_[i] * e;
             }
             /*

@@ -2,7 +2,8 @@
 #
 # $Id$
 
-from __future__ import division
+from __future__ import absolute_import, division, print_function
+from six.moves import range
 
 import math
 import wx
@@ -49,8 +50,8 @@ def _get_flex_image(
 
 def _get_flex_image_multipanel(panels, raw_data, beam, brightness=1.0,
                                binning=1, show_untrusted=False, color_scheme=0):
-  # From xfel.cftbx.cspad_detector.readHeader() and
-  # xfel.cftbx.cspad_detector.get_flex_image().  XXX Is it possible to
+  # From serialtbx.detector.legacy_metrology.cspad_detector.readHeader() and
+  # serialtbx.detector.legacy_metrology.cspad_detector.get_flex_image().  XXX Is it possible to
   # merge this with _get_flex_image() above?  XXX Move to dxtbx Format
   # class (or a superclass for multipanel images)?
 
@@ -60,30 +61,36 @@ def _get_flex_image_multipanel(panels, raw_data, beam, brightness=1.0,
   from libtbx.test_utils import approx_equal
   from scitbx.array_family import flex
   from scitbx.matrix import col, rec, sqr
-  from xfel.cftbx.detector.metrology import get_projection_matrix
+  from serialtbx.detector.legacy_metrology.metrology import get_projection_matrix
 
   assert len(panels) == len(raw_data), (len(panels), len(raw_data))
 
   # Determine next multiple of eight of the largest panel size.
+  data_max_focus = None
   for data in raw_data:
-    if 'data_max_focus' not in locals():
-      data_max_focus = data.focus()
-    else:
-      data_max_focus = (max(data_max_focus[0], data.focus()[0]),
-                        max(data_max_focus[1], data.focus()[1]))
-  data_padded = (8 * int(ceil(data_max_focus[0] / 8)),
-                 8 * int(ceil(data_max_focus[1] / 8)))
+      if data_max_focus is None:
+          data_max_focus = data.focus()
+      else:
+          data_max_focus = (
+              max(data_max_focus[0], data.focus()[0]),
+              max(data_max_focus[1], data.focus()[1]),
+          )
+  data_padded = (
+      8 * int(ceil(data_max_focus[0] / 8)),
+      8 * int(ceil(data_max_focus[1] / 8)),
+  )
 
   # Assert that all saturated values are equal and not None.  While
   # dxtbx records a separated trusted_range for each panel,
   # generic_flex_image supports only accepts a single common value for
   # the saturation.
+  saturation = None
   for panel in panels:
-    if 'saturation' not in locals():
-      saturation = panel.get_trusted_range()[1]
-    else:
-      assert approx_equal(saturation, panel.get_trusted_range()[1])
-  assert 'saturation' in locals() and saturation is not None
+      if saturation is None:
+          saturation = panel.get_trusted_range()[1]
+      else:
+          assert approx_equal(saturation, panel.get_trusted_range()[1])
+  assert saturation is not None
 
   # Create rawdata and my_flex_image before populating it.
   rawdata = flex.double(
@@ -107,7 +114,7 @@ def _get_flex_image_multipanel(panels, raw_data, beam, brightness=1.0,
     try:
       beam_center += col(panel.get_beam_centre_lab(beam.get_s0()))
       npanels += 1
-    except RuntimeError, e: # catch DXTBX_ASSERT for no intersection
+    except RuntimeError as e: # catch DXTBX_ASSERT for no intersection
       pass
   beam_center /= (npanels / 1e-3)
 
@@ -547,8 +554,8 @@ class _Tiles(object):
         for key, asic in self.raw_image._tiles.iteritems():
           key_count += 1
           focus = asic.focus()
-          for slow in xrange(0,focus[0],20):
-            for fast in xrange(0,focus[1],20):
+          for slow in range(0,focus[0],20):
+            for fast in range(0,focus[1],20):
               slowpic,fastpic = self.flex_image.tile_readout_to_picture(key_count,slow,fast)
               mr1,mr2 = self.picture_fast_slow_to_map_relative(fastpic,slowpic)
               pointdata.append((mr1,mr2,{"data":key}))
@@ -591,7 +598,7 @@ class _Tiles(object):
       text_data = []
       if hasattr(self.raw_image, 'get_tile_manager'):
         IT = self.raw_image.get_tile_manager(params).effective_tiling_as_flex_int()
-        for i in xrange(len(IT) // 4):
+        for i in range(len(IT) // 4):
           tile = IT[4*i:4*i+4]
           attributes = {'color': '#0000FFA0', 'width': 1, 'closed': False}
           box_data.append(
@@ -615,7 +622,7 @@ class _Tiles(object):
           text_data.append((txt_x, txt_y, "%i" %i))
       return box_data, text_data
 
-    def get_resolution (self, x, y, readout=None) :
+    def get_resolution(self, x, y, readout=None):
         """
         Determine the resolution of a pixel.
         Arguments are in image pixel coordinates (starting from 1,1).
@@ -642,7 +649,7 @@ class _Tiles(object):
         else:
           return None
 
-    def get_detector_distance (self) :
+    def get_detector_distance(self):
         detector = self.raw_image.get_detector()
         if len(detector) == 1:
           dist = abs(detector[0].get_distance())
@@ -651,12 +658,12 @@ class _Tiles(object):
           # supported.
           dist = self.raw_image.distance
         twotheta = self.get_detector_2theta()
-        if (twotheta == 0.0) :
+        if (twotheta == 0.0):
             return dist
         else :
             return dist / math.cos(twotheta)
 
-    def get_detector_2theta (self) :
+    def get_detector_2theta(self):
         from scitbx.matrix import col
 
         detector = self.raw_image.get_detector()

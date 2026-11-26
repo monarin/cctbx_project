@@ -1,16 +1,17 @@
-from __future__ import division
+from __future__ import absolute_import, division, print_function
 from cctbx import geometry_restraints
 from cctbx.geometry_restraints.distance_least_squares \
   import distance_and_repulsion_least_squares
 import cctbx.geometry_restraints.manager
 from cctbx import crystal
 from cctbx.array_family import flex
-from cStringIO import StringIO
+from six.moves import cStringIO as StringIO
 import libtbx.utils
 from libtbx.test_utils import approx_equal, show_diff
 import libtbx.load_env
 import sys, os
 from mmtbx.monomer_library import pdb_interpretation
+from six.moves import range
 
 # ============================================================
 # Edit notes: show_interactions function is obsolete and removed from GRM
@@ -19,16 +20,17 @@ from mmtbx.monomer_library import pdb_interpretation
 
 def exercise_with_zeolite(verbose):
   if (not libtbx.env.has_module("iotbx")):
-    print "Skipping exercise_with_zeolite(): iotbx not available"
+    print("Skipping exercise_with_zeolite(): iotbx not available")
     return
   from iotbx.kriber import strudat
   atlas_file = libtbx.env.find_in_repositories(
     relative_path="phenix_regression/misc/strudat_zeolite_atlas",
     test=os.path.isfile)
   if (atlas_file is None):
-    print "Skipping exercise_with_zeolite(): input file not available"
+    print("Skipping exercise_with_zeolite(): input file not available")
     return
-  strudat_contents = strudat.read_all_entries(open(atlas_file))
+  with open(atlas_file) as f:
+    strudat_contents = strudat.read_all_entries(f)
   strudat_entry = strudat_contents.get("YUG")
   si_structure = strudat_entry.as_xray_structure()
   if (verbose):
@@ -201,7 +203,7 @@ def exercise_with_zeolite(verbose):
       asu_mappings=asu_mappings)
     while (not pair_generator.at_end()):
       p = geometry_restraints.nonbonded_asu_proxy(
-        pair=pair_generator.next(),
+        pair=next(pair_generator),
         vdw_distance=3)
       sorted_asu_proxies.process(p)
     out = StringIO()
@@ -320,17 +322,18 @@ END
 
 def exercise_with_pdb(verbose):
   if (not libtbx.env.has_module(name="mmtbx")):
-    print "Skipping exercise_with_pdb():", \
-      "mmtbx.monomer_library.pdb_interpretation not available"
+    print("Skipping exercise_with_pdb():", \
+      "mmtbx.monomer_library.pdb_interpretation not available")
     return
   if (libtbx.env.find_in_repositories(relative_path="chem_data") is None):
-    print "Skipping exercise_with_pdb(): chem_data directory not available"
+    print("Skipping exercise_with_pdb(): chem_data directory not available")
     return
   if (verbose):
     out = sys.stdout
   else:
     out = StringIO()
-  open("tmp_cctbx_geometry_restraints.pdb", "w").write(enk_pdb)
+  with open("tmp_cctbx_geometry_restraints.pdb", "w") as f:
+    f.write(enk_pdb)
   pdb_interpretation_params = pdb_interpretation.master_params.extract()
   pdb_interpretation_params.sort_atoms=False
   processed_pdb_file = pdb_interpretation.run(
@@ -392,7 +395,7 @@ def exercise_non_crystallographic_conserving_bonds_and_angles():
   sio = StringIO()
   geo.show_sorted(sites_cart=sites_cart_noise, f=sio)
   expected_first_part = """\
-Bond restraints: 5
+Bond | covalent geometry | restraints: 5
 Sorted by residual:
 bond 2
      3
@@ -415,18 +418,9 @@ bond 0
   ideal  model  delta    sigma   weight residual
   2.453  2.462 -0.009 1.41e-01 5.00e+01 3.92e-03
 
-Bond-like restraints: 0
-Sorted by residual:
-
-Metal coordination restraints: 0
-Sorted by residual:
-
 """
   assert not show_diff(sio.getvalue(), expected_first_part + """\
-User supplied restraints restraints: 0
-Sorted by residual:
-
-Nonbonded interactions: 0
+Nonbonded | unspecified | interactions: 0
 
 """)
   #
@@ -444,10 +438,7 @@ Nonbonded interactions: 0
   sio = StringIO()
   geo.show_sorted(sites_cart=sites_cart_noise, f=sio)
   assert not show_diff(sio.getvalue(), expected_first_part + """\
-User supplied restraints restraints: 0
-Sorted by residual:
-
-Nonbonded interactions: 2
+Nonbonded | unspecified | interactions: 2
 Sorted by model distance:
 nonbonded 0
           4
@@ -463,8 +454,8 @@ nonbonded 1
 def exercise_na_restraints_output_to_geo(verbose=False):
   for dependency in ("chem_data", "ksdssp"):
     if not libtbx.env.has_module(dependency):
-      print "Skipping exercise_na_restraints_output_to_geo(): %s not available" %(
-        dependency)
+      print("Skipping exercise_na_restraints_output_to_geo(): %s not available" %(
+        dependency))
       return
   pdb_str_1dpl_cutted="""\
 CRYST1   24.627   42.717   46.906  90.00  90.00  90.00 P 21 21 21    8
@@ -557,16 +548,35 @@ ATOM    263  C6   DC B  12       8.502  -0.825  21.311  1.00  6.80           C
         1.46 -     1.54: 25
         1.54 -     1.61: 5
   Bond restraints: 87""",
-  """\
+  '''\
   Histogram of bond angle deviations from ideal:
-       99.49 -   105.87: 23
-      105.87 -   112.26: 36
-      112.26 -   118.65: 28
-      118.65 -   125.04: 30
-      125.04 -   131.42: 13
-  Bond angle restraints: 130"""
+        0.00 -     1.10: 75
+        1.10 -     2.19: 30
+        2.19 -     3.29: 13
+        3.29 -     4.38: 8
+        4.38 -     5.48: 4
+  Bond angle restraints: 130''',
   ]
-  open("tst_cctbx_geometry_restraints_2_na.pdb", "w").write(pdb_str_1dpl_cutted)
+  identical_portions = [
+  '''\
+  Histogram of bond lengths:
+        1.23 -     1.31: 5
+        1.31 -     1.39: 25
+        1.39 -     1.46: 27
+        1.46 -     1.54: 25
+        1.54 -     1.61: 5
+  Bond restraints: 87''',
+  '''\
+  Histogram of bond angle deviations from ideal:
+        0.01 -     1.23: 77
+        1.23 -     2.45: 33
+        2.45 -     3.68: 9
+        3.68 -     4.90: 7
+        4.90 -     6.13: 4
+  Bond angle restraints: 130''',
+  ]
+  with open("tst_cctbx_geometry_restraints_2_na.pdb", "w") as f:
+    f.write(pdb_str_1dpl_cutted)
   out1 = StringIO()
   out2 = StringIO()
   from mmtbx.monomer_library.server import MonomerLibraryServerError
@@ -576,8 +586,8 @@ ATOM    263  C6   DC B  12       8.502  -0.825  21.311  1.00  6.80           C
       strict_conflict_handling=False,
       log=out1)
   except MonomerLibraryServerError:
-    print "Skipping exercise_na_restraints_output_to_geo(): Encountered MonomerLibraryServerError.\n"
-    print "Is the CCP4 monomer library installed and made available through environment variables MMTBX_CCP4_MONOMER_LIB or CLIBD_MON?"
+    print("Skipping exercise_na_restraints_output_to_geo(): Encountered MonomerLibraryServerError.\n")
+    print("Is the CCP4 monomer library installed and made available through environment variables MMTBX_CCP4_MONOMER_LIB or CLIBD_MON?")
     return
   geo1 = processed_pdb_file.geometry_restraints_manager()
   hbp = geo1.get_n_hbond_proxies()
@@ -603,21 +613,29 @@ ATOM    263  C6   DC B  12       8.502  -0.825  21.311  1.00  6.80           C
   for v in [v_out1, v_out2]:
     for portion in identical_portions:
       if not v.find(portion) > 0:
-        print "This portion was not found:\n%s\n=====End of portion." % portion
+        print("This portion was not found:\n%s\n=====End of portion." % portion)
         assert 0, "the portion above does not match expected portion."
   # check .geo output
-  geo_identical_portions = ["Bond restraints: 87",
-      "Bond angle restraints: 130", "Dihedral angle restraints: 33",
-      "Chirality restraints: 15",
-      "Planarity restraints: 4"]
-  ss_geo_portions = ["Bond-like restraints: 6",
-      "SS restraints around h-bond angle restraints: 12",
-      "Parallelity restraints: 4",
-      "Nonbonded interactions: 504"]
-  non_ss_geo_portions = ["Bond-like restraints: 0",
-      "SS restraints around h-bond angle restraints: 0",
-      "Parallelity restraints: 0",
-      "Nonbonded interactions: 526"]
+  geo_identical_portions = ["Bond | covalent geometry | restraints: 87",
+      "Bond angle | covalent geometry | restraints: 130",
+      "Dihedral angle | covalent geometry | restraints: 33",
+      "Chirality | covalent geometry | restraints: 15",
+      "Planarity | covalent geometry | restraints: 4"]
+  ss_geo_portions = [
+      # "Bond-like restraints: 6",
+      "Bond | Bond-like | restraints: 6",
+      # 'Secondary Structure restraints around h-bond angle restraints: 12',
+      'Bond angle | Secondary Structure restraints around h-bond | restraints: 12',
+      # "Stacking parallelity restraints: 2",
+      # 'Basepair parallelity restraints: 2',
+      'Parallelity | Stacking parallelity | restraints: 2',
+      'Parallelity | Basepair parallelity | restraints: 2',
+      "Nonbonded | unspecified | interactions: 504"]
+  non_ss_geo_portions = [
+      #"Bond-like restraints: 0",
+      #'Secondary Structure restraints around h-bond angle restraints: 0',
+      # "Parallelity restraints: 0", removed because zero
+      "Nonbonded | unspecified | interactions: 526"]
   acp = processed_pdb_file.all_chain_proxies
   sites_cart = acp.sites_cart_exact()
   site_labels = [atom.id_str() for atom in acp.pdb_atoms]
@@ -628,9 +646,39 @@ ATOM    263  C6   DC B  12       8.502  -0.825  21.311  1.00  6.80           C
   v_geo_out_noss = geo_out1.getvalue()
   v_geo_out_ss = geo_out2.getvalue()
   for portion in geo_identical_portions+ss_geo_portions:
-    assert v_geo_out_ss.find(portion) >= 0
+    assert v_geo_out_ss.find(portion) >= 0, 'did not find %s\n in \n%s\n%s\n' % (
+      portion,
+      v_geo_out_ss,
+      portion)
   for portion in geo_identical_portions+non_ss_geo_portions:
-    assert v_geo_out_noss.find(portion) >= 0
+    assert v_geo_out_noss.find(portion) >= 0, 'did not find %s\n in \n%s' % (
+      portion,
+      v_geo_out_noss)
+
+def exercise_hydrogen_bond_rmsd():
+  for dependency in ("chem_data", "ksdssp"):
+    if not libtbx.env.has_module(dependency):
+      print("Skipping exercise_na_restraints_output_to_geo(): %s not available" %(
+        dependency))
+      return
+  if not os.path.exists('tst_cctbx_geometry_restraints_2_na.pdb'):
+    print('exercise_hydrogen_bond_rmsd SKIPPED')
+  from libtbx import easy_run
+  cmd = 'phenix.geometry_minimization tst_cctbx_geometry_restraints_2_na.pdb'
+  print(cmd)
+  rc=easy_run.go(cmd)
+  for token in ['  87  Z', ' 130  Z']:
+    for line in rc.stdout_lines:
+      if line.find(token)>-1: break
+    else: assert 0, 'token "%s" not found' % token
+  cmd = 'phenix.geometry_minimization tst_cctbx_geometry_restraints_2_na.pdb'
+  cmd += ' secondary_structure.enabled=True'
+  print(cmd)
+  rc=easy_run.go(cmd)
+  for token in ['  87  Z', ' 130  Z']:
+    for line in rc.stdout_lines:
+      if line.find(token)>-1: break
+    else: assert 0, 'token "%s" not found' % token
 
 def exercise_all(args):
   verbose = "--verbose" in args
@@ -638,7 +686,8 @@ def exercise_all(args):
   exercise_with_pdb(verbose=verbose)
   exercise_non_crystallographic_conserving_bonds_and_angles()
   exercise_na_restraints_output_to_geo(verbose=verbose)
-  print libtbx.utils.format_cpu_times()
+  exercise_hydrogen_bond_rmsd()
+  print(libtbx.utils.format_cpu_times())
 
 if (__name__ == "__main__"):
   exercise_all(sys.argv[1:])

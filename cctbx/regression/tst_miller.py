@@ -1,4 +1,4 @@
-from __future__ import division
+from __future__ import absolute_import, division, print_function
 from cctbx import crystal
 from cctbx import miller
 from cctbx import xray
@@ -15,12 +15,11 @@ from libtbx.test_utils import \
   approx_equal, not_approx_equal, show_diff, Exception_expected
 from libtbx.utils import Sorry, Keep, null_out
 from libtbx import Auto
-from cStringIO import StringIO
+from six.moves import cStringIO as StringIO
 import warnings
-try:
-  import cPickle as pickle
-except ImportError:
-  import pickle
+from six.moves import range
+from six.moves import zip
+from six.moves import cPickle as pickle
 import random
 import math
 import sys
@@ -172,6 +171,21 @@ Completeness with d_max=infinity: 1
   assert s.indices().size() == 1
   assert s.anomalous_flag()
 
+
+def exercise_generate_bijvoet_mates_set():
+  sg_info = sgtbx.space_group_info("P422")
+  cs = sg_info.any_compatible_crystal_symmetry(volume=1000)
+  for anom in [True, False]:
+    miller_set = miller.build_set(
+      crystal_symmetry=cs,
+      anomalous_flag=anom,
+      d_min=2.0,
+    )
+    bm = miller_set.generate_bivoet_mates()
+    assert bm.anomalous_flag()
+    assert bm.completeness() == 1
+
+
 def exercise_union_of_sets():
   xs = crystal.symmetry(unit_cell=(10,10,10,90,90,90), space_group_symbol="P1")
   ms = miller.set(xs, flex.miller_index())
@@ -255,7 +269,7 @@ def exercise_generate_r_free_flags(verbose=0, use_lattice_symmetry=False):
         space_group_symbol="P 21 21 21"),
       anomalous_flag=anomalous_flag,
       d_min=8)
-    for i_trial in xrange(10):
+    for i_trial in range(10):
       if (i_trial == 0):
         trial_set = miller_set
       else:
@@ -276,8 +290,8 @@ def exercise_generate_r_free_flags(verbose=0, use_lattice_symmetry=False):
         accu = flags.r_free_flags_accumulation()
         assert accu.reflection_counts.size() == accu.free_fractions.size()
         if (verbose):
-          print "r_free_flags_accumulation:", \
-            zip(accu.reflection_counts, accu.free_fractions)
+          print("r_free_flags_accumulation:", \
+            list(zip(accu.reflection_counts, accu.free_fractions)))
       if (not anomalous_flag):
         if (i_trial < 5):
           assert flags.indices().size() == 145
@@ -329,7 +343,7 @@ def exercise_generate_r_free_flags(verbose=0, use_lattice_symmetry=False):
       format="ccp4")
     assert (isinstance(flags1.data(), flex.int))
     assert (isinstance(flags2.data(), flex.int))
-    if (anomalous_flag) :
+    if (anomalous_flag):
       flags1_ave = flags1.average_bijvoet_mates()
       flags2_ave = flags2.average_bijvoet_mates()
     try :
@@ -484,11 +498,11 @@ unused: 10.0715 -         [0/0]
     [0,1,1,1,1,0], [0,2,2,0], [0,4,0], [0,4,0], [0,4,0], [0,4,0],
     [0,1,1,1,1,1,0], [0,2,1,2,0], [0,3,2,0], [0,5,0], [0,5,0], [0,5,0], [0,5,0]
   ])
-  for n in xrange(1,6):
-    set2 = set1.select(flex.size_t(xrange(n)))
-    for reflections_per_bin in range(1,n+1) + [n+1, n*10]:
+  for n in range(1,6):
+    set2 = set1.select(flex.size_t(range(n)))
+    for reflections_per_bin in list(range(1,n+1)) + [n+1, n*10]:
       set2.setup_binner_counting_sorted(reflections_per_bin=reflections_per_bin)
-      assert list(set2.binner().counts()) == expected_counts.next()
+      assert list(set2.binner().counts()) == next(expected_counts)
   set1.setup_binner_counting_sorted(
     d_max=16,
     d_min=11,
@@ -504,16 +518,46 @@ unused: 10.0715 -         [0/0]
     [0,1,1,1,1,1,1,0], [0,1,1,2,1,1,0], [0,2,1,2,1,0], [0,2,2,2,0], [0,3,3,0], [0,6,0],
     [0,1,1,1,1,1,1,1,0], [0,1,1,2,1,1,1,0], [0,1,2,1,2,1,0], [0,2,2,1,2,0], [0,2,3,2,0], [0,4,3,0], [0,7,0]
   ])
-  for n in xrange(1,8):
-    set2 = set1.select(flex.size_t(xrange(n)))
+  for n in range(1,8):
+    set2 = set1.select(flex.size_t(range(n)))
     for n_bins in range(n, 0, -1):
       set2.setup_binner_counting_sorted(n_bins=n_bins)
-      assert list(set2.binner().counts()) == expected_counts.next()
+      assert list(set2.binner().counts()) == next(expected_counts)
   set1.setup_binner_counting_sorted(
     d_max=16,
     d_min=11,
     n_bins=2)
   assert list(set1.binner().counts()) == [2,3,2,1]
+
+def exercise_counting_sorted_no_empty_bins():
+  sgi = sgtbx.space_group_info("I23")
+  cs = sgi.any_compatible_crystal_symmetry(volume=999)
+  ms = cs.build_miller_set(True, d_min=1)
+  try:
+    ms.setup_binner_counting_sorted(n_bins=50)
+  except AssertionError:
+    pass
+  else:
+     raise Exception_expected
+
+def exercise_counting_sorted_n_bins_reflections_per_bin():
+  sgi = sgtbx.space_group_info("I23")
+  cs = sgi.any_compatible_crystal_symmetry(volume=999)
+  ms = cs.build_miller_set(True, d_min=1)
+  binner = ms.setup_binner_counting_sorted(n_bins=50, reflections_per_bin=10)
+  assert binner.n_bins_used() == 5
+  assert binner.counts_complete() == [0, 17, 30, 37, 44, 51, 0]
+  assert approx_equal(
+    binner.limits(),
+    [
+      0.020013344452328715,
+      0.20013344452328713,
+      0.4002668890465743,
+      0.6204136780221902,
+      0.8005337780931485,
+      0.9806538783602378
+    ]
+  )
 
 def exercise_crystal_gridding():
   crystal_symmetry = crystal.symmetry(
@@ -694,6 +738,11 @@ def exercise_array():
     assert approx_equal(tuple(hm.data()), (2,3))
     assert approx_equal(tuple(hm.sigmas()), (0.2,0.4))
   assert approx_equal(ma.anomalous_signal(), 0.5063697)
+  app = ma.anomalous_probability_plot()
+  for app in (app, pickle.loads(pickle.dumps(app))):
+    assert approx_equal(app.slope, 6.280403781181725)
+    assert approx_equal(app.intercept, -0.23606797749978936)
+    assert app.n_pairs ==  2
   assert ma.measurability() == 1.0
   assert approx_equal(ma.anomalous_completeness(), 0.018018)
   assert approx_equal(ma.anomalous_completeness(
@@ -778,7 +827,7 @@ def exercise_array():
   indices=flex.miller_index(((0,0,1),))
   try:
     sa = ma2.select_indices(indices=indices)
-  except RuntimeError, e:
+  except RuntimeError as e:
     assert not show_diff(
       str(e),
       ("cctbx.miller.array.select_indices(): "
@@ -1034,7 +1083,7 @@ unused: 1.0000 -        [ 0/0 ]  0 0.0000
     d_min=3)
   ma = miller.array(
     miller_set=ms,
-    data=flex.double(xrange(ms.indices().size())))
+    data=flex.double(range(ms.indices().size())))
   assert ma.remove_cone(fraction_percent=10).data().size() == 43
   ma.set_observation_type_xray_amplitude()
   assert ma.select_acentric().data().size() == 48
@@ -1399,10 +1448,10 @@ def exercise_array_2(space_group_info):
   xs = space_group_info.any_compatible_crystal_symmetry(volume=60)
   for anomalous_flag in (False, True):
     st = miller.build_set(xs, anomalous_flag, d_min=1)
-    for sigmas in (None, flex.double(xrange(1,st.indices().size()+1))):
+    for sigmas in (None, flex.double(range(1,st.indices().size()+1))):
       sg = miller.array(
         st,
-        data=flex.double(xrange(st.indices().size())),
+        data=flex.double(range(st.indices().size())),
         sigmas=sigmas)
       p1 = sg.expand_to_p1()
       ps = miller.array(
@@ -1572,7 +1621,7 @@ def exercise_squaring_and_patterson_map(space_group_info,
   grid_resolution_factor = 1/3.
   u_base = xray.calc_u_base(d_min, grid_resolution_factor)
   if (0 or verbose):
-    print "u_base:", u_base
+    print("u_base:", u_base)
   d_star_sq = e.unit_cell().d_star_sq(e.indices())
   dw = flex.exp(d_star_sq*2*(math.pi**2)*u_base)
   eb = miller.array(miller_set=e, data=e.data()/dw)
@@ -1586,7 +1635,7 @@ def exercise_squaring_and_patterson_map(space_group_info,
   mpe = f_calc.mean_phase_error(f_calc.phases())
   assert approx_equal(mpe, 0.0)
   if (0 or verbose):
-    print "mean_weighted_phase_error: %.2f" % mwpe
+    print("mean_weighted_phase_error: %.2f" % mwpe)
   assert mwpe < 2
   for sharpening in (False, True):
     for origin_peak_removal in (False, True):
@@ -1603,6 +1652,49 @@ def exercise_squaring_and_patterson_map(space_group_info,
       assert grid_tags.n_grid_misses() == 0
       assert grid_tags.verify(patterson_map.real_map())
 
+def exercise_neighbor_average():
+  # Setup
+  symmetry = crystal.symmetry(
+    unit_cell=(10, 10, 10, 90, 90, 90),
+    space_group_symbol="P1")
+  d_min = 2
+  structure = xray.structure(crystal_symmetry=symmetry)
+  # now let's add some atoms
+  atmrad = flex.double()
+  xyzf = flex.vec3_double()
+  from cctbx.eltbx import van_der_waals_radii
+  a,b,c,_,_,_ = symmetry.unit_cell().parameters()
+  for k in range(10):
+    scatterer = xray.scatterer(
+      site=(0, 0.1*math.sin(math.pi*4*k/b), k/b),
+      scattering_type="S",
+      u=0.02)
+    structure.add_scatterer(scatterer)
+    atmrad.append(van_der_waals_radii.vdw.table[scatterer.element_symbol()])
+    xyzf.append(scatterer.site)
+  f_calc = structure.structure_factors(
+    d_min=d_min, anomalous_flag=False).f_calc()
+
+  # Ready to get local average
+
+  local_average=f_calc.average_neighbors(layers=0,include_origin=True)
+  local_average_2=f_calc.average_neighbors(layers=1,include_origin=False,
+      average_with_cc=True)
+
+  a=None
+  ind_list=[ (2,2,2),(1,2,2),(3,2,2),(2,1,2),(2,3,2),(2,2,1),(2,2,3)]
+  for ind in ind_list:
+    s=(f_calc.indices()==ind)
+    ind=f_calc.indices().select(s)
+    values=f_calc.data().select(s)
+    for x,y in zip(ind,values):
+      if a is None: a=y
+      else: a+=y
+  s=f_calc.indices()==ind_list[0]
+  avg=local_average.data().select(s)[0]
+  avg2=local_average_2.data().select(s)[0]
+  assert approx_equal(a/len(ind_list),avg)
+
 def exercise_local_overlap_map():
   symmetry = crystal.symmetry(
     unit_cell=(10, 10, 10, 90, 90, 90),
@@ -1614,7 +1706,7 @@ def exercise_local_overlap_map():
   xyzf = flex.vec3_double()
   from cctbx.eltbx import van_der_waals_radii
   a,b,c,_,_,_ = symmetry.unit_cell().parameters()
-  for k in xrange(10):
+  for k in range(10):
     scatterer = xray.scatterer(
       site=(0, 0.1*math.sin(math.pi*4*k/b), k/b),
       scattering_type="S",
@@ -1670,7 +1762,7 @@ def exercise_lsd_map():
   xyzf = flex.vec3_double()
   from cctbx.eltbx import van_der_waals_radii
   a,b,c,_,_,_ = symmetry.unit_cell().parameters()
-  for k in xrange(10):
+  for k in range(10):
     scatterer = xray.scatterer(
       site=(0, 0.1*math.sin(math.pi*4*k/b), k/b),
       scattering_type="S",
@@ -1699,8 +1791,7 @@ def exercise_lsd_map():
     shrink_truncation_radius=1)
   corr = flex.linear_correlation(
     mask.as_double().as_1d(), m1.data.as_double().as_1d())
-  assert corr.coefficient() > 0.90
-
+  assert corr.coefficient() > 0.90, corr.coefficient()
 
 def exercise_phased_translation_coeff(d_min = 1.0,
                                       algorithm = "direct",
@@ -1735,7 +1826,8 @@ def exercise_phased_translation_coeff(d_min = 1.0,
     expected_shift = [1.-(0.7/5), 1.-(1.2/5), 1.-(1.4/5)]
     assert approx_equal(expected_shift, cluster_analysis.sites()[0], eps=1e-2)
 
-def exercise_common_set((a, b), permutation_only):
+def exercise_common_set(arrays, permutation_only):
+  (a, b) = arrays
   ab = a.common_set(b)
   ba = b.common_set(a)
   if (permutation_only):
@@ -1753,7 +1845,7 @@ def exercise_array_correlation(space_group_info,
                                d_min=2,
                                verbose=0):
   arrays = []
-  for i in xrange(2):
+  for i in range(2):
     structure = random_structure.xray_structure(
       space_group_info,
       elements=["const"]*n_scatterers)
@@ -1839,7 +1931,7 @@ def generate_random_hl(miller_set, coeff_range=5, max_centric_multiplier=None, s
         max_figure_of_merit=1-1.e-6))
     else:
       f = 2 * coeff_range * random.random()
-      coefs = [one_random_hl(f) for i in xrange(4)]
+      coefs = [one_random_hl(f) for i in range(4)]
       if set_a is not None:
         coefs[0] = set_a
       hl.append(coefs)
@@ -1877,17 +1969,17 @@ def exercise_phase_integrals(space_group_info):
       if (is_centric(h)):
         if (scitbx.math.phase_error(complex_math.arg(pi_p1),
                                     complex_math.arg(pi_p1_sg)) > 1.e-6):
-          print "Error:", h, pi_p1, pi_p1_sg
-          print "arg(pi_p1):", complex_math.arg(pi_p1)
-          print "arg(pi_p1_sg):", complex_math.arg(pi_p1_sg)
+          print("Error:", h, pi_p1, pi_p1_sg)
+          print("arg(pi_p1):", complex_math.arg(pi_p1))
+          print("arg(pi_p1_sg):", complex_math.arg(pi_p1_sg))
           raise AssertionError
         if (not (0.5 < abs(pi_p1)/abs(pi_p1_sg) < 0.75)):
-          print "Error:", h, pi_p1, pi_p1_sg
-          print "abs(pi_p1):", abs(pi_p1)
-          print "abs(pi_p1_sg):", abs(pi_p1_sg)
+          print("Error:", h, pi_p1, pi_p1_sg)
+          print("abs(pi_p1):", abs(pi_p1))
+          print("abs(pi_p1_sg):", abs(pi_p1_sg))
           raise AssertionError
       elif (abs(pi_p1 - pi_p1_sg) > 1.e-6):
-        print "Error:", h, pi_p1, pi_p1_sg
+        print("Error:", h, pi_p1, pi_p1_sg)
         raise AssertionError
     #
     amplitude_array = miller.array(
@@ -2006,6 +2098,7 @@ def exercise_multiscale():
   xrs = random_structure.xray_structure(
     space_group_info=sgtbx.space_group_info(number=19),
     elements=["C"]*10)
+  # Scalar scale
   f1 = abs(xrs.structure_factors(d_min=3).f_calc())
   f2 = abs(f1.deep_copy())
   assert approx_equal(
@@ -2016,6 +2109,20 @@ def exercise_multiscale():
   f1 = f2.multiscale(other = f1)
   assert approx_equal(
     flex.sum(f1.data()*f2.data())/flex.sum(f2.data()*f2.data()), 1)
+  # Exp scale
+  f1 = abs(xrs.structure_factors(d_min=1).f_calc())
+  ss = 1./flex.pow2(f1.d_spacings().data()) / 4.
+  f2 = f1.deep_copy()
+  f2 = f2.array(data = f2.data()*10*flex.exp(-50*ss))
+  f2 = f1.multiscale(other=f2, use_exp_scale=True)
+  assert approx_equal(f1.data(), f2.data())
+  # Now complex arrays!
+  f1 = xrs.structure_factors(d_min=1).f_calc()
+  ss = 1./flex.pow2(f1.d_spacings().data()) / 4.
+  f2 = f1.deep_copy()
+  f2 = f2.array(data = f2.data()*10*flex.exp(-50*ss))
+  f2 = f1.multiscale(other=f2, use_exp_scale=True)
+  assert approx_equal(f1.data(), f2.data())
 
 def exercise_symmetry_agreement_factor():
   from cmath import phase as arg
@@ -2167,7 +2274,7 @@ def exercise_structure_factors_from_map():
     space_group_info=sgtbx.space_group_info(number=19),
     elements=["C"]*10)
   fc1 = xrs.structure_factors(d_min=1.5, algorithm="direct").f_calc()
-  for cntr in xrange(10):
+  for cntr in range(10):
     fft_map = fc1.fft_map(resolution_factor=0.1)
     fft_map.apply_volume_scaling()
     map_data = fft_map.real_map_unpadded()
@@ -2207,13 +2314,13 @@ def exercise_log_binning():
   fc = xrs.structure_factors(d_min=1.0).f_calc()
   lb = fc.log_binning()
   r = flex.double()
-  for i in xrange(len(lb)):
+  for i in range(len(lb)):
     if(i!=0 and i+1<len(lb)-1):
       r.append(lb[i+1].count(True)/lb[i].count(True))
   assert r.size() == 7
   assert approx_equal(flex.mean(r), 2.0, 0.01)
   #
-  for i in xrange(2,10):
+  for i in range(2,10):
     lb = fc.log_binning(max_number_of_bins=i)
     assert i == len(lb)
   #
@@ -2282,12 +2389,12 @@ def exercise_randomize_amplitude_and_phase(space_group_info,
     return (r, fc.mean_phase_error(phase_source=fc_))
   #
   assert approx_equal(run(0,0), (0,0))
-  for v in list(xrange(0,91, 10)):
+  for v in range(0,91, 10):
     r = run(v/100.,v)
     assert approx_equal(r[0], v/100., 0.05)
     assert approx_equal(r[1], v, 5)
 
-def exercise_permute () :
+def exercise_permute():
   xrs = random_structure.xray_structure(
     space_group_info=sgtbx.space_group_info(number=1),
     elements=["C"]*300)
@@ -2301,8 +2408,20 @@ def exercise_permute () :
   assert fc.indices().all_eq(fc_perm.indices())
   assert fc_other.data().all_eq(fc_perm_other.data())
   assert not fc_high.data().all_eq(fc_perm_high.data())
+  #
+  # Ad hoc test for G-function
+  #
+  fc_high._data.append(123)
+  fc_high._indices.append([0,0,0])
+  s = 1./fc_high.d_spacings().data()
+  sel = flex.sort_permutation(s, reverse=False)
+  s = s.select(sel)
+  assert approx_equal(s[0], -1)
+  fc_high=fc_high.select(sel)
+  vals = fc_high.g_function(R=3, volume_scale=False)
+  assert approx_equal(vals[:3], [1.0, 0.000863211, 0.0008627407])
 
-def exercise_diagnostics () :
+def exercise_diagnostics():
   xs = crystal.symmetry((30,40,50), "P 2 2 2")
   ms = miller.build_set(crystal_symmetry=xs, anomalous_flag=True, d_min=2.9)
   da, db, dc = ms.d_min_along_a_b_c_star()
@@ -2332,7 +2451,7 @@ def exercise_convert_to_non_anomalous_if_ratio_pairs_lone_less_than():
   assert ma.completeness()>0.99
   assert ma.anomalous_flag() is False
 
-def exercise_change_symmetry () :
+def exercise_change_symmetry():
   # these should run without warnings
   with warnings.catch_warnings(record=True) as w:
     test_inputs = [
@@ -2354,7 +2473,7 @@ def exercise_change_symmetry () :
       (40.15, 40.15, 65, 90, 90, 90),
       (40.1, 40.2, 65, 90, 90, 90),
     ]
-    for i_inp, (uc_old, sg_old, sg_new) in enumerate(test_inputs) :
+    for i_inp, (uc_old, sg_old, sg_new) in enumerate(test_inputs):
       cs = crystal.symmetry(
         unit_cell=uc_old,
         space_group_symbol=sg_old)
@@ -2374,7 +2493,7 @@ def exercise_change_symmetry () :
       ( (39.0, 40.7, 65, 89.98, 90.02, 121.05), "P1", "P63" ),
       ( (40.1, 40.2, 65, 90, 90, 90), "P222", "P1"),
     ]
-    for i_inp, (uc_old, sg_old, sg_new) in enumerate(test_inputs) :
+    for i_inp, (uc_old, sg_old, sg_new) in enumerate(test_inputs):
       cs = crystal.symmetry(
         unit_cell=uc_old,
         space_group_symbol=sg_old)
@@ -2387,7 +2506,7 @@ def exercise_change_symmetry () :
         expand_to_p1_if_necessary=False)
     assert len(w) == 2
 
-def exercise_systematic_absences_info () :
+def exercise_systematic_absences_info():
   xrs = random_structure.xray_structure(
     sgtbx.space_group_info("P21212"),
     elements=["const"]*100)
@@ -2440,8 +2559,8 @@ def exercise_karle_normalization():
   assert cntr == 2
 
 def exercise_structure_factors_from_map_and_asu_map(d_min=2.):
-  import boost.python
-  asu_map_ext = boost.python.import_ext("cctbx_asymmetric_map_ext")
+  import boost_adaptbx.boost.python as bp
+  asu_map_ext = bp.import_ext("cctbx_asymmetric_map_ext")
   def rfactor(x,y):
     x = flex.abs(x.data())
     y = flex.abs(y.data())
@@ -2481,7 +2600,35 @@ def exercise_structure_factors_from_map_and_asu_map(d_min=2.):
       n_real       = n_real)
     assert approx_equal(rfactor(x=fc,y=fc_from_asu_map), 0.0)
 
+def exercise_as_map_manager():
+  xrs = random_structure.xray_structure(
+    space_group_info = sgtbx.space_group_info(number=19),
+    elements=["C"]*50,
+    volume_per_atom=50,
+    min_distance=1.0,
+    general_positions_only=False)
+  fc = xrs.structure_factors(d_min=2.0).f_calc()
+  mm = fc.as_map_manager()
+  mm = fc.as_map_manager(d_min=1, d_max=3)
+  mm = fc.as_map_manager(wrapping=False, apply_volume_scaling=False)
+
+def exercise_make_up_hl_coeffs():
+  xrs = random_structure.xray_structure(
+    space_group_info = sgtbx.space_group_info(number=19),
+    elements=["C"]*50,
+    volume_per_atom=50,
+    min_distance=1.0,
+    general_positions_only=False)
+  fc = xrs.structure_factors(d_min=2.0).f_calc()
+  hl = fc.make_up_hl_coeffs(k_blur=1, b_blur=20)
+
 def run(args):
+  exercise_make_up_hl_coeffs()
+  exercise_as_map_manager()
+  exercise_generate_bijvoet_mates_set()
+  exercise_counting_sorted_n_bins_reflections_per_bin()
+  exercise_counting_sorted_no_empty_bins()
+  exercise_neighbor_average()
   exercise_local_overlap_map()
   exercise_structure_factors_from_map_and_asu_map()
   exercise_karle_normalization()
@@ -2525,7 +2672,7 @@ def run(args):
   exercise_merge_equivalents_special_cases()
   exercise_permute()
   debug_utils.parse_options_loop_space_groups(args, run_call_back)
-  print "OK"
+  print("OK")
 
 if (__name__ == "__main__"):
   flex.set_random_seed(1)

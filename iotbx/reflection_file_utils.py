@@ -1,4 +1,6 @@
-from __future__ import division
+"""Tools for extracting information from reflection files
+"""
+from __future__ import absolute_import, division, print_function
 from iotbx import reflection_file_reader
 from cctbx import miller
 from cctbx.array_family import flex
@@ -9,6 +11,9 @@ import libtbx.phil
 from itertools import count
 import math
 import sys, os
+from functools import cmp_to_key
+from six.moves import range
+from six.moves import zip
 
 class Sorry_No_array_of_the_required_type(Sorry):
   __orig_module__ = __module__
@@ -73,58 +78,57 @@ class label_table(object):
         minimum_score=None,
         parameter_name=None):
     if (f is None): f = self.err
-    print >> f, "Possible choices:"
+    print("Possible choices:", file=f)
     if (scores is None):
       for info_string in self.info_strings:
-        print >> f, " ", info_string
+        print(" ", info_string, file=f)
     else:
       for info_string,score in zip(self.info_strings, scores):
         if (score >= minimum_score):
-          print >> f, " ", info_string
-    print >> f
+          print(" ", info_string, file=f)
+    print(file=f)
     if (parameter_name is None): hint = ""
     else: hint = "use %s\nto " % parameter_name
-    print >> f, \
-      "Please %sspecify an unambiguous substring of the target label." % hint
-    print >> f
+    print("Please %sspecify an unambiguous substring of the target label." % hint, file=f)
+    print(file=f)
 
   def match_data_label(self, label, command_line_switch, f=None):
     if (f is None): f = self.err
     assert label is not None
     scores = self.scores(label=label)
     selected_array = None
-    for high_score in xrange(max(scores),0,-1):
+    for high_score in range(max(scores),0,-1):
       if (scores.count(high_score) > 0):
         if (scores.count(high_score) > 1):
-          print >> f
-          print >> f, "Ambiguous %s=%s" % (command_line_switch, label)
-          print >> f
+          print(file=f)
+          print("Ambiguous %s=%s" % (command_line_switch, label), file=f)
+          print(file=f)
           self.show_possible_choices(
             f=f, scores=scores, minimum_score=high_score)
           return None
         return self.miller_arrays[scores.index(high_score)]
-    print >> f
-    print >> f, "Unknown %s=%s" % (command_line_switch, label)
-    print >> f
+    print(file=f)
+    print("Unknown %s=%s" % (command_line_switch, label), file=f)
+    print(file=f)
     self.show_possible_choices(f=f)
     return None
 
   def select_array(self, label, command_line_switch, f=None):
     if (f is None): f = self.err
     if (len(self.miller_arrays) == 0):
-      print >> f
-      print >> f, "No reflection arrays available."
-      print >> f
+      print(file=f)
+      print("No reflection arrays available.", file=f)
+      print(file=f)
       return None
     if (len(self.miller_arrays) == 1):
       return self.miller_arrays[0]
     if (label is None):
-      print >> f
+      print(file=f)
       s = command_line_switch
-      print >> f, "Please use %s to select a reflection array." % s
-      print >> f, "For example: %s=%s" % (s, show_string(str(
-        self.miller_arrays[1].info()).split(":")[-1]))
-      print >> f
+      print("Please use %s to select a reflection array." % s, file=f)
+      print("For example: %s=%s" % (s, show_string(str(
+        self.miller_arrays[1].info()).split(":")[-1])), file=f)
+      print(file=f)
       self.show_possible_choices(f=f)
       return None
     return self.match_data_label(
@@ -139,7 +143,7 @@ def get_amplitude_scores(miller_arrays, strict=False):
   result = []
   for miller_array in miller_arrays:
     score = 0
-    if (miller_array.is_complex_array()) and (not strict) :
+    if (miller_array.is_complex_array()) and (not strict):
       score = 1
     elif (miller_array.is_real_array()):
       if (miller_array.is_xray_reconstructed_amplitude_array()):
@@ -149,7 +153,7 @@ def get_amplitude_scores(miller_arrays, strict=False):
           score = 2
       elif (miller_array.is_xray_amplitude_array()):
         score = 5
-      elif (miller_array.is_xray_intensity_array()) and (not strict) :
+      elif (miller_array.is_xray_intensity_array()) and (not strict):
         score = 4
     result.append(score)
   return result
@@ -182,11 +186,11 @@ def get_phase_scores(miller_arrays):
   return result
 
 def get_xray_data_scores(miller_arrays, ignore_all_zeros,
-    prefer_anomalous=None, prefer_amplitudes=None) :
+    prefer_anomalous=None, prefer_amplitudes=None):
   anomalous_bonus = 4
   intensity_bonus = 2
   amplitude_bonus = 0
-  if (prefer_amplitudes) :
+  if (prefer_amplitudes):
     intensity_bonus = 0
     amplitude_bonus = 2
   result = []
@@ -202,7 +206,7 @@ def get_xray_data_scores(miller_arrays, ignore_all_zeros,
           score = 1
       elif (miller_array.is_xray_intensity_array()):
         score = 8 + intensity_bonus
-        if (prefer_anomalous is not None) :
+        if (prefer_anomalous is not None):
           if (((prefer_anomalous) and (miller_array.anomalous_flag())) or
               ((not prefer_anomalous) and (not miller_array.anomalous_flag()))):
             score += anomalous_bonus
@@ -211,7 +215,7 @@ def get_xray_data_scores(miller_arrays, ignore_all_zeros,
       elif (miller_array.is_xray_amplitude_array()):
         if (miller_array.is_xray_reconstructed_amplitude_array()):
           if (presumably_from_mtz_FQDQY(miller_array)):
-            if (prefer_anomalous) :
+            if (prefer_anomalous):
               score = 8 + amplitude_bonus
             else :
               score = 6 + amplitude_bonus
@@ -219,7 +223,7 @@ def get_xray_data_scores(miller_arrays, ignore_all_zeros,
             score = 4
         else:
           score = 6 + amplitude_bonus
-          if (prefer_anomalous is not None) :
+          if (prefer_anomalous is not None):
             if (((prefer_anomalous) and (miller_array.anomalous_flag())) or
                 ((not prefer_anomalous) and
                  (not miller_array.anomalous_flag()))):
@@ -234,8 +238,8 @@ def get_xray_data_scores(miller_arrays, ignore_all_zeros,
           and miller_array.sigmas_are_sensible()
           and score != 0):
         score += 1
-      if (prefer_anomalous is not None) and (miller_array.anomalous_flag()) :
-        if (prefer_anomalous) :
+      if (prefer_anomalous is not None) and (miller_array.anomalous_flag()):
+        if (prefer_anomalous):
           score += 1
         else :
           score -= 1
@@ -293,8 +297,8 @@ class get_r_free_flags_scores(object):
         try: counts = data.counts(max_keys=200)
         except RuntimeError: pass
         else:
-          c_keys = counts.keys()
-          c_values = counts.values()
+          c_keys = list(counts.keys())
+          c_values = list(counts.values())
           if (   test_flag_value is None
               or test_flag_value in c_keys):
             if (counts.size() == 2):
@@ -320,7 +324,7 @@ class get_r_free_flags_scores(object):
               c_keys_min = min(c_keys)
               c_keys_max = max(c_keys)
               if (((c_keys_max - c_keys_min) < data.size()) and
-                  (c_keys == range(c_keys_min, c_keys_max+1))) :
+                  (c_keys == list(range(c_keys_min, c_keys_max+1)))):
                 # XXX 0.55 may be too close a margin - the routine to export
                 # R-free flags for CCP4 seems to get this wrong frequently.
                 if (min(c_values) > max(c_values)*0.55):
@@ -336,7 +340,7 @@ class get_r_free_flags_scores(object):
                     # XXX this appears to be a special case (from Axel); I'm
                     # erring on the side of consistency with CNS here
                     if ((c_keys == [-1, 0, 1]) and
-                        (counts[0] >= data.size()*0.55)) :
+                        (counts[0] >= data.size()*0.55)):
                       effective_test_flag_value = 1
                     else :
                       effective_test_flag_value = min(c_keys)
@@ -344,14 +348,14 @@ class get_r_free_flags_scores(object):
                     effective_test_flag_value = test_flag_value
               else : # XXX gross fix to avoid memory leak for corrupted flags
                 n_binary = counts.get(0, 0) + counts.get(1, 0)
-                if (n_binary >= data.size()*0.95) :
+                if (n_binary >= data.size()*0.95):
                   if (looks_like_r_free_flags_info(miller_array.info())):
                     flag_score = 2
                   else :
                     flag_score = 1
-                if (flag_score != 0) :
-                  if (test_flag_value is None) :
-                    if (counts[0] >= data.size()*0.55) :
+                if (flag_score != 0):
+                  if (test_flag_value is None):
+                    if (counts[0] >= data.size()*0.55):
                       effective_test_flag_value = 1
                     else :
                       effective_test_flag_value = min(c_keys)
@@ -389,14 +393,16 @@ def get_experimental_phases_scores(miller_arrays, ignore_all_zeros):
       result.append(0)
   return result
 
-def sort_arrays_by_score (miller_arrays, array_scores, minimum_score) :
+def sort_arrays_by_score(miller_arrays, array_scores, minimum_score):
   assert len(miller_arrays) == len(array_scores)
   i = 0
   scored_arrays = []
   for array in miller_arrays :
     scored_arrays.append( (array, array_scores[i]) )
     i += 1
-  scored_arrays.sort(lambda x, y: y[1] - x[1])
+  def cmp_fn(x,y):
+    return y[1] - x[1]
+  scored_arrays.sort(key=cmp_to_key(cmp_fn))
   valid_arrays = []
   for (array, score) in scored_arrays :
     if score >= minimum_score :
@@ -411,7 +417,8 @@ def select_array(
       err,
       error_message_no_array,
       error_message_not_a_suitable_array,
-      error_message_multiple_equally_suitable):
+      error_message_multiple_equally_suitable,
+      raise_no_array=True):
   if (labels is not None): assert parameter_name is not None
   if (len(miller_arrays) == 0):
     raise Sorry_No_array_of_the_required_type(
@@ -427,7 +434,7 @@ def select_array(
     label_scores = lbl_tab.scores(labels=labels)
   if (label_scores is not None and max(label_scores) == 0):
     error = "No matching array: %s=%s" % (parameter_name, " ".join(labels))
-    print >> err, "\n" + error + "\n"
+    print("\n" + error + "\n", file=err)
     if (max(data_scores) > 0):
       lbl_tab.show_possible_choices(
         scores=data_scores,
@@ -436,11 +443,13 @@ def select_array(
     raise Sorry(error)
   if (max(data_scores) == 0):
     if (label_scores is None):
-      print >> err, "\n" + error_message_no_array + "\n"
-      raise Sorry_No_array_of_the_required_type(error_message_no_array)
+      if(raise_no_array):
+        print("\n" + error_message_no_array + "\n", file=err)
+        raise Sorry_No_array_of_the_required_type(error_message_no_array)
+      else: return
     error = "%s%s=%s" % (
       error_message_not_a_suitable_array, parameter_name, " ".join(labels))
-    print >> err, "\n" + error + "\n"
+    print("\n" + error + "\n", file=err)
     raise Sorry_Not_a_suitable_array(error)
   if (label_scores is None):
     combined_scores = data_scores
@@ -452,7 +461,7 @@ def select_array(
   i = combined_scores.index(max(combined_scores))
   if (combined_scores.count(combined_scores[i]) > 1):
     error = error_message_multiple_equally_suitable
-    print >> err, "\n" + error + "\n"
+    print("\n" + error + "\n", file=err)
     lbl_tab.show_possible_choices(
       scores=combined_scores,
       minimum_score=max(combined_scores),
@@ -466,6 +475,7 @@ class reflection_file_server(object):
         crystal_symmetry=None,
         force_symmetry=None,
         reflection_files=None,
+        miller_arrays=None,
         err=None):
     self.crystal_symmetry = crystal_symmetry
     self.force_symmetry = force_symmetry
@@ -477,11 +487,21 @@ class reflection_file_server(object):
         self.miller_arrays.extend(reflection_file.as_miller_arrays(
           crystal_symmetry=self.crystal_symmetry,
           force_symmetry=self.force_symmetry))
+    if (miller_arrays is not None):
+      self.miller_arrays.extend(miller_arrays)
     self.file_name_miller_arrays = {}
     for miller_array in self.miller_arrays:
       self.file_name_miller_arrays.setdefault(
         libtbx.path.canonical_path(
           miller_array.info().source), []).append(miller_array)
+
+  def update_crystal_symmetry(self, crystal_symmetry):
+    self.crystal_symmetry = crystal_symmetry
+    for i, ma in enumerate(self.miller_arrays):
+      info = ma.info()
+      self.miller_arrays[i] = ma.customized_copy(
+        crystal_symmetry = self.crystal_symmetry)
+      self.miller_arrays[i].set_info(info)
 
   def get_miller_arrays(self, file_name):
     if (file_name is None): return self.miller_arrays
@@ -507,19 +527,19 @@ class reflection_file_server(object):
       raise Sorry("No reflection data in file: %s" % file_name)
     return result
 
-  def get_miller_array (self, labels, file_name=None) :
-    if (file_name is None) :
+  def get_miller_array(self, labels, file_name=None):
+    if (file_name is None):
       miller_arrays = self.miller_arrays
     else :
       canonical_file_name = libtbx.path.canonical_path(file_name)
       miller_arrays = self.file_name_miller_arrays[canonical_file_name]
     for array in miller_arrays :
-      if (isinstance(labels, str)) :
-        if (array.info().label_string() == labels) :
+      if (isinstance(labels, str)):
+        if (array.info().label_string() == labels):
           return array
       else :
         assert (isinstance(labels, list))
-        if (array.info().labels == labels) :
+        if (array.info().labels == labels):
           return array
     return None
 
@@ -640,7 +660,7 @@ class reflection_file_server(object):
         return_all_valid_arrays=False,
         minimum_score=1,
         prefer_anomalous=None,
-        prefer_amplitudes=None) :
+        prefer_amplitudes=None):
     miller_arrays = self.get_miller_arrays(file_name=file_name)
     data_scores = get_xray_data_scores(
       miller_arrays=miller_arrays,
@@ -656,19 +676,32 @@ class reflection_file_server(object):
     if(labels is None):
       new_miller_arrays = []
       new_data_scores = []
-      for ma, ds in zip(miller_arrays, data_scores):
-        if(not ((ma.info().labels in [
+      # This allows still use "filtered" if no other option is available
+      for j in range(len(miller_arrays)):
+        ma = miller_arrays[j]
+        ds = data_scores[j]
+        if((ma.info().labels in [
            ['F-obs-filtered', 'SIGF-obs-filtered'],
            ['F-obs-filtered(+)', 'SIGF-obs-filtered(+)', 'F-obs-filtered(-)',
             'SIGF-obs-filtered(-)',],
+            ]) ):
+          data_scores[j] = ds-1
+      #
+      for ma, ds in zip(miller_arrays, data_scores):
+        if(not ((ma.info().labels in [
            ['F-model', 'PHIF-model'],
            ['F-model(+)', 'PHIF-model(+)', 'F-model(-)', 'PHIF-model(-)'] ]) or
            isinstance(ma.data(), flex.complex_double))):
           new_miller_arrays.append(ma)
           new_data_scores.append(ds)
     #
+    parameter_name = parameter_name.strip()
+    if(len(parameter_name)==0):
+      parameter_name_ = parameter_scope
+    else:
+      parameter_name_ = parameter_scope+"."+parameter_name
     i = select_array(
-      parameter_name=parameter_scope+"."+parameter_name,
+      parameter_name=parameter_name_,
       labels=labels,
       miller_arrays=new_miller_arrays,
       data_scores=new_data_scores,
@@ -688,7 +721,7 @@ class reflection_file_server(object):
         disable_suitability_test,
         parameter_scope,
         return_all_valid_arrays=False,
-        minimum_score=1) :
+        minimum_score=1):
     miller_arrays = self.get_miller_arrays(file_name=file_name)
     if (disable_suitability_test):
       if (label is None or test_flag_value is None):
@@ -711,9 +744,11 @@ class reflection_file_server(object):
     if return_all_valid_arrays : # used in PHENIX GUI
       test_flag_values = flag_scores.test_flag_values
       scored_arrays = []
-      for i, array in enumerate(miller_arrays) :
+      for i, array in enumerate(miller_arrays):
         scored_arrays.append( (array, test_flag_values[i], data_scores[i]) )
-      scored_arrays.sort(lambda x, y: y[2] - x[2])
+      def cmp_fn(x,y):
+        return y[2] - x[2]
+      scored_arrays.sort(key=cmp_to_key(cmp_fn))
       valid_arrays_and_flags = []
       for (array, flag_value, score) in scored_arrays :
         if score >= minimum_score :
@@ -726,7 +761,7 @@ class reflection_file_server(object):
     else: labels=[label]
     try:
       i = select_array(
-        parameter_name=parameter_scope+".label",
+        parameter_name=parameter_scope,
         labels=labels,
         miller_arrays=miller_arrays,
         data_scores=data_scores,
@@ -734,14 +769,13 @@ class reflection_file_server(object):
         error_message_no_array
           ="No array of R-free flags found.\n\n"
           +"For manual selection define:\n"
-          +"  %s.label\n"%parameter_scope
           +"  %s.test_flag_value\n"%parameter_scope
           +"  %s.disable_suitability_test=True"%parameter_scope,
         error_message_not_a_suitable_array
           ="Not a suitable array of R-free flags: ",
         error_message_multiple_equally_suitable
           ="Multiple equally suitable arrays of R-free flags found.")
-    except Sorry_Not_a_suitable_array, e:
+    except Sorry_Not_a_suitable_array as e:
       raise Sorry_Not_a_suitable_array(
         str(e) + "\nTo override the suitability test define:"
                + " %s.disable_suitability_test=True" % parameter_scope)
@@ -758,9 +792,10 @@ class reflection_file_server(object):
         labels,
         ignore_all_zeros,
         parameter_scope,
+        raise_no_array=True,
         parameter_name="labels",
         return_all_valid_arrays=False,
-        minimum_score=1) :
+        minimum_score=1):
     miller_arrays = self.get_miller_arrays(file_name=file_name)
     data_scores = get_experimental_phases_scores(
       miller_arrays=miller_arrays,
@@ -773,12 +808,14 @@ class reflection_file_server(object):
       miller_arrays=miller_arrays,
       data_scores=data_scores,
       err=self.err,
+      raise_no_array=raise_no_array,
       error_message_no_array
         ="No array of experimental phases found.",
       error_message_not_a_suitable_array
         ="Not a suitable array of experimental phases: ",
       error_message_multiple_equally_suitable
         ="Multiple equally suitable arrays of experimental phases found.")
+    if i is None: return None
     return miller_arrays[i]
 
 def cif_status_flags_as_int_r_free_flags(miller_array, test_flag_value):
@@ -794,7 +831,7 @@ def cif_status_flags_as_int_r_free_flags(miller_array, test_flag_value):
     test_flag_value = 0
   return miller_array, test_flag_value
 
-def guess_r_free_flag_value (miller_array, test_flag_value=None) :
+def guess_r_free_flag_value(miller_array, test_flag_value=None):
   flag_scores = get_r_free_flags_scores(
     miller_arrays=[miller_array],
     test_flag_value=test_flag_value)
@@ -823,7 +860,7 @@ def construct_output_file_name(input_file_names,
       user_file_name += extension_seperator + file_extension
   return user_file_name
 
-def make_joined_set (miller_arrays) :
+def make_joined_set(miller_arrays):
   if(len(miller_arrays)==0): return None
   cs0 = miller_arrays[0].crystal_symmetry()
   for ma in miller_arrays:
@@ -846,7 +883,8 @@ def make_joined_set (miller_arrays) :
     crystal_symmetry=miller_arrays[0].crystal_symmetry(),
     indices=master_indices,
     anomalous_flag=False)
-  return master_set.map_to_asu().unique_under_symmetry()
+  return \
+    master_set.map_to_asu().unique_under_symmetry().remove_systematic_absences()
 
 def extract_miller_array_from_file(file_name, label=None, type=None, log=None):
   if(log is None): log = sys.stdout
@@ -858,15 +896,15 @@ def extract_miller_array_from_file(file_name, label=None, type=None, log=None):
     return (type == "complex" and ma.is_complex_array()) or \
            (type == "real"    and ma.is_real_array()) or \
            type is None
-  print >> log, "  Available suitable arrays:"
+  print("  Available suitable arrays:", file=log)
   suitable_arrays = []
   suitable_labels = []
   for ma in miller_arrays:
     if(get_flag(ma=ma)):
-      print >> log, "    ", ma.info().label_string()
+      print("    ", ma.info().label_string(), file=log)
       suitable_arrays.append(ma)
       suitable_labels.append(ma.info().label_string())
-  print >> log
+  print(file=log)
   if(  len(suitable_arrays) == 0): raise Sorry("No suitable arrays.")
   elif(len(suitable_arrays) == 1): result = suitable_arrays[0]
   elif(len(suitable_arrays) >  1):
@@ -879,11 +917,11 @@ def extract_miller_array_from_file(file_name, label=None, type=None, log=None):
     else:
       for ma in miller_arrays:
         if(get_flag(ma=ma) and (ma.info().label_string() == label)):
-          print >> log, "  Selected:", ma.info().label_string()
+          print("  Selected:", ma.info().label_string(), file=log)
           result = ma
   return result
 
-class process_raw_data (object) :
+class process_raw_data(object):
   """
   Automation wrapper - prepares single-wavelength experimental data (and
   optional R-free flags and experimental phases) for any future step in the
@@ -897,7 +935,7 @@ class process_raw_data (object) :
     "phases",
     "_generate_new",
   ]
-  def __init__ (self,
+  def __init__(self,
       obs,
       r_free_flags,
       test_flag_value,
@@ -907,9 +945,9 @@ class process_raw_data (object) :
       r_free_flags_params=None,
       merge_anomalous=False,
       log=sys.stdout,
-      verbose=True) :
+      verbose=True):
     assert (log is not None) and (obs is not None)
-    if (r_free_flags_params is None) :
+    if (r_free_flags_params is None):
       from cctbx.r_free_utils import generate_r_free_params_str
       r_free_flags_params = libtbx.phil.parse(
         generate_r_free_params_str).extract()
@@ -919,9 +957,9 @@ class process_raw_data (object) :
     obs = obs.map_to_asu().merge_equivalents().array()
     obs = obs.eliminate_sys_absent(log=log)
     obs = obs.resolution_filter(d_min=d_min, d_max=d_max)
-    if (obs.is_xray_intensity_array()) :
+    if (obs.is_xray_intensity_array()):
       from cctbx import french_wilson
-      if (verbose) :
+      if (verbose):
         fw_out = log
       else :
         fw_out = null_out()
@@ -930,66 +968,75 @@ class process_raw_data (object) :
         params=None,
         log=fw_out)
     assert (obs is not None)
+    if (obs.is_xray_reconstructed_amplitude_array()):
+      # The MTZ reader fuses adjacent F/SIGF/DANO/SIGDANO(/ISYM) columns into
+      # Bijvoet pairs of observation type reconstructed_amplitude.  The MTZ
+      # writer would write such an array back as F/SIGF/DANO/SIGDANO/ISYM
+      # columns, and write_mtz_file would then fail adding the merged data
+      # under the same "F" root label.  Treat the pairs as ordinary F(+)/F(-)
+      # amplitudes from here on, which is what write_mtz_file and the
+      # automation steps reading its output expect.
+      obs = obs.set_observation_type_xray_amplitude()
     merged_obs = obs.average_bijvoet_mates()
-    if (merged_obs.completeness() < 0.9) :
-      print >> log, """
+    if (merged_obs.completeness() < 0.9):
+      print("""
   WARNING: data are incomplete (%.1f%% of possible reflections measured to
   %.2fA).  This may cause problems if you plan to use the maps for building
   and/or ligand fitting!
-    """ % (100*merged_obs.completeness(), merged_obs.d_min())
+    """ % (100*merged_obs.completeness(), merged_obs.d_min()), file=log)
     # XXX this is kind of a hack (the reconstructed arrays break some of my
     # assumptions about labels)
-    if (merge_anomalous) :
+    if (merge_anomalous):
       obs = obs.average_bijvoet_mates()
-    if (r_free_flags is not None) :
+    if (r_free_flags is not None):
       r_free_flags_info = r_free_flags.info()
       format = "cns"
-      if (test_flag_value == 0) :
+      if (test_flag_value == 0):
         format = "ccp4"
-      elif (test_flag_value == -1) :
+      elif (test_flag_value == -1):
         format = "shelx"
-      if (r_free_flags.anomalous_flag()) :
+      if (r_free_flags.anomalous_flag()):
         r_free_flags = r_free_flags.average_bijvoet_mates()
       is_compatible_symmetry = False
       obs_pg = obs.space_group().build_derived_point_group()
       flags_pg = r_free_flags.space_group().build_derived_point_group()
-      if (obs_pg.type().number() == flags_pg.type().number()) :
+      if (obs_pg.type().number() == flags_pg.type().number()):
         is_compatible_symmetry = True
       else :
         pass # TODO unit cell comparison?
-      if (is_compatible_symmetry) :
+      if (is_compatible_symmetry):
         r_free_flags = r_free_flags.map_to_asu().merge_equivalents().array()
         r_free_flags = r_free_flags.eliminate_sys_absent(log=log)
-        if (format == "cns") :
+        if (format == "cns"):
           r_free_flags = r_free_flags.customized_copy(
             crystal_symmetry=obs.crystal_symmetry(),
             data=(r_free_flags.data() == test_flag_value))
           test_flag_value = True
         obs_tmp = obs.deep_copy()
-        if (obs.anomalous_flag()) :
+        if (obs.anomalous_flag()):
           obs_tmp = obs.average_bijvoet_mates()
         r_free_flags = r_free_flags.common_set(other=obs_tmp)
         n_r_free = r_free_flags.indices().size()
         n_obs = obs_tmp.indices().size()
         if ((test_flag_value is None) or
-            (r_free_flags.data().all_eq(r_free_flags.data()[0]))) :
-          print >> log, """
+            (r_free_flags.data().all_eq(r_free_flags.data()[0]))):
+          print("""
   WARNING: uniform R-free flags detected; a new test set will be generated,
   but this will bias the refinement statistics.
-"""
+""", file=log)
           r_free_flags = None
-        elif (n_r_free != n_obs) :
+        elif (n_r_free != n_obs):
           missing_set = obs_tmp.lone_set(other=r_free_flags)
           n_missing = missing_set.indices().size()
-          if (n_missing > 0) :
-            print >> log, """
+          if (n_missing > 0):
+            print("""
   WARNING: R-free flags are incomplete relative to experimental
   data (%d vs. %d reflections).  The flags will be extended to
   complete the set, but we recommend supplying flags that are already
   generated to the maximum expected resolution.
-""" % (n_r_free, n_obs)
+""" % (n_r_free, n_obs), file=log)
             if (n_missing < 20) : # FIXME
-              if (format == "cns") :
+              if (format == "cns"):
                 missing_flags = missing_set.array(data=flex.bool(n_missing,
                   False))
               else :
@@ -1001,10 +1048,10 @@ class process_raw_data (object) :
                 use_lattice_symmetry=True,
                 format=format)
             r_free_flags = r_free_flags.concatenate(other=missing_flags)
-        if (r_free_flags is not None) :
+        if (r_free_flags is not None):
           assert (r_free_flags.indices().size() == obs_tmp.indices().size())
       else :
-        print >> log, """
+        print("""
     NOTE: incompatible symmetry between the data and the R-free flags:
          Data  : %s  %s
          Flags : %s  %s
@@ -1012,14 +1059,14 @@ class process_raw_data (object) :
 """ % (str(obs.space_group_info()),
           " ".join([ "%g" % x for x in obs.unit_cell().parameters() ]),
           str(r_free_flags.space_group_info()),
-          " ".join(["%g" % x for x in r_free_flags.unit_cell().parameters()]))
+          " ".join(["%g" % x for x in r_free_flags.unit_cell().parameters()])), file=log)
     else :
-      print >> log, """
+      print("""
  WARNING: R-free flags not supplied.  This may bias the refinement if the
      structures are very nearly isomorphous!
-"""
+""", file=log)
     self._generate_new = False
-    if (r_free_flags is None) :
+    if (r_free_flags is None):
       r_free_flags = obs.generate_r_free_flags(
         fraction=r_free_flags_params.fraction,
         max_free=r_free_flags_params.max_free,
@@ -1029,9 +1076,9 @@ class process_raw_data (object) :
         format="ccp4")
       test_flag_value = 0
       self._generate_new = True
-    if (r_free_flags.anomalous_flag()) :
+    if (r_free_flags.anomalous_flag()):
       r_free_flags = r_free_flags.average_bijvoet_mates()
-    if (phases is not None) :
+    if (phases is not None):
       phases_info = phases.info()
       phases = phases.map_to_asu().resolution_filter(d_min=d_min, d_max=d_max)
     assert (obs.is_xray_amplitude_array())
@@ -1039,69 +1086,69 @@ class process_raw_data (object) :
     self.r_free_flags = r_free_flags.set_info(r_free_flags_info)
     self.test_flag_value = test_flag_value
     self.phases = None
-    if (phases is not None) :
+    if (phases is not None):
       self.phases = phases.set_info(phases_info)
 
-  def data_labels (self) :
-    if (self.f_obs.is_xray_reconstructed_amplitude_array()) :
+  def data_labels(self):
+    if (self.f_obs.is_xray_reconstructed_amplitude_array()):
       return "F,SIGF,DANO,SIGDANO,ISYM"
-    elif (self.f_obs.anomalous_flag()) :
-      if (self.f_obs.sigmas() is not None) :
+    elif (self.f_obs.anomalous_flag()):
+      if (self.f_obs.sigmas() is not None):
         return "F(+),SIGF(+),F(-),SIGF(-)"
       else :
         return "F(+),F(-)"
-    elif (self.f_obs.sigmas() is not None) :
+    elif (self.f_obs.sigmas() is not None):
       return "F,SIGF"
     else :
       return "F"
 
-  def r_free_flags_label (self) :
+  def r_free_flags_label(self):
     return "FreeR_flag"
 
-  def r_free_flags_as_boolean_array (self) :
+  def r_free_flags_as_boolean_array(self):
     flags = self.r_free_flags.customized_copy(
       data=self.r_free_flags.data()==self.test_flag_value)
-    if (self.f_obs.anomalous_flag()) and (not flags.anomalous_flag()) :
+    if (self.f_obs.anomalous_flag()) and (not flags.anomalous_flag()):
       flags = flags.generate_bijvoet_mates()
     return flags
 
-  def data_and_flags (self) :
+  def data_and_flags(self):
     return self.f_obs.common_sets(other=self.r_free_flags_as_boolean_array())
 
-  def phase_labels (self) :
-    if (self.phases is not None) :
+  def phase_labels(self):
+    if (self.phases is not None):
       return "HLA,HLB,HLC,HLD"
     return None
 
-  def n_obs (self) :
+  def n_obs(self):
     return self.f_obs.data().size()
 
-  def fraction_free (self) :
+  def fraction_free(self):
     return (self.r_free_flags.data().count(self.test_flag_value) /
             self.r_free_flags.data().size())
 
-  def flags_are_new (self) :
+  def flags_are_new(self):
     return self._generate_new
 
-  def write_mtz_file (self, file_name,
+  def write_mtz_file(self, file_name,
       title=None,
       wavelength=None,
-      single_dataset=True) :
+      single_dataset=True):
     mtz_data = self.f_obs.as_mtz_dataset(
       column_root_label="F",
       wavelength=wavelength)
-    if (self.f_obs.anomalous_flag()) and (not single_dataset) :
+    if (self.f_obs.anomalous_flag()) and (not single_dataset):
       mtz_data.add_miller_array(
         miller_array=self.f_obs.average_bijvoet_mates(),
         column_root_label="F")
-    if (self.phases is not None) :
+    if (self.phases is not None):
       mtz_data.add_miller_array(self.phases,
         column_root_label="HL")
     mtz_data.add_miller_array(self.r_free_flags,
       column_root_label="FreeR_flag")
     mtz_data.mtz_object().write(file_name)
 
-def change_space_group (file_name, space_group_info) :
+def change_space_group(file_name, space_group_info):
   """
   Update the space group in an MTZ file, writing it in place.
   """
@@ -1111,7 +1158,7 @@ def change_space_group (file_name, space_group_info) :
   mtz_new = mtz_object.set_space_group_info(space_group_info)
   mtz_new.write(file_name)
 
-def load_f_obs_and_r_free (file_name, anomalous_flag=False, phases=False) :
+def load_f_obs_and_r_free(file_name, anomalous_flag=False, phases=False):
   """
   Automation wrapper for reading in MTZ files generated by the process_raw_data
   class.
@@ -1136,20 +1183,20 @@ def load_f_obs_and_r_free (file_name, anomalous_flag=False, phases=False) :
   f_obs_info = f_obs_anom_info = None
   for array in file_server.miller_arrays :
     label = array.info().label_string()
-    if (array.is_xray_amplitude_array()) and (array.anomalous_flag()) :
+    if (array.is_xray_amplitude_array()) and (array.anomalous_flag()):
       f_obs_anom = array
       f_obs_anom_info = f_obs_anom.info()
-    elif (label == "F,SIGF") :
+    elif (label == "F,SIGF"):
       f_obs = array
       f_obs_info = array.info()
-  if (f_obs is None) and (f_obs_anom is not None) :
+  if (f_obs is None) and (f_obs_anom is not None):
     f_obs = f_obs_anom.average_bijvoet_mates()
   f_obs = f_obs.eliminate_sys_absent()
   # XXX this may still be necessary
   f_obs = f_obs.common_set(other=r_free)
   r_free = r_free.common_set(other=f_obs)
   assert (not None in [f_obs, r_free])
-  if (f_obs_anom is not None) and (anomalous_flag) :
+  if (f_obs_anom is not None) and (anomalous_flag):
     f_obs_anom = f_obs_anom.eliminate_sys_absent()
     r_free = r_free.generate_bijvoet_mates()
     f_obs = f_obs_anom.common_set(other=r_free).set_info(f_obs_anom_info)

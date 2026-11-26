@@ -1,7 +1,7 @@
 
 # TODO make this much more comprehensive
 
-from __future__ import division
+from __future__ import absolute_import, division, print_function
 from mmtbx.regression import model_1yjp
 import mmtbx.command_line
 from iotbx.scalepack import no_merge_original_index
@@ -13,11 +13,11 @@ from libtbx.test_utils import approx_equal, Exception_expected
 from libtbx.utils import null_out, Sorry
 from libtbx import easy_run
 import libtbx.load_env
-from cStringIO import StringIO
+from six.moves import cStringIO as StringIO
 import random
 import os.path
 
-def exercise_simple () :
+def exercise_simple():
   pdb_str="""
 ATOM     47  N   TYR A   7       8.292   1.817   6.147  1.00 14.70           N
 ATOM     48  CA  TYR A   7       9.159   2.144   7.299  1.00 15.18           C
@@ -44,14 +44,15 @@ TER
     photon=1.54,
     table="sasaki")
   file_base = "tmp_mmtbx_cmdline"
-  open(file_base+".pdb", "w").write(
-    hierarchy.as_pdb_string(crystal_symmetry=xrs))
+  with open(file_base+".pdb", "w") as f:
+    f.write(hierarchy.as_pdb_string(crystal_symmetry=xrs))
   fc = abs(xrs.structure_factors(d_min=1.5).f_calc())
   flags = fc.generate_r_free_flags()
   mtz = fc.as_mtz_dataset(column_root_label="F")
   mtz.add_miller_array(flags, column_root_label="FreeR_flag")
   mtz.mtz_object().write(file_base+".mtz")
-  open(file_base+".fa", "w").write(">Tyr\nY\n")
+  with open(file_base+".fa", "w") as f:
+    f.write(">Tyr\nY\n")
   base_args = [ file_base + ext for ext in [".pdb",".mtz",".fa"] ]
   cmdline = mmtbx.command_line.load_model_and_data(
     args=base_args+["wavelength=1.54"],
@@ -74,6 +75,7 @@ TER
   assert approx_equal(cmdline.params.input.wavelength, 1.54018, eps=0.0001)
   # UNMERGED DATA INPUT
   log = cmdline.start_log_file("tst_mmtbx_cmdline.log")
+  log.close()
   fc2 = xrs.structure_factors(d_min=1.3).f_calc().generate_bijvoet_mates()
   fc2 = fc2.randomize_amplitude_and_phase(amplitude_error=0.01,
     phase_error_deg=5, random_seed=12345).customized_copy(
@@ -81,9 +83,8 @@ TER
   i_obs = abs(fc2).f_as_f_sq()
   i_obs = i_obs.expand_to_p1().customized_copy(
     crystal_symmetry=fc2).set_observation_type_xray_intensity()
-  f = open(file_base + ".sca", "w")
-  no_merge_original_index.writer(i_obs,
-    file_object=f)
+  with open(file_base + ".sca", "w") as f:
+    no_merge_original_index.writer(i_obs, file_object=f)
   master_phil = mmtbx.command_line.generate_master_phil_with_inputs(
     phil_string="",
     enable_unmerged_data=True)
@@ -100,8 +101,8 @@ ATOM     59  UNK UNL A   7       0.000   0.000   0.000  1.00 20.00           X
 """)
   hierarchy = pdb_in.construct_hierarchy()
   file_base = "tmp_mmtbx_cmdline"
-  open(file_base+".pdb", "w").write(
-    hierarchy.as_pdb_string(crystal_symmetry=xrs))
+  with open(file_base+".pdb", "w") as f:
+    f.write(hierarchy.as_pdb_string(crystal_symmetry=xrs))
   try :
     cmdline = mmtbx.command_line.load_model_and_data(
       args=[ file_base + ext for ext in [".pdb",".mtz",".fa",] ],
@@ -121,20 +122,21 @@ ATOM     59  UNK UNL A   7       0.000   0.000   0.000  1.00 20.00           X
     create_log_buffer=True,
     remove_unknown_scatterers=True)
 
-def exercise_combine_symmetry () :
+def exercise_combine_symmetry():
   """
   Test the extraction of symmetry from both a PDB file and an MTZ file.
   """
   from mmtbx.regression import model_1yjp
   import mmtbx.command_line
-  import iotbx.pdb.hierarchy
+  import iotbx.pdb
   from cctbx import sgtbx
   from cctbx import uctbx
   # 1yjp, as usual
-  pdb_in = iotbx.pdb.hierarchy.input(pdb_string=model_1yjp)
-  xrs = pdb_in.input.xray_structure_simple()
+  pdb_in = iotbx.pdb.input(source_info=None, lines=model_1yjp)
+  hierarchy = pdb_in.construct_hierarchy()
+  xrs = pdb_in.xray_structure_simple()
   f = open("tst_combine_symmetry.pdb", "w")
-  f.write(pdb_in.hierarchy.as_pdb_string(crystal_symmetry=xrs))
+  f.write(hierarchy.as_pdb_string(crystal_symmetry=xrs))
   f.close()
   f_calc = abs(xrs.structure_factors(d_min=1.5).f_calc())
   # Make up slightly more exact unit cell, but set SG to P2
@@ -155,7 +157,7 @@ def exercise_combine_symmetry () :
     out=null_out())
   symm = cmdline.xray_structure.crystal_symmetry()
   assert (approx_equal(symm.unit_cell().parameters(),
-          (21.9371, 4.8659, 23.4774, 90.0, 107.08, 90.0), eps=0.001))
+          (21.9371, 4.8659, 23.4774, 90.0, 107.083, 90.0), eps=0.001))
   assert (str(symm.space_group_info()) == "P 1 21 1")
   # Part 2: incompatible space groups
   f_calc_2 = f_calc.customized_copy(
@@ -172,7 +174,7 @@ def exercise_combine_symmetry () :
       process_pdb_file=False,
       create_fmodel=True,
       out=null_out())
-  except Sorry, s :
+  except Sorry as s :
     assert ("Incompatible space groups" in str(s))
   else :
     raise Exception_expected
@@ -192,12 +194,12 @@ def exercise_combine_symmetry () :
       process_pdb_file=False,
       create_fmodel=True,
       out=null_out())
-  except Sorry, s :
+  except Sorry as s :
     assert ("Unit cell mismatch" in str(s))
   else :
     raise Exception_expected
 
-def exercise_example () :
+def exercise_example():
   from mmtbx.regression import make_fake_anomalous_data
   pdb_file, mtz_file = make_fake_anomalous_data.generate_cd_cl_inputs(
     file_base="tst_cmdline_example")
@@ -214,7 +216,7 @@ def exercise_example () :
   result = easy_run.fully_buffered(" ".join(args)).raise_if_errors()
   assert ("""CC(obs-calc): 0.999""" in result.stdout_lines)
 
-def exercise_cns_input () :
+def exercise_cns_input():
   from mmtbx.regression import make_fake_anomalous_data
   pdb_file, mtz_file = make_fake_anomalous_data.generate_cd_cl_inputs(
     file_base="tst_cmdline_cns")
@@ -228,8 +230,8 @@ def exercise_cns_input () :
     file_object=out,
     r_free_flags=flags)
   # get rid of embedded symmetry
-  for line in out.getvalue().splitlines() :
-    if (not "{" in line) :
+  for line in out.getvalue().splitlines():
+    if (not "{" in line):
       f.write("%s\n" % line)
   f.close()
   cmdline = mmtbx.command_line.load_model_and_data(
@@ -246,11 +248,11 @@ Space group: P 1 (No. 1)
 """), out.getvalue()
 
 # XXX this is essentially identical to tst_cc_star_space_group.py
-def exercise_load_unmerged () :
+def exercise_load_unmerged():
   flex.set_random_seed(123456)
   random.seed(123456)
   base = "tst_load_unmerged"
-  pdb_in = iotbx.pdb.hierarchy.input(pdb_string=model_1yjp)
+  pdb_in = iotbx.pdb.input(source_info=None, lines=model_1yjp)
   xrs = pdb_in.xray_structure_simple()
   xrs.set_inelastic_form_factors(
     photon=1.54,
@@ -275,7 +277,8 @@ def exercise_load_unmerged () :
     space_group_info=sg_p2,
     sigmas=flex.double(fc_p1.size(), 10.0))
   ic.export_as_scalepack_unmerged(file_name=base + ".sca")
-  open(base + ".pdb", "w").write(model_1yjp)
+  with open(base + ".pdb", "w") as f:
+    f.write(model_1yjp)
   args = [
     base + ".mtz",
     base + ".pdb",
@@ -310,7 +313,7 @@ def exercise_load_unmerged () :
       create_fmodel=False,
       process_pdb_file=False,
       create_log_buffer=True)
-  except Sorry, s :
+  except Sorry as s :
     assert (str(s) == "Incompatible space groups in merged and unmerged data:P 1 21 1 versus P 1"), s
   else :
     raise Exception_expected
@@ -353,15 +356,15 @@ def exercise_load_unmerged () :
       create_fmodel=False,
       process_pdb_file=False,
       create_log_buffer=True)
-  except Sorry, s :
+  except Sorry as s :
     assert ("Incompatible symmetry definitions" in str(s)), s
   else :
     raise Exception_expected
 
-if (__name__ == "__main__") :
+if (__name__ == "__main__"):
   exercise_simple()
   exercise_cns_input()
   exercise_load_unmerged()
   exercise_combine_symmetry()
   exercise_example()
-  print "OK"
+  print("OK")

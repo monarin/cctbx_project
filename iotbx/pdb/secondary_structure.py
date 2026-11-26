@@ -1,4 +1,5 @@
-from __future__ import division
+"""Tools for identification of secondary structure in a model"""
+from __future__ import absolute_import, division, print_function
 #
 # Implemented based on PDB v3.2 specification at:
 #   http://www.wwpdb.org/documentation/format32/sect5.html
@@ -48,13 +49,15 @@ from __future__ import division
 #
 
 from libtbx.utils import Sorry
-import libtbx.phil
+
 from libtbx import adopt_init_args
 import sys
 from iotbx.pdb.hybrid_36 import hy36encode, hy36decode
 import iotbx.cif.model
 import copy
 from libtbx.utils import null_out
+from six.moves import range
+from six.moves import zip
 
 
 def lists_have_comment_element(a,b):
@@ -79,17 +82,17 @@ def segments_are_similar(atom_selection_1=None,
     asc=hierarchy.atom_selection_cache()
     sel=asc.selection(string = atom_selection_1)
     try:
-      h1=hierarchy.deep_copy().select(sel)  # keep original hierarchy too
+      h1=hierarchy.select(sel, copy_atoms=True)  # detach from original hierarchy
       number_self=h1.overall_counts().n_residues
-    except Exception, e:
+    except Exception as e:
       return False
 
     asc=hierarchy.atom_selection_cache()
     sel=asc.selection(string = atom_selection_2)
     try:
-      h2=hierarchy.deep_copy().select(sel)
+      h2=hierarchy.select(sel, copy_atoms=True)
       number_other=h2.overall_counts().n_residues
-    except Exception, e:
+    except Exception as e:
       return False
 
     if maximum_length_difference is not None and \
@@ -100,9 +103,9 @@ def segments_are_similar(atom_selection_1=None,
     atom_selection="(%s) and (%s)" %(atom_selection_1,atom_selection_2)
     sel=asc.selection(string = atom_selection)
     try:
-      h12=hierarchy.deep_copy().select(sel)
+      h12=hierarchy.select(sel, copy_atoms=True)
       number_both=h12.overall_counts().n_residues
-    except Exception, e:
+    except Exception as e:
       return False
 
     if number_both<minimum_overlap:
@@ -161,13 +164,13 @@ class one_strand_pair_registration_atoms:
        (strand_a_atom=="N" and strand_b_atom != "O") or \
        (strand_a_atom!="N" and strand_b_atom != "N") or \
        (strand_a_atom!="O" and strand_b_atom != "O"):
-          print >>log,"Cannot interpret H-bonding of %s to %s " %(
-            strand_a_atom,strand_b_atom)
+          print("Cannot interpret H-bonding of %s to %s " %(
+            strand_a_atom,strand_b_atom), file=log)
           ok=False
           return
 
     if not sense in [-1,1]:
-      print >>log,"Cannot interpret bonding with sense not -1 or 1:"
+      print("Cannot interpret bonding with sense not -1 or 1:", file=log)
       self.ok=False
       return
 
@@ -271,7 +274,7 @@ class registration_atoms:
        self.strand_1b.as_atom_selections(), self.strand_2b.as_atom_selections())
     asc=self.hierarchy.atom_selection_cache()
     sel=asc.selection(string = atom_selection)
-    ph=self.hierarchy.deep_copy().select(sel)  # keep original hierarchy too
+    ph=self.hierarchy.select(sel, copy_atoms=True)  # detach from original hierarchy
     # now ph is list of CA by residue.  Find the position of our N or O
 
     if not self.registration_1 or not self.registration_2:
@@ -333,13 +336,44 @@ class registration_atoms:
     return None
 
 
-class structure_base (object) :
+def get_amide_isel(asc, ss_element_string_selection):
+  # There are cases where SS element can be only in B conformation
+  # and split in A/B conformations
+  sele_str_main_conf = "(%s) and (name N) and (altloc 'A' or altloc ' ')" % ss_element_string_selection
+  amide_isel_main_conf = asc.iselection(sele_str_main_conf)
+  if len(amide_isel_main_conf) > 0:
+    return amide_isel_main_conf
+  sele_str_all = "(%s) and (name N)" % ss_element_string_selection
+  amide_isel_all = asc.iselection(sele_str_all)
+  if len(amide_isel_all) > 0:
+    return amide_isel_all
+  error_msg = "Error in helix definition. It will be skipped.\n"
+  error_msg += "String '%s' selected 0 atoms.\n" % sele_str_main_conf
+  error_msg += "String '%s' selected 0 atoms.\n" % sele_str_all
+  error_msg += "Most likely the definition of SS element does not match model.\n"
+  return error_msg
 
-  def as_pdb_str (self) :
+
+class structure_base(object):
+
+  def fits_in_pdb_format(self):
+    return True
+
+  def as_pdb_str(self):
     return None
 
-  def __str__ (self) :
-    return self.as_pdb_str()
+  def as_mmcif_str(self):
+    return None
+
+  def as_pdb_or_mmcif_str(self, target_format='pdb'):
+    # Return str in target format if possible, otherwise in mmcif
+    if target_format == 'pdb' and self.fits_in_pdb_format():
+      return self.as_pdb_str()
+    else:
+      return self.as_mmcif_str()
+
+  def __str__(self):
+    return self.as_pdb_or_mmcif_str()
 
   @staticmethod
   def convert_resseq(resseq):
@@ -355,6 +389,29 @@ class structure_base (object) :
     elif isinstance(id, int):
       return hy36encode(3, id)
 
+  def get_start_resseq_as_int(self):
+    if self.start_resseq is not None:
+      if isinstance(self.start_resseq, str):
+        return hy36decode(4, self.start_resseq)
+      elif isinstance(self.start_resseq, int):
+        return self.start_resseq
+    return None
+
+  def get_end_resseq_as_int(self):
+    if self.end_resseq is not None:
+      if isinstance(self.end_resseq, str):
+        return hy36decode(4, self.end_resseq)
+      elif isinstance(self.end_resseq, int):
+        return self.end_resseq
+    return None
+
+  @staticmethod
+  def id_as_int(id):
+    if isinstance(id, str):
+      return hy36decode(min(len(id), 3), id)
+    elif isinstance(id, int):
+      return id
+    raise ValueError("String or int is needed")
 
   @staticmethod
   def icode_to_cif(icode):
@@ -385,6 +442,8 @@ class structure_base (object) :
   @staticmethod
   def filter_helix_records(lines):
     result = []
+    if lines is None:
+      return result
     for line in lines:
       if line.startswith("HELIX"):
         result.append(line)
@@ -396,6 +455,8 @@ class structure_base (object) :
     returns [[lines with equal sheetID], ... ,[lines with equal sheetID]]
     """
     result = []
+    if lines is None:
+      return result
     current_sh_lines = []
     current_sh_id = ""
     for line in lines:
@@ -418,7 +479,7 @@ class structure_base (object) :
     "Count residues in this secondary structure"
 
     if hierarchy is None:
-      raise AssertionError,"Require hierarchy for count_residues"
+      raise AssertionError("Require hierarchy for count_residues")
 
     atom_selection=self.combine_atom_selections(self.as_atom_selections())
     if not atom_selection:
@@ -426,8 +487,56 @@ class structure_base (object) :
 
     asc=hierarchy.atom_selection_cache()
     sel = asc.selection(string = atom_selection)
-    ph=hierarchy.deep_copy().select(sel)
+    ph=hierarchy.select(sel, copy_atoms=True)
     return ph.overall_counts().n_residues
+
+  def present_in_hierarchy(self, hierarchy):
+    start_present = False
+    end_present = False
+    start_resseq = self.start_resseq if isinstance(self.start_resseq, str) else self.convert_resseq(self.start_resseq)
+    end_resseq = self.end_resseq if isinstance(self.end_resseq, str) else self.convert_resseq(self.end_resseq)
+    if len(hierarchy.models()) == 0:
+      return False
+    for chain in hierarchy.models()[0].chains():
+      if chain.id == self.start_chain_id:
+        for rg in chain.residue_groups():
+          resname = rg.atom_groups()[0].resname
+          if rg.resseq == start_resseq and self.start_resname == resname:
+            start_present = True
+          if rg.resseq == end_resseq and self.end_resname == resname:
+            end_present = True
+          if start_present and end_present:
+            return True
+    return False
+
+  def _change_residue_numbering_in_place_helper(self, renumbering_dictionary, se=["start", "end"]):
+    """ Changes residue numbers and insertion codes in annotations.
+    For cases where one needs to renumber hierarchy and keep annotations
+    consisten with the new numbering.
+    Not for cases where residues removed or added.
+    Therefore residue name stays the same.
+
+    Called from derived classes.
+
+    Args:
+        renumbering_dictionary (_type_): data structure to match old and new numbering:
+        {'chain id':
+          {(old resseq, icode):(new resseq, icode)}
+        }
+        se: labels for start and end. Also can be ["cur", "prev"] in sheet registrations
+    """
+    for start_end in se:
+      chain_id_attr = "%s_chain_id" % start_end
+      resseq_attr  = "%s_resseq" % start_end
+      icode_attr = "%s_icode" % start_end
+      chain_dic = renumbering_dictionary.get(getattr(self, chain_id_attr), None)
+      if chain_dic is not None:
+          resseq, icode = getattr(self, resseq_attr), getattr(self, icode_attr)
+          new_resseq, new_icode = chain_dic.get((resseq, icode), (None, None))
+          if new_resseq is not None and new_icode is not None:
+              setattr(self, resseq_attr, new_resseq)
+              setattr(self, icode_attr, new_icode)
+
 
   def count_h_bonds(self,hierarchy=None,
        max_h_bond_length=None,ss_by_chain=False):
@@ -436,9 +545,8 @@ class structure_base (object) :
     "This uses the annotation in self"
     "Not appropriate for large structures unless you set ss_by_chain=True"
     "Use instead annotation.count_h_bonds in general."
-    print "ZZ count_h_bonds",hierarchy.overall_counts().n_residues
     if hierarchy is None:
-      raise AssertionError,"Require hierarchy for count_h_bonds"
+      raise AssertionError("Require hierarchy for count_h_bonds")
 
     atom_selection=self.combine_atom_selections(self.as_atom_selections())
     if not atom_selection:
@@ -446,17 +554,16 @@ class structure_base (object) :
 
     asc=hierarchy.atom_selection_cache()
     sel = asc.selection(string = atom_selection)
-    ph=hierarchy.deep_copy().select(sel)
+    ph=hierarchy.select(sel, copy_atoms=True)
 
     from mmtbx.secondary_structure.find_ss_from_ca import \
       find_secondary_structure
     fss=find_secondary_structure(hierarchy=ph,
-      user_annotation_text=self.as_pdb_str(),
+      user_annotation_text=self.as_pdb_or_mmcif_str(),
       force_secondary_structure_input=True,
       combine_annotations=False,
       ss_by_chain=ss_by_chain,
       max_h_bond_length=max_h_bond_length,out=null_out())
-    print "ZZ done count_h_bonds",hierarchy.overall_counts().n_residues,fss.number_of_good_h_bonds,fss.number_of_poor_h_bonds
     return fss.number_of_good_h_bonds,fss.number_of_poor_h_bonds
 
 
@@ -469,7 +576,7 @@ class structure_base (object) :
     if self.is_same_as(other=other): return True  # always quicker
 
     if hierarchy is None:
-      raise AssertionError,"Require hierarchy for is_similar_to"
+      raise AssertionError("Require hierarchy for is_similar_to")
 
     # Check for different objects
     if type(self) != type(other): return False
@@ -525,10 +632,19 @@ class structure_base (object) :
     if atom_selection:
       asc=hierarchy.atom_selection_cache()
       sel = asc.selection(string = atom_selection)
-      ph=hierarchy.deep_copy().select(sel)  #ph = needed part of hierarchy
+      ph=hierarchy.select(sel, copy_atoms=True)  #ph = needed part of hierarchy
       if ph.overall_counts().n_residues>0:
         return True
     return False
+
+
+def _index_rows(loop, key_list):
+  """Rows of loop (as iterrows yields them) keyed by the tuple of their
+  key_list values; the first row with a given key wins."""
+  index = {}
+  for row in loop.iterrows():
+    index.setdefault(tuple([row[k] for k in key_list]), row)
+  return index
 
 
 class annotation(structure_base):
@@ -540,7 +656,10 @@ class annotation(structure_base):
   @classmethod
   def resseq_as_int(cls, resseq):
     if resseq is not None:
-      return hy36decode(4, resseq)
+      if isinstance(resseq, str):
+        return hy36decode(4, resseq)
+      elif isinstance(resseq, int):
+        return resseq
     return None
 
   @classmethod
@@ -552,16 +671,16 @@ class annotation(structure_base):
       try:
         h = pdb_helix.from_pdb_record(line)
       except ValueError:
-        print >> log, "Bad HELIX record, was skipped:\n%s" % line
+        print("Bad HELIX record, was skipped:\n%s" % line, file=log)
       else:
         helices.append(h)
     for sh_lines in cls.filter_and_split_sheet_records(records):
       try:
         sh = pdb_sheet.from_pdb_records(sh_lines)
-      except ValueError, e:
-        print >> log, "Bad SHEET records, were skipped:\n"
+      except ValueError as e:
+        print("Bad SHEET records, were skipped:\n", file=log)
         for l in sh_lines:
-          print >> log, "  %s" % l
+          print("  %s" % l, file=log)
       else:
         sheets.append(sh)
     return cls(helices=helices, sheets=sheets)
@@ -576,11 +695,11 @@ class annotation(structure_base):
       for helix_row in helix_loop.iterrows():
         try:
           h = pdb_helix.from_cif_row(helix_row, serial)
-          serial += 1
+          if h is not None:
+            helices.append(h)
+            serial += 1
         except ValueError:
-          print >> log, "Bad HELIX records!"
-        else:
-          helices.append(h)
+          print("Bad HELIX records!", file=log)
     sheets = []
     struct_sheet_loop = cif_block.get_loop_or_row("_struct_sheet")
     struct_sheet_order_loop = cif_block.get_loop_or_row("_struct_sheet_order")
@@ -590,16 +709,44 @@ class annotation(structure_base):
         and struct_sheet_order_loop is not None
         and struct_sheet_range_loop is not None
         and struct_sheet_hbond_loop is not None):
+      # Check that keys are unique
+      error_msg_list = []
+      dups_sheet = struct_sheet_loop.check_key_is_unique(key_list=["_struct_sheet.id"])
+      dups_order = struct_sheet_order_loop.check_key_is_unique(key_list=["_struct_sheet_order.sheet_id",
+          "_struct_sheet_order.range_id_1", "_struct_sheet_order.range_id_2"])
+      dups_range = struct_sheet_range_loop.check_key_is_unique(key_list=["_struct_sheet_range.sheet_id",
+            "_struct_sheet_range.id"])
+      dups_hbond = struct_sheet_hbond_loop.check_key_is_unique(key_list=["_pdbx_struct_sheet_hbond.sheet_id",
+          "_pdbx_struct_sheet_hbond.range_id_1", "_pdbx_struct_sheet_hbond.range_id_2"])
+      for e_str, dups in [("Duplication in _struct_sheet.id: %s", dups_sheet),
+          ("Duplication in _struct_sheet_order: %s %s %s", dups_order),
+          ("Duplication in _struct_sheet_range: %s %s", dups_range),
+          ("Duplication in _pdbx_struct_sheet_hbond: %s %s %s", dups_hbond)]:
+        for dup in dups:
+          error_msg_list.append(e_str % dup)
+      if len(error_msg_list) > 0:
+        msg = "Error in sheet definitions:\n  " + "\n  ".join(error_msg_list)
+        raise Sorry(msg)
+      # Index each loop by its key once. find_row scans the whole loop per
+      # call, which made reading an annotation quadratic in its size.
+      range_index = _index_rows(struct_sheet_range_loop,
+          ["_struct_sheet_range.sheet_id", "_struct_sheet_range.id"])
+      order_index = _index_rows(struct_sheet_order_loop,
+          ["_struct_sheet_order.sheet_id", "_struct_sheet_order.range_id_1",
+           "_struct_sheet_order.range_id_2"])
+      hbond_index = _index_rows(struct_sheet_hbond_loop,
+          ["_pdbx_struct_sheet_hbond.sheet_id",
+           "_pdbx_struct_sheet_hbond.range_id_1",
+           "_pdbx_struct_sheet_hbond.range_id_2"])
       for sheet_row in struct_sheet_loop.iterrows():
         sheet_id = sheet_row['_struct_sheet.id']
         # we will count number_of_strands in from_cif_rows
         # number_of_strands = int(sheet_row['_struct_sheet.number_strands'])
         try:
-          sh = pdb_sheet.from_cif_rows(sheet_id,
-              struct_sheet_order_loop, struct_sheet_range_loop,
-              struct_sheet_hbond_loop)
+          sh = pdb_sheet.from_cif_rows(sheet_id, struct_sheet_range_loop,
+              range_index, order_index, hbond_index)
         except ValueError as e:
-          print >> log, "Bad sheet records.\n"
+          print("Bad sheet records.\n", file=log)
         else:
           sheets.append(sh)
     return cls(helices=helices, sheets=sheets)
@@ -612,14 +759,17 @@ class annotation(structure_base):
     cache = atom_selection_cache
     if cache is None:
       cache = pdb_hierarchy.atom_selection_cache()
+    h_atoms = pdb_hierarchy.atoms()
     for i, helix_param in enumerate(phil_helices):
       if helix_param.selection is not None:
-        h = pdb_helix.from_phil_params(helix_param, pdb_hierarchy, cache, i, log)
-        helices.append(h)
+        h = pdb_helix.from_phil_params(helix_param, pdb_hierarchy, h_atoms, cache, i, log)
+        if h is not None:
+          helices.append(h)
     for i, sheet_param in enumerate(phil_sheets):
       if sheet_param.first_strand is not None:
-        sh = pdb_sheet.from_phil_params(sheet_param, pdb_hierarchy, cache, log)
-        sheets.append(sh)
+        sh = pdb_sheet.from_phil_params(sheet_param, pdb_hierarchy, h_atoms, cache, log)
+        if sh is not None:
+          sheets.append(sh)
     return cls(helices=helices, sheets=sheets)
 
   def deep_copy(self):
@@ -656,7 +806,7 @@ class annotation(structure_base):
       if asc is None:
         asc = hierarchy.atom_selection_cache()
       if remove_empty_annotations:
-        result.remove_empty_annotations(hierarchy, asc)
+        result.remove_empty_annotations(hierarchy)
       if concatenate_consecutive_helices:
         result.concatenate_consecutive_helices(hierarchy, asc)
       if split_helices_with_prolines:
@@ -665,22 +815,16 @@ class annotation(structure_base):
         result.filter_sheets_with_long_hbonds(hierarchy, asc)
     return result
 
-  def remove_empty_annotations(self, hierarchy, asc=None):
+  def remove_empty_annotations(self, hierarchy):
     # returns annotation of deleted helices and sheets
-    if asc is None:
-      asc = hierarchy.atom_selection_cache()
     h_indeces_to_delete = []
     sh_indeces_to_delete = []
     for i, h in enumerate(self.helices):
-      selstring = h.as_atom_selections()
-      isel = asc.iselection(selstring[0])
-      if len(isel) == 0:
+      if not h.present_in_hierarchy(hierarchy):
         h_indeces_to_delete.append(i)
     for i, sh in enumerate(self.sheets):
       for st in sh.strands:
-        selstring = st.as_atom_selections()
-        isel = asc.iselection(selstring)
-        if len(isel) == 0:
+        if not st.present_in_hierarchy(hierarchy):
           if i not in sh_indeces_to_delete:
             sh_indeces_to_delete.append(i)
     deleted_helices = []
@@ -695,20 +839,74 @@ class annotation(structure_base):
         del self.sheets[i]
     return annotation(helices=deleted_helices, sheets=deleted_sheets)
 
-  def remove_short_annotations(self):
+  def remove_elements_losing_residues(self, hierarchy, selection):
+    """
+    Remove helices and sheets that would lose a residue if hierarchy were
+    reduced to selection (flex.bool over hierarchy.atoms()). A residue
+    survives when at least one of its atoms is selected; a sheet goes when
+    any of its strands does. Keeps the annotation usable with
+    hierarchy.select(selection): restraints are generated by pairing residues
+    by their position inside an element, so a hole would pair wrong residues.
+    Like present_in_hierarchy(): first model only, residues matched by chain
+    id, resseq, icode and resname. Purely positional, i_seqs are not used.
+    Returns annotation of the removed helices and sheets.
+    """
+    if self.is_empty():
+      return annotation(helices=[], sheets=[])
+    assert selection.size() == hierarchy.atoms_size(), \
+      (selection.size(), hierarchy.atoms_size())
+    # chain id -> one (residue ids, survives flags) pair per chain object,
+    # in hierarchy order. Atoms of the first model come first in
+    # hierarchy.atoms(), so a running offset addresses selection directly.
+    chains = {}
+    offset = 0
+    first_model = hierarchy.models()[0] if hierarchy.models_size() > 0 else None
+    chain_list = first_model.chains() if first_model is not None else []
+    for chain in chain_list:
+      rids, kept = [], []
+      for rg in chain.residue_groups():
+        n = rg.atoms_size()
+        rids.append((rg.resseq, rg.icode.strip(),
+                     rg.atom_groups()[0].resname.strip()))
+        kept.append(selection[offset:offset+n].count(True) > 0)
+        offset += n
+      chains.setdefault(chain.id, []).append((rids, kept))
+    def survives(e):
+      start = (self.convert_resseq(e.start_resseq),
+               (e.start_icode or "").strip(), (e.start_resname or "").strip())
+      end   = (self.convert_resseq(e.end_resseq),
+               (e.end_icode or "").strip(), (e.end_resname or "").strip())
+      for rids, kept in chains.get(e.start_chain_id, []):
+        try:
+          i_start = rids.index(start)
+          i_end   = rids.index(end, i_start)
+        except ValueError:
+          continue
+        return all(kept[i_start:i_end+1])
+      return False
+    keep_h = [survives(h) for h in self.helices]
+    keep_sh = [all(survives(st) for st in sh.strands) for sh in self.sheets]
+    deleted_helices = [h for h, k in zip(self.helices, keep_h) if not k]
+    deleted_sheets = [sh for sh, k in zip(self.sheets, keep_sh) if not k]
+    self.helices = [h for h, k in zip(self.helices, keep_h) if k]
+    self.sheets = [sh for sh, k in zip(self.sheets, keep_sh) if k]
+    return annotation(helices=deleted_helices, sheets=deleted_sheets)
+
+  def remove_short_annotations(self,
+      helix_min_len=5, sheet_min_len=3, keep_one_stranded_sheets=False):
     # returns nothing
     # Remove short annotations
     h_indeces_to_delete = []
     for i, h in enumerate(self.helices):
-      if h.length < 5:
+      if h.length < helix_min_len:
         h_indeces_to_delete.append(i)
     if len(h_indeces_to_delete) > 0:
       for i in reversed(h_indeces_to_delete):
         del self.helices[i]
     sh_indeces_to_delete = []
     for i, sh in enumerate(self.sheets):
-      sh.remove_short_strands()
-      if sh.n_strands < 2:
+      sh.remove_short_strands(size=sheet_min_len)
+      if sh.n_strands < 2 and not keep_one_stranded_sheets:
         sh_indeces_to_delete.append(i)
     if len(sh_indeces_to_delete) > 0:
       for i in reversed(sh_indeces_to_delete):
@@ -927,12 +1125,12 @@ class annotation(structure_base):
       if n_copy == 0 and old_chain_id in chain_ids_dict:
         return old_chain_id
       return chain_ids_dict[old_chain_id][n_copy-1]
-    n_copies = len(chain_ids_dict.values()[0]) + 1
+    n_copies = len(list(chain_ids_dict.values())[0]) + 1
     new_helices = []
     new_sheets = []
     new_h_serial = 0
     new_sheet_id = 0
-    for n_copy in xrange(n_copies):
+    for n_copy in range(n_copies):
       for helix in self.helices:
         new_helix = copy.deepcopy(helix)
         new_helix.erase_hbond_list()
@@ -984,6 +1182,24 @@ class annotation(structure_base):
         filtered_helices.append(h)
     self.helices = filtered_helices
 
+  def change_residue_numbering_in_place(self, renumbering_dictionary):
+    """ Changes residue numbers and insertion codes in annotations.
+    For cases where one needs to renumber hierarchy and keep annotations
+    consisten with the new numbering.
+    Not for cases where residues removed or added.
+    Therefore residue name stays the same.
+
+    Args:
+        renumbering_dictionary (_type_): data structure to match old and new numbering:
+        {'chain id':
+          {(old resseq, icode):(new resseq, icode)}
+        }
+    """
+    for h in self.helices:
+      h.change_residue_numbering_in_place(renumbering_dictionary)
+    for sh in self.sheets:
+      sh.change_residue_numbering_in_place(renumbering_dictionary)
+
   def as_cif_loops(self):
     """
     Returns list of loops needed to represent SS annotation. The first for
@@ -1018,6 +1234,14 @@ class annotation(structure_base):
           row.append(v)
         helix_loop.add_row(row)
       loops.append(helix_loop)
+      type_prefix = "_struct_conf_type."
+      type_names = ["id", "criteria", "reference"]
+      conf_type_ids = set(helix_loop["_struct_conf.conf_type_id"])
+      type_loop = iotbx.cif.model.loop(header=(
+          ["%s%s" % (type_prefix, x) for x in type_names]))
+      for conf_type in conf_type_ids:
+        type_loop.add_row([conf_type, "?", "?"])
+      loops.append(type_loop)
     if self.get_n_sheets() > 0:
       struct_sheet_loop = iotbx.cif.model.loop(header=(
           '_struct_sheet.id',
@@ -1103,7 +1327,31 @@ class annotation(structure_base):
       loops.append(struct_sheet_hbond_loop)
     return loops
 
-  def as_pdb_str (self) :
+  def as_mmcif_str(self, data_block_name=None):
+    cif_object = iotbx.cif.model.cif()
+    if data_block_name is None:
+      data_block_name = "phenix"
+    cif_object[data_block_name] = self.as_cif_block()
+    from six.moves import cStringIO as StringIO
+    f = StringIO()
+    cif_object.show(out = f)
+    return f.getvalue()
+
+  def as_cif_block(self):
+    cif_block = iotbx.cif.model.block()
+    ss_cif_loops = self.as_cif_loops()
+    for loop in ss_cif_loops:
+      cif_block.add_loop(loop)
+    return cif_block
+
+  def fits_in_pdb_format(self):
+    for helix in self.helices :
+      if (not helix.fits_in_pdb_format()):  return False
+    for sheet in self.sheets :
+      if (not sheet.fits_in_pdb_format()):  return False
+    return True
+
+  def as_pdb_str(self):
     records = []
     for helix in self.helices :
       records.append(helix.as_pdb_str())
@@ -1111,8 +1359,8 @@ class annotation(structure_base):
       records.append(sheet.as_pdb_str())
     return "\n".join(records)
 
-  def as_restraint_groups (self, log=sys.stdout, prefix_scope="",
-      add_segid=None) :
+  def as_restraint_groups(self, log=sys.stdout, prefix_scope="",
+      add_segid=None):
     phil_strs = []
     for helix in self.helices :
       helix_phil = helix.as_restraint_group(log, prefix_scope, add_segid)
@@ -1129,25 +1377,44 @@ class annotation(structure_base):
     for helix in self.helices :
       try :
         selections.extend(helix.as_atom_selections(add_segid=add_segid))
-      except RuntimeError, e :
+      except RuntimeError as e :
         pass
     for sheet in self.sheets :
       selections.extend(sheet.as_atom_selections(add_segid=add_segid))
     return selections
 
-  def overall_selection(self,add_segid=None):
+  def overall_selection(self,add_segid=None,trim_ends_by=None):
+    result = ""
+    result = self.overall_helices_selection(add_segid=add_segid,trim_ends_by=trim_ends_by)
+    s_s = self.overall_sheets_selection(add_segid=add_segid,trim_ends_by=trim_ends_by)
+    if len(s_s) > 0 and len(result) > 0:
+      result += " or %s" % s_s
+      return result
+    if len(result) == 0:
+      return s_s
+    else:
+      return result
+
+  def overall_helices_selection(self, add_segid=None,trim_ends_by=None):
     selections = []
     for helix in self.helices:
       try :
-        selections.extend(helix.as_atom_selections(add_segid=add_segid))
-      except RuntimeError, e :
+        selections.extend(helix.as_atom_selections(add_segid=add_segid,
+         trim_ends_by=trim_ends_by))
+      except RuntimeError as e :
         pass
+    return "(" + ") or (".join(selections) + ")" if len(selections) > 0 else ""
+
+  def overall_sheets_selection(self, add_segid=None,trim_ends_by=None):
+    selections = []
     for sheet in self.sheets:
       try:
-        selections.extend(sheet.as_atom_selections(add_segid=add_segid))
-      except RuntimeError, e :
+        selections.extend(sheet.as_atom_selections(add_segid=add_segid,
+          trim_ends_by=trim_ends_by))
+      except RuntimeError as e :
         pass
-    return "(" + ") or (".join(selections) + ")"
+    return "(" + ") or (".join(selections) + ")" if len(selections) > 0 else ""
+
 
   def overall_helix_selection(self,
                               add_segid=None,
@@ -1162,7 +1429,7 @@ class annotation(structure_base):
         if helix.get_n_maximum_hbonds()<n_hbonds_selection: continue
       try :
         selections.extend(helix.as_atom_selections(add_segid=add_segid))
-      except RuntimeError, e :
+      except RuntimeError as e :
         pass
     return "(" + ") or (".join(selections) + ")"
 
@@ -1171,11 +1438,11 @@ class annotation(structure_base):
     for sheet in self.sheets:
       try:
         selections.extend(sheet.as_atom_selections(add_segid=add_segid))
-      except RuntimeError, e :
+      except RuntimeError as e :
         pass
     return "(" + ") or (".join(selections) + ")"
 
-  def as_bond_selections (self) :
+  def as_bond_selections(self):
     assert 0, "Probably is not used anywhere"
     bonded_atoms = self.extract_h_bonds(params)
     selections = []
@@ -1196,6 +1463,18 @@ class annotation(structure_base):
   def is_empty(self):
     return self.get_n_helices() + self.get_n_sheets() == 0
 
+  def get_n_helix_residues(self):
+    result = 0
+    for h in self.helices:
+      result += h.length
+    return result
+
+  def get_n_sheet_residues(self):
+    result = 0
+    for sh in self.sheets:
+      result += sh.get_approx_size()
+    return result
+
   def get_n_defined_hbonds(self):
     n_hb = 0
     if self.get_n_helices() > 0:
@@ -1209,11 +1488,10 @@ class annotation(structure_base):
   def split_sheets(self):
     "Split all multi-strand sheets into 2-strand sheets"
     new_sheets=[]
-    from copy import deepcopy
     for sheet in self.sheets:
       new_sheets+=sheet.split(starting_sheet_id_number=len(new_sheets)+1)
     return annotation(
-      helices=deepcopy(self.helices),
+      helices=copy.deepcopy(self.helices),
       sheets=new_sheets)
 
   def merge_sheets(self):
@@ -1221,7 +1499,6 @@ class annotation(structure_base):
     # Assumes that all the sheets are non-overlapping
     # First run sheet.split() on all sheets or split_sheets on the annotation
     #  as this requires 2-strand sheets (not 3 or more)
-    from copy import deepcopy
 
     sheet_pointer_0={}
     sheet_pointer_1={}
@@ -1248,7 +1525,7 @@ class annotation(structure_base):
         if key in sheet_pointer_0.keys() and (
             iter==1 or not key in sheet_pointer_1.keys()):
           used_strand_selections.append(key)
-          working_sheet=deepcopy(sheet_pointer_0.get(key))
+          working_sheet=copy.deepcopy(sheet_pointer_0.get(key))
           new_sheets.append(working_sheet)  # now we will extend this sheet
 
           second_strand=working_sheet.strands[1] # second strand
@@ -1261,8 +1538,8 @@ class annotation(structure_base):
             if not next_sheet: break
             used_strand_selections.append(next_key)
 
-            next_strand=deepcopy(next_sheet.strands[1])
-            next_registration=deepcopy(next_sheet.registrations[1])
+            next_strand=copy.deepcopy(next_sheet.strands[1])
+            next_registration=copy.deepcopy(next_sheet.registrations[1])
 
             working_sheet.add_strand(next_strand)
             working_sheet.add_registration(next_registration)
@@ -1282,9 +1559,14 @@ class annotation(structure_base):
         strand.strand_id=strand_number
 
     # Now new_sheets has strands arranged in sheets.
-    new_annotation=deepcopy(self)
+    new_annotation=copy.deepcopy(self)
     new_annotation.sheets=new_sheets
     return new_annotation
+
+  def add_helices_and_sheets_simple(self, other_annot):
+    self.helices += other_annot.helices
+    self.sheets += other_annot.sheets
+    self.renumber_helices_and_sheets()
 
   def combine_annotations(self,hierarchy=None,other=None,
     keep_self=None,
@@ -1322,7 +1604,7 @@ class annotation(structure_base):
       return None # nothing to do
     asc=hierarchy.atom_selection_cache()
     sel = asc.selection(string = atom_selection)
-    ph=hierarchy.deep_copy().select(sel)  #ph = needed part of hierarchy
+    ph=hierarchy.select(sel, copy_atoms=True)  #ph = needed part of hierarchy
     # Split all sheets into pairs
     a1=self.split_sheets()
     a2=other.split_sheets()
@@ -1332,13 +1614,10 @@ class annotation(structure_base):
 
     #print >>out,"\nFinding matching and unique helices:"
 
-    print "ZZC helices"
     helices=self.get_unique_set(
        a1.helices,a2.helices,hierarchy=hierarchy,out=out)
     #print >>out,"\nFinding matching and unique sheets:"
-    print "ZZC sheets"
     sheets=self.get_unique_set(a1.sheets,a2.sheets,hierarchy=hierarchy,out=out)
-    print "ZZC donesheets"
 
     new_annotation=annotation(sheets=sheets,helices=helices)
     new_annotation=new_annotation.merge_sheets()
@@ -1394,10 +1673,9 @@ class annotation(structure_base):
       sheet_or_helix_list=self.sheets)
     new_helices=self.select_best_overlapping_annotations(hierarchy=hierarchy,
       sheet_or_helix_list=self.helices)
-    from copy import deepcopy
     new_annotation=annotation(
-      helices=deepcopy(new_helices),
-      sheets=deepcopy(new_sheets))
+      helices=copy.deepcopy(new_helices),
+      sheets=copy.deepcopy(new_sheets))
     return new_annotation.merge_sheets()
 
   def select_best_overlapping_annotations(self,hierarchy=None,
@@ -1411,8 +1689,7 @@ class annotation(structure_base):
          max_h_bond_length=self.max_h_bond_length,
          keep_self=None)
       score_list.append([score_1,s1])
-    score_list.sort()
-    score_list.reverse()
+    score_list = sorted(score_list, key = lambda s: s[0], reverse = True)
 
     remove_list=[]
     keep_list=[]
@@ -1429,7 +1706,6 @@ class annotation(structure_base):
   def get_unique_set(self,h1_list,h2_list,hierarchy=None,
      out=sys.stdout):
     # Sheets should be split before using get_unique_set
-    print "ZZD unique set...",h1_list,h2_list,hierarchy.overall_counts().n_residues
     pairs=[]
     overlapping_but_not_matching_pairs=[]
     unique_h1=[]
@@ -1438,7 +1714,6 @@ class annotation(structure_base):
     used_h2=[]
     for h1 in h1_list:
       for h2 in h2_list:
-        print "ZZD overlap check:",h1,h2
         if not h2.has_chains_in_common(other=h1):
           pass # nothting to do
         elif h2.is_similar_to(other=h1,hierarchy=hierarchy,
@@ -1456,11 +1731,9 @@ class annotation(structure_base):
     for h2 in h2_list:
       if not h2 in used_h2: unique_h2.append(h2)
 
-    print "ZZD unique...",pairs
     if pairs:
       #print >>out,"\nMatching pairs:"
       for [h1,h2] in pairs:
-        print "ZZD checking unique",h1,h2
 
         score_1,score_2=self.score_pair(h1,h2,
           maximize_h_bonds=self.maximize_h_bonds,
@@ -1468,8 +1741,8 @@ class annotation(structure_base):
           max_h_bond_length=self.max_h_bond_length,
           rescore_if_zero_scores=True,
           keep_self=self.keep_self)
-        print >>out,"SELF : %7.1f\n%s" %(score_1,h1.as_pdb_str()) # ZZ
-        print >>out,"OTHER: %7.1f\n%s" %(score_2,h2.as_pdb_str()) # ZZ
+        #print >>out,"SELF : %7.1f\n%s" %(score_1,h1.as_pdb_str())
+        #print >>out,"OTHER: %7.1f\n%s" %(score_2,h2.as_pdb_str())
 
     if overlapping_but_not_matching_pairs:
       #print >>out,"\nOverlapping non-matching pairs:"
@@ -1503,7 +1776,6 @@ class annotation(structure_base):
         #print >>out,"OTHER: %7.1f\n%s" %(score_1,h2.as_pdb_str())
 
     unique=unique_h1+unique_h2
-    print "ZZD unique..."
 
     # Now take the best (or self if desired) of pairs and add on unique
     final_list=[]
@@ -1629,7 +1901,7 @@ class annotation(structure_base):
     def sort_strings(h):
       sorted=[]
       for x in h:
-        sorted.append(x.as_pdb_str(set_id_zero=True))
+        sorted.append(x.as_pdb_str(set_id_zero=True, force_format = True))
       sorted.sort()
       return sorted
 
@@ -1675,11 +1947,12 @@ class annotation(structure_base):
 #        88        88 88888888888 88888888888 88 8P        Y8
 #=============================================================================
 
-class pdb_helix (structure_base) :
+class pdb_helix(structure_base):
   _helix_class_array = ['unknown','alpha', 'unknown', 'pi', 'unknown',
         '3_10', 'unknown', 'unknown', 'unknown', 'unknown', 'unknown']
+  _cif_helix_classes = {'HELX_RH_AL_P': 1, 'HELX_RH_PI_P':3, 'HELX_RH_3T_P':5}
 
-  def __init__ (self,
+  def __init__(self,
         serial,
         helix_id,
         start_resname,
@@ -1702,7 +1975,7 @@ class pdb_helix (structure_base) :
         ):
     adopt_init_args(self, locals())
     if (length <= 0):
-      raise Sorry("Bad helix length. Check HELIX records.")
+      raise Sorry("Bad helix length. Check HELIX records.\n%s" % self.as_pdb_str())
     if isinstance(self.helix_class, int):
       self.helix_class = self._helix_class_array[helix_class]
     if self.helix_class not in self._helix_class_array:
@@ -1729,9 +2002,22 @@ class pdb_helix (structure_base) :
   def helix_class_to_str(cls, h_class):
     return cls._helix_class_array[h_class]
 
+  @classmethod
+  def get_helix_class(cls, cif_row):
+    conf_type_class = cif_row.get('_struct_conf.conf_type_id', None)
+    if conf_type_class not in ['HELX_P', 'HELX_RH_AL_P', 'HELX_RH_PI_P', 'HELX_RH_3T_P']:
+      return None
+    if conf_type_class == 'HELX_P':
+      pdbx_class = int(cif_row.get('_struct_conf.pdbx_PDB_helix_class', 0))
+      return cls._helix_class_array[pdbx_class]
+    else:
+      return cls._helix_class_array[cls._cif_helix_classes[conf_type_class]]
 
   @classmethod
   def from_cif_row(cls, cif_row, serial):
+    h_class = cls.get_helix_class(cif_row)
+    if h_class is None:
+      return None
     start_resname = choose_correct_cif_record(
         cif_row,
         '_struct_conf.beg_auth_comp_id',
@@ -1781,7 +2067,7 @@ class pdb_helix (structure_base) :
       end_chain_id=end_chain_id,
       end_resseq=cls.convert_resseq(end_resseq),
       end_icode=cls.parse_cif_insertion_code(cif_row.get('_struct_conf.pdbx_end_PDB_ins_code', '.')),
-      helix_class=cls.helix_class_to_str(int(cif_row.get('_struct_conf.pdbx_PDB_helix_class',0))),
+      helix_class=h_class,
       helix_selection=None,
       comment=comment,
       length=length)
@@ -1808,31 +2094,27 @@ class pdb_helix (structure_base) :
       length=int(line[71:76])) #string.atoi(line[71:76]))
 
   @classmethod
-  def from_phil_params(cls, helix_params, pdb_hierarchy, cache, serial=0, log=None):
+  def from_phil_params(cls, helix_params, pdb_hierarchy, h_atoms, cache, serial=0, log=None):
+    if log is None:
+      log = sys.stdout
     if helix_params.selection is None :
-      print >> log, "Empty helix at serial %d." % (serial)
+      print("Empty helix at serial %d." % (serial), file=log)
       # continue
-    # No evidence that this is really necessary
-    # sele_str = ("(%s) and (name N) and (altloc 'A' or altloc ' ')" %
-    sele_str = ("(%s) and (name N)" %
-                helix_params.selection)
     if helix_params.serial_number is not None:
       serial = helix_params.serial_number
-    amide_isel = cache.iselection(sele_str)
-    if amide_isel is None or len(amide_isel) == 0:
-      error_msg = "Error in helix definition.\n"
-      error_msg += "String '%s' selected 0 atoms.\n" % sele_str
-      error_msg += "Most likely the definition of helix does not match model.\n"
-      raise Sorry(error_msg)
-    start_atom = pdb_hierarchy.atoms()[amide_isel[0]]
-    end_atom = pdb_hierarchy.atoms()[amide_isel[-1]]
+    amide_isel = get_amide_isel(cache, helix_params.selection)
+    if isinstance(amide_isel, str):
+      print(amide_isel, file=log)
+      return None
+    start_atom = h_atoms[amide_isel[0]]
+    end_atom = h_atoms[amide_isel[-1]]
     hbonds = []
     for hb in helix_params.hbond:
       if hb.donor is None:
-        print >> log, "Donor selection in hbond cannot be None"
+        print("Donor selection in hbond cannot be None", file=log)
         continue
       if hb.acceptor is None:
-        print >> log, "Acceptor selection in hbond cannot be None"
+        print("Acceptor selection in hbond cannot be None", file=log)
         continue
       hbonds.append((hb.donor, hb.acceptor))
     return cls(
@@ -1860,16 +2142,6 @@ class pdb_helix (structure_base) :
   def deep_copy(self):
     return copy.deepcopy(self)
 
-  def get_start_resseq_as_int(self):
-    if self.start_resseq is not None:
-      return hy36decode(4, self.start_resseq)
-    return None
-
-  def get_end_resseq_as_int(self):
-    if self.end_resseq is not None:
-      return hy36decode(4, self.end_resseq)
-    return None
-
   def get_class_as_int(self):
     return self.helix_class_to_int(self.helix_class)
 
@@ -1883,13 +2155,12 @@ class pdb_helix (structure_base) :
     self.end_resseq = self.convert_resseq(resseq)
 
   def set_new_serial(self, serial, adopt_as_id=False):
-    self.serial = serial
+    self.serial = hy36encode(3, serial)
     if adopt_as_id:
       self.adopt_serial_as_id()
 
   def adopt_serial_as_id(self):
     self.helix_id = "%s" % self.serial
-    self.helix_id = self.helix_id[:3]
 
   def set_new_chain_ids(self, new_chain_id):
     self.start_chain_id = new_chain_id
@@ -1901,14 +2172,14 @@ class pdb_helix (structure_base) :
   def as_restraint_group(self, log=sys.stdout, prefix_scope="",
       add_segid=None, show_hbonds=False):
     if self.start_chain_id != self.end_chain_id :
-      print >> log, "Helix chain ID mismatch: starts in %s, ends in %s" % (
-        self.start_chain_id, self.end_chain_id)
+      print("Helix chain ID mismatch: starts in %s, ends in %s" % (
+        self.start_chain_id, self.end_chain_id), file=log)
       return None
     sele = self.as_atom_selections(add_segid=add_segid)[0]
-    if prefix_scope != "" and not prefix_scope.endswith(".") :
+    if prefix_scope != "" and not prefix_scope.endswith("."):
       prefix_scope += "."
     serial_and_id = ""
-    if self.serial is not None and self.serial > 0:
+    if self.serial is not None and self.id_as_int(self.serial) > 0:
       serial_and_id += "\n  serial_number = %s" % self.serial
     if self.helix_id is not None:
       serial_and_id += "\n  helix_identifier = %s" % self.helix_id
@@ -1937,8 +2208,13 @@ class pdb_helix (structure_base) :
   def as_cif_dict(self):
     """Returns dict. keys - cif field names, values - appropriate values."""
     result = {}
+    # XXX This is most default type of helix.
+    # Refer here for the others:
+    # http://mmcif.wwpdb.org/dictionaries/mmcif_mdb.dic/Items/_struct_conf_type.id.html
+    # Note, that PDB itself does not assign proper helix types in mmCIF although it has
+    # no problems doing it for PDB format and pretty pictures on the web-site.
     result['conf_type_id'] = "HELX_P"
-    result['id'] = self.serial
+    result['id'] = self.serial if isinstance(self.serial, int) else self.serial.strip()
     result['pdbx_PDB_helix_id'] = self.helix_id
     result['beg_label_comp_id'] = self.start_resname
     result['beg_label_asym_id'] = self.start_chain_id
@@ -1953,7 +2229,23 @@ class pdb_helix (structure_base) :
     result['pdbx_PDB_helix_length'] = self.length
     return result
 
-  def as_pdb_str (self, set_id_zero=False):
+  def fits_in_pdb_format(self):
+    if len(self.start_resname.strip()) > 3: return False
+    if len(self.end_resname.strip()) > 3: return False
+    if len(self.start_chain_id.strip()) > 2: return False
+    if len(self.end_chain_id.strip()) > 2: return False
+    return True
+
+  def as_mmcif_str(self):
+    ann = annotation(helices = [self], sheets = [])
+    text = ann.as_mmcif_str()
+    return text
+
+  def as_pdb_str(self, set_id_zero=False, force_format = False):
+    if (not force_format) and (not self.fits_in_pdb_format()):
+      raise AssertionError(
+       "Helix does not fit in PDB format. "+
+       "Please fix code to use as_pdb_or_mmcif_str instead of as_pdb_str")
     def h_class_to_pdb_int(h_class):
       h_class_int = self.helix_class_to_int(h_class)
       if h_class_int == 0:
@@ -1977,12 +2269,19 @@ class pdb_helix (structure_base) :
       h_class_to_pdb_int(self.helix_class), self.comment, self.length)
     return out.strip()
 
-  def as_atom_selections(self, add_segid=None):
+  def as_atom_selections(self, add_segid=None, trim_ends_by=None):
     segid_extra = ""
     if add_segid is not None :
       segid_extra = "and segid '%s' " % add_segid
-    resid_start = "%s%s" % (self.start_resseq, self.start_icode)
-    resid_end = "%s%s" % (self.end_resseq, self.end_icode)
+    if trim_ends_by and \
+     self.get_end_resseq_as_int()-self.get_start_resseq_as_int()>2*trim_ends_by:
+      resid_start = "%s%s" % (self.convert_resseq(
+         self.get_start_resseq_as_int()+trim_ends_by), self.start_icode)
+      resid_end = "%s%s" % (self.convert_resseq(
+         self.get_end_resseq_as_int()-trim_ends_by), self.end_icode)
+    else:  # usual
+      resid_start = "%s%s" % (self.start_resseq, self.start_icode)
+      resid_end = "%s%s" % (self.end_resseq, self.end_icode)
     sele = "chain '%s' %sand resid %s through %s" % (self.start_chain_id,
       segid_extra, resid_start, resid_end)
     return [sele]
@@ -2032,6 +2331,10 @@ class pdb_helix (structure_base) :
         return False
     return True
 
+  def change_residue_numbering_in_place(self, renumbering_dictionary):
+    self._change_residue_numbering_in_place_helper(renumbering_dictionary)
+
+
 #=============================================================================
 #       ad88888ba  88        88 88888888888 88888888888 888888888888
 #      d8"     "8b 88        88 88          88               88
@@ -2044,7 +2347,7 @@ class pdb_helix (structure_base) :
 #=============================================================================
 
 class pdb_strand(structure_base):
-  def __init__ (self,
+  def __init__(self,
       sheet_id,
       strand_id,
       start_resname,
@@ -2055,9 +2358,11 @@ class pdb_strand(structure_base):
       end_chain_id,
       end_resseq,
       end_icode,
-      sense) :
+      sense):
     adopt_init_args(self, locals())
-    assert (sheet_id > 0) and (strand_id > 0)
+    # Python 3 prevents comparisons between str and int
+    # assert (sheet_id > 0) and (strand_id > 0)
+    assert (sheet_id is not None) and (strand_id is not None)
     if sense not in [-1, 0, 1]:
       raise Sorry("Bad sense in SHEET record: '%s'" % sense)
     self.start_chain_id = self.parse_chain_id(start_chain_id)
@@ -2133,6 +2438,9 @@ class pdb_strand(structure_base):
     self.start_chain_id = new_chain_id
     self.end_chain_id = new_chain_id
 
+  def change_residue_numbering_in_place(self, renumbering_dictionary):
+    self._change_residue_numbering_in_place_helper(renumbering_dictionary)
+
   def sense_as_cif(self):
     if self.sense == 0:
       return '?'
@@ -2143,28 +2451,26 @@ class pdb_strand(structure_base):
     else:
       raise Sorry("Invalid sense creeped in object: %s", self.sense)
 
-  def get_start_resseq_as_int(self):
-    if self.start_resseq is not None:
-      return hy36decode(4, self.start_resseq)
-    return None
-
-  def get_end_resseq_as_int(self):
-    if self.end_resseq is not None:
-      return hy36decode(4, self.end_resseq)
-    return None
-
   def set_start_resseq(self, resseq):
     self.start_resseq = self.convert_resseq(resseq)
 
   def set_end_resseq(self, resseq):
     self.end_resseq = self.convert_resseq(resseq)
 
-  def as_atom_selections(self, add_segid=None):
+  def as_atom_selections(self, add_segid=None,trim_ends_by=None):
     segid_extra = ""
     if add_segid is not None :
       segid_extra = "and segid '%s' " % add_segid
-    resid_start = "%s%s" % (self.start_resseq, self.start_icode)
-    resid_end = "%s%s" % (self.end_resseq, self.end_icode)
+    if trim_ends_by and \
+     self.get_end_resseq_as_int()-self.get_start_resseq_as_int()>2*trim_ends_by:
+      resid_start = "%s%s" % (self.convert_resseq(
+         self.get_start_resseq_as_int()+trim_ends_by), self.start_icode)
+      resid_end = "%s%s" % (self.convert_resseq(
+         self.get_end_resseq_as_int()-trim_ends_by), self.end_icode)
+    else:  # usual
+      resid_start = "%s%s" % (self.start_resseq, self.start_icode)
+      resid_end = "%s%s" % (self.end_resseq, self.end_icode)
+
     sele = "chain '%s' %sand resid %s through %s" % (self.start_chain_id,
       segid_extra, resid_start, resid_end)
     return sele
@@ -2193,7 +2499,7 @@ class pdb_strand(structure_base):
     return True
 
 class pdb_strand_register(structure_base):
-  def __init__ (self,
+  def __init__(self,
       cur_atom,
       cur_resname,
       cur_chain_id,
@@ -2203,7 +2509,7 @@ class pdb_strand_register(structure_base):
       prev_resname,
       prev_chain_id,
       prev_resseq,
-      prev_icode) :
+      prev_icode):
     adopt_init_args(self, locals())
 
   @classmethod
@@ -2323,6 +2629,9 @@ class pdb_strand_register(structure_base):
         resid_prev, self.prev_atom.strip())
     return sele_curr, sele_prev
 
+  def change_residue_numbering_in_place(self, renumbering_dictionary):
+    self._change_residue_numbering_in_place_helper(renumbering_dictionary, se=["cur", "prev"])
+
   def is_same_as(self,other=None):
 
     if not other: return False
@@ -2345,8 +2654,7 @@ class pdb_strand_register(structure_base):
 
   def reversed(self):
     # swap cur and prev
-    from copy import deepcopy
-    new_register=deepcopy(self)
+    new_register=copy.deepcopy(self)
     for key in [
         'atom',
         'resname',
@@ -2360,7 +2668,7 @@ class pdb_strand_register(structure_base):
 
 
 class pdb_sheet(structure_base):
-  def __init__ (self,
+  def __init__(self,
       sheet_id,
       n_strands,
       strands,
@@ -2369,8 +2677,7 @@ class pdb_sheet(structure_base):
       ):
     adopt_init_args(self, locals())
     if isinstance(self.sheet_id, int):
-      self.sheet_id = "%s" % self.sheet_id
-      self.sheet_id = self.sheet_id[:3]
+      self.sheet_id = hy36encode(3, self.sheet_id)
     else:
       assert isinstance(self.sheet_id, str)
 
@@ -2401,9 +2708,8 @@ class pdb_sheet(structure_base):
                registrations=registrations)
 
   @classmethod
-  def from_cif_rows(cls, sheet_id,
-            struct_sheet_order_loop, struct_sheet_range_loop,
-            struct_sheet_hbond_loop):
+  def from_cif_rows(cls, sheet_id, struct_sheet_range_loop,
+            range_index, order_index, hbond_index):
     strands = []
     registrations = []
     number_of_strands = 0
@@ -2411,42 +2717,26 @@ class pdb_sheet(structure_base):
     number_of_strands = struct_sheet_range_loop['_struct_sheet_range.sheet_id'].\
         count(sheet_id)
     for i in range(1, number_of_strands+1):
-      f_rows = struct_sheet_range_loop.find_row(kv_dict={
-          '_struct_sheet_range.sheet_id' : sheet_id,
-          '_struct_sheet_range.id' : str(i),
-        })
+      res_range = range_index.get((sheet_id, str(i)))
       if i == 1:
         # the first strand, no sense, no hbond
-        if len(f_rows) != 1:
-          raise Sorry("Error in sheet definitions")
-        strands.append(pdb_strand.from_cif_dict(f_rows[0], 0))
+        if res_range is None:
+          raise ValueError(
+              "sheet %s: no _struct_sheet_range row with id 1" % sheet_id)
+        strands.append(pdb_strand.from_cif_dict(res_range, 0))
         registrations.append(None)
       else:
         # all the rest
-        res_range = None
-        registration = None
         sense = None
-        if len(f_rows) == 1:
-          res_range = f_rows[0]
-        sense_rows = struct_sheet_order_loop.find_row(kv_dict = {
-            '_struct_sheet_order.sheet_id':sheet_id,
-            '_struct_sheet_order.range_id_1':str(i-1),
-            '_struct_sheet_order.range_id_2':str(i)
-          })
-        if len(sense_rows) >= 1:
+        sense_row = order_index.get((sheet_id, str(i-1), str(i)))
+        if sense_row is not None:
           sense = 0
-          str_sense = sense_rows[0].get('_struct_sheet_order.sense', '.')
+          str_sense = sense_row.get('_struct_sheet_order.sense', '.')
           if str_sense == 'parallel':
             sense = 1
           elif str_sense == 'anti-parallel':
             sense = -1
-        registration_rows = struct_sheet_hbond_loop.find_row(kv_dict = {
-              '_pdbx_struct_sheet_hbond.sheet_id':sheet_id,
-              '_pdbx_struct_sheet_hbond.range_id_1':str(i-1),
-              '_pdbx_struct_sheet_hbond.range_id_2':str(i)
-          })
-        if len(registration_rows) >= 1:
-          registration = registration_rows[0]
+        registration = hbond_index.get((sheet_id, str(i-1), str(i)))
         if (res_range is not None and
             registration is not None and sense is not None):
           strands.append(pdb_strand.from_cif_dict(res_range, sense))
@@ -2457,24 +2747,21 @@ class pdb_sheet(structure_base):
                registrations=registrations)
 
   @classmethod
-  def from_phil_params(cls, sheet_params, pdb_hierarchy, cache, log=None):
+  def from_phil_params(cls, sheet_params, pdb_hierarchy, h_atoms, cache, log=None):
+    if log is None:
+      log = sys.stdout
     if sheet_params.first_strand is None:
       raise Sorry("Empty first strand selection")
     sheet_id="1"
     if sheet_params.sheet_id is not None:
       sheet_id =  "%3s" % sheet_params.sheet_id[:3]
     n_strands = len(sheet_params.strand) + 1
-    # sele_str = ("(%s) and (name N) and (altloc 'A' or altloc ' ')" %
-    sele_str = ("(%s) and (name N)" %
-                    sheet_params.first_strand)
-    amide_isel = cache.iselection(sele_str)
-    if amide_isel is None or len(amide_isel) == 0:
-      error_msg = "Error in sheet definition.\n"
-      error_msg += "String '%s' selected 0 atoms.\n" % sele_str
-      error_msg += "Most likely the definition of sheet does not match model.\n"
-      raise Sorry(error_msg)
-    start_atom = pdb_hierarchy.atoms()[amide_isel[0]]
-    end_atom = pdb_hierarchy.atoms()[amide_isel[-1]]
+    amide_isel = get_amide_isel(cache, sheet_params.first_strand)
+    if isinstance(amide_isel, str):
+      print(amide_isel, file=log)
+      return None
+    start_atom = h_atoms[amide_isel[0]]
+    end_atom = h_atoms[amide_isel[-1]]
     first_strand = pdb_strand(
         sheet_id=sheet_id,
         strand_id=1,
@@ -2490,17 +2777,12 @@ class pdb_sheet(structure_base):
     strands = [first_strand]
     registrations = [None]
     for i, strand_param in enumerate(sheet_params.strand):
-      # sele_str = ("(%s) and (name N) and (altloc 'A' or altloc ' ')" %
-      sele_str = ("(%s) and (name N)" %
-                      strand_param.selection)
-      amide_isel = cache.iselection(sele_str)
-      if amide_isel is None or len(amide_isel) == 0:
-        error_msg = "Error in sheet definition.\n"
-        error_msg += "String '%s' selected 0 atoms.\n" % sele_str
-        error_msg += "Most likely the definition of sheet does not match model.\n"
-        raise Sorry(error_msg)
-      start_atom = pdb_hierarchy.atoms()[amide_isel[0]]
-      end_atom = pdb_hierarchy.atoms()[amide_isel[-1]]
+      amide_isel = get_amide_isel(cache, strand_param.selection)
+      if isinstance(amide_isel, str):
+        print(amide_isel, file=log)
+        return None
+      start_atom = h_atoms[amide_isel[0]]
+      end_atom = h_atoms[amide_isel[-1]]
       sense = cls.sense_to_int(strand_param.sense)
       strand = pdb_strand(
           sheet_id=sheet_id,
@@ -2518,11 +2800,12 @@ class pdb_sheet(structure_base):
       if strand_param.bond_start_current is not None:
         reg_cur_sel = cache.iselection(strand_param.bond_start_current)
         if reg_cur_sel is None or len(reg_cur_sel) == 0:
-          error_msg = "Error in sheet definition.\n"
+          error_msg = "Error in sheet definition. Whole sheet will be skipped.\n"
           error_msg += "String '%s' selected 0 atoms.\n" % strand_param.bond_start_current
           error_msg += "Most likely the definition of sheet does not match model.\n"
-          raise Sorry(error_msg)
-        reg_cur_atom = pdb_hierarchy.atoms()[reg_cur_sel[0]]
+          print(error_msg, file=log)
+          return None
+        reg_cur_atom = h_atoms[reg_cur_sel[0]]
       if reg_cur_atom is None: # No current atom in registration
         pass
         # raise Sorry("This bond_start_current yields 0 atoms:\n %s" % strand_param.bond_start_current)
@@ -2530,11 +2813,12 @@ class pdb_sheet(structure_base):
       if strand_param.bond_start_previous is not None:
         reg_prev_sel = cache.iselection(strand_param.bond_start_previous)
         if reg_prev_sel is None or len(reg_prev_sel) == 0:
-          error_msg = "Error in sheet definition.\n"
+          error_msg = "Error in sheet definition. Whole sheet will be skipped.\n"
           error_msg += "String '%s' selected 0 atoms.\n" % strand_param.bond_start_previous
           error_msg += "Most likely the definition of sheet does not match model.\n"
-          raise Sorry(error_msg)
-        reg_prev_atom = pdb_hierarchy.atoms()[reg_prev_sel[0]]
+          print(error_msg, file=log)
+          return None
+        reg_prev_atom = h_atoms[reg_prev_sel[0]]
       if reg_prev_atom is None: # No previous atom in registration
         pass
         # raise Sorry("This bond_start_previous yields 0 atoms:\n %s" % strand_param.bond_start_previous)
@@ -2556,10 +2840,10 @@ class pdb_sheet(structure_base):
     hbonds = []
     for hb in sheet_params.hbond:
       if hb.donor is None:
-        print >> log, "Donor selection in hbond cannot be None"
+        print("Donor selection in hbond cannot be None", file=log)
         continue
       if hb.acceptor is None:
-        print >> log, "Acceptor selection in hbond cannot be None"
+        print("Acceptor selection in hbond cannot be None", file=log)
         continue
       hbonds.append((hb.donor, hb.acceptor))
     return cls(sheet_id=sheet_id,
@@ -2575,6 +2859,12 @@ class pdb_sheet(structure_base):
     elif str_sense == "antiparallel":
       sense = -1
     return sense
+
+  def get_approx_size(self):
+    s = 0
+    for strand in self.strands:
+      s += strand.approx_length
+    return s
 
   def remove_short_strands(self, size=3):
     strand_indices_to_delete = []
@@ -2614,6 +2904,14 @@ class pdb_sheet(structure_base):
         self.renumber_strands()
         self.erase_hbond_list()
 
+  def change_residue_numbering_in_place(self, renumbering_dictionary):
+    self.erase_hbond_list()
+    for st in self.strands:
+      st.change_residue_numbering_in_place(renumbering_dictionary)
+    for reg in self.registrations:
+      if reg is not None:
+        reg.change_residue_numbering_in_place(renumbering_dictionary)
+
   def deep_copy(self):
     return copy.deepcopy(self)
 
@@ -2626,16 +2924,17 @@ class pdb_sheet(structure_base):
   def erase_hbond_list(self):
     self.hbond_list = []
 
-  def add_strand (self, strand) :
+  def add_strand(self, strand):
     self.strands.append(strand)
 
-  def add_registration (self, registration) :
+  def add_registration(self, registration):
     self.registrations.append(registration)
 
-  def as_atom_selections (self, add_segid=None):
+  def as_atom_selections(self, trim_ends_by=None, add_segid=None):
     strand_selections = []
     for strand in self.strands:
-      strand_selections.append(strand.as_atom_selections(add_segid=add_segid))
+      strand_selections.append(strand.as_atom_selections(add_segid=add_segid,
+       trim_ends_by=trim_ends_by))
     return strand_selections
 
   def get_n_defined_hbonds(self):
@@ -2643,10 +2942,26 @@ class pdb_sheet(structure_base):
       return len(self.hbond_list)
     return 0
 
-  def as_pdb_str(self, strand_id=None, set_id_zero=False):
+  def fits_in_pdb_format(self):
+    for strand in self.strands:
+      if len(strand.start_resname.strip()) > 3: return False
+      if len(strand.end_resname.strip()) > 3: return False
+      if len(strand.start_chain_id.strip()) > 2: return False
+      if len(strand.end_chain_id.strip()) > 2: return False
+    return True
+
+  def as_mmcif_str(self):
+    ann = annotation(helices = [], sheets = [self])
+    text = ann.as_mmcif_str()
+    return text
+
+  def as_pdb_str(self, strand_id=None, set_id_zero=False, force_format = False):
+    if (not force_format) and (not self.fits_in_pdb_format()):
+      raise AssertionError("Sheet does not fit in PDB format"+
+       "Please fix code to use as_pdb_or_mmcif_str instead of as_pdb_str")
     assert len(self.strands) == len(self.registrations)
     lines = []
-    for strand, reg in zip(self.strands, self.registrations) :
+    for strand, reg in zip(self.strands, self.registrations):
       format1 = "SHEET  %3s %3s%2d %3s%2s%4s%1s %3s%2s%4s%1s%2d"
       format2 = "%4s%3s%2s%4s%1s %4s%3s%2s%4s%1s"
       # print "STRAND, REG", strand, reg
@@ -2677,8 +2992,9 @@ class pdb_sheet(structure_base):
   def as_cif_dict(self):
     """Returns dict. keys - cif field names, values - appropriate values,
     lists where needed."""
+    sheet_id_to_output = self.sheet_id if isinstance(self.sheet_id, int) else self.sheet_id.strip()
     result = {}
-    result['_struct_sheet.id'] = self.sheet_id
+    result['_struct_sheet.id'] = sheet_id_to_output
     result['_struct_sheet.type'] = '?'
     result['_struct_sheet.number_strands'] = self.n_strands
     result['_struct_sheet.details'] = '?'
@@ -2717,14 +3033,14 @@ class pdb_sheet(structure_base):
     for i, strand, registration in zip(range(self.n_strands), self.strands, self.registrations):
       # _struct_sheet_order
       if i != 0:
-        result['_struct_sheet_order.sheet_id'].append(self.sheet_id)
+        result['_struct_sheet_order.sheet_id'].append(sheet_id_to_output)
         result['_struct_sheet_order.range_id_1'].append(i)
         result['_struct_sheet_order.range_id_2'].append(i+1)
         result['_struct_sheet_order.offset'].append('?')
         result['_struct_sheet_order.sense'].append(strand.sense_as_cif())
 
       if strand is not None: # should always be True
-        result['_struct_sheet_range.sheet_id'].append(self.sheet_id)
+        result['_struct_sheet_range.sheet_id'].append(sheet_id_to_output)
         result['_struct_sheet_range.id'].append(i+1)
         result['_struct_sheet_range.beg_label_comp_id'].append(strand.start_resname)
         result['_struct_sheet_range.beg_label_asym_id'].append(strand.start_chain_id)
@@ -2736,7 +3052,7 @@ class pdb_sheet(structure_base):
         result['_struct_sheet_range.pdbx_end_PDB_ins_code'].append(self.icode_to_cif(strand.end_icode))
 
       if registration is not None:
-        result['_pdbx_struct_sheet_hbond.sheet_id'].append(self.sheet_id)
+        result['_pdbx_struct_sheet_hbond.sheet_id'].append(sheet_id_to_output)
         result['_pdbx_struct_sheet_hbond.range_id_1'].append(i)
         result['_pdbx_struct_sheet_hbond.range_id_2'].append(i+1)
         result['_pdbx_struct_sheet_hbond.range_1_label_atom_id'].append(registration.prev_atom.strip())
@@ -2760,7 +3076,7 @@ class pdb_sheet(structure_base):
     senses = []
     reg_curr = []
     reg_prev = []
-    for (strand,registration) in zip(self.strands, self.registrations) :
+    for (strand,registration) in zip(self.strands, self.registrations):
       sele = strand.as_atom_selections(add_segid=add_segid)
       selections.append(sele)
       if strand.sense == 0 :
@@ -2785,7 +3101,7 @@ class pdb_sheet(structure_base):
     n = 0
     first_strand = None
     strands = []
-    for (sele, sense, curr, prev) in zip(selections,senses,reg_curr,reg_prev) :
+    for (sele, sense, curr, prev) in zip(selections,senses,reg_curr,reg_prev):
       if n == 0 :
         first_strand = sele
       else :
@@ -2798,7 +3114,7 @@ class pdb_sheet(structure_base):
   }""" % (sele, sense, curr, prev))
       n += 1
     assert first_strand is not None
-    if prefix_scope != "" and not prefix_scope.endswith(".") :
+    if prefix_scope != "" and not prefix_scope.endswith("."):
       prefix_scope += "."
     hbond_restr = ""
     if show_hbonds:
@@ -2819,19 +3135,18 @@ class pdb_sheet(structure_base):
   def split(self,starting_sheet_id_number=1):
     assert len(self.strands)==len(self.registrations)
     new_sheets=[]
-    from copy import deepcopy
     for s1,s2,r2 in zip(
       self.strands[:-1],
       self.strands[1:],self.registrations[1:]):
       self_id="%d" %(len(new_sheets)+1)
-      new_s1=deepcopy(s1)
+      new_s1=copy.deepcopy(s1)
       new_s1.sense=0
       new_s1.strand_id=1
       new_s1.sheet_id="%d" %(starting_sheet_id_number)
-      new_s2=deepcopy(s2)
+      new_s2=copy.deepcopy(s2)
       new_s2.strand_id=2
       new_s2.sheet_id="%d" %(starting_sheet_id_number)
-      new_r2=deepcopy(r2)
+      new_r2=copy.deepcopy(r2)
       new_sheet=pdb_sheet(
              sheet_id="%d" %(starting_sheet_id_number),
              n_strands=2,
@@ -2877,13 +3192,13 @@ class pdb_sheet(structure_base):
           atom_selection=self.combine_atom_selections(pair_1,require_all=True)
           if not atom_selection: continue
           sel = asc.selection(string = atom_selection)
-          ph=hierarchy.deep_copy().select(sel)  #ph = needed part of hierarchy
+          ph=hierarchy.select(sel, copy_atoms=True)  #ph = needed part of hierarchy
           if ph.overall_counts().n_residues==0: continue
 
           atom_selection=self.combine_atom_selections(pair_2,require_all=True)
           if not atom_selection: continue
           sel = asc.selection(string = atom_selection)
-          ph=hierarchy.deep_copy().select(sel)  #ph = needed part of hierarchy
+          ph=hierarchy.select(sel, copy_atoms=True)  #ph = needed part of hierarchy
           if ph.overall_counts().n_residues>0:
             return True  # both match
     return False

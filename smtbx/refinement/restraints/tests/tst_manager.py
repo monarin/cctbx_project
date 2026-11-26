@@ -1,5 +1,5 @@
-from __future__ import division
-from libtbx.test_utils import show_diff
+from __future__ import absolute_import, division, print_function
+
 from smtbx.refinement import restraints
 from smtbx.refinement.restraints import adp_restraints
 import smtbx.development
@@ -7,10 +7,10 @@ from cctbx import crystal
 from cctbx import sgtbx
 from cctbx.array_family import flex
 import cctbx.geometry_restraints
-from cStringIO import StringIO
+from six.moves import cStringIO as StringIO
 import sys
 
-def exercise_manager(verbose=0):
+def exercise_manager():
   xray_structure = smtbx.development.sucrose()
   xray_structure.scatterers()[10].set_use_u_iso_only()
   asu_mappings = xray_structure.asu_mappings(buffer_thickness=3.5)
@@ -25,6 +25,9 @@ def exercise_manager(verbose=0):
       pair_sym_table=pair_sym_table).proxies
   rigid_bond_proxies = \
     adp_restraints.rigid_bond_restraints(
+      pair_sym_table=pair_sym_table).proxies
+  rigu_proxies = \
+    adp_restraints.rigu_restraints(
       pair_sym_table=pair_sym_table).proxies
   isotropic_adp_proxies = \
     adp_restraints.isotropic_adp_restraints(
@@ -56,6 +59,13 @@ def exercise_manager(verbose=0):
       i_seqs=((14,36),(12,38)),
       weights=(10,10),
       sym_ops=(sgtbx.rt_mx(),sgtbx.rt_mx())))
+  chirality_proxies=cctbx.geometry_restraints.shared_chirality_proxy()
+  chirality_proxies.append(
+    cctbx.geometry_restraints.chirality_proxy(
+      i_seqs=(14,36,12,38),
+      weight=10**4,
+      volume_ideal=1.2,
+      both_signs=False))
   # setup restraints manager
   manager = restraints.manager(
     bond_proxies=bond_proxies,
@@ -63,7 +73,9 @@ def exercise_manager(verbose=0):
     bond_similarity_proxies=bond_similarity_proxies,
     adp_similarity_proxies=adp_similarity_proxies,
     rigid_bond_proxies=rigid_bond_proxies,
-    isotropic_adp_proxies=isotropic_adp_proxies)
+    rigu_proxies=rigu_proxies,
+    isotropic_adp_proxies=isotropic_adp_proxies,
+    chirality_proxies=chirality_proxies)
   sio = StringIO()
   manager.show_sorted(xray_structure, max_items=1, f=sio)
   if sys.platform.startswith("win") and sys.version_info[:2] < (2,6):
@@ -72,7 +84,7 @@ def exercise_manager(verbose=0):
     # with 3 digits rather than 2.
     pass
   else:
-    assert not show_diff(sio.getvalue(), """\
+    assert sio.getvalue() == """\
 Bond restraints: 3
 Sorted by residual:
 bond O3
@@ -89,6 +101,15 @@ angle C3
     ideal   model   delta    sigma   weight residual
    110.00  108.00    2.00 7.07e-01 2.00e+00 8.03e+00
 ... (remaining 2 not shown)
+
+Chirality restraints: 1
+Sorted by residual:
+chirality O9
+          C9
+          O8
+          C10
+  both_signs  ideal   model   delta    sigma   weight residual
+    False      1.20    2.52   -1.32 1.00e-02 1.00e+04 1.75e+04
 
 Bond similarity restraints: 1
 Sorted by residual:
@@ -117,6 +138,16 @@ scatterers O7
  -6.42e-01 1.00e-02 1.00e+04 4.12e+03
 ... (remaining 59 not shown)
 
+Rigu bond restraints: 60
+Sorted by residual:
+scatterers O2
+           C2
+   delta_z    sigma   weight residual
+  1.27e-03 6.36e-03 2.47e+04 4.01e-02
+ -9.08e-03 6.36e-03 2.47e+04 2.04e+00
+ -9.08e-03 6.36e-03 2.47e+04 2.40e+00
+... (remaining 59 not shown)
+
 Isotropic ADP restraints: 22
 Sorted by residual:
 scatterer O3
@@ -129,12 +160,8 @@ scatterer O3
  U23 -8.63e-03 2.00e-01 2.50e+01
 ... (remaining 21 not shown)
 
-""")
-  if (0 or verbose): print sio.getvalue()
+"""
 
-def run(verbose=0):
-  exercise_manager(verbose=verbose)
-  print "OK"
-
-if __name__ == "__main__":
-  run(verbose=("--verbose" in sys.argv[1:]))
+if __name__ == '__main__':
+  exercise_manager()
+  print('OK')

@@ -1,8 +1,7 @@
-from __future__ import division
-import mmtbx.command_line.fmodel
+from __future__ import absolute_import, division, print_function
+import mmtbx.programs.fmodel
 import mmtbx.utils
-from iotbx import file_reader
-import libtbx.phil.command_line
+import iotbx.pdb
 import sys
 import math
 
@@ -24,11 +23,10 @@ def run (params) :
        return c_array
     raise Exception("mtz did not contain expected label Iobs or IMEAN")
 
-  pdb_in = file_reader.any_file(params.model, force_type="pdb")
-  pdb_in.assert_file_type("pdb")
-  xray_structure = pdb_in.file_object.xray_structure_simple()
+  pdb_in = iotbx.pdb.input(params.model)
+  xray_structure = pdb_in.xray_structure_simple()
   xray_structure.show_summary()
-  phil2 = mmtbx.command_line.fmodel.fmodel_from_xray_structure_master_params
+  phil2 = mmtbx.programs.fmodel.master_phil
   params2 = phil2.extract()
   # adjust the cutoff of the generated intensities to assure that
   # statistics will be reported to the desired high-resolution limit
@@ -41,6 +39,16 @@ def run (params) :
   if (params.include_bulk_solvent) :
     params2.fmodel.k_sol = params.k_sol
     params2.fmodel.b_sol = params.b_sol
+
+  # vvv These params restore the "legacy" solvent mask generation before
+  # vvv cctbx commit 2243cc9a
+  params2.mask.Fmask_res_high = 0
+  params2.mask.grid_step_factor = 4
+  params2.mask.solvent_radius = 1.11
+  params2.mask.shrink_truncation_radius = 0.9
+  params2.mask.use_resolution_based_gridding = True
+  # ^^^
+
   f_model = mmtbx.utils.fmodel_from_xray_structure(
     xray_structure = xray_structure,
     f_obs          = None,
@@ -85,7 +93,7 @@ def random_structure (params) :
     elements=elements,
     min_distance=1.2)
   xs.show_summary()
-  phil2 = mmtbx.command_line.fmodel.fmodel_from_xray_structure_master_params
+  phil2 = mmtbx.programs.fmodel.master_phil
   params2 = phil2.extract()
   # adjust the cutoff of the generated intensities to assure that
   # statistics will be reported to the desired high-resolution limit
@@ -94,7 +102,7 @@ def random_structure (params) :
     1 + params.unit_cell_length_tolerance, 1 / 3)
   params2.output.type = "real"
   if (params.include_bulk_solvent) :
-    print "Sorry, can't include bulk solvent for randomly-generated sites."
+    print("Sorry, can't include bulk solvent for randomly-generated sites.")
   f_model = mmtbx.utils.fmodel_from_xray_structure(
     xray_structure = xs,
     f_obs          = None,

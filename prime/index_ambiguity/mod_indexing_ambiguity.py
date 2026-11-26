@@ -1,11 +1,14 @@
-from __future__ import division
-import cPickle as pickle
+from __future__ import absolute_import, division, print_function
+from six.moves import cPickle as pickle
 from prime.postrefine import postref_handler
-from mod_lbfgs import lbfgs_handler
+from .mod_lbfgs import lbfgs_handler
 import numpy as np
 from cctbx import sgtbx
 import random
 from cctbx.array_family import flex
+from prime.postrefine.mod_input import read_frame
+from six.moves import range
+from six.moves import zip
 
 class indamb_handler(object):
   """
@@ -46,14 +49,14 @@ class indamb_handler(object):
     return alternates
 
   def get_observations(self, pickle_filename, iparams):
-    main_obs_pickle = pickle.load(open(pickle_filename,"rb"))
+    main_obs_pickle = read_frame(pickle_filename)
     prh = postref_handler()
     avg_mode = 'average'
     try:
       inputs, txt_org = prh.organize_input(main_obs_pickle, iparams, avg_mode, pickle_filename=pickle_filename)
       main_obs = inputs[0]
     except Exception:
-      print 'Error reading input pickle.'
+      print('Error reading input pickle.')
       return None
     main_asu = main_obs.map_to_asu().merge_equivalents().array()
     #get other indexing alternatives
@@ -75,8 +78,8 @@ class indamb_handler(object):
         corr = miller_array_ref.correlation(alternates[key], assert_is_similar_symmetry=False)
         cc_set.append(corr.coefficient())
       i_best = np.argmax(cc_set)
-      txt_out = ' {0:40} ==> CC:{1:6.2f}'.format(img_filename_only+' '+alternates.keys()[i_best], cc_set[i_best])
-      return alternates.keys()[i_best], txt_out
+      txt_out = ' {0:40} ==> CC:{1:6.2f}'.format(img_filename_only+' '+list(alternates.keys())[i_best], cc_set[i_best])
+      return list(alternates.keys())[i_best], txt_out
     except Exception:
       txt_out = ' {0:40} ==> CC:{1:6.2f}'.format(img_filename_only+' (h,k,l)', 0)
       return "h,k,l", txt_out

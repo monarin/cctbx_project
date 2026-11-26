@@ -1,9 +1,10 @@
-from __future__ import division
+from __future__ import absolute_import, division, print_function
 import sys, math
 from libtbx.str_utils import make_sub_header
 from libtbx.utils import Sorry
 import libtbx.phil
 import libtbx.callbacks # import dependency
+from six.moves import zip
 
 #acentric tables from French-Wilson supplement, 1978
 ac_zj =    [ 0.226,0.230,0.235,0.240,0.246,0.251,0.257,0.263,0.270,
@@ -92,7 +93,7 @@ def fw_acentric(
       I,
       sigma_I,
       mean_intensity,
-      sigma_iobs_rejection_criterion) :
+      sigma_iobs_rejection_criterion):
   assert (mean_intensity != 0) and (sigma_I != 0)
   h = (I/sigma_I) - (sigma_I/mean_intensity)
   h_min = sigma_iobs_rejection_criterion
@@ -128,7 +129,7 @@ def fw_centric(
       I,
       sigma_I,
       mean_intensity,
-      sigma_iobs_rejection_criterion) :
+      sigma_iobs_rejection_criterion):
   assert (mean_intensity != 0) and (sigma_I != 0)
   h = (I/sigma_I) - ( sigma_I/(2.0*mean_intensity) )
   h_min = sigma_iobs_rejection_criterion
@@ -190,10 +191,8 @@ def f_w_binning(miller_array, max_bins=60, min_bin_size=40, log=None):
         if bin.size() < min_bin_size:
           max_bins = max_bins - 1
           if max_bins == 0:
-            print >> log, "not enough reflections for accurate binning\n"+ \
-                          "** skipping French-Wilson scaling **"
-            return False
-          print >> log, "bin too small, trying %d bins" % max_bins
+            raise ValueError("Too few reflections for accurate binning.")
+          print("bin too small, trying %d bins" % max_bins, file=log)
           bin_success = False
           break
           #f_w_binning(miller_array, max_bins=new_max_bins, log=log)
@@ -215,7 +214,7 @@ def interpolate(pt_1, pt_2, delta):
 def calculate_mean_intensities(miller_array, log=None):
   if log == None:
     log = sys.stdout
-  print >> log, "** Calculating bin mean intensity values for each intensity **"
+  print("** Calculating bin mean intensity values for each intensity **", file=log)
   bin_mean_intensities = miller_array.mean(use_binning=True).data
   bin_centers = get_bin_centers(miller_array=miller_array)
   d_mean_intensities = dict()
@@ -258,7 +257,7 @@ def calculate_mean_intensities(miller_array, log=None):
             assert (d_1 > d > d_2)
             if ( not ( (m_1 > mean_i > m_2) or (m_2 > mean_i > m_1) ) and
                  not (m_1 == mean_i == m_2 == 0.0) and
-                     (math.fabs(m_1-m_2) > 1.0e-10) ) :
+                     (math.fabs(m_1-m_2) > 1.0e-10) ):
               raise RuntimeError(
                 "Internal error: i_bin=%d d=%f m_1=%f mean_i=%f m_2=%f" %
                   (i_bin, d, m_1, mean_i, m_2))
@@ -296,7 +295,7 @@ def calculate_mean_intensities(miller_array, log=None):
             assert (d_1 > d > d_2)
             if ( not ( (m_1 > mean_i > m_2) or (m_2 > mean_i > m_1) ) and
                  not (m_1 == mean_i == m_2 == 0.0) and
-                     (math.fabs(m_1-m_2) > 1.0e-10) ) :
+                     (math.fabs(m_1-m_2) > 1.0e-10) ):
               raise RuntimeError(
                 "Internal error: i_bin=%d d=%f m_1=%f mean_i=%f m_2=%f" %
                   (i_bin, d, m_1, mean_i, m_2))
@@ -312,6 +311,8 @@ def french_wilson_scale(
       params=None,
       sigma_iobs_rejection_criterion=None,
       merge=False,
+      min_bin_size=40,
+      max_bins=60,
       log=None):
   from cctbx.array_family import flex
   if not miller_array.is_xray_intensity_array():
@@ -325,47 +326,61 @@ def french_wilson_scale(
   if miller_array.sigmas() is None:
     raise Sorry("Input array does not contain sigma values. "+
       "This method requires input intensities with associated sigmas.")
-  if (not miller_array.is_unique_set_under_symmetry()) :
-    if (merge) :
+  if (not miller_array.is_unique_set_under_symmetry()):
+    if (merge):
       miller_array = miller_array.merge_equivalents().array()
     else :
       raise Sorry("Unmerged data not allowed - please merge "+
         "symmetry-equivalent reflections first.")
-  if (miller_array.data().all_eq(miller_array.data()[0])) :
+  if (miller_array.data().all_eq(miller_array.data()[0])):
     # XXX some Scalepack files (and possibly others) crash the routine if this
     # check is not performed.  presumably an HKL2000 bug?
     raise Sorry(("The input intensities have uniform values (%g); this is probably "+
       "a bug in one of the data processing and/or conversion programs.") %
       miller_array.data()[0])
-  if params == None:
-    params = master_phil.extract()
-  if (params.max_bins is None) : # XXX reset in case of user error
-    params.max_bins = 60
+  # Phil defaults are set in master_phil above - they should be kept in sync with the
+  # default arguments for this function
+  if params and params.max_bins:
+    max_bins = params.max_bins
+  if params and params.min_bin_size:
+    min_bin_size = params.min_bin_size
   if log == None:
     log = sys.stdout
-  if (sigma_iobs_rejection_criterion is None) :
+  if (sigma_iobs_rejection_criterion is None):
     sigma_iobs_rejection_criterion = -4.0
-  elif (sigma_iobs_rejection_criterion == 0.0) :
+  elif (sigma_iobs_rejection_criterion == 0.0):
     libtbx.warn(
       "For French and Wilson scaling, sigma_iobs_rejection_criterion " +
       "must be a value between -4.0 and -1.0, or None. " +
       "Setting sigma_iobs_rejection_criteriont to -4.0.")
     sigma_iobs_rejection_criterion = -4.0
   elif ((sigma_iobs_rejection_criterion < -4.0) or
-        (sigma_iobs_rejection_criterion > -1.0)) :
+        (sigma_iobs_rejection_criterion > -1.0)):
     raise Sorry(
       "For French and Wilson scaling, sigma_iobs_rejection_criterion " +
       "must be a value between -4.0 and -1.0, or None.")
   rejected = []
   make_sub_header("Scaling input intensities via French-Wilson Method",
     out=log)
-  print >> log, "Trying %d bins..." % params.max_bins
-  if not f_w_binning(miller_array=miller_array,
-              max_bins=params.max_bins,
-              min_bin_size=params.min_bin_size,
-              log=log):
-    return None
-  print >> log, "Number of bins = %d" % miller_array.binner().n_bins_used()
+  print("Trying %d bins..." % max_bins, file=log)
+  try:
+    f_w_binning(
+      miller_array=miller_array,
+      max_bins=max_bins,
+      min_bin_size=min_bin_size,
+      log=log
+    )
+  except ValueError:
+    try:
+      miller_array.setup_binner_counting_sorted(reflections_per_bin=5)
+    except AssertionError:
+      print(
+        "Too few reflections for accurate binning.\n"
+        "** Skipping French-Wilson scaling **",
+        file=log
+      )
+      return None
+  print("Number of bins = %d" % miller_array.binner().n_bins_used(), file=log)
   new_I = flex.double()
   new_sigma_I = flex.double()
   new_F = flex.double()
@@ -386,10 +401,10 @@ def french_wilson_scale(
                                    cen.sigmas(),
                                    cen.indices()):
         mean_intensity = d_mean_intensities[index]
-        if (mean_intensity == 0) :
+        if (mean_intensity == 0):
           # XXX is this the appropriate way to handle this?
           rejected.append( (index, I, sigma_I, mean_intensity) )
-        elif (sigma_I <= 0) :
+        elif (sigma_I <= 0):
           if I <= 0 or sigma_I < 0 :
             rejected.append( (index, I, sigma_I, mean_intensity) )
             continue
@@ -418,9 +433,9 @@ def french_wilson_scale(
                                    acen.sigmas(),
                                    acen.indices()):
         mean_intensity = d_mean_intensities[index]
-        if (mean_intensity == 0) :
+        if (mean_intensity == 0):
           rejected.append( (index, I, sigma_I, mean_intensity) )
-        elif (sigma_I <= 0) :
+        elif (sigma_I <= 0):
           if I <= 0 or sigma_I < 0 :
             rejected.append( (index, I, sigma_I, mean_intensity) )
             continue
@@ -455,12 +470,12 @@ def french_wilson_scale(
 def show_rejected_summary(rejected, log=None):
   if log == None:
     log = sys.stdout
-  print >> log, "** Total # rejected intensities: %d **" % len(rejected)
+  print("** Total # rejected intensities: %d **" % len(rejected), file=log)
   if len(rejected) > 0:
-    print >> log, "** Summary or rejected intensities **"
-    print >> log, "-----------------------------------------------------------------"
-    print >> log, "Miller Index  :  Intensity  :  Sigma  :  Bin Mean Intensity"
+    print("** Summary or rejected intensities **", file=log)
+    print("-----------------------------------------------------------------", file=log)
+    print("Miller Index  :  Intensity  :  Sigma  :  Bin Mean Intensity", file=log)
     for rej in rejected:
-      print >> log, "%s    %.3f      %.3f    %.3f" % \
-                    (str(rej[0]),rej[1],rej[2],rej[3])
-    print >> log, "-----------------------------------------------------------------"
+      print("%s    %.3f      %.3f    %.3f" % \
+                    (str(rej[0]),rej[1],rej[2],rej[3]), file=log)
+    print("-----------------------------------------------------------------", file=log)

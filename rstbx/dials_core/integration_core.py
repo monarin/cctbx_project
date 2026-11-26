@@ -1,4 +1,5 @@
-from __future__ import division
+from __future__ import absolute_import, division, print_function
+from six.moves import range
 from cctbx.array_family import flex
 from scitbx import matrix
 
@@ -8,7 +9,8 @@ def show_observations(obs,out=None, n_bins=12):
     out = sys.stdout
   from libtbx.str_utils import format_value
 
-  obs.setup_binner(n_bins = n_bins)
+  if n_bins is not None: # if None, assume binner already set up
+    obs.setup_binner(n_bins = n_bins)
   result = []
   counts_given = obs.binner().counts_given()
   counts_complete = obs.binner().counts_complete()
@@ -31,15 +33,15 @@ def show_observations(obs,out=None, n_bins=12):
         d_max_min    = (d_max_, d_min_),
         completeness = (counts_given[i_bin], counts_complete[i_bin]))
       result.append(bin)
-  print >>out, "\n Bin  Resolution Range  Compl.         <I>     <I/sig(I)>"
+  print("\n Bin  Resolution Range  Compl.         <I>     <I/sig(I)>", file=out)
   for bin in result:
     fmt = " %s %s    %s  %s"
-    print >>out,fmt%(
+    print(fmt%(
       format_value("%3d",   bin.i_bin),
       format_value("%-17s", bin.d_range),
       format_value("%8.1f", bin.mean_I),
       format_value("%8.1f", bin.mean_I_sigI),
-      )
+      ), file=out)
   return result
 
 class resolution_bin(object):
@@ -90,15 +92,15 @@ class integration_core(simple_integration):
 
   def integration_masks_as_xy_tuples(self):
     values = []
-    for imsk in xrange(len(self.BSmasks)):
+    for imsk in range(len(self.BSmasks)):
       smask_keys = self.get_ISmask(imsk)
-      for ks in xrange(0,len(smask_keys),2):
+      for ks in range(0,len(smask_keys),2):
         values.append((smask_keys[ks],smask_keys[ks+1]))
     return values
 
   def background_masks_as_xy_tuples(self):
     values = []
-    for imsk in xrange(len(self.BSmasks)):
+    for imsk in range(len(self.BSmasks)):
       bmask = self.BSmasks[imsk]
       for key in bmask.keys():
         values.append((key[0],key[1]))
@@ -116,13 +118,13 @@ class integration_core(simple_integration):
         dc.SetBrush(wx.BLUE_BRUSH)
         dc.DrawCircle(x,y,1)
 
-    for imsk in xrange(len(self.BSmasks)):
+    for imsk in range(len(self.BSmasks)):
       smask_keys = self.get_ISmask(imsk)
       bmask = self.BSmasks[imsk]
       if len(bmask.keys())==0: continue
 
       # CYAN: integration mask
-      for ks in xrange(0,len(smask_keys),2):
+      for ks in range(0,len(smask_keys),2):
         x,y = wxpanel._img.image_coords_as_screen_coords(smask_keys[ks+1],
                                                          smask_keys[ks])
         dc.SetPen(wx.Pen('cyan'))
@@ -169,12 +171,12 @@ class integration_core(simple_integration):
     Distsq = flex.double()
     self.sorted = [] # a generic list of points close in distance to a central point
     if self.mask_focus[image_number] == None: return
-    for i in xrange(-self.mask_focus[image_number][0],1+self.mask_focus[image_number][0]):
-      for j in xrange(-self.mask_focus[image_number][1],1+self.mask_focus[image_number][1]):
+    for i in range(-self.mask_focus[image_number][0],1+self.mask_focus[image_number][0]):
+      for j in range(-self.mask_focus[image_number][1],1+self.mask_focus[image_number][1]):
         Incr.append(matrix.col((i,j)))
         Distsq.append(i*i+j*j)
     order = flex.sort_permutation(Distsq)
-    for i in xrange(len(order)):
+    for i in range(len(order)):
       #print i,order[i],Distsq[order[i]],Incr[order[i]]
       self.sorted.append(Incr[order[i]])
 

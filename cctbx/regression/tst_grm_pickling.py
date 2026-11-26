@@ -1,14 +1,14 @@
-from __future__ import division
+from __future__ import absolute_import, division, print_function
 
 from mmtbx import monomer_library
 import mmtbx.monomer_library.server
 import mmtbx.monomer_library.pdb_interpretation
 import sys
 try:
-  import cPickle as pickle
+  from six.moves import cPickle as pickle
 except ImportError:
   import pickle
-from cStringIO import StringIO
+from six.moves import cStringIO as StringIO
 from libtbx.test_utils import show_diff
 import iotbx.pdb
 from libtbx.utils import null_out # import dependency
@@ -170,7 +170,7 @@ def make_geo_pickle_unpickle(geometry, xrs, prefix):
   # Fails here:
   energy_from_pickle = grm_from_file.energies_sites(sites_cart=xrs.sites_cart())
   assert approx_equal(energy_original.target, energy_from_pickle.target)
-  print "Time pickling/unpickling: %.4f, %.4f" % (t1-t0, t2-t1)
+  print("Time pickling/unpickling: %.4f, %.4f" % (t1-t0, t2-t1))
   grm_from_file.show_sorted(
       sites_cart=xrs.sites_cart(),
       site_labels=xrs.scatterers().extract_labels(),
@@ -192,8 +192,8 @@ def test_simple_protein(
   make_geo_pickle_unpickle(geometry, xrs, prefix)
 
 def test_nucleic_acid(mon_lib_srv, ener_lib, prefix="tst_grm_pickling_na"):
-  open("%s.pdb" % prefix, "w").\
-      write(raw_records2)
+  with open("%s.pdb" % prefix, "w") as f:
+    f.write(raw_records2)
   from mmtbx import monomer_library
   params = monomer_library.pdb_interpretation.master_params.extract()
   params.secondary_structure.enabled=True
@@ -210,8 +210,8 @@ def test_nucleic_acid(mon_lib_srv, ener_lib, prefix="tst_grm_pickling_na"):
   make_geo_pickle_unpickle(geo, processed_pdb_file.xray_structure(), prefix)
 
 def test_ramachandran(mon_lib_srv, ener_lib, prefix="tst_grm_pickling_rama"):
-  open("%s.pdb" % prefix, "w").\
-    write(raw_records3)
+  with open("%s.pdb" % prefix, "w") as f:
+    f.write(raw_records3)
   from mmtbx import monomer_library
   params = monomer_library.pdb_interpretation.master_params.extract()
   params.peptide_link.ramachandran_restraints=True
@@ -225,8 +225,8 @@ def test_ramachandran(mon_lib_srv, ener_lib, prefix="tst_grm_pickling_rama"):
   make_geo_pickle_unpickle(geo, processed_pdb_file.xray_structure(), prefix)
 
 def test_cbeta(mon_lib_srv, ener_lib, prefix="tst_grm_pickling_cbeta"):
-  open("%s.pdb" % prefix, "w").\
-    write(raw_records3)
+  with open("%s.pdb" % prefix, "w") as f:
+    f.write(raw_records3)
   from mmtbx import monomer_library
   params = monomer_library.pdb_interpretation.master_params.extract()
   params.c_beta_restraints=True
@@ -410,7 +410,8 @@ def test_reference_model(mon_lib_srv, ener_lib, prefix="tst_reference_model"):
   from mmtbx.geometry_restraints.torsion_restraints.tst_reference_model import \
       model_raw_records, reference_raw_records
   from mmtbx.geometry_restraints.torsion_restraints.reference_model import \
-    reference_model, reference_model_params
+    reference_model
+  import mmtbx.model
   # mstream = StringIO()
   from libtbx.utils import multi_out
   mstream = multi_out()
@@ -419,29 +420,31 @@ def test_reference_model(mon_lib_srv, ener_lib, prefix="tst_reference_model"):
   mstreamfile = open(mstream_file_name, "w")
   mstream.register("logfile", mstreamfile)
 
-  work_params = reference_model_params.extract()
+  work_params = mmtbx.model.manager.get_default_pdb_interpretation_params()
   work_params.reference_model.enabled = True
+  work_params.reference_model.use_starting_model_as_reference = True
   work_params.reference_model.fix_outliers = False
-  processed_pdb_file = monomer_library.pdb_interpretation.process(
-      mon_lib_srv=mon_lib_srv,
-      ener_lib=ener_lib,
-      raw_records=model_raw_records.split('\n'),
-      log=mstream)
-  pdb_h = processed_pdb_file.all_chain_proxies.pdb_hierarchy
+  # Keep side-chain dihedrals so the pickled manager holds more than one proxy.
+  work_params.reference_model.side_chain = True
+  pdb_inp = iotbx.pdb.input(lines=model_raw_records.split('\n'), source_info=None)
+  model = mmtbx.model.manager(model_input = pdb_inp)
+  model.process(pdb_interpretation_params=work_params,
+    make_restraints=True)
   reference_hierarchy_list = []
   tmp_hierarchy = iotbx.pdb.input(
     source_info=None,
     lines=reference_raw_records.split('\n')).construct_hierarchy()
   reference_hierarchy_list.append(tmp_hierarchy)
   rm = reference_model(
-         processed_pdb_file=processed_pdb_file,
+         model = model,
          reference_hierarchy_list=reference_hierarchy_list,
          params=work_params.reference_model,
-         log=mstream)
+         log=null_out())  # XXX changed from mstream which cannot be pickled
   assert rm.get_n_proxies() == 5, "Got %d, expected 5" % rm.get_n_proxies()
   geometry, xrs = make_initial_grm(mon_lib_srv, ener_lib, model_raw_records)
   geometry.adopt_reference_dihedral_manager(rm)
   make_geo_pickle_unpickle(geometry, xrs, prefix)
+  mstream.close()
 
 def exercise_all(args):
   mon_lib_srv = None
@@ -450,11 +453,11 @@ def exercise_all(args):
     mon_lib_srv = monomer_library.server.server()
     ener_lib = monomer_library.server.ener_lib()
   except Exception:
-    print "Can not initialize monomer_library, skipping test."
+    print("Can not initialize monomer_library, skipping test.")
     return 0
   import libtbx.load_env
   if libtbx.env.find_in_repositories(relative_path="chem_data") is None:
-    print "Skipping exercise(): chem_data directory not available"
+    print("Skipping exercise(): chem_data directory not available")
     return
 
   test_simple_protein(mon_lib_srv, ener_lib)

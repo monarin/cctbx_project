@@ -1,12 +1,12 @@
 
-from __future__ import division
+from __future__ import absolute_import, division, print_function
 from mmtbx.command_line import sort_hetatms
-from iotbx import file_reader
-from cStringIO import StringIO
+import iotbx.pdb
+from six.moves import cStringIO as StringIO
 import os.path as op
 import os
 
-def exercise () :
+def exercise():
   pdb_raw = """\
 CRYST1   21.937    4.866   23.477  90.00 107.08  90.00 P 1 21 1      2
 ATOM      1  N   GLY A   1      -9.009   4.612   6.102  1.00 16.77           N
@@ -80,16 +80,16 @@ HETATM   67  O   HOH A  14      -1.500   0.682  10.967  1.00 43.49           O
 END
 """
   pdb_file = "unsorted.pdb"
-  open(pdb_file, "w").write(pdb_raw)
-  if (op.exists("unsorted_sorted.pdb")) :
+  with open(pdb_file, "w") as f:
+    f.write(pdb_raw)
+  if (op.exists("unsorted_sorted.pdb")):
     os.remove("unsorted_sorted.pdb")
   out = StringIO()
   sort_hetatms.run(
     args=[pdb_file, "--verbose"],
     out=out)
   assert ("""Residue group pdb=" O   HOH    10 " added to chain A (distance = 2.814, symop = -x-1,y-1/2,-z)""" in out.getvalue())
-  pdb_in = file_reader.any_file("unsorted_sorted.pdb")
-  hierarchy = pdb_in.file_object.hierarchy
+  hierarchy = iotbx.pdb.input("unsorted_sorted.pdb").construct_hierarchy()
   chains = hierarchy.models()[0].chains()
   assert (len(chains) == 4)
   rgsA = chains[-2].residue_groups()
@@ -98,8 +98,7 @@ END
   sort_hetatms.run(
     args=[pdb_file, "preserve_chain_id=True", "renumber=False"],
     out=StringIO())
-  pdb_in = file_reader.any_file("unsorted_sorted.pdb")
-  hierarchy = pdb_in.file_object.hierarchy
+  hierarchy = iotbx.pdb.input("unsorted_sorted.pdb").construct_hierarchy()
   chains = hierarchy.models()[0].chains()
   assert (len(chains) == 3)
   assert (chains[-1].id == "A")
@@ -136,8 +135,9 @@ HETATM   67  O   HOH A  14      -1.500   0.682  10.967  1.00 43.49           O
 END
 """
   pdb_file = "unsorted2.pdb"
-  open(pdb_file, "w").write(pdb_raw2)
-  if (op.exists("unsorted2_sorted.pdb")) :
+  with open(pdb_file, "w") as f:
+    f.write(pdb_raw2)
+  if (op.exists("unsorted2_sorted.pdb")):
     os.remove("unsorted2_sorted.pdb")
   out = StringIO()
   sort_hetatms.run(
@@ -260,36 +260,39 @@ HETATM 4964  O   HOH X 977      44.190  81.253 -31.435  1.00 48.82           O
 HETATM 4965  O   HOH X 978      41.198  81.209 -30.407  1.00 48.77           O
 """
   pdb_file = "unsorted3.pdb"
-  open(pdb_file, "w").write(pdb_raw)
-  if (op.exists("unsorted3_sorted.pdb")) :
+  with open(pdb_file, "w") as f:
+    f.write(pdb_raw)
+  if (op.exists("unsorted3_sorted.pdb")):
     os.remove("unsorted3_sorted.pdb")
   out = StringIO()
   sort_hetatms.run(
     args=[pdb_file, "--verbose",],
     out=out)
   assert op.isfile("unsorted3_sorted.pdb")
-  pdb_in = file_reader.any_file("unsorted3_sorted.pdb")
-  for atom in pdb_in.file_object.hierarchy.atoms() :
+  hierarchy = iotbx.pdb.input("unsorted3_sorted.pdb").construct_hierarchy()
+  for atom in hierarchy.atoms():
     assert atom.fetch_labels().chain_id == "A"
   # now with ARG ligand minus waters, but still flagged as HETATM
-  pdb_in = file_reader.any_file("unsorted3.pdb")
+  pdb_in = iotbx.pdb.input("unsorted3.pdb")
+  hierarchy = pdb_in.construct_hierarchy()
   sel_str = "not resname HOH"
-  sel_cache = pdb_in.file_object.hierarchy.atom_selection_cache()
+  sel_cache = hierarchy.atom_selection_cache()
   sel = sel_cache.selection(sel_str)
-  hierarchy_new = pdb_in.file_object.hierarchy.select(sel)
-  open("unsorted4.pdb", "w").write(hierarchy_new.as_pdb_string(
-    crystal_symmetry=pdb_in.file_object.crystal_symmetry()))
-  if (op.exists("unsorted4_sorted.pdb")) :
+  hierarchy_new = hierarchy.select(sel)
+  with open("unsorted4.pdb", "w") as f:
+    f.write(hierarchy_new.as_pdb_string(
+      crystal_symmetry=pdb_in.crystal_symmetry()))
+  if (op.exists("unsorted4_sorted.pdb")):
     os.remove("unsorted4_sorted.pdb")
   out = StringIO()
   sort_hetatms.run(
     args=["unsorted4.pdb", "--verbose",],
     out=out)
   assert op.isfile("unsorted4_sorted.pdb")
-  pdb_in = file_reader.any_file("unsorted4_sorted.pdb")
-  for atom in pdb_in.file_object.hierarchy.atoms() :
+  hierarchy = iotbx.pdb.input("unsorted4_sorted.pdb").construct_hierarchy()
+  for atom in hierarchy.atoms():
     assert atom.fetch_labels().chain_id == "A"
-  print "OK"
+  print("OK")
 
-if (__name__ == "__main__") :
+if (__name__ == "__main__"):
   exercise()

@@ -1,4 +1,4 @@
-from __future__ import division
+from __future__ import absolute_import, division, print_function
 import os
 from spotfinder.applications.stats_distl import pretty_image_stats,notes
 
@@ -35,7 +35,7 @@ def spotfinder_factory(absrundir,frames,phil_params):
 
   for framenumber in local_frames:
     try:
-      assert Spotfinder.images.has_key(framenumber)
+      assert framenumber in Spotfinder.images
     except Exception:
       Spotfinder.register_frames(framenumber,frames)
       if phil_params.spotfinder_verbose: Spotfinder.show()
@@ -44,8 +44,8 @@ def spotfinder_factory(absrundir,frames,phil_params):
 
 def dxtbx_spotfinder_factory(phil_params):
 
-  from dxtbx.format.Registry import Registry
-  reader = Registry.find(phil_params.distl.image[0])
+  import dxtbx.format.Registry
+  reader = dxtbx.format.Registry.get_format_class_for_file(phil_params.distl.image[0])
   from spotfinder.dxtbx_toolbox.practical_heuristics import heuristics_base
   Spotfinder = heuristics_base(phil_params)
   return Spotfinder
@@ -59,7 +59,7 @@ class DistlOrganizer(object):
     if self.phil_params.distl.dxtbx:
       self.set_dxtbx_input()
       return
-    if kwargs.has_key('argument_module'):
+    if 'argument_module' in kwargs:
       # new interface
       self.setCommandInput(kwargs['argument_module'])
 

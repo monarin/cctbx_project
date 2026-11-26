@@ -1,10 +1,12 @@
-from __future__ import division
+from __future__ import absolute_import, division, print_function
 # LIBTBX_SET_DISPATCHER_NAME smtbx.refine
 
 import os
 from scitbx import lstbx
 import scitbx.lstbx.normal_eqns_solving
 from smtbx import refinement
+from timeit import default_timer as current_time
+
 
 allowed_input_file_extensions = ('.ins', '.res', '.cif')
 
@@ -42,13 +44,30 @@ def run(filenames, options):
   else:
     out_root, out_ext = os.path.splitext(output_filename)
 
+  # ...and handle the hkl format specifiers requested by
+  # iotbx.reflection_file_reader
+  if "=amplitudes" in reflections_filename:
+    reflections_realfilename = \
+        reflections_filename[:reflections_filename.find("=amplitudes")]
+  elif "=hklf3" in reflections_filename:
+    reflections_realfilename = \
+        reflections_filename[:reflections_filename.find("=hklf3")]
+  elif "=intensities" in reflections_filename:
+    reflections_realfilename = \
+        reflections_filename[:reflections_filename.find("=intensities")]
+  elif "=hklf4" in reflections_filename:
+    reflections_realfilename = \
+        reflections_filename[:reflections_filename.find("=hklf4")]
+  else:
+    reflections_realfilename = reflections_filename
+
   # check extensions are supported
   for ext in (in_ext, out_ext):
     if ext not in allowed_input_file_extensions:
       raise command_line_error("unsupported extension: %s" % ext)
 
   # Investigate whether input and ouput files do exist, are the same, etc
-  for filename in (input_filename, reflections_filename):
+  for filename in (input_filename, reflections_realfilename):
     if not os.path.isfile(filename):
       raise command_line_error("No such file %s" % filename)
   if os.path.isfile(output_filename):
@@ -66,12 +85,17 @@ def run(filenames, options):
                                      hkl=reflections_filename,
                                      strictly_shelxl=False)
 
+  # Load default anomalous scattering factors if wavelength is available
+  wvl=xm.wavelength
+  if wvl:
+    xm.xray_structure.set_inelastic_form_factors(wvl, 'sasaki')
+
   sgi = xm.xray_structure.space_group_info()
   sg = sgi.group()
-  print "Space group: %s" % sgi.type().hall_symbol()
-  print "\t* %scentric" % ('non-','')[sg.is_centric()]
-  print "\t* %schiral" % ('a','')[sg.is_chiral()]
-  print "%i reflections" % len(xm.fo_sq.indices)
+  print("Space group: %s" % sgi.type().hall_symbol())
+  print("\t* %scentric" % ('non-','')[sg.is_centric()])
+  print("\t* %schiral" % ('a','')[sg.is_chiral()])
+  print("%i reflections" % len(xm.fo_sq.indices))
 
   # At last...
   for sc in xm.xray_structure.scatterers():
@@ -79,23 +103,26 @@ def run(filenames, options):
     if sc.flags.use_u_iso(): sc.flags.set_grad_u_iso(True)
     if sc.flags.use_u_aniso(): sc.flags.set_grad_u_aniso(True)
   ls = xm.least_squares()
-  print "%i atoms" % len(ls.reparametrisation.structure.scatterers())
-  print "%i refined parameters" % ls.reparametrisation.n_independents
-  steps = lstbx.normal_eqns_solving.naive_iterations(
+  print("%i atoms" % len(ls.reparametrisation.structure.scatterers()))
+  print("%i refined parameters" % ls.reparametrisation.n_independents)
+  steps = lstbx.normal_eqns_solving.levenberg_marquardt_iterations(
     non_linear_ls=ls,
     n_max_iterations=options.max_cycles,
     gradient_threshold=options.stop_if_max_derivative_below,
     step_threshold=options.stop_if_shift_norm_below)
-  print "Normal equations building time: %.3f s" % \
-        steps.non_linear_ls.normal_equations_building_time
-  print "Normal equations solving time: %.3f s" % \
-        steps.non_linear_ls.normal_equations_solving_time
+  print("Normal equations building time: %.3f s" % \
+        steps.non_linear_ls.normal_equations_building_time)
+  print("Normal equations solving time: %.3f s" % \
+        steps.non_linear_ls.normal_equations_solving_time)
+  t0 = current_time()
+  cov = ls.covariance_matrix_and_annotations()
+  print("Covariance matrix building: %.3f" % (current_time() - t0))
 
   # Write result to disk
   if out_ext != '.cif':
     raise NotImplementedError("Write refined structure to %s file" % out_ext)
   with open(output_filename, 'w') as out:
-    xm.xray_structure.as_cif_simple(out)
+    xm.xray_structure.as_cif_simple(out, format="corecif")
 
 here_usage="""\
 refine [options] INPUT
@@ -147,15 +174,26 @@ if __name__ == '__main__':
     default=8,
     help='Stop refinement as soon as the given number of cycles have been '
          'performed')
+  parser.add_option(
+    '--profile',
+    action='store_true',
+    help='Run with a profiler to find hotspots (for the author-eyes mostly!)')
   options, args = parser.parse_args()
   try:
-    run(args, options)
+    if not options.profile:
+      run(args, options)
+    else:
+      import cProfile, pstats
+      prof = cProfile.Profile()
+      prof.runcall(run, args, options)
+      stats = pstats.Stats(prof)
+      stats.strip_dirs().sort_stats('time').print_stats(6)
   except number_of_arguments_error:
     parser.print_usage()
     sys.exit(1)
-  except command_line_error, err:
-    print >>sys.stderr, "\nERROR: %s\n" % err
+  except command_line_error as err:
+    print("\nERROR: %s\n" % err, file=sys.stderr)
     parser.print_help()
     sys.exit(1)
   t1 = current_time()
-  print "Total time: %.3f s" % (t1 - t0)
+  print("Total time: %.3f s" % (t1 - t0))

@@ -1,9 +1,10 @@
-from __future__ import division
+from __future__ import absolute_import, division, print_function
 from mmtbx.validation.clashscore import clashscore
 import libtbx.load_env
 import iotbx.pdb
 import unittest
 import os
+from six.moves import map
 
 __author__ = 'Youval'
 
@@ -66,7 +67,8 @@ class MyTestCase(unittest.TestCase):
     self.file_to_delete = []
     # import files used in tests
     self.file_name = 'test_do_flips_clashscore.pdb'
-    open(self.file_name,'w').write(test_pdb_str)
+    with open(self.file_name,'w') as f:
+      f.write(test_pdb_str)
     self.file_to_delete.append(self.file_name)
 
   def test_identifying_and_addition_of_hydrogen(self):
@@ -108,7 +110,7 @@ def run_selected_tests():
   3) Un-comment unittest.TextTestRunner().run(run_selected_tests())
   """
   tests = ['test_something']
-  suite = unittest.TestSuite(map(MyTestCase, tests))
+  suite = unittest.TestSuite(list(map(MyTestCase, tests)))
   return suite
 
 

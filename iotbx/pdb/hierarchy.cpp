@@ -5,6 +5,10 @@
 #include <cctbx/eltbx/chemical_elements.h>
 #include <boost/format.hpp>
 #include <boost/scoped_array.hpp>
+#include <boost/algorithm/string/trim.hpp>
+#include <set>
+#include <string>
+#include <iomanip>
 
 namespace iotbx { namespace pdb { namespace hierarchy {
 
@@ -168,7 +172,7 @@ namespace {
 #ifdef IOTBX_PDB_ENABLE_ATOM_DATA_SIGUIJ
     siguij(other.siguij),
 #endif
-    fp(other.fp), fdp(other.fdp),
+    fp(other.fp), fdp(other.fdp), resolution(other.resolution),
     i_seq(other.i_seq), tmp(0), have_sentinel(false),
     hetero(other.hetero), serial(other.serial), name(other.name),
     segid(other.segid), element(other.element), charge(other.charge)
@@ -187,7 +191,7 @@ namespace {
 #else
       sym_mat3(-1,-1,-1,-1,-1,-1),
 #endif
-      data->fp, data->fdp,
+      data->fp, data->fdp, data->resolution,
       data->hetero, data->serial.elems, data->name.elems,
       data->segid.elems, data->element.elems, data->charge.elems);
   }
@@ -233,6 +237,41 @@ namespace {
     }
     }}}} // close macro
     return i_seq;
+  }
+
+  bool
+  root::fits_in_pdb_format(
+    bool use_hybrid36)
+  {
+    std::vector<model> const& models = this->models();
+    unsigned n_mds = models_size();
+    for(unsigned i_md=0;i_md<n_mds;i_md++) {
+      unsigned n_chs = models[i_md].chains_size();
+      std::vector<chain> const& chains = models[i_md].chains();
+      for(unsigned i_ch=0;i_ch<n_chs;i_ch++) {
+        // chain id
+        if (chains[i_ch].data->id.size()>2) return false;
+        unsigned n_rgs = chains[i_ch].residue_groups_size();
+        std::vector<residue_group> const& rgs = chains[i_ch].residue_groups();
+        for(unsigned i_rg=0;i_rg<n_rgs;i_rg++) {
+          // resseq
+          if (!use_hybrid36 && rgs[i_rg].resseq_as_int() > 9999) return false;
+          unsigned n_ags = rgs[i_rg].atom_groups_size();
+          std::vector<atom_group> const& ags = rgs[i_rg].atom_groups();
+          for(unsigned i_ag=0;i_ag<n_ags;i_ag++) {
+            // residue name
+            if (ags[i_ag].data->resname.size()>3) return false;
+            unsigned n_ats = ags[i_ag].atoms_size();
+            std::vector<atom> const& atoms = ags[i_ag].atoms();
+            for(unsigned i_at=0; i_at<n_ats; i_at++) {
+              // atom serial number
+              if (!use_hybrid36 && atoms[i_at].serial_as_int() > 99999) return false;
+            }
+          }
+        }
+      }
+    }
+    return true;
   }
 
   void
@@ -355,6 +394,47 @@ namespace {
     return result;
   }
 
+  af::shared<atom_with_labels>
+  root::atoms_with_labels() const
+  {
+    af::shared<atom_with_labels> result((af::reserve(atoms_size())));
+    std::vector<model> const& mds = models();
+    for(unsigned i_md=0;i_md<mds.size();i_md++) {
+      model_data const& md = *mds[i_md].data;
+      std::vector<chain> const& chs = mds[i_md].chains();
+      for(unsigned i_ch=0;i_ch<chs.size();i_ch++) {
+        chain_data const& ch = *chs[i_ch].data;
+        bool is_first_in_chain = true;
+        std::vector<residue_group> const& rgs = chs[i_ch].residue_groups();
+        for(unsigned i_rg=0;i_rg<rgs.size();i_rg++) {
+          residue_group_data const& rg = *rgs[i_rg].data;
+          bool is_first_after_break = !(
+            is_first_in_chain || rg.link_to_previous);
+          std::vector<atom_group> const& ags = rgs[i_rg].atom_groups();
+          for(unsigned i_ag=0;i_ag<ags.size();i_ag++) {
+            atom_group_data const& ag = *ags[i_ag].data;
+            std::vector<atom> const& ats = ags[i_ag].atoms();
+            for(unsigned i_at=0;i_at<ats.size();i_at++) {
+              result.push_back(atom_with_labels(
+                ats[i_at],
+                md.id.c_str(),
+                ch.id.c_str(),
+                rg.resseq.elems,
+                rg.icode.elems,
+                ag.altloc.c_str(),
+                ag.resname.c_str(),
+                is_first_in_chain,
+                is_first_after_break));
+              is_first_in_chain = false;
+              is_first_after_break = false;
+            }
+          }
+        }
+      }
+    }
+    return result;
+  }
+
   af::shared<atom>
   model::atoms_sequential_conf() const
   {
@@ -401,63 +481,124 @@ namespace {
     return result;
   }
 
+namespace {
+
+  //! value padded with blanks to at least width columns, as printf's
+  //! "%<width>s" (left=false) or "%-<width>s" (left=true)
   void
+  append_padded(
+    std::string& result,
+    const char* value,
+    std::size_t width,
+    bool left)
+  {
+    std::size_t n = std::strlen(value);
+    if (!left && n < width) result.append(width - n, ' ');
+    result.append(value, n);
+    if (left && n < width) result.append(width - n, ' ');
+  }
+
+} // namespace <anonymous>
+
+  std::string
   atom_label_columns_formatter::format(
-    char* result,
     bool add_model,
     bool add_segid) const
   {
-    char blank = ' ';
+    /* This is replacement for the below function.
+    At this point all members have the information, so we just put it into string
+    and return. */
+    std::string result;
     if (add_model) {
       if (model_id != 0) {
         std::size_t l = std::strlen(model_id);
         IOTBX_ASSERT(l <= 8);
-        unsigned n = static_cast<unsigned>(l);
-        unsigned m = std::max(4U, n);
-        std::memcpy(result, "model=\"", 7U);
-        result += 7;
-        copy_right_justified(result, m, model_id, n, blank);
-        result += m;
-        std::memcpy(result, "\" ", 2U);
-        result += 2;
+        result += "model=\"";
+        append_padded(result, model_id, 4, false);
+        result += "\" ";
       }
       if (name != 0) {
-        std::memcpy(result, "pdb=\"", 5U);
-        result += 5;
+        result += "pdb=\"";
       }
       else {
-        std::memcpy(result, "pdbres=\"", 8U);
-        result += 8;
+        result += "pdbres=\"";
       }
     }
     if (name != 0) {
-      copy_left_justified(result, 4U, name, 4U, blank);
-      copy_left_justified(result+4, 1U, altloc, 1U, blank);
-      result += 5;
+      append_padded(result, name, 4, true);
+      append_padded(result, (altloc==0 ? " " : altloc), 1, true);
     }
-    copy_right_justified(result, 3U, resname, 3U, blank);
-    copy_right_justified(result+3, 2U, chain_id, 2U, blank);
-    copy_right_justified(result+5, 4U, resseq, 4U, blank);
-    copy_left_justified(result+9, 1U, icode, 1U, blank);
-    result += 10;
+    append_padded(result, (resname ==0 ? " " : resname), 3, false);
+    append_padded(result, (chain_id == 0 ? " " : chain_id), 2, false);
+    append_padded(result, (resseq == 0 ? " " : resseq), 4, false);
+    append_padded(result, (icode == 0 ? " " : icode), 1, false);
     if (add_model) {
-      result[0] = '"';
-      result++;
+      result += '"';
     }
     if (add_segid && segid != 0 && str4(segid).stripped_size() != 0) {
-      std::memcpy(result, " segid=\"", 8U);
-      copy_left_justified(result+8, 4U, segid, 4U, blank);
-      result[12] = '"';
-      result += 13;
+      result += " segid=\"";
+      append_padded(result, segid, 4, true);
+      result += "\"";
     }
-    if (add_model || add_segid) {
-      result[0] = '\0';
-    }
+    return result;
   }
 
-  void
+  // void
+  // atom_label_columns_formatter::format(
+  //   char* result,
+  //   bool add_model,
+  //   bool add_segid) const
+  // {
+  //   char blank = ' ';
+  //   if (add_model) {
+  //     if (model_id != 0) {
+  //       std::size_t l = std::strlen(model_id);
+  //       IOTBX_ASSERT(l <= 8);
+  //       unsigned n = static_cast<unsigned>(l);
+  //       unsigned m = std::max(4U, n);
+  //       std::memcpy(result, "model=\"", 7U);
+  //       result += 7;
+  //       copy_right_justified(result, m, model_id, n, blank);
+  //       result += m;
+  //       std::memcpy(result, "\" ", 2U);
+  //       result += 2;
+  //     }
+  //     if (name != 0) {
+  //       std::memcpy(result, "pdb=\"", 5U);
+  //       result += 5;
+  //     }
+  //     else {
+  //       std::memcpy(result, "pdbres=\"", 8U);
+  //       result += 8;
+  //     }
+  //   }
+  //   if (name != 0) {
+  //     copy_left_justified(result, 4U, name, 4U, blank);
+  //     copy_left_justified(result+4, 1U, altloc, 1U, blank);
+  //     result += 5;
+  //   }
+  //   copy_right_justified(result, 3U, resname, 3U, blank);
+  //   copy_right_justified(result+3, 2U, chain_id, 2U, blank);
+  //   copy_right_justified(result+5, 4U, resseq, 4U, blank);
+  //   copy_left_justified(result+9, 1U, icode, 1U, blank);
+  //   result += 10;
+  //   if (add_model) {
+  //     result[0] = '"';
+  //     result++;
+  //   }
+  //   if (add_segid && segid != 0 && str4(segid).stripped_size() != 0) {
+  //     std::memcpy(result, " segid=\"", 8U);
+  //     copy_left_justified(result+8, 4U, segid, 4U, blank);
+  //     result[12] = '"';
+  //     result += 13;
+  //   }
+  //   if (add_model || add_segid) {
+  //     result[0] = '\0';
+  //   }
+  // }
+
+  std::string
   atom_label_columns_formatter::format(
-    char* result,
     shared_ptr<chain_data> const& ch_lock,
     bool add_model,
     bool add_segid)
@@ -465,82 +606,144 @@ namespace {
     chain_data const* ch = ch_lock.get();
     if (ch == 0) {
       chain_id = model_id = 0;
-      format(result, add_model, add_segid);
     }
     else {
       chain_id = ch->id.c_str();
       if (!add_model) {
         model_id = 0;
-        format(result, add_model, add_segid);
       }
       else {
         shared_ptr<model_data> md_lock = ch->parent.lock();
         model_data const* md = md_lock.get();
         if (md == 0) {
           model_id = 0;
-          format(result, add_model, add_segid);
         }
         else {
           model_id = (md->id.size() == 0 ? 0 : md->id.c_str());
-          format(result, add_model, add_segid);
         }
       }
     }
+    return format(add_model, add_segid);
   }
 
-  void
+  // void
+  // atom_label_columns_formatter::format(
+  //   char* result,
+  //   shared_ptr<chain_data> const& ch_lock,
+  //   bool add_model,
+  //   bool add_segid)
+  // {
+  //   chain_data const* ch = ch_lock.get();
+  //   if (ch == 0) {
+  //     chain_id = model_id = 0;
+  //     format(result, add_model, add_segid);
+  //   }
+  //   else {
+  //     chain_id = ch->id.c_str();
+  //     if (!add_model) {
+  //       model_id = 0;
+  //       format(result, add_model, add_segid);
+  //     }
+  //     else {
+  //       shared_ptr<model_data> md_lock = ch->parent.lock();
+  //       model_data const* md = md_lock.get();
+  //       if (md == 0) {
+  //         model_id = 0;
+  //         format(result, add_model, add_segid);
+  //       }
+  //       else {
+  //         model_id = (md->id.size() == 0 ? 0 : md->id.c_str());
+  //         format(result, add_model, add_segid);
+  //       }
+  //     }
+  //   }
+  // }
+
+  std::string
   atom_label_columns_formatter::format(
-    char* result,
     hierarchy::atom const& atom,
     bool add_model,
     bool add_segid,
     bool pdbres)
   {
+    /* This is replacement for the below function.
+    Here we populate members of atom_label_columns_formatter, such as name, segid etc
+    and then call format where this info will be put into string */
     name = (pdbres ? 0 : atom.data->name.elems);
     segid = atom.data->segid.elems;
     shared_ptr<atom_group_data> ag_lock = atom.data->parent.lock();
     const atom_group_data* ag = ag_lock.get();
     if (ag == 0) {
       altloc = resname = resseq = icode = chain_id = model_id = 0;
-      format(result, add_model, add_segid);
     }
     else {
-      altloc = ag->altloc.elems;
-      resname = ag->resname.elems;
+      altloc = ag->altloc.c_str();
+      resname = ag->resname.c_str();
       shared_ptr<residue_group_data> rg_lock = ag->parent.lock();
       const residue_group_data* rg = rg_lock.get();
       if (rg == 0) {
         resseq = icode = chain_id = model_id = 0;
-        format(result, add_model, add_segid);
       }
       else {
         resseq = rg->resseq.elems;
         icode = rg->icode.elems;
-        format(result, rg->parent.lock(), add_model, add_segid);
+        return format(rg->parent.lock(), add_model, add_segid);
       }
     }
+    return format(add_model, add_segid);
   }
 
-  void
+
+  // void
+  // atom_label_columns_formatter::format(
+  //   char* result,
+  //   hierarchy::atom const& atom,
+  //   bool add_model,
+  //   bool add_segid,
+  //   bool pdbres)
+  // {
+  //   name = (pdbres ? 0 : atom.data->name.elems);
+  //   segid = atom.data->segid.elems;
+  //   shared_ptr<atom_group_data> ag_lock = atom.data->parent.lock();
+  //   const atom_group_data* ag = ag_lock.get();
+  //   if (ag == 0) {
+  //     altloc = resname = resseq = icode = chain_id = model_id = 0;
+  //     format(result, add_model, add_segid);
+  //   }
+  //   else {
+  //     altloc = ag->altloc.elems;
+  //     resname = ag->resname.c_str();
+  //     shared_ptr<residue_group_data> rg_lock = ag->parent.lock();
+  //     const residue_group_data* rg = rg_lock.get();
+  //     if (rg == 0) {
+  //       resseq = icode = chain_id = model_id = 0;
+  //       format(result, add_model, add_segid);
+  //     }
+  //     else {
+  //       resseq = rg->resseq.elems;
+  //       icode = rg->icode.elems;
+  //       format(result, rg->parent.lock(), add_model, add_segid);
+  //     }
+  //   }
+  // }
+
+  std::string
   atom_label_columns_formatter::format(
-    char* result,
     hierarchy::residue const& residue)
   {
     name = 0;
     altloc = 0;
-    resname = residue.data->resname.elems;
+    resname = residue.data->resname.c_str();
     resseq = residue.data->resseq.elems;
     icode = residue.data->icode.elems;
     shared_ptr<conformer_data> cf_lock = residue.data->parent.lock();
     const conformer_data* cf = cf_lock.get();
     if (cf == 0) {
       chain_id = model_id = 0;
-      format(
-        result, /* add_model */ true, /* add_segid */ true);
+      return format(/* add_model */ true, /* add_segid */ true);
     }
     else {
-      format(
-        result, cf->parent.lock(), /* add_model */ true, /* add_segid */ true);
+      return format(cf->parent.lock(), /* add_model */ true, /* add_segid */ true);
     }
   }
 
@@ -551,8 +754,8 @@ namespace {
     atom_with_labels const& self,
     atom_label_columns_formatter& label_formatter)
   {
-    label_formatter.altloc = self.altloc.elems;
-    label_formatter.resname = self.resname.elems;
+    label_formatter.altloc = self.altloc.c_str();
+    label_formatter.resname = self.resname.c_str();
     label_formatter.resseq = self.resseq.elems;
     label_formatter.icode = self.icode.elems;
     label_formatter.chain_id = self.chain_id.c_str();
@@ -562,21 +765,22 @@ namespace {
 
 } // namespace <anonymous>
 
-  void
+  std::string
   atom::format_atom_record_serial_label_columns(
-    char* result,
     atom_label_columns_formatter* label_formatter) const
   {
+    std::string result;
     char blank = ' ';
-    data->serial.copy_right_justified(result+6, 5U, blank);
-    result[11] = blank;
+    result += (boost::format("%5s") % data->serial.elems).str();
+    result += blank;
     if (label_formatter == 0) {
-      atom_label_columns_formatter().format(result+12, *this);
+      result += atom_label_columns_formatter().format(*this);
     }
     else {
       label_formatter->name = data->name.elems;
-      label_formatter->format(result+12);
+      result += label_formatter->format();
     }
+    return result;
   }
 
   unsigned
@@ -608,72 +812,55 @@ namespace {
     return blanks_start_at;
   }
 
-  void
-  atom::format_pdb_element_charge_columns(
-    char* result) const
-  {
-    char blank = ' ';
-    data->element.copy_right_justified(result, 2U, blank);
-    data->charge.copy_left_justified(result+2, 2U, blank);
-  }
-
   std::string
   atom::pdb_label_columns() const
   {
-    char result[15];
-    atom_label_columns_formatter().format(result, *this);
-    return std::string(result, 15U);
+    return atom_label_columns_formatter().format(*this);
   }
 
-  small_str<19>
+  std::string
   atom::pdb_label_columns_segid_small_str() const
+  // Only used in overall_counts in find_duplicate_atom_labels()
   {
-    char blank = ' ';
-    small_str<19> result(small_str_no_init);
-    atom_label_columns_formatter().format(result.elems, *this);
-    data->segid.copy_left_justified(result.elems+15, 4U, blank);
-    result.elems[19] = '\0';
+    std::string result;
+    result = atom_label_columns_formatter().format(*this);
+    result += (boost::format("%-4s") % data->segid.elems).str();
     return result;
   }
 
   std::string
   atom::pdb_element_charge_columns() const
   {
-    char result[4];
-    format_pdb_element_charge_columns(result);
-    return std::string(result, 4U);
+    std::string result;
+    result += (boost::format("%2s") % data->element.elems).str();
+    result += (boost::format("%-2s") % data->charge.elems).str();
+    return result;
   }
 
   std::string
   atom::id_str(bool pdbres, bool suppress_segid) const
   {
-    char result[52];
-    atom_label_columns_formatter().format(
-      result,
+    return atom_label_columns_formatter().format(
       *this,
       /* add_model */ true,
       /* add_segid */ !suppress_segid,
       pdbres);
-    return std::string(result);
   }
 
   std::string
   atom_with_labels::id_str(bool pdbres, bool suppress_segid) const
   {
-    char result[52];
     atom_label_columns_formatter label_formatter;
     label_formatter.name = (pdbres ? 0 : data->name.elems);
     label_formatter.segid = data->segid.elems;
     atom_with_labels_init_label_formatter(*this, label_formatter);
-    label_formatter.format(
-      result, /* add_model */ true, /* add_segid */ !suppress_segid);
-    return std::string(result);
+    return label_formatter.format(/* add_model */ true, /* add_segid */ !suppress_segid);
   }
 
   std::string
   residue::id_str(int suppress_segid) const
   {
-    char result[50];
+    std::string result;
     bool throw_segid_not_unique = false;
     atom_label_columns_formatter label_formatter;
     label_formatter.segid = 0;
@@ -693,28 +880,30 @@ namespace {
         }
       }
     }
-    label_formatter.format(result, *this);
+    result = label_formatter.format(*this);
     if (throw_segid_not_unique) {
       throw std::invalid_argument(
         "residue.id_str(suppress_segid=false): segid is not unique:\n"
         + ("  " + std::string(result)));
     }
-    return std::string(result);
+    return result;
   }
 
-  unsigned
+  std::string
   atom::format_atom_record(
-    char* result,
     atom_label_columns_formatter* label_formatter,
     const char* replace_floats_with) const
   {
     char blank = ' ';
+    char result[81];
     std::memcpy(result, (data->hetero ? "HETATM" : "ATOM  "), 6U);
-    format_atom_record_serial_label_columns(result, label_formatter);
+    std::string far = format_atom_record_serial_label_columns(label_formatter);
+    std::memcpy(result+6, far.c_str(), far.size());
     unsigned segid_start;
     unsigned blanks_start_at;
+    size_t far_plus = far.size() + 6;
     if (replace_floats_with != 0) {
-      segid_start = 27U;
+      segid_start = far_plus;
       unsigned i=0;
       while (replace_floats_with[i] != '\0' && segid_start != 72U) {
         result[segid_start++] = replace_floats_with[i++];
@@ -722,39 +911,39 @@ namespace {
       blanks_start_at = segid_start + 8U;
     }
     else {
-      copy_left_justified(result+27, 3U, 0, 0U, blank);
-      char *r = result + 30;
+      copy_left_justified(result+far_plus, 3U, 0, 0U, blank);
+      char *r = result + far_plus + 3;
       for(unsigned i=0;i<3;i++) {
-        std::sprintf(r, "%8.3f", std::min(std::max(-1.e7, data->xyz[i]), 1.e8));
+        std::snprintf(r, 10U, "%8.3f", std::min(std::max(-1.e7, data->xyz[i]), 1.e8));
         if (r[8] != '\0' && r[5] != '.' && r[6] != '.' && r[7] != '.') {
           throw std::runtime_error(
             std::string("atom ") + "XYZ"[i] + " coordinate value"
             " does not fit into F8.3 format:\n"
-            + "  \"" + std::string(result, 27U) + "\"\n"
+            + "  \"" + std::string(result, far_plus) + "\"\n"
             + "  value: " + (boost::format("%.3f") % data->xyz[i]).str());
         }
         r += 8;
       }
-      std::sprintf(r, "%6.2f", std::min(std::max(-1.e5, data->occ), 1.e6));
+      std::snprintf(r, 8U, "%6.2f", std::min(std::max(-1.e5, data->occ), 1.e6));
       if (r[6] != '\0' && r[4] != '.' && r[5] != '.') {
         throw std::runtime_error(
           std::string("atom occupancy factor does not fit into F6.2 format:\n")
-          + "  \"" + std::string(result, 27U) + "\"\n"
+          + "  \"" + std::string(result, far_plus) + "\"\n"
           + "  occupancy factor: " + (boost::format("%.2f") % data->occ).str());
       }
       r += 6;
-      std::sprintf(r, "%6.2f", std::min(std::max(-1.e5, data->b), 1.e6));
+      std::snprintf(r, 8U, "%6.2f", std::min(std::max(-1.e5, data->b), 1.e6));
       if (r[6] != '\0' && r[4] != '.' && r[5] != '.') {
         throw std::runtime_error(
           std::string("atom B-factor does not fit into F6.2 format:\n")
-          + "  \"" + std::string(result, 27U) + "\"\n"
+          + "  \"" + std::string(result, far_plus) + "\"\n"
           + "  B-factor: " + (boost::format("%.2f") % data->b).str());
       }
-      segid_start = 72U;
-      blanks_start_at = 66U;
+      blanks_start_at = 39+far_plus;
+      segid_start = blanks_start_at+6;
     }
-    return format_atom_record_segid_element_charge_columns(
-      result, segid_start, blanks_start_at);
+    unsigned len_return = format_atom_record_segid_element_charge_columns(result, segid_start, blanks_start_at);
+    return std::string(result, len_return);
   }
 
   unsigned
@@ -764,38 +953,40 @@ namespace {
   {
     char blank = ' ';
     std::memcpy(result, "SIGATM", 6U);
-    format_atom_record_serial_label_columns(result, label_formatter);
-    copy_left_justified(result+27, 3U, 0, 0U, blank);
-    char *r = result + 30;
+    std::string far = format_atom_record_serial_label_columns(label_formatter);
+    size_t far_plus = far.size() + 6;
+    std::memcpy(result+6, far.c_str(), far.size());
+    copy_left_justified(result+far_plus, 3U, 0, 0U, blank);
+    char *r = result + far_plus + 3;
     for(unsigned i=0;i<3;i++) {
-      std::sprintf(r, "%8.3f", std::min(std::max(-1.e7, data->sigxyz[i]),1.e8));
+      std::snprintf(r, 10U, "%8.3f", std::min(std::max(-1.e7, data->sigxyz[i]),1.e8));
       if (r[8] != '\0' && r[5] != '.' && r[6] != '.' && r[7] != '.') {
         throw std::runtime_error(
           std::string("atom sigma ") + "XYZ"[i] + " coordinate value"
           " does not fit into F8.3 format:\n"
-          + "  \"" + std::string(result, 27U) + "\"\n"
+          + "  \"" + std::string(result, far_plus) + "\"\n"
           + "  value: " + (boost::format("%.3f") % data->sigxyz[i]).str());
       }
       r += 8;
     }
-    std::sprintf(r, "%6.2f", std::min(std::max(-1.e5, data->sigocc), 1.e6));
+    std::snprintf(r, 8U, "%6.2f", std::min(std::max(-1.e5, data->sigocc), 1.e6));
     if (r[6] != '\0' && r[4] != '.' && r[5] != '.') {
       throw std::runtime_error(std::string(
           "atom sigma occupancy factor does not fit into F6.2 format:\n")
-        + "  \"" + std::string(result, 27U) + "\"\n"
+        + "  \"" + std::string(result, far_plus) + "\"\n"
         + "  sigma occupancy factor: "
         + (boost::format("%.2f") % data->sigocc).str());
     }
     r += 6;
-    std::sprintf(r, "%6.2f", std::min(std::max(-1.e5, data->sigb), 1.e6));
+    std::snprintf(r, 8U, "%6.2f", std::min(std::max(-1.e5, data->sigb), 1.e6));
     if (r[6] != '\0' && r[4] != '.' && r[5] != '.') {
       throw std::runtime_error(std::string(
           "atom sigma B-factor does not fit into F6.2 format:\n")
-        + "  \"" + std::string(result, 27U) + "\"\n"
+        + "  \"" + std::string(result, far_plus) + "\"\n"
         + "  sigma B-factor: "
         + (boost::format("%.2f") % data->sigb).str());
     }
-    return format_atom_record_segid_element_charge_columns(result, 72U, 66U);
+    return format_atom_record_segid_element_charge_columns(result, 45+far_plus, 39+far_plus);
   }
 
 namespace {
@@ -825,16 +1016,18 @@ namespace {
   {
     char blank = ' ';
     std::memcpy(result, "ANISOU", 6U);
-    format_atom_record_serial_label_columns(result, label_formatter);
-    result[27] = blank;
-    char *r = result + 28;
+    std::string far = format_atom_record_serial_label_columns(label_formatter);
+    std::memcpy(result+6, far.c_str(), far.size());
+    size_t far_plus=far.size() + 6;
+    result[far_plus] = blank;
+    char *r = result + far_plus + 1;
     for(unsigned i=0;i<6;i++) {
       double value = data->uij[i]*10000.;
-      std::sprintf(r, "%7.0f", std::min(std::max(-1.e7, value), 1.e8));
+      std::snprintf(r, 9U, "%7.0f", std::min(std::max(-1.e7, value), 1.e8));
       r += 7;
       if (*r != '\0') throw_f70_error(i, value, result, "");
     }
-    return format_atom_record_segid_element_charge_columns(result, 72U, 70U);
+    return format_atom_record_segid_element_charge_columns(result, 45+far_plus, 43+far_plus);
   }
 
   unsigned
@@ -844,9 +1037,11 @@ namespace {
   {
     char blank = ' ';
     std::memcpy(result, "SIGUIJ", 6U);
-    format_atom_record_serial_label_columns(result, label_formatter);
-    result[27] = blank;
-    char *r = result + 28;
+    std::string far = format_atom_record_serial_label_columns(label_formatter);
+    std::memcpy(result+6, far.c_str(), far.size());
+    size_t far_plus=far.size() + 6;
+    result[far_plus] = blank;
+    char *r = result + far_plus +1;
     for(unsigned i=0;i<6;i++) {
       double value =
 #ifdef IOTBX_PDB_ENABLE_ATOM_DATA_SIGUIJ
@@ -855,23 +1050,21 @@ namespace {
         -1
 #endif
         *10000.;
-      std::sprintf(r, "%7.0f", std::min(std::max(-1.e7, value), 1.e8));
+      std::snprintf(r, 9U, "%7.0f", std::min(std::max(-1.e7, value), 1.e8));
       r += 7;
       if (*r != '\0') throw_f70_error(i, value, result, "sigma ");
     }
-    return format_atom_record_segid_element_charge_columns(result, 72U, 70U);
+    return format_atom_record_segid_element_charge_columns(result, 45+far_plus, 43+far_plus);
   }
 
   std::string
   atom_with_labels::format_atom_record(
     const char* replace_floats_with) const
   {
-    char result[81];
     atom_label_columns_formatter label_formatter;
     atom_with_labels_init_label_formatter(*this, label_formatter);
-    unsigned str_len = atom::format_atom_record(
-      result, &label_formatter, replace_floats_with);
-    return std::string(result, str_len);
+    return atom::format_atom_record(
+      &label_formatter, replace_floats_with);
   }
 
 #define IOTBX_LOC(type) \
@@ -904,7 +1097,9 @@ namespace {
     char newline = '\n';
     unsigned str_len = 0;
     if (atom_hetatm) {
-      str_len += format_atom_record(result, label_formatter);
+      std::string far = format_atom_record(label_formatter);
+      str_len += far.size();
+      far.copy(result, far.size());
     }
     if (  sigatm
         && (  !data->sigxyz.const_ref().all_le(0)
@@ -943,29 +1138,23 @@ namespace {
   std::string
   atom::quote(bool full) const
   {
-    char result[82];
-    result[0] = '"';
-    unsigned str_len = format_atom_record(
-      result+1,
+    std::string res = format_atom_record(
       /* label_formatter */ 0,
       /* replace_floats_with */ (full ? 0 : ".*."));
-    result[++str_len] = '"';
-    return std::string(result, ++str_len);
+    res = '"'+res+'"';
+    return res;
   }
 
   std::string
   atom_with_labels::quote(bool full) const
   {
-    char result[82];
     atom_label_columns_formatter label_formatter;
     atom_with_labels_init_label_formatter(*this, label_formatter);
-    result[0] = '"';
-    unsigned str_len = atom::format_atom_record(
-      result+1,
+    std::string res = atom::format_atom_record(
       &label_formatter,
       /* replace_floats_with */ (full ? 0 : ".*."));
-    result[++str_len] = '"';
-    return std::string(result, ++str_len);
+    res = '"'+res+'"';
+    return res;
   }
 
   atom_with_labels
@@ -975,8 +1164,8 @@ namespace {
     std::string chain_id;
     str4 resseq;
     str1 icode;
-    str1 altloc;
-    str3 resname;
+    std::string altloc;
+    std::string resname;
     boost::optional<atom_group> ag = parent();
     if (ag) {
       altloc = ag->data->altloc;
@@ -1001,8 +1190,8 @@ namespace {
       chain_id.c_str(),
       resseq.elems,
       icode.elems,
-      altloc.elems,
-      resname.elems,
+      altloc.c_str(),
+      resname.c_str(),
       /* is_first_in_chain */ false,
       /* is_first_after_break */ false);
   }
@@ -1014,6 +1203,73 @@ namespace {
     return (
          (e[0] == ' ' && (e[1] == 'H' || e[1] == 'D'))
       || ((e[0] == 'H' || e[0] == 'D') && (e[1] == ' ' || e[1] == '\0')));
+  }
+
+
+  // Convert a fixed-length character array to a string.
+  // This makes it at most 2 characters long and also makes both characters upper case.
+  // We do this because some paths through CCTBX produced lower-case second letters and
+  // others produces upper-case second letters.
+  static std::string convertElementToString(char* a)
+  {
+    std::string ret;
+    for (size_t i = 0; i < 2; i++) {
+      if (a[i]) {
+        ret += toupper(a[i]);
+      }
+    }
+    return ret;
+  }
+
+  bool
+  atom::element_is_positive_ion() const
+  {
+    // The standard bracket-initialization was not available in the compiler version
+    // being used on the mac at the time this code was written.
+    // The std::begin() function was not available on some of the Linux compiler
+    // versions being used at the time this code was written, preventing direct
+    // initialization from the const char * array.
+    // Thus, we have a twisty maze to get the set initialized.
+    static const char* posi[] = {
+      // Metallic atoms
+      "LI", "NA", "AL", "K",  "MG", "CA", "MN", "FE", "CO", "NI"
+     ,"CU", "ZN", "RB", "SR", "MO", "AG", "CD", "IN", "CS", "BA", "AU", "HG", "TL"
+     ,"PB", "V",  "CR", "TE", "SM", "GD", "YB", "W",  "PT", "U"
+     ,"BE", "SI", "SC", "TI", "GA", "GE", "Y",  "ZR", "SN", "SB", "LA", "CE", "FR", "RA", "TH"
+     ,"NB", "TC", "RU", "RH", "PD", "PR", "ND", "PM", "EU", "TB", "DY", "HO", "ER"
+     ,"TM", "LU", "HF", "TA", "RE", "OS", "IR", "BI", "PO", "AT"
+     ,"AC", "PA", "NP", "PU", "AM", "CM", "BK", "CF", "ES", "FM", "MD", "NO"
+      // Other positive ions
+     ,"B"
+    };
+    static std::set<std::string> positiveIons(&posi[0], &posi[sizeof(posi) / sizeof(posi[0])]);
+
+    // The element name is stored in a 2-character array that is not alwayszero terminated, so we
+    // need to put it into string form before we check it against the list above.
+    return positiveIons.find(convertElementToString(data->element.elems)) != positiveIons.end();
+  }
+
+  bool
+  atom::element_is_negative_ion() const
+  {
+    // The standard bracket-initialization was not available in the compiler version
+    // being used on the mac at the time this code was written.
+    // The std::begin() function was not available on some of the Linux compiler
+    // versions being used at the time this code was written, preventing direct
+    // initialization from the const char * array.
+    // Thus, we have a twisty maze to get the set initialized.
+    static const char* negi[] = { "F", "CL", "BR", "I" };
+    static std::set<std::string> negativeIons(&negi[0], &negi[sizeof(negi) / sizeof(negi[0])]);
+
+    // The element name is stored in a 2-character array that is not always zero terminated, so we
+    // need to put it into string form before we check it against the list above.
+    return negativeIons.find(convertElementToString(data->element.elems)) != negativeIons.end();
+  }
+
+  bool
+  atom::element_is_ion() const
+  {
+    return element_is_positive_ion() || element_is_negative_ion();
   }
 
   boost::optional<std::string>
@@ -1126,25 +1382,40 @@ namespace {
   std::string
   atom_group::confid() const
   {
-    char blank = ' ';
-    char result[5];
-    data->altloc.copy_left_justified(result, 1U, blank);
-    data->resname.copy_right_justified(result+1, 3U, blank);
-    result[4] = '\0';
-    return std::string(result);
+    std::string result;
+    result += (data->altloc.size() == 0) ? " " : data->altloc.c_str();
+    result += (data->resname.size() == 0) ? " " : boost::algorithm::trim_copy(data->resname);
+    return result;
   }
 
 namespace {
-  int pos_in_vector(std::vector<str4> vec, str4 elem)
+  // Index of each name in an ordered list of names.
+  typedef std::map<str4, int> name_positions;
+
+  template <std::size_t N>
+  name_positions
+  make_name_positions(const str4 (&names)[N])
+  {
+    name_positions result;
+    for (int i = 0; i < static_cast<int>(N); i++) {
+      result[names[i]] = i;
+    }
+    IOTBX_ASSERT(result.size() == N); // names must be unique
+    return result;
+  }
+
+  // Index of elem in the list, or the list size if elem is not listed.
+  int pos_in_vector(name_positions const& positions, str4 elem)
   {
     str4 up_elem = elem;
     up_elem.upper_in_place();
-    int pos = std::find(
-      vec.begin(), vec.end(), up_elem)-vec.begin();
-    return pos;
+    name_positions::const_iterator it = positions.find(up_elem);
+    if (it == positions.end()) return static_cast<int>(positions.size());
+    return it->second;
   }
 
-  bool sorting_general(atom a1, atom a2, std::vector<str4> ordered_names) {
+  bool sorting_general(atom const& a1, atom const& a2,
+                       name_positions const& ordered_names) {
     str4 name1 = a1.data->name.strip();
     name1.replace_in_place('*', '\'');
     str4 name2 = a2.data->name.strip();
@@ -1172,7 +1443,7 @@ namespace {
     return pos1 < pos2;
   }
 
-  bool sorting_function_aa (atom a1, atom a2) {
+  bool sorting_function_aa (atom const& a1, atom const& a2) {
     // Not all these names necessarily exist
     static const str4 arr[] = {
         "N", "CA", "C", "O",
@@ -1181,7 +1452,7 @@ namespace {
         "CG", "NG", "OG", "SG", "CG1", "NG1", "OG1", "SG1", "CG2", "NG2", "OG2", "SG2", "CG3", "NG3", "OG3", "SG3",
         "CD", "ND", "OD", "SD", "CD1", "ND1", "OD1", "SD1", "CD2", "ND2", "OD2", "SD2", "CD3", "ND3", "OD3", "SD3",
         "SE",
-        "CE", "NE", "OE", "SE", "CE1", "NE1", "OE1", "SE1", "CE2", "NE2", "OE2", "SE2", "CE3", "NE3", "OE3", "SE3",
+        "CE", "NE", "OE", "CE1", "NE1", "OE1", "SE1", "CE2", "NE2", "OE2", "SE2", "CE3", "NE3", "OE3", "SE3",
         "CZ", "NZ", "OZ", "SZ", "CZ1", "NZ1", "OZ1", "SZ1", "CZ2", "NZ2", "OZ2", "SZ2", "CZ3", "NZ3", "OZ3", "SZ3",
         "CH", "NH", "OH", "SH", "CH1", "NH1", "OH1", "SH1", "CH2", "NH2", "OH2", "SH2", "CH3", "NH3", "OH3", "SH3",
         "OXT",
@@ -1217,11 +1488,11 @@ namespace {
         "HH3", "3HH", "HH31", "1HH3", "HH32", "2HH3", "HH33", "3HH3",
 
     };
-    std::vector<str4> ordered_names(arr, arr + sizeof(arr) / sizeof(arr[0]) );
+    static const name_positions ordered_names = make_name_positions(arr);
     return sorting_general(a1, a2, ordered_names);
   }
 
-  bool sorting_function_small_na (atom a1, atom a2) {
+  bool sorting_function_small_na (atom const& a1, atom const& a2) {
     static const str4 arr[] = {
         // Nucleic acids C, T
         // main chain
@@ -1238,11 +1509,11 @@ namespace {
         "H3", "H5M1", "H5M2", "H5M3", "H71", "H72", "H73",
         "H6", "H61", "H62", "H1", "H2", "H21", "H22", "HO5'", "H2'1", "H2'2",
     };
-    std::vector<str4> ordered_names(arr, arr + sizeof(arr) / sizeof(arr[0]) );
+    static const name_positions ordered_names = make_name_positions(arr);
     return sorting_general(a1, a2, ordered_names);
 
   }
-  bool sorting_function_big_na (atom a1, atom a2) {
+  bool sorting_function_big_na (atom const& a1, atom const& a2) {
     // Not all these names necessarily exist
     static const str4 arr[] = {
         // Nucleic acids A,G
@@ -1260,10 +1531,9 @@ namespace {
         "H5M1", "H5M2", "H5M3", "H71", "H72", "H73",
         "H6", "H61", "H62", "H1",  "H2", "H21", "H22", "HO5'", "H2'1","H2'2",
     };
-    std::vector<str4> ordered_names(arr, arr + sizeof(arr) / sizeof(arr[0]) );
+    static const name_positions ordered_names = make_name_positions(arr);
     return sorting_general(a1, a2, ordered_names);
   }
-
 
 
 } // namespace <anonymous>
@@ -1274,7 +1544,7 @@ namespace {
     std::string ag_class;
     // Using correct overloaded function so residue name would be padded.
     // Crucial for mmCIF.
-    ag_class = common_residue_names::get_class(std::string(data->resname.elems));
+    ag_class = common_residue_names::get_class(data->resname);
     if (ag_class == "common_rna_dna" || ag_class == "modified_rna_dna") {
       if (!get_atom("N9")) {
         std::sort(
@@ -1298,7 +1568,6 @@ namespace {
     }
   }
 
-
   boost::optional<atom>
   atom_group::get_atom(char const* name) const
   {
@@ -1315,17 +1584,6 @@ namespace {
       }
     }
     return boost::optional<atom>();
-  }
-
-  str4
-  atom_group::confid_small_str() const
-  {
-    char blank = ' ';
-    str4 result;
-    data->altloc.copy_left_justified(result.elems, 1U, blank);
-    data->resname.copy_right_justified(result.elems+1, 3U, blank);
-    result.elems[4] = '\0';
-    return result;
   }
 
 namespace {
@@ -1395,8 +1653,8 @@ namespace {
     typedef std::vector<atom_group>::const_iterator agi_t;
     agi_t ag_end = data->atom_groups.end();
     for(agi_t agi=data->atom_groups.begin();agi!=ag_end;agi++) {
-      char altloc = agi->data->altloc.elems[0];
-      if (altloc != '\0' && altloc != blank_altloc_char) {
+      std::string altloc = agi->data->altloc;
+      if (altloc != "" && altloc != blank_altloc_string) {
         return true;
       }
     }
@@ -1441,8 +1699,8 @@ namespace {
     unsigned n_ag = atom_groups_size();
     for(unsigned i_ag=0;i_ag<n_ag;i_ag++) {
       atom_group const& ag = data->atom_groups[i_ag];
-      char altloc = ag.data->altloc.elems[0];
-      if (altloc == '\0' || altloc == blank_altloc_char) {
+      std::string altloc = ag.data->altloc;
+      if (altloc == "" || altloc == blank_altloc_string) {
         if (i_ag != n_blank_altloc_atom_groups) {
           atom_group ag_by_value = ag;
           remove_atom_group(i_ag);
@@ -1463,12 +1721,12 @@ namespace {
       return af::tiny<unsigned, 2>(0, 0);
     }
     typedef std::set<str4> ss4;
-    typedef std::map<str3, ss4> ms3ss4;
+    typedef std::map<std::string, ss4> ms3ss4;
     ms3ss4 blank_name_sets;
     unsigned i_ag = 0;
     for(;i_ag<n_blank_altloc_atom_groups;i_ag++) {
       atom_group& ag = data->atom_groups[i_ag];
-      ag.data->altloc.elems[0] = '\0';
+      ag.data->altloc = "";
       ss4& blank_name_set = blank_name_sets[ag.data->resname];
       unsigned n_atoms = ag.atoms_size();
       for(unsigned i_atom=0;i_atom<n_atoms;i_atom++) {
@@ -1525,7 +1783,7 @@ namespace {
           if (new_atom_group == 0) {
             unsigned i = n_blank_altloc_atom_groups
                        + n_blank_but_alt_atom_groups;
-            atom_group new_ag(blank_altloc_cstr, ag.data->resname.elems);
+            atom_group new_ag(blank_altloc_string, ag.data->resname.c_str());
             insert_atom_group(i, new_ag);
             new_atom_group = &data->atom_groups[i];
             n_blank_but_alt_atom_groups++;
@@ -1566,8 +1824,8 @@ namespace {
         "\"secondary\" residue_group has a different or no parent"
         " (this chain must be the parent).");
     }
-    typedef std::map<str3, atom_group> s3ag;
-    typedef std::map<str1, s3ag> s1s3ag;
+    typedef std::map<std::string, atom_group> s3ag;
+    typedef std::map<std::string, s3ag> s1s3ag;
     s1s3ag altloc_resname_dict;
     unsigned n_ag = primary.atom_groups_size();
     for(unsigned i=0;i<n_ag;i++) {
@@ -1607,6 +1865,31 @@ namespace {
     remove_residue_group(secondary);
   }
 
+  bool
+  chain::is_polymer_chain() const
+  {
+    unsigned n_rg = residue_groups_size();
+    int n_polymer_res=0, n_water=0, n_unk = 0, n_non_polymer=0;
+    for (unsigned i_rg=0; i_rg<n_rg; i_rg++) {
+      residue_group const& rg = data->residue_groups[i_rg];
+      std::vector<atom_group> const& ags = rg.atom_groups();
+      std::string resname = ags[0].data->resname;
+      std::string res_class = common_residue_names::get_class(resname, true);
+      if (res_class.compare("common_amino_acid") == 0 ||
+          res_class.compare("d_amino_acid") == 0 ||
+          res_class.compare("modified_amino_acid") == 0 ||
+          res_class.compare("common_rna_dna") == 0 ||
+          res_class.compare("modified_rna_dna") == 0 ||
+          res_class.compare("ccp4_mon_lib_rna_dna") == 0) n_polymer_res += 1;
+      if (res_class.compare("common_water") == 0)         n_water += 1;
+      if (res_class.compare("other") == 0 ||
+          res_class.compare("common_element") == 0)       n_non_polymer += 1;
+      if (resname == "UNK")                               n_unk += 1;
+    }
+    if (n_polymer_res > n_non_polymer || n_unk > n_non_polymer) return true;
+    return false;
+  }
+
   af::shared<std::size_t>
   chain::merge_disconnected_residue_groups_with_pure_altloc()
   {
@@ -1631,9 +1914,9 @@ namespace {
         std::vector<unsigned> const& i_rgs = mrii->second;
         unsigned n_i_rgs = static_cast<unsigned>(i_rgs.size());
         if (n_i_rgs == 1U) continue;
-        std::set<str1> altlocs;
-        altlocs.insert('\0');
-        altlocs.insert(blank_altloc_char);
+        std::set<std::string> altlocs;
+        altlocs.insert("");
+        altlocs.insert(blank_altloc_string);
         unsigned altlocs_size = 2U;
         for(unsigned i_i_rgs=0;i_i_rgs<n_i_rgs;i_i_rgs++) {
           unsigned i_rg = i_rgs[i_i_rgs];
@@ -1697,7 +1980,7 @@ namespace {
       unsigned n_ags = rg.atom_groups_size();
       std::vector<atom_group> const& ags = rg.atom_groups();
       bool is_pure_altloc = (   n_ags != 0
-                             && ags[0].data->altloc.elems[0] != '\0');
+                             && ags[0].data->altloc != "");
       if (common_residue_name_class_only != 0) {
         skip = 1;
         for(unsigned i_ag=0;i_ag<n_ags;i_ag++) {
@@ -1784,9 +2067,10 @@ namespace {
     const residue_group* residue_groups,
     unsigned residue_groups_size)
   {
-    const char nulc = '\0';
-    std::vector<char> altlocs;
-    typedef std::map<char, unsigned> mcu;
+    // const char nulc = '\0';
+    std::string nulc = "";
+    std::vector<std::string> altlocs;
+    typedef std::map<std::string, unsigned> mcu;
     mcu altloc_indices;
     bool have_at_least_one_atom_group = false;
     for(unsigned i_rg=0;i_rg<residue_groups_size;i_rg++) {
@@ -1795,7 +2079,7 @@ namespace {
       if (n_ag != 0) have_at_least_one_atom_group = true;
       std::vector<atom_group> const& ags = rg.atom_groups();
       for(unsigned i_ag=0;i_ag<n_ag;i_ag++) {
-        char altloc = ags[i_ag].data->altloc.elems[0];
+        std::string altloc = ags[i_ag].data->altloc;
         if (altloc == nulc) continue;
         if (altloc_indices.find(altloc) == altloc_indices.end()) {
           altlocs.push_back(altloc);
@@ -1813,15 +2097,15 @@ namespace {
     af::shared<conformer> result((af::reserve(n_cf)));
     for(unsigned i_cf=0;i_cf<n_cf;i_cf++) {
       if (chain != 0) {
-        result.push_back(conformer(*chain, str1(altlocs[i_cf]).elems));
+        result.push_back(conformer(*chain, altlocs[i_cf]));
       }
       else {
-        result.push_back(conformer(str1(altlocs[i_cf]).elems));
+        result.push_back(conformer(altlocs[i_cf]));
       }
     }
-    std::vector<str3> resnames; // allocate once
+    std::vector<std::string> resnames; // allocate once
     resnames.reserve(32U); // not critical
-    std::set<str3> resnames_with_altloc; // allocate once
+    std::set<std::string> resnames_with_altloc; // allocate once
     std::vector<std::vector<atom_group> > altloc_ags(n_cf); // allocate once
     for(unsigned i_rg=0;i_rg<residue_groups_size;i_rg++) {
       residue_group const& rg = residue_groups[i_rg];
@@ -1833,7 +2117,7 @@ namespace {
       std::vector<atom_group> const& ags = rg.atom_groups();
       for(unsigned i_ag=0;i_ag<n_ag;i_ag++) {
         atom_group const& ag = ags[i_ag];
-        char altloc = ag.data->altloc.elems[0];
+        std::string altloc = ag.data->altloc;
         if (altloc == nulc) {
           for(unsigned i_cf=0;i_cf<n_cf;i_cf++) {
             altloc_ags[i_cf].push_back(ag);
@@ -1845,7 +2129,7 @@ namespace {
       }
       for(unsigned i_cf=0;i_cf<n_cf;i_cf++) {
         resnames.clear();
-        typedef std::map<str3, std::vector<atom> > ms3va;
+        typedef std::map<std::string, std::vector<atom> > ms3va;
         ms3va resname_atoms;
         resnames_with_altloc.clear();
         std::vector<atom_group> const& ags = altloc_ags[i_cf];
@@ -1866,17 +2150,17 @@ namespace {
             }
           }
           atoms->insert(atoms->end(), ag.atoms().begin(), ag.atoms().end());
-          if (ag.data->altloc.elems[0] != nulc) {
+          if (ag.data->altloc != nulc) {
             resnames_with_altloc.insert(ag.data->resname);
           }
         }
         unsigned n_rn = static_cast<unsigned>(resnames.size());
         for(unsigned i_rn=0;i_rn<n_rn;i_rn++) {
-          str3 const& resname = resnames[i_rn];
+          std::string const& resname = resnames[i_rn];
           ms3va::const_iterator rai = resname_atoms.find(resname);
           IOTBX_ASSERT(rai != resname_atoms.end());
           result[i_cf].append_residue(
-            resname.elems,
+            resname.c_str(),
             rg.data->resseq.elems,
             rg.data->icode.elems,
             rg.data->link_to_previous,
@@ -1951,21 +2235,21 @@ namespace {
 
   void
   get_confid_atom_names(
-    std::map<str4, std::vector<str4> >& result,
+    std::map<std::string, std::vector<str4> >& result,
     residue_group const& rg)
   {
     unsigned n_ag = rg.atom_groups_size();
     std::vector<atom_group> const& ags = rg.atom_groups();
     for(unsigned i_ag=0;i_ag<n_ag;i_ag++) {
       atom_group const& ag = ags[i_ag];
-      std::vector<str4>& atom_names = result[ag.confid_small_str()];
+      std::vector<str4>& atom_names = result[ag.confid()];
       unsigned n_at = ag.atoms_size();
       std::vector<atom> const& ats = ag.atoms();
       for(unsigned i_at=0;i_at<n_at;i_at++) {
         atom_names.push_back(ats[i_at].data->name);
       }
     }
-    typedef std::map<str4, std::vector<str4> >::iterator it;
+    typedef std::map<std::string, std::vector<str4> >::iterator it;
     it i_end = result.end();
     for(it i=result.begin();i!=i_end;i++) {
       std::sort(i->second.begin(), i->second.end());
@@ -1978,10 +2262,10 @@ namespace {
   residue_group::is_similar_hierarchy(
     residue_group const& other) const
   {
-    std::map<str4, std::vector<str4> > confid_atom_names[2];
+    std::map<std::string, std::vector<str4> > confid_atom_names[2];
     get_confid_atom_names(confid_atom_names[0], *this);
     get_confid_atom_names(confid_atom_names[1], other);
-    typedef std::map<str4, std::vector<str4> >::const_iterator it;
+    typedef std::map<std::string, std::vector<str4> >::const_iterator it;
     if (   confid_atom_names[0].size()
         != confid_atom_names[1].size()) return false;
     it i_end = confid_atom_names[0].end();
@@ -2128,7 +2412,7 @@ namespace {
     bool group_residue_names,
     af::shared<atom>& result) const
   {
-    std::map<str3, unsigned> resname_indices;
+    std::map<std::string, unsigned> resname_indices;
     unsigned resname_indices_size = 0;
     unsigned resname_index = 0;
     std::vector<std::map<str4, unsigned> > resname_atom_name_indices;
@@ -2197,7 +2481,7 @@ namespace {
   {
     unsigned n_ag = atom_groups_size();
     std::vector<atom_group> const& ags = atom_groups();
-    typedef std::set<str3> ss3;
+    typedef std::set<std::string> ss3;
     ss3 resname_set;
     for(unsigned i_ag=0;i_ag<n_ag;i_ag++) {
       atom_group const& ag = ags[i_ag];
@@ -2206,7 +2490,7 @@ namespace {
     af::shared<std::string> result((af::reserve(resname_set.size())));
     typedef ss3::const_iterator it;
     for(it i=resname_set.begin();i!=resname_set.end();i++) {
-      result.push_back(std::string(i->elems));
+      result.push_back(std::string(i->c_str()));
     }
     return result;
   }
@@ -2313,8 +2597,8 @@ namespace {
       chain_id.c_str(),
       resseq.elems,
       icode.elems,
-      altloc.elems,
-      resname.elems,
+      altloc.c_str(),
+      resname.c_str(),
       is_first_in_chain,
       is_first_after_break);
   }

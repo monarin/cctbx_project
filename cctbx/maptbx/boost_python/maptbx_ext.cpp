@@ -11,6 +11,7 @@
 #include <cctbx/maptbx/histogram.h>
 #include <cctbx/maptbx/resolution.h>
 #include <cctbx/maptbx/fsc.h>
+#include <cctbx/maptbx/loft.h>
 #include <cctbx/maptbx/sphericity.h>
 #include <cctbx/maptbx/mask.h>
 #include <cctbx/maptbx/utils.h>
@@ -32,6 +33,21 @@ namespace cctbx { namespace maptbx { namespace boost_python {
   void wrap_statistics();
   void wrap_structure_factors();
   void wrap_coordinate_transformers();
+
+  template <typename FloatType, typename GridType>
+  struct map_accumulator2_wrapper
+  {
+    typedef cctbx::maptbx::map_accumulator2<FloatType, GridType> w_t;
+    static void wrap() {
+      using namespace boost::python;
+      class_<w_t>("map_accumulator2", no_init)
+        .def(init<af::int3 const& >((arg("n_real"))))
+        .def("as_median_map", &w_t::as_median_map)
+        .def("add", &w_t::add, (arg("map_data")))
+      ;
+    }
+  };
+
 
   template <typename FloatType, typename GridType>
   struct map_accumulator_wrapper
@@ -85,6 +101,7 @@ namespace {
     using namespace boost::python;
 
     map_accumulator_wrapper<double, af::c_grid<3> >::wrap();
+    map_accumulator2_wrapper<double, af::c_grid<3> >::wrap();
     ft_analytical_1d_point_scatterer_at_origin_wrapper<double>::wrap();
     wrap_grid_indices_around_sites();
     wrap_grid_tags();
@@ -114,6 +131,52 @@ namespace {
         .def("gradients", &w_t::gradients)
       ;
     }
+
+    //- Magnification begin ----------------------------------------------------
+    {
+      typedef cctbx::maptbx::target_and_gradients::simple::magnification<double> w_t;
+      class_<w_t>("target_and_gradients_simple_magnification", no_init)
+        .def(init<uctbx::unit_cell const&,
+             af::const_ref<double, af::c_grid_padded<3> > const&,
+             af::const_ref<scitbx::vec3<double> > const&,
+             scitbx::mat3<double> const& >((
+                                    arg("unit_cell"),
+                                    arg("map_target"),
+                                    arg("sites_cart"),
+                                    arg("K"))))
+        .def(init<uctbx::unit_cell const&,
+             af::const_ref<double, af::c_grid_padded<3> > const&,
+             af::const_ref<scitbx::vec3<double> > const&,
+             scitbx::vec3<double> const& >((
+                                    arg("unit_cell"),
+                                    arg("map_target"),
+                                    arg("sites_cart"),
+                                    arg("K"))))
+        .def("target", &w_t::target)
+        .def("gradients", &w_t::gradients)
+      ;
+    }
+
+    def("magnification_isotropic",
+      (double(*)
+        (uctbx::unit_cell const&,
+         af::const_ref<double, af::c_grid_padded<3> > const&,
+         af::const_ref<scitbx::vec3<double> > const&))
+           cctbx::maptbx::target_and_gradients::simple::magnification_isotropic, (
+             arg("unit_cell"),
+             arg("density_map"),
+             arg("sites_cart")));
+
+    def("magnification_anisotropic",
+      (scitbx::vec3<double>(*)
+        (uctbx::unit_cell const&,
+         af::const_ref<double, af::c_grid_padded<3> > const&,
+         af::const_ref<scitbx::vec3<double> > const&))
+           cctbx::maptbx::target_and_gradients::simple::magnification_anisotropic, (
+             arg("unit_cell"),
+             arg("density_map"),
+             arg("sites_cart")));
+    //- Magnification end ------------------------------------------------------
 
     {
       typedef cctbx::maptbx::target_and_gradients::simple::compute<double> w_t;
@@ -154,6 +217,20 @@ namespace {
              arg("density_map"),
              arg("sites_cart"),
              arg("selection")));
+
+    def("real_space_target_simple_with_adjacent_similarity",
+      (double(*)
+        (uctbx::unit_cell const&,
+         af::const_ref<double, af::c_grid_padded<3> > const&,
+         af::const_ref<scitbx::vec3<double> > const&,
+         af::const_ref<std::size_t > const&,
+         af::const_ref<double> const&))
+           cctbx::maptbx::target_and_gradients::simple::target_with_adjacent_similarity, (
+             arg("unit_cell"),
+             arg("density_map"),
+             arg("sites_cart"),
+             arg("selection"),
+             arg("weights")));
 
     def("real_space_target_simple",
       (double(*)
@@ -256,19 +333,12 @@ namespace {
           af::const_ref<std::complex<double> > const&,
           af::const_ref<double> const&,
           af::const_ref<miller::index<> > const&,
-          double const&,
           double const& >(
                     (arg("f"),
                      arg("d_spacings"),
                      arg("hkl"),
-                     arg("d_min"),
-                     arg("d_max"))))
-        .def("d_min_cc9",      &w_t::d_min_cc9)
-        .def("d_min_cc99",     &w_t::d_min_cc99)
-        .def("d_min_cc999",    &w_t::d_min_cc999)
-        .def("d_min_cc9999",   &w_t::d_min_cc9999)
-        .def("d_min_cc99999",  &w_t::d_min_cc99999)
-        .def("d_min_cc999999", &w_t::d_min_cc999999)
+                     arg("cutoff"))))
+        .def("d_min", &w_t::d_min)
       ;
     }
 
@@ -312,6 +382,46 @@ namespace {
     }
 
     {
+      typedef sphericity2 w_t;
+
+      class_<w_t>("sphericity2", no_init)
+        .def(init<af::const_ref<double, af::c_grid<3> > const&,
+                  cctbx::cartesian<double> const&,
+                  af::const_ref<scitbx::vec3<double> > const&,
+                  cctbx::uctbx::unit_cell const& >(
+                    (arg("map_data"),
+                     arg("center_cart"),
+                     arg("points_on_sphere_cart"),
+                     arg("unit_cell"))))
+        .def("rho_min_max_mean", &w_t::rho_min_max_mean)
+        .def("ccs_min_max_mean", &w_t::ccs_min_max_mean)
+      ;
+    }
+
+    {
+      typedef fit_point_3d_grid_search w_t;
+
+      class_<w_t>("fit_point_3d_grid_search", no_init)
+        .def(init<cctbx::cartesian<> const&,
+                  af::const_ref<double, af::c_grid<3> > const&,
+                  double const&,
+                  cctbx::uctbx::unit_cell const&,
+                  double const&,
+                  double const& >(
+                    (arg("site_cart"),
+                     arg("map_data"),
+                     arg("map_min"),
+                     arg("unit_cell"),
+                     arg("amplitude"),
+                     arg("increment"))))
+        .def("has_peak",        &w_t::has_peak)
+        .def("map_best",        &w_t::map_best)
+        .def("map_start",       &w_t::map_start)
+        .def("site_cart_moved", &w_t::site_cart_moved)
+      ;
+    }
+
+    {
       typedef volume_scale w_t;
 
       class_<w_t>("volume_scale", no_init)
@@ -336,6 +446,7 @@ namespace {
         .def("v_values", &w_t::v_values)
       ;
     }
+
 
     {
       typedef one_gaussian_peak_approximation w_t;
@@ -364,26 +475,115 @@ namespace {
       typedef connectivity w_t;
 
       class_<w_t>("connectivity", no_init)
-        .def(init<af::const_ref<float, af::flex_grid<> > const&,
+        .def(init<af::ref<float, af::c_grid<3> >,
                   float const&,
+                  bool,
                   bool >(
                     (arg("map_data"),
                      arg("threshold"),
-                     arg("wrapping")=true)))
-        .def(init<af::const_ref<double, af::flex_grid<> > const&,
+                     arg("wrapping")=true,
+                     arg("preprocess_against_shallow")=false)))
+        .def(init<af::ref<double, af::c_grid<3> > ,
                   double const&,
+                  bool,
                   bool >(
                     (arg("map_data"),
                      arg("threshold"),
-                     arg("wrapping")=true)))
-        .def(init<af::const_ref<int, af::flex_grid<> > const&,
+                     arg("wrapping")=true,
+                     arg("preprocess_against_shallow")=false)))
+        .def(init<af::ref<int, af::c_grid<3> >,
                   int const&,
+                  bool,
                   bool >(
                     (arg("map_data"),
                      arg("threshold"),
-                     arg("wrapping")=true)))
+                     arg("wrapping")=true,
+                     arg("preprocess_against_shallow")=false)))
+
+        // Whole unit cell map with space group symmetry: shallow voxels are
+        // removed so that the map stays symmetric.
+        .def(init<af::ref<float, af::c_grid<3> >,
+                  float const&,
+                  bool,
+                  bool,
+                  cctbx::sgtbx::space_group const& >(
+                    (arg("map_data"),
+                     arg("threshold"),
+                     arg("wrapping"),
+                     arg("preprocess_against_shallow"),
+                     arg("space_group"))))
+        .def(init<af::ref<double, af::c_grid<3> > ,
+                  double const&,
+                  bool,
+                  bool,
+                  cctbx::sgtbx::space_group const& >(
+                    (arg("map_data"),
+                     arg("threshold"),
+                     arg("wrapping"),
+                     arg("preprocess_against_shallow"),
+                     arg("space_group"))))
+        .def(init<af::ref<int, af::c_grid<3> >,
+                  int const&,
+                  bool,
+                  bool,
+                  cctbx::sgtbx::space_group const& >(
+                    (arg("map_data"),
+                     arg("threshold"),
+                     arg("wrapping"),
+                     arg("preprocess_against_shallow"),
+                     arg("space_group"))))
+
+        // Symmetry-aware constructors
+        // .def(init< //af::ref<float, af::c_grid<3> >
+        //           float const&
+        //           // const cctbx::sgtbx::space_group &,
+        //           // const cctbx::sgtbx::space_group_type &,
+        //           // int3,
+        //           // bool,
+        //           // bool
+        //           >(
+        //             // (arg("map_data")
+        //              arg("threshold")
+        //              // arg("space_group"),
+        //              // arg("uc_dimensions"),
+        //              // arg("wrapping")=true,
+        //              // arg("preprocess_against_shallow")=false
+        //             )))
+
+        .def(init< af::ref<double, af::c_grid<3> >
+                  // double const&
+                  // const cctbx::sgtbx::space_group &,
+                  // const cctbx::sgtbx::space_group_type &,
+                  // int3,
+                  // bool,
+                  // bool
+                  >(
+                    (arg("map_data")
+                      // arg("threshold")
+                     // arg("space_group"),
+                     // arg("uc_dimensions"),
+                     // arg("wrapping")=true,
+                     // arg("preprocess_against_shallow")=false
+                    )))
+
+        // amap constructor
+        .def(init< asymmetric_map &,
+                  double const&,
+                  bool
+                  >(
+                    (arg("amap"),
+                     arg("threshold"),
+                     arg("preprocess_against_shallow")=false
+                    )))
+
+
+
         .def("result",    &w_t::result)
         .def("regions",   &w_t::regions)
+        .def("experiment_with_symmetry", &w_t::experiment_with_symmetry,
+            (arg("space_group")))
+        .def("merge_symmetry_related_regions", &w_t::merge_symmetry_related_regions,
+            (arg("space_group")))
         .def("volume_cutoff_mask", &w_t::volume_cutoff_mask,
                     (arg("volume_cutoff")))
         .def("get_blobs_boundaries", &w_t::get_blobs_boundaries)
@@ -397,6 +597,8 @@ namespace {
                      arg("zero_all_interblob_region")=true))
         .def("maximum_coors", &w_t::maximum_coors)
         .def("maximum_values", &w_t::maximum_values)
+        .def_readonly("preprocessing_changed_voxels", &w_t::preprocessing_changed_voxels)
+        .def_readonly("preprocessing_n_passes", &w_t::preprocessing_n_passes)
       ;
     }
     {
@@ -436,6 +638,17 @@ namespace {
             int const& > ((
               arg("mask"),
               arg("boundary"))))
+        .def("result",    &w_t::result)
+      ;
+    }
+
+    {
+      typedef binary_filter w_t;
+      class_<w_t>("binary_filter", no_init)
+        .def(init<af::const_ref<double, af::flex_grid<> > const&,
+            float const& > ((
+              arg("map"),
+              arg("threshold"))))
         .def("result",    &w_t::result)
       ;
     }
@@ -502,6 +715,30 @@ namespace {
             arg("n_real"),
             arg("miller_indices"),
             arg("data")));
+
+    def("loft",
+      (af::shared<std::complex<double> >(*)
+        (af::const_ref<std::size_t> const&,
+         af::tiny<int, 3> const&,
+         af::const_ref<cctbx::miller::index<> > const&,
+         double const&)) loft, (
+      arg("points"),
+      arg("n_real"),
+      arg("miller_indices"),
+      arg("volume_per_point")));
+
+    def("loft",
+      (af::shared<std::complex<double> >(*)
+        (af::const_ref<std::size_t> const&,
+         af::tiny<int, 3> const&,
+         af::const_ref<cctbx::miller::index<> > const&,
+         double const&,
+         sgtbx::space_group const&)) loft, (
+      arg("points"),
+      arg("n_real"),
+      arg("miller_indices"),
+      arg("volume_per_point"),
+      arg("space_group")));
 
     def("direct_summation_at_point",
       (std::complex<double>(*)(
@@ -648,13 +885,16 @@ namespace {
           af::tiny<int, 3> const&,
           double const&,
           double const&,
-          af::const_ref<double> const&)) mask, (
+          af::const_ref<double> const&,
+          bool const&)) mask, (
       arg("sites_frac"),
       arg("unit_cell"),
       arg("n_real"),
       arg("mask_value_inside_molecule"),
       arg("mask_value_outside_molecule"),
-      arg("radii")));
+      arg("radii"),
+      arg("wrapping")=true
+       ));
 
     def("convert_to_non_negative",
       (void(*)
@@ -676,6 +916,15 @@ namespace {
          std::vector<unsigned> const&)) negate_selected_in_place, (
       arg("map_data"),
       arg("selection")));
+
+    def("resample",
+      (void(*)
+        (af::const_ref<double, af::c_grid<3> > const&,
+         af::ref<double, af::c_grid<3> >,
+         cctbx::uctbx::unit_cell const&)) resample, (
+      arg("map_data"),
+      arg("map_data_new"),
+      arg("unit_cell")));
 
     def("reset",
       (void(*)
@@ -910,6 +1159,17 @@ namespace {
       arg("start"),
       arg("end")));
 
+    def("set_box_copy_inside",
+      (af::versa<double, af::c_grid<3> >(*)
+        (double const&,
+         af::ref<double, af::c_grid<3> >,
+         af::tiny<int, 3> const&,
+         af::tiny<int, 3> const&)) set_box_copy_inside, (
+      arg("value"),
+      arg("map_data_to"),
+      arg("start"),
+      arg("end")));
+
     def("set_box",
       (void(*)
         (double const&,
@@ -931,6 +1191,25 @@ namespace {
       arg("map_data_to"),
       arg("start"),
       arg("end")));
+
+    def("set_box_with_symmetry",
+      (void(*)
+        (af::const_ref<double, af::c_grid<3> > const&,
+         af::ref<double, af::c_grid<3> >,
+         af::tiny<int, 3> const&,
+         af::tiny<int, 3> const&,
+         cctbx::uctbx::unit_cell const& unit_cel,
+         af::shared<scitbx::mat3<double> > const&,
+         af::shared<scitbx::vec3<double> > const&
+         )) set_box_with_symmetry, (
+      arg("map_data_from"),
+      arg("map_data_to"),
+      arg("start"),
+      arg("end"),
+      arg("unit_cell"),
+      arg("rotation_matrix"),
+      arg("translation_vector")
+      ));
 
     def("copy_box",
       (void(*)

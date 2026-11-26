@@ -1,5 +1,4 @@
-from __future__ import division
-from iotbx import pdb
+from __future__ import absolute_import, division, print_function
 from mmtbx import monomer_library
 import mmtbx.monomer_library.server
 import mmtbx.monomer_library.pdb_interpretation
@@ -8,10 +7,14 @@ from libtbx.test_utils import Exception_expected, block_show_diff, approx_equal
 import libtbx.load_env
 import iotbx.phil
 from libtbx import Auto
-from cStringIO import StringIO
+from six.moves import cStringIO as StringIO
 import os
 import sys
 from cctbx.array_family import flex
+from six.moves import zip
+
+params = monomer_library.pdb_interpretation.master_params.extract()
+params.flip_symmetric_amino_acids = False
 
 def exercise_handle_case_insensitive(mon_lib_srv, ener_lib):
   def check(a, r, e):
@@ -23,6 +26,7 @@ HETATM    1 %s    %s F   1      -7.869  17.488  18.637  1.00 30.00          %s
       mon_lib_srv=mon_lib_srv,
       ener_lib=ener_lib,
       file_name=None,
+      params=params,
       raw_records=raw_records,
       log=log)
     log_lines = log.getvalue().splitlines()
@@ -488,6 +492,7 @@ _chem_comp_plane_atom.dist_esd
     ener_lib=ener_lib,
     file_name=None,
     raw_records=raw_records,
+    params=params,
     force_symmetry=True,
     log=log)
   grm = processed_pdb_file.geometry_restraints_manager()
@@ -529,6 +534,7 @@ END
     mon_lib_srv=mon_lib_srv,
     ener_lib=ener_lib,
     file_name=None,
+    params=params,
     raw_records=raw_records,
     force_symmetry=True)
   xray_structure = processed_pdb_file.xray_structure()
@@ -538,6 +544,7 @@ END
   processed_pdb_file = monomer_library.pdb_interpretation.process(
     mon_lib_srv=mon_lib_srv,
     ener_lib=ener_lib,
+    params=params,
     file_name=None,
     raw_records=raw_records,
     force_symmetry=True)
@@ -560,6 +567,7 @@ END
     mon_lib_srv=mon_lib_srv,
     ener_lib=ener_lib,
     file_name=None,
+    params=params,
     raw_records=raw_records,
     log=log)
   looking_for = "Ad-hoc single atom residues: "
@@ -567,7 +575,7 @@ END
     line = line.strip()
     if (not line.startswith(looking_for)): continue
     counts = eval(line[len(looking_for):])
-    assert counts == {"CH4": 3, "NH3": 3, "U  ": 1}
+    assert counts == {"U  ": 1}
     break
   else:
     raise RuntimeError('Expected string not found in output: "%s"'
@@ -601,37 +609,6 @@ END
     lines=log.getvalue().splitlines())
   assert len(lines) == 1
 
-  # test the atom_selection feature
-  log = StringIO()
-  pdb_inp = pdb.input(source_info = None, lines = raw_records)
-  processed_pdb_file = monomer_library.pdb_interpretation.process(
-    mon_lib_srv=mon_lib_srv,
-    ener_lib=ener_lib,
-    atom_selection_string="resname ser",
-    pdb_inp = pdb_inp,
-    crystal_symmetry=pdb_inp.crystal_symmetry(),
-    log=log)
-  processed_pdb_file.geometry_restraints_manager()
-  lines = search_for(
-    pattern=" +Nonbonded interactions: 0$",
-    mode="re.match",
-    lines=log.getvalue().splitlines())
-  assert len(lines) == 1
-
-  processed_pdb_file = monomer_library.pdb_interpretation.process(
-    mon_lib_srv=mon_lib_srv,
-    ener_lib=ener_lib,
-    atom_selection_string="resname ser or resname ala",
-    pdb_inp = pdb_inp,
-    crystal_symmetry=pdb_inp.crystal_symmetry(),
-    log=log)
-  processed_pdb_file.geometry_restraints_manager()
-  lines = search_for(
-    pattern=" +Nonbonded interactions: 7$",
-    mode="re.match",
-    lines=log.getvalue().splitlines())
-  assert len(lines) == 1
-  #
   raw_records = """\
 CRYST1   53.910   23.100   23.100  90.00 110.40  90.00 C 2
 ATOM    561  N   TYR X  39      11.814  -3.041  22.005  1.00 15.52           N
@@ -880,7 +857,7 @@ def exercise_rna(
     relative_path="phenix_regression/pdb/"+file_name,
     test=os.path.isfile)
   if (file_path is None):
-    print 'Skipping exercise_rna("%s"): input file not available' % file_name
+    print('Skipping exercise_rna("%s"): input file not available' % file_name)
     return
   log = StringIO()
   processed_pdb_file = monomer_library.pdb_interpretation.process(
@@ -944,7 +921,7 @@ def exercise_rna_3p_2p(mon_lib_srv, ener_lib):
       Conformer: ""
         Number of residues, atoms: 3, 63
           Classifications: {'RNA': 3}
-          Link IDs: {'rna3p': 1, 'rna2p': 1}
+          Link IDs: {'rna2p': 1, 'rna3p': 1}
   Residues with excluded nonbonded symmetry interactions: 2
     residue:
       pdb=" P     C A 857 " occ=0.30
@@ -1010,12 +987,12 @@ def exercise_hydrogen_deuterium_aliases():
       relative_path="phenix_regression/pdb/"+file_name,
       test=os.path.isfile)
     if (file_path is None):
-      print "Skipping exercise_hydrogen_deuterium_aliases():", \
-        "input file not available:", file_name
+      print("Skipping exercise_hydrogen_deuterium_aliases():", \
+        "input file not available:", file_name)
       return
     file_paths.append(file_path)
   log = StringIO()
-  monomer_library.pdb_interpretation.run(args=file_paths, log=log)
+  monomer_library.pdb_interpretation.run(args=file_paths, params=params, log=log)
   assert not block_show_diff(
     log.getvalue(), """\
   Histogram of bond lengths:
@@ -1034,14 +1011,14 @@ def exercise_corrupt_cif_link():
       relative_path="phenix_regression/misc/"+file_name,
       test=os.path.isfile)
     if (file_path is None):
-      print "Skipping exercise_corrupt_cif_link():", \
-        "input file not available:", file_name
+      print("Skipping exercise_corrupt_cif_link():", \
+        "input file not available:", file_name)
       return
     file_paths.append(file_path)
   log = StringIO()
   try:
-    monomer_library.pdb_interpretation.run(args=file_paths, log=log)
-  except Sorry, e:
+    monomer_library.pdb_interpretation.run(args=file_paths, params=params, log=log)
+  except Sorry as e:
     assert str(e).startswith("Corrupt CIF link definition:")
   else: raise Exception_expected
 
@@ -1054,19 +1031,21 @@ def exercise_dna_cns_cy5_th6():
       relative_path="phenix_regression/misc/"+file_name,
       test=os.path.isfile)
     if (file_path is None):
-      print "Skipping exercise_dna_cns_cy5_th6():", \
-        "input file not available:", file_name
+      print("Skipping exercise_dna_cns_cy5_th6():", \
+        "input file not available:", file_name)
       return
     file_paths.append(file_path)
   log = StringIO()
-  monomer_library.pdb_interpretation.run(args=file_paths, log=log)
+  monomer_library.pdb_interpretation.run(args=file_paths, params=params, log=log)
   assert not block_show_diff(log.getvalue(), """\
         Number of residues, atoms: 12, 244
+          Unusual residues: %s
           Classifications: %s
           Modifications used: {'5*END': 1}
           Link IDs: %s
 """ % (
-  str({'DNA': 12}),
+  str({'CY5': 1, 'TH6': 1}),
+  str({'DNA': 10, 'DNA_mixed' : 2}),
   str({'rna3p': 11})))
 
 def exercise_sym_excl_indices(mon_lib_srv, ener_lib):
@@ -1075,12 +1054,13 @@ def exercise_sym_excl_indices(mon_lib_srv, ener_lib):
     relative_path="phenix_regression/pdb/"+file_name,
     test=os.path.isfile)
   if (file_path is None):
-    print "Skipping exercise_sym_excl_indices():", \
-      "input file not available:", file_name
+    print("Skipping exercise_sym_excl_indices():", \
+      "input file not available:", file_name)
     return
   log = StringIO()
   pdb_interpretation_params = monomer_library.pdb_interpretation.master_params.extract()
   pdb_interpretation_params.sort_atoms=False
+  pdb_interpretation_params.flip_symmetric_amino_acids=False
   processed_pdb_file = monomer_library.pdb_interpretation.process(
     mon_lib_srv=mon_lib_srv,
     ener_lib=ener_lib,
@@ -1114,12 +1094,13 @@ def exercise_auto_alias_h_h1():
       relative_path="phenix_regression/pdb/"+file_name,
       test=os.path.isfile)
     if (file_path is None):
-      print "Skipping exercise_auto_alias_h_h1():", \
-        "input file not available:", file_name
+      print("Skipping exercise_auto_alias_h_h1():", \
+        "input file not available:", file_name)
       return
     file_paths.append(file_path)
   log = StringIO()
   processed_pdb_file = monomer_library.pdb_interpretation.run(
+        params=params,
     args=file_paths, log=log)
   assert log.getvalue().find("Modifications used: {'NH3': 1}") >= 0
   assert processed_pdb_file.all_chain_proxies.fatal_problems_message() is None
@@ -1129,11 +1110,12 @@ def exercise_d_aa_resnames():
     relative_path="phenix_regression/pdb/dpn.pdb",
     test=os.path.isfile)
   if (file_path is None):
-    print "Skipping exercise_d_aa_resnames():", \
-      "input file not available: dpn.pdb"
+    print("Skipping exercise_d_aa_resnames():", \
+      "input file not available: dpn.pdb")
     return
   log = StringIO()
   processed_pdb_file = monomer_library.pdb_interpretation.run(
+        params=params,
     args=[file_path], log=log)
   assert log.getvalue().find("'PEPT-D': 1") >= 0
   assert log.getvalue().find("'NH1NOTPRO': 1") >= 0
@@ -1144,59 +1126,62 @@ def exercise_d_amino_acid_chain_perfect_in_box_peptide_plane():
     relative_path="phenix_regression/pdb/d_amino_acid_chain_perfect_in_box.pdb",
     test=os.path.isfile)
   if (file_path is None):
-    print "Skipping exercise_d_aa_resnames():", \
-      "input file not available: d_amino_acid_chain_perfect_in_box.pdb"
+    print("Skipping exercise_d_aa_resnames():", \
+      "input file not available: d_amino_acid_chain_perfect_in_box.pdb")
     return
   log = StringIO()
   pdb_interpretation_params = monomer_library.pdb_interpretation.master_params.extract()
   pdb_interpretation_params.sort_atoms=False
+  pdb_interpretation_params.flip_symmetric_amino_acids=False
   pdb_interpretation_params.peptide_link.apply_peptide_plane=True
   processed_pdb_file = monomer_library.pdb_interpretation.run(
     args=[file_path], params=pdb_interpretation_params, log=log)
   grm = processed_pdb_file.geometry_restraints_manager()
   lv = log.getvalue()
   assert lv.find("Classifications: {'peptide': 16}") >= 0
-  assert lv.find("Link IDs: {'TRANS': 14, 'peptide plane': 15, 'PCIS': 1}")>=0
+  assert lv.find("Link IDs: {'PCIS': 1, 'TRANS': 14, 'peptide plane': 15}")>=0
 
 def exercise_d_amino_acid_chain_perfect_in_box():
   file_path = libtbx.env.find_in_repositories(
     relative_path="phenix_regression/pdb/d_amino_acid_chain_perfect_in_box.pdb",
     test=os.path.isfile)
   if (file_path is None):
-    print "Skipping exercise_d_aa_resnames():", \
-      "input file not available: d_amino_acid_chain_perfect_in_box.pdb"
+    print("Skipping exercise_d_aa_resnames():", \
+      "input file not available: d_amino_acid_chain_perfect_in_box.pdb")
     return
   log = StringIO()
   pdb_interpretation_params = monomer_library.pdb_interpretation.master_params.extract()
   pdb_interpretation_params.sort_atoms=False
+  pdb_interpretation_params.flip_symmetric_amino_acids=False
   processed_pdb_file = monomer_library.pdb_interpretation.run(
     args=[file_path], params=pdb_interpretation_params, log=log)
   grm = processed_pdb_file.geometry_restraints_manager()
   lv = log.getvalue()
+  print(lv)
   assert lv.find("Classifications: {'peptide': 16}") >= 0
   assert lv.find("'PEPT-D': 1") >= 0
   assert lv.find("'TRANS': 14") >= 0
   assert lv.find("'PCIS': 1") >= 0
-  assert lv.find("Link IDs: {'TRANS': 14, 'PCIS': 1}")>=0
+  assert lv.find("Link IDs: {'PCIS': 1, 'TRANS': 14}")>=0
   assert lv.find("""\
 Simple disulfide: pdb=" SG  DCY A   4 " - pdb=" SG  DCY A  19 " distance=2.03
 """) >= 0
   assert not block_show_diff(lv, """\
-  Bond restraints: 122
+  Bond restraints: 121
   Sorted by residual:
-  bond pdb=" CG  DPR A   7 "
-       pdb=" CD  DPR A   7 "
+  bond pdb=" CZ  DAR A  14 "
+       pdb=" NH2 DAR A  14 "
     ideal  model  delta    sigma   weight residual
-    1.503  1.507 -0.004 3.40e-02 8.65e+02 1.39e-02
+    1.330  1.326  0.004 1.30e-02 5.92e+03 1.15e-01
 """)
   assert not block_show_diff(lv, """\
-  Bond angle restraints: 163
+  Bond angle restraints: 161
   Sorted by residual:
-  angle pdb=" SG  DCY A   4 "
-        pdb=" SG  DCY A  19 "
-        pdb=" CB  DCY A  19 "
+  angle pdb=" NE  DAR A  14 "
+        pdb=" CZ  DAR A  14 "
+        pdb=" NH1 DAR A  14 "
       ideal   model   delta    sigma   weight residual
-     104.20   80.00   24.20 2.10e+00 2.27e-01 1.33e+02
+     121.50  120.07    1.43 1.00e+00 1.00e+00 2.04e+00
 """)
   assert not block_show_diff(lv, """\
   Dihedral angle restraints: 50
@@ -1242,34 +1227,36 @@ def exercise_asp_glu_acid():
       relative_path="phenix_regression/pdb/"+file_name,
       test=os.path.isfile)
     if (file_path is None):
-      print "Skipping exercise_asp_glu_acid():", \
-        "input file not available:", file_name
+      print("Skipping exercise_asp_glu_acid():", \
+        "input file not available:", file_name)
     else:
       log = StringIO()
       processed_pdb_file = monomer_library.pdb_interpretation.run(
+        params=params,
         args=[file_path], log=log)
       if (resname == "ASP"):
         pat = "Modifications used: {'ACID-ASP': 1}"
       else:
-        pat = "Modifications used: {'NH1NOTPRO': 1, 'COOH': 1, 'ACID-GLU': 1}"
+        pat = "Modifications used: {'ACID-GLU': 1, 'COOH': 1, 'NH1NOTPRO': 1}"
       assert log.getvalue().find(pat) >= 0
       assert processed_pdb_file.all_chain_proxies \
         .fatal_problems_message() is None
 
 # tests automatic aliasing of OP1/O1P etc. when the residue is not detected as
 # RNA/DNA but the monomer entry is
-def exercise_rna_dna_synonyms () :
+def exercise_rna_dna_synonyms():
   pdb_file = libtbx.env.find_in_repositories(
     relative_path="phenix_regression/pdb/PGP.pdb",
     test=os.path.isfile)
   cif_file = libtbx.env.find_in_repositories(
     relative_path="phenix_regression/cif_files/PGP.cif",
     test=os.path.isfile)
-  if (None in [pdb_file, cif_file]) :
-    print "Skipping exercise_rna_dna_synonyms() - input file(s) unavailable."
+  if (None in [pdb_file, cif_file]):
+    print("Skipping exercise_rna_dna_synonyms() - input file(s) unavailable.")
   else :
     log = StringIO()
     processed_pdb_file = monomer_library.pdb_interpretation.run(
+        params=params,
       args=[pdb_file, cif_file], log=log)
     msg = processed_pdb_file.all_chain_proxies.fatal_problems_message(
       ignore_unknown_scattering_types=False,
@@ -1400,9 +1387,20 @@ _chem_comp_angle.value_angle_esd   3.000
   cmd = "phenix.pdb_interpretation \"%s\" \"%s\" write_geo_files=True" %(
     pdb_file.name, restraints_file.name)
   result = easy_run.fully_buffered(cmd).raise_if_errors()
-  geo_file = open(pdb_file.name+".geo", "rb")
+  geo_file = open(pdb_file.name+".geo", "r")
   geo_file_str = geo_file.read()
-  assert "Bond angle restraints: 1" in geo_file_str
+  geo_file.close()
+  assert "Bond angle | covalent geometry | restraints: 1" in geo_file_str
+
+  pdb_string = pdb_string.replace('HOH', 'H!H')
+  pdb_file = open_tmp_file(suffix="HOH.pdb")
+  pdb_file.write(pdb_string)
+  pdb_file.close()
+  cmd = "phenix.pdb_interpretation %s" % (pdb_file.name)
+  result = easy_run.fully_buffered(cmd).raise_if_errors()
+  std_lines='\n'.join(result.stdout_lines)
+  msg='Number of atoms with unknown nonbonded energy type symbols: 3'
+  assert std_lines.find(msg)!=-1, 'error msg "%s" missing' % msg
 
 def exercise_do_not_link(mon_lib_srv, ener_lib):
   """
@@ -1829,13 +1827,13 @@ ATOM     10  CA  VAL A  10      50.711  63.858  50.117  1.00  0.00           C
       file_name=None,
       raw_records=raw_records,
       force_symmetry=True)
-  except Sorry, e:
+  except Sorry as e:
     assert str(e).startswith(
       "Unit cell volume is incompatible with number of atoms")
   else: raise Exception_expected
 
 # Test automatic detection of CDL
-def exercise_cdl_automatic () :
+def exercise_cdl_automatic():
   pdbstring = """\
 ATOM      0  CA  GLY A   3       5.804  -2.100   7.324  1.00  1.36           C
 ATOM      1  C   GLY A   3       4.651  -1.149   7.578  1.00  1.01           C
@@ -1854,8 +1852,10 @@ ATOM     13  O   LEU A   5       1.246  -0.440   4.196  1.00  1.23           O
 """
   pdb_1 = "REMARK   3    GEOSTD + MON.LIB. + CDL v1.2\n" + pdbstring
   pdb_2 = pdbstring
-  open("tst_cdl_auto_1.pdb", "w").write(pdb_1)
-  open("tst_cdl_auto_2.pdb", "w").write(pdb_2)
+  with open("tst_cdl_auto_1.pdb", "w") as f:
+    f.write(pdb_1)
+  with open("tst_cdl_auto_2.pdb", "w") as f:
+    f.write(pdb_2)
   cifstring = """\
 data_cdl_refine
 %s
@@ -1896,8 +1896,10 @@ loop_
 _refine.pdbx_stereochemistry_target_values 'GeoStd + Monomer Library + CDL v1.2'
 """
   cif_2 = cifstring % ""
-  open("tst_cdl_auto_1.cif", "w").write(cif_1)
-  open("tst_cdl_auto_2.cif", "w").write(cif_2)
+  with open("tst_cdl_auto_1.cif", "w") as f:
+    f.write(cif_1)
+  with open("tst_cdl_auto_2.cif", "w") as f:
+    f.write(cif_2)
   model_files = [
     ("tst_cdl_auto_1.pdb", "tst_cdl_auto_2.pdb"),
     ("tst_cdl_auto_1.cif", "tst_cdl_auto_2.cif"),
@@ -1972,7 +1974,7 @@ END
     log=log)
   grm = processed_pdb_file.geometry_restraints_manager()
   assert grm.angle_proxies.size() == 15
-  assert grm.get_dihedral_proxies().size() == 9
+  assert grm.get_dihedral_proxies().size() == 3
   selected_dihedrals = grm.dihedral_proxies.proxy_select(
     n_seq=13, iselection=flex.size_t([4,5,10,11,12]))
   # select SS dihedrals, 2 in this case because of alternative SG atom
@@ -2018,8 +2020,163 @@ END
     log=log)
   grm = processed_pdb_file.geometry_restraints_manager()
   assert grm.angle_proxies.size() == 21
-  assert grm.get_dihedral_proxies().size() == 9, \
+  assert grm.get_dihedral_proxies().size() == 5, \
     "dihedrals %d" % grm.get_dihedral_proxies().size()
+
+def exercise_const_dihedral_proxies(mon_lib_srv, ener_lib):
+  # Synthetic 4-atom monomer (X-Y-Z-HX) carrying both a CONST torsion
+  # (value_angle_esd=0, period=0) and a Var torsion (value_angle_esd>0)
+  # on the same H. Verifies that add_dihedral_proxies routes the CONST
+  # into const_dihedral_proxies and the Var into dihedral_proxies, and
+  # that proxy_select on the CONST list filters and remaps i_seqs in the
+  # same way it does for the Var list. Echoes the dihedral-proxy
+  # assertions in exercise_ss_bond_angles (line ~1977) for layout.
+  cif_str = """\
+data_comp_list
+loop_
+_chem_comp.id
+_chem_comp.three_letter_code
+_chem_comp.name
+_chem_comp.group
+_chem_comp.number_atoms_all
+_chem_comp.number_atoms_nh
+_chem_comp.desc_level
+ ZZ7 ZZ7 test_const_routing non-polymer 4 3 .
+
+data_comp_ZZ7
+loop_
+_chem_comp_atom.comp_id
+_chem_comp_atom.atom_id
+_chem_comp_atom.type_symbol
+_chem_comp_atom.type_energy
+_chem_comp_atom.partial_charge
+ ZZ7 X  C  CH1  0.00
+ ZZ7 Y  C  C    0.00
+ ZZ7 Z  C  CH3  0.00
+ ZZ7 HX H  H    0.00
+
+loop_
+_chem_comp_bond.comp_id
+_chem_comp_bond.atom_id_1
+_chem_comp_bond.atom_id_2
+_chem_comp_bond.type
+_chem_comp_bond.value_dist
+_chem_comp_bond.value_dist_esd
+ ZZ7 X  Y   single 1.520 0.020
+ ZZ7 Y  Z   single 1.520 0.020
+ ZZ7 X  HX  single 0.970 0.020
+
+loop_
+_chem_comp_angle.comp_id
+_chem_comp_angle.atom_id_1
+_chem_comp_angle.atom_id_2
+_chem_comp_angle.atom_id_3
+_chem_comp_angle.value_angle
+_chem_comp_angle.value_angle_esd
+ ZZ7 Y  X  HX  109.500 1.500
+ ZZ7 X  Y  Z   111.000 1.500
+
+loop_
+_chem_comp_tor.comp_id
+_chem_comp_tor.id
+_chem_comp_tor.atom_id_1
+_chem_comp_tor.atom_id_2
+_chem_comp_tor.atom_id_3
+_chem_comp_tor.atom_id_4
+_chem_comp_tor.value_angle
+_chem_comp_tor.value_angle_esd
+_chem_comp_tor.period
+ ZZ7 CONST_01 HX X Y Z  60.000  0.000  0
+ ZZ7 Var_01   HX X Y Z 180.000 10.000  1
+"""
+  # Two residues -> 2 CONST proxies and 2 Var proxies. Lets proxy_select
+  # actually filter (drop residue 1, keep residue 2) and remap i_seqs,
+  # mirroring exercise_ss_bond_angles' proxy_select at line 1978.
+  raw_records = """\
+CRYST1   30.000   30.000   30.000  90.00  90.00  90.00 P 1
+HETATM    1  X   ZZ7 A   1       0.000   0.000   0.000  1.00 20.00           C
+HETATM    2  Y   ZZ7 A   1       1.520   0.000   0.000  1.00 20.00           C
+HETATM    3  Z   ZZ7 A   1       2.064   1.434   0.000  1.00 20.00           C
+HETATM    4  HX  ZZ7 A   1      -0.314   0.769   0.583  1.00 20.00           H
+HETATM    5  X   ZZ7 A   2      10.000   0.000   0.000  1.00 20.00           C
+HETATM    6  Y   ZZ7 A   2      11.520   0.000   0.000  1.00 20.00           C
+HETATM    7  Z   ZZ7 A   2      12.064   1.434   0.000  1.00 20.00           C
+HETATM    8  HX  ZZ7 A   2       9.686   0.769   0.583  1.00 20.00           H
+END
+""".splitlines()
+  cif_path = "tmp_const_dihedral.cif"
+  with open(cif_path, "w") as f:
+    f.write(cif_str)
+  try:
+    mon_lib_srv.process_cif(file_name=cif_path)
+    log = StringIO()
+    processed_pdb_file = monomer_library.pdb_interpretation.process(
+      mon_lib_srv=mon_lib_srv,
+      ener_lib=ener_lib,
+      file_name=None,
+      raw_records=raw_records,
+      log=log)
+    grm = processed_pdb_file.geometry_restraints_manager()
+
+    # Routing: CONST (ESD=0) goes to const_dihedral_proxies, Var (ESD>0)
+    # goes to dihedral_proxies. One of each per residue across two residues.
+    assert grm.get_const_dihedral_proxies().size() == 2, \
+      "const dihedrals %d" % grm.get_const_dihedral_proxies().size()
+    assert grm.get_dihedral_proxies().size() == 2, \
+      "dihedrals %d" % grm.get_dihedral_proxies().size()
+
+    # CONST proxies are stored with the period=0 / weight=0 marker that
+    # add_dihedral_proxies' CONST branch sets — confirms the proxy was
+    # built via that branch and not the Var branch.
+    for cdp in grm.get_const_dihedral_proxies():
+      assert cdp.periodicity == 0
+      assert abs(cdp.weight) < 1.e-12
+
+    # proxy_select on residue 2's atoms only. Mirrors line 1978: filter
+    # plus i_seq remap. Both buckets must filter independently.
+    selected_const = grm.get_const_dihedral_proxies().proxy_select(
+      n_seq=8, iselection=flex.size_t([4, 5, 6, 7]))
+    assert selected_const.size() == 1, \
+      "selected const dihedrals %d" % selected_const.size()
+    selected_var = grm.dihedral_proxies.proxy_select(
+      n_seq=8, iselection=flex.size_t([4, 5, 6, 7]))
+    assert selected_var.size() == 1, \
+      "selected dihedrals %d" % selected_var.size()
+
+    # i_seqs of the surviving CONST proxy must be remapped into [0, 4),
+    # not stale 4-7 values from the full model.
+    for i in selected_const[0].i_seqs:
+      assert 0 <= i < 4, \
+        "remapped i_seq %d outside selected [0,4)" % i
+
+    # angle_ideal round-trip. The dihedral_proxy_registry canonicalises
+    # by outer-swapping i1<->i4, which negates angle_ideal; abs() is
+    # used so the test does not depend on the canonicalisation direction.
+    assert approx_equal(abs(selected_const[0].angle_ideal), 60.0)
+    assert approx_equal(abs(selected_var[0].angle_ideal), 180.0)
+
+    # Same filter via grm.select(selection=...) with a string-based
+    # selection, exercising the grm-level threading of
+    # const_dihedral_proxies through manager.select() (cctbx
+    # geometry_restraints/manager.py line ~434). proxy_select above
+    # tests the registry directly; this tests the integration layer.
+    sel_resseq2 = processed_pdb_file.all_chain_proxies.pdb_hierarchy \
+      .atom_selection_cache().selection("resseq 2")
+    assert sel_resseq2.count(True) == 4, \
+      "resseq 2 should pick 4 atoms; got %d" % sel_resseq2.count(True)
+    grm_sel = grm.select(selection=sel_resseq2)
+    assert grm_sel.get_const_dihedral_proxies().size() == 1, \
+      "selected const dihedrals %d" % grm_sel.get_const_dihedral_proxies().size()
+    assert grm_sel.get_dihedral_proxies().size() == 1, \
+      "selected dihedrals %d" % grm_sel.get_dihedral_proxies().size()
+    for i in grm_sel.get_const_dihedral_proxies()[0].i_seqs:
+      assert 0 <= i < 4, \
+        "grm.select() left stale i_seq %d outside [0,4)" % i
+    assert approx_equal(
+      abs(grm_sel.get_const_dihedral_proxies()[0].angle_ideal), 60.0)
+  finally:
+    if os.path.exists(cif_path):
+      os.remove(cif_path)
 
 def exercise_bad_water(mon_lib_srv, ener_lib):
   raw_records = """\
@@ -2364,19 +2521,30 @@ pdb_interpretation.geometry_restraints.edits {
     atom_selection_2 = chain N and resname O and name NE
   }
   bond {
-    distance_ideal = -1
-  }
-  bond {
     distance_ideal = 2
+  }
+}"""
+  bad_edits = """\
+pdb_interpretation.geometry_restraints.edits {
+  bond {
+    distance_ideal = -1
   }
   bond {
     distance_ideal = 2
     sigma = -1
   }
-}"""
+}
+"""
   gm_phil = iotbx.phil.parse(
       monomer_library.pdb_interpretation.grand_master_phil_str,
       process_includes=True)
+  edits_phil = iotbx.phil.parse(edits+bad_edits)
+  try:
+    working_phil = gm_phil.fetch(edits_phil)
+  except RuntimeError as e:
+    assert str(e) == "geometry_restraints.edits.bond.distance_ideal element is less than the minimum allowed value: -1 < 0.001 (input line 25)", str(e)
+  else: raise Exception_expected
+
   edits_phil = iotbx.phil.parse(edits)
   working_phil = gm_phil.fetch(edits_phil)
   params = working_phil.extract()
@@ -2393,7 +2561,7 @@ pdb_interpretation.geometry_restraints.edits {
   expected = """
   Custom bonds:
     bond:
-      atom 1: "HETATM   64 FE   HEM A 154 .*.    Fe  "
+      atom 1: "HETATM   64 FE   HEM A 154 .*.    FE  "
       atom 2: "ATOM     16  NE2 HIS A  93 .*.     N  "
       symmetry operation: x,y,z
       distance_model:   2.146
@@ -2403,7 +2571,7 @@ pdb_interpretation.geometry_restraints.edits {
       delta_slack:     -0.046
       sigma:            0.0100
     bond:
-      atom 1: "HETATM   64 FE   HEM A 154 .*.    Fe  "
+      atom 1: "HETATM   64 FE   HEM A 154 .*.    FE  "
       atom 2: "HETATM   65  O   MTO A 155 .*.     O  "
       symmetry operation: x,y,z
       distance_model:   2.164
@@ -2415,31 +2583,209 @@ pdb_interpretation.geometry_restraints.edits {
     Warning: Ignoring bond with distance_ideal = None:
       atom_selection_1 = None
       atom_selection_2 = "chain N and resname O and name NE"
-    Warning: Ignoring bond with distance_ideal < 0:
-      atom_selection_1 = None
-      atom_selection_2 = None
-      distance_ideal = -1
     Warning: Ignoring bond with sigma = None:
       atom_selection_1 = None
       atom_selection_2 = None
       distance_ideal = 2
-    Warning: Ignoring bond with sigma <= 0:
-      atom_selection_1 = None
-      atom_selection_2 = None
-      distance_ideal = 2
-      sigma = -1
-      slack = 0
-    Total number of custom bonds: 2"""
+    Total number of added/changed bonds: 2"""
   log = log.getvalue().splitlines()
   found = 0
   for e in expected.splitlines():
     if(e in log): found += 1
-  assert found > 39, found
+  assert found > 29, found
+
+def exercise_allow_polymer_cross_special_position(mon_lib_srv, ener_lib):
+  raw_records = """\
+CRYST1  257.160  257.160  125.289  90.00  90.00  90.00 P 42 21 2
+ATOM   6125  N   GLU B 219       2.256  -0.004  52.800  1.00556.70      B    N
+ATOM   6126  CA  GLU B 219       2.976  -0.009  54.101  1.00553.07      B    C
+ATOM   6127  C   GLU B 219       2.020  -0.291  55.269  1.00548.53      B    C
+ATOM   6128  O   GLU B 219       2.412  -1.087  56.152  1.00563.96      B    O
+ATOM   6129  CB  GLU B 219       3.635   1.353  54.312  1.00549.67      B    C
+ATOM   6130  N   VAL B 220       0.817   0.295  55.291  1.00579.40      B    N
+ATOM   6131  CA  VAL B 220      -0.101  -0.076  56.415  1.00536.12      B    C
+ATOM   6132  C   VAL B 220      -0.931  -1.312  56.040  1.00595.15      B    C
+ATOM   6133  O   VAL B 220      -1.615  -1.845  56.941  1.00560.98      B    O
+ATOM   6134  CB  VAL B 220      -0.969   1.109  56.872  1.00506.94      B    C
+ATOM   6135  CG1 VAL B 220      -1.904   0.713  58.004  1.00516.72      B    C
+ATOM   6136  CG2 VAL B 220      -0.110   2.296  57.278  1.00493.38      B    C
+ATOM   6137  N   GLN B 221      -0.855  -1.759  54.781  1.00618.59      B    N
+ATOM   6138  CA  GLN B 221      -1.583  -2.967  54.295  1.00643.31      B    C
+ATOM   6139  C   GLN B 221      -0.837  -4.237  54.735  1.00659.80      B    C
+ATOM   6140  O   GLN B 221      -1.504  -5.170  55.254  1.00664.86      B    O
+ATOM   6141  CB  GLN B 221      -1.633  -2.914  52.766  1.00632.59      B    C
+ATOM   6142  CG  GLN B 221      -2.226  -4.158  52.118  1.00628.14      B    C
+ATOM   6143  CD  GLN B 221      -3.524  -3.878  51.400  1.00607.81      B    C
+ATOM   6144  OE1 GLN B 221      -3.819  -2.746  51.025  1.00587.02      B    O
+ATOM   6145  NE2 GLN B 221      -4.309  -4.921  51.188  1.00611.94      B    N
+END
+  """.splitlines()
+  params = iotbx.phil.parse(
+    monomer_library.pdb_interpretation.grand_master_phil_str,
+    process_includes=True).extract()
+  exp_lines = [
+    "Polymer crosses special position element:",
+    "ATOM      7  CA  VAL B 220       0.000  -0.000  56.415  1.00536.12      B    C",
+    "Use 'allow_polymer_cross_special_position=True' to keep going."]
+  cntr=0
+  try:
+    processed_pdb_file = monomer_library.pdb_interpretation.process(
+      mon_lib_srv=mon_lib_srv,
+      ener_lib=ener_lib,
+      file_name=None,
+      raw_records=raw_records,
+      params = params.pdb_interpretation,
+      log=None).xray_structure()
+  except KeyboardInterrupt: raise
+  except Exception as e:
+    for line in str(e).splitlines():
+      if(line.strip() in exp_lines):
+        cntr+=1
+  assert cntr>=2
+  #
+  params.pdb_interpretation.allow_polymer_cross_special_position=True
+  processed_pdb_file = monomer_library.pdb_interpretation.process(
+    mon_lib_srv=mon_lib_srv,
+    ener_lib=ener_lib,
+    file_name=None,
+    raw_records=raw_records,
+    params = params.pdb_interpretation,
+    log=None).xray_structure()
+
+def exercise_merging_of_multiple_torsions_from_ccp4(mon_lib_srv, ener_lib):
+  raw_records = '''\
+CRYST1  173.131   63.222  139.747  90.00 117.44  90.00 C 1 2 1
+SCALE1      0.005776  0.000000  0.002999        0.00000
+SCALE2      0.000000  0.015817  0.000000        0.00000
+SCALE3      0.000000  0.000000  0.008063        0.00000
+ATOM     51  P   UFT D   7     -67.463  33.524   3.567  1.00112.63           P
+ATOM     52  OP1 UFT D   7     -68.380  34.407   4.348  1.00110.72           O
+ATOM     53  OP2 UFT D   7     -66.071  33.991   3.308  1.00125.39           O1-
+ATOM     54  O5' UFT D   7     -67.227  32.153   4.352  1.00 96.88           O
+ATOM     55  C5' UFT D   7     -66.275  31.194   3.850  1.00 86.30           C
+ATOM     56  C4' UFT D   7     -66.867  29.809   3.998  1.00 90.89           C
+ATOM     57  O4' UFT D   7     -67.018  29.186   2.691  1.00 89.89           O
+ATOM     58  C3' UFT D   7     -66.068  28.802   4.846  1.00 94.41           C
+ATOM     59  O3' UFT D   7     -66.587  28.769   6.175  1.00 95.64           O
+ATOM     60  C2' UFT D   7     -66.247  27.476   4.085  1.00 90.12           C
+ATOM     61  C1' UFT D   7     -66.300  27.971   2.642  1.00 87.60           C
+ATOM     62  N1  UFT D   7     -64.948  28.191   2.070  1.00 92.31           N
+ATOM     63  C2  UFT D   7     -64.148  27.069   1.895  1.00 97.52           C
+ATOM     64  O2  UFT D   7     -64.517  25.929   2.181  1.00 83.90           O
+ATOM     65  N3  UFT D   7     -62.899  27.333   1.376  1.00 96.36           N
+ATOM     66  C4  UFT D   7     -62.378  28.569   1.029  1.00 96.57           C
+ATOM     67  O4  UFT D   7     -61.235  28.641   0.578  1.00104.59           O
+ATOM     68  C5  UFT D   7     -63.264  29.677   1.237  1.00 88.14           C
+ATOM     69  C6  UFT D   7     -64.492  29.451   1.732  1.00 89.94           C
+ATOM     70  F2' UFT D   7     -67.445  26.780   4.352  1.00 91.06           F
+  '''.splitlines()
+  cif_records = '''
+data_comp_list
+loop_
+_chem_comp.id
+_chem_comp.three_letter_code
+_chem_comp.name
+_chem_comp.group
+_chem_comp.number_atoms_all
+_chem_comp.number_atoms_nh
+_chem_comp.desc_level
+UFT UFT "2'-deoxy-2'-fluorouridine 5'-(dihydrogen phosphate)" DNA 31 21 .
+
+data_comp_UFT
+loop_
+_chem_comp_atom.comp_id
+_chem_comp_atom.atom_id
+_chem_comp_atom.type_symbol
+_chem_comp_atom.type_energy
+_chem_comp_atom.charge
+_chem_comp_atom.x
+_chem_comp_atom.y
+_chem_comp_atom.z
+UFT OP3    O OP   -1 1.868  -46.867 -34.019
+UFT P      P P    0  0.567  -47.432 -33.481
+UFT OP1    O O    0  -0.201 -48.232 -34.516
+UFT OP2    O OP   -1 -0.289 -46.386 -32.791
+UFT "O5'"  O O2   0  0.984  -48.486 -32.332
+UFT N1     N NR6  0  0.520  -52.299 -30.250
+UFT C6     C CR16 0  0.035  -52.133 -31.532
+UFT C2     C CR6  0  0.180  -53.419 -29.502
+UFT O2     O O    0  0.586  -53.626 -28.364
+UFT N3     N NR16 0  -0.668 -54.303 -30.131
+UFT C4     C CR6  0  -1.196 -54.193 -31.405
+UFT O4     O O    0  -1.946 -55.073 -31.830
+UFT C5     C CR16 0  -0.794 -53.014 -32.119
+UFT "F2'"  F F    0  3.749  -51.440 -29.039
+UFT "C2'"  C CH1  0  2.891  -51.409 -30.143
+UFT "C5'"  C CH2  0  1.715  -48.005 -31.174
+UFT "C4'"  C CH1  0  2.137  -49.171 -30.313
+UFT "O4'"  O O2   0  0.993  -49.989 -29.983
+UFT "C1'"  C CH1  0  1.444  -51.292 -29.649
+UFT "C3'"  C CH1  0  3.123  -50.141 -30.956
+UFT "O3'"  O OH1  0  4.454  -49.679 -30.878
+UFT H6     H H    0  0.289  -51.368 -32.013
+UFT HN3    H H    0  -0.896 -55.022 -29.658
+UFT H5     H H    0  -1.105 -52.862 -32.987
+UFT "H2'"  H H    0  3.011  -52.211 -30.708
+UFT "H5'"  H H    0  1.142  -47.394 -30.647
+UFT "H5'A" H H    0  2.516  -47.504 -31.468
+UFT "H4'"  H H    0  2.524  -48.816 -29.478
+UFT "H1'"  H H    0  1.433  -51.381 -28.667
+UFT "H3'"  H H    0  2.880  -50.294 -31.893
+UFT "HO3'" H H    0  4.516  -48.968 -31.338
+loop_
+_chem_comp_tor.comp_id
+_chem_comp_tor.id
+_chem_comp_tor.atom_id_1
+_chem_comp_tor.atom_id_2
+_chem_comp_tor.atom_id_3
+_chem_comp_tor.atom_id_4
+_chem_comp_tor.value_angle
+_chem_comp_tor.value_angle_esd
+_chem_comp_tor.period
+UFT C2e-chi         "O4'" "C1'" N1    C2     210.000 10.000 6
+UFT C2e-nyu0        "C4'" "O4'" "C1'" "C2"   340.700 6.300  1
+UFT C2e-nyu3        "C2'" "C3'" "C4'" "O4'"  22.600  4.500  1
+UFT C2e-nyu4        "C3'" "C4'" "O4'" "C1'"  357.700 6.100  1
+UFT C3e-chi         "O4'" "C1'" N1    C2     210.000 10.000 6
+UFT C3e-nyu0        "C4'" "O4'" "C1'" "C2'"  2.8     6.100  1
+UFT C3e-nyu3        "C2'" "C3'" "C4'" "O4'"  324.700 3.100  1
+UFT C3e-nyu4        "C3'" "C4'" "O4'" "C1'"  20.500  5.100  1
+UFT alpha           "C5'" "O5'" P     OP3    -60.000 10.00  3
+UFT beta            P     "O5'" "C5'" "C4'"  180.000 10.00  3
+UFT epsi            "C4'" "C3'" "O3'" "HO3'" 180.000 10.00  3
+UFT gamma           "O5'" "C5'" "C4'" "C3'"  180.000 10.00  3
+UFT const_11        O4    C4    C5    C6     180.000 10.0   2
+UFT sp3_sp3_35      N1    "C1'" "C2'" "F2'"  180.000 10.0   3
+UFT sp3_sp3_5       "F2'" "C2'" "C3'" "O3'"  60.000  10.0   3
+UFT const_sp2_sp2_1 C5    C6    N1    C2     0.000   5.0    2
+UFT const_23        O2    C2    N1    C6     180.000 10.0   2
+UFT const_sp2_sp2_5 C4    C5    C6    N1     0.000   5.0    2
+UFT const_19        O2    C2    N3    C4     180.000 10.0   2
+UFT const_15        O4    C4    N3    C2     180.000 10.0   2
+
+'''
+  import iotbx.cif
+  log = StringIO()
+  cif_object = iotbx.cif.reader(input_string=cif_records).model()
+  mon_lib_srv.process_cif_object(cif_object=cif_object,
+                                 process_tor=True)
+  params = iotbx.phil.parse(
+    monomer_library.pdb_interpretation.grand_master_phil_str,
+    process_includes=True).extract()
+  processed_pdb_file = monomer_library.pdb_interpretation.process(
+    mon_lib_srv=mon_lib_srv,
+    ener_lib=ener_lib,
+    file_name=None,
+    raw_records=raw_records,
+    params = params.pdb_interpretation,
+    log=None).xray_structure()
 
 def run(args):
   assert len(args) == 0
   mon_lib_srv = monomer_library.server.server()
   ener_lib = monomer_library.server.ener_lib()
+  exercise_merging_of_multiple_torsions_from_ccp4(mon_lib_srv, ener_lib)
+  exercise_allow_polymer_cross_special_position(mon_lib_srv, ener_lib)
   exercise_bad_custom_bonds(mon_lib_srv, ener_lib)
   exercise_bad_water(mon_lib_srv, ener_lib)
   exercise_unk_and_cys(mon_lib_srv, ener_lib)
@@ -2466,10 +2812,11 @@ def run(args):
   exercise_rna_dna_synonyms()
   exercise_ss_bond_angles(mon_lib_srv, ener_lib)
   exercise_ss_bond_angles_alt_loc(mon_lib_srv, ener_lib)
+  exercise_const_dihedral_proxies(mon_lib_srv, ener_lib)
   exercise_edits_parallelity(mon_lib_srv, ener_lib)
   exercise_edits_planarity(mon_lib_srv, ener_lib)
   exercise_edits_bond(mon_lib_srv, ener_lib)
-  print format_cpu_times()
+  print(format_cpu_times())
 
 if (__name__ == "__main__"):
   import sys

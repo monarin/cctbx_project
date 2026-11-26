@@ -1,7 +1,8 @@
-from __future__ import division
-import boost.python
-from boost.python import streambuf
-ext = boost.python.import_ext("boost_adaptbx_python_streambuf_test_ext")
+from __future__ import absolute_import, division, print_function
+
+import boost_adaptbx.boost.python as bp
+from boost_adaptbx.boost.python import streambuf
+ext = bp.import_ext("boost_adaptbx_python_streambuf_test_ext")
 import subprocess
 import sys
 
@@ -22,7 +23,7 @@ def read_from_stdin():
 def run(core):
   if not core:
     exercise()
-    print 'OK'
+    print('OK')
   else:
     read_from_stdin()
 

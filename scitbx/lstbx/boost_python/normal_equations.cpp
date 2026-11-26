@@ -35,7 +35,8 @@ namespace boost_python {
         .def("add_equations",
              &wt::add_equations,
              (arg("right_hand_side"), arg("design_matrix"), arg("weights"),
-              arg("negate_right_hand_side")=false))
+              arg("negate_right_hand_side")=false,
+              arg("optimise_for_tall_matrix")=true))
         .def("reset", &wt::reset)
         .def("solve", &wt::solve)
         .add_property("solved", &wt::solved)
@@ -69,7 +70,8 @@ namespace boost_python {
         = &wt::add_equations;
       void (wt::*add_sparse_eqns)(af::const_ref<scalar_t> const &,
                                   sparse::matrix<scalar_t> const &,
-                                  af::const_ref<scalar_t> const &)
+                                  af::const_ref<scalar_t> const &,
+                                  bool, bool)
         = &wt::add_equations;
 
       class_<wt>(name, no_init)
@@ -99,7 +101,8 @@ namespace boost_python {
              (arg("residuals"), arg("jacobian"), arg("weights")))
         .def("add_equations",
              add_sparse_eqns,
-             (arg("residuals"), arg("jacobian"), arg("weights")))
+             (arg("residuals"), arg("jacobian"), arg("weights"),
+             arg("negate_right_hand_side")=true, arg("optimise_for_tall_matrix")=true))
         .def("reset", &wt::reset)
         /* We use 'def' instead of add_property for those to stay consistent
            with the other wrappers in this module which can't use properties
@@ -112,10 +115,12 @@ namespace boost_python {
   };
 
 
-  template <typename FloatType>
+  template <typename FloatType, template<typename> class SumOfRank1Updates>
   struct non_linear_ls_with_separable_scale_factor_wrapper
   {
-    typedef non_linear_ls_with_separable_scale_factor<FloatType> wt;
+    typedef non_linear_ls_with_separable_scale_factor<FloatType,
+                                                      SumOfRank1Updates>
+            wt;
     typedef typename wt::scalar_t scalar_t;
 
     static void add_equation(wt &self,
@@ -125,10 +130,10 @@ namespace boost_python {
       self.add_equation(yc, grad_yc, yo, w);
     }
 
-    static void wrap(char const *name) {
+    static void wrap(std::string const &name) {
       using namespace boost::python;
       return_internal_reference<> rir;
-      class_<wt>(name, no_init)
+      class_<wt>(name.c_str(), no_init)
         .def(init<int, bool>((arg("n_parameters"), arg("normalised")=true)))
         .add_property("n_parameters", &wt::n_parameters)
         .add_property("n_equations", &wt::n_equations)
@@ -162,8 +167,13 @@ namespace boost_python {
   void wrap_normal_equations() {
     linear_ls_wrapper<double>::wrap("linear_ls");
     non_linear_ls_wrapper<double>::wrap("non_linear_ls");
-    non_linear_ls_with_separable_scale_factor_wrapper<double>
-      ::wrap("non_linear_ls_with_separable_scale_factor");
+    std::string basename("non_linear_ls_with_separable_scale_factor");
+    non_linear_ls_with_separable_scale_factor_wrapper<
+      double, matrix::sum_of_symmetric_rank_1_updates>
+      ::wrap(basename + "__level_2_blas_impl");
+    non_linear_ls_with_separable_scale_factor_wrapper<
+      double, matrix::rank_n_update>
+      ::wrap(basename + "__level_3_blas_impl");
   }
 
 }}}}

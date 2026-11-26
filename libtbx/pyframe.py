@@ -1,6 +1,7 @@
 
-from __future__ import division
+from __future__ import absolute_import, division, print_function
 import inspect
+from six.moves import range
 
 class error(Exception):
   """ libtbx.python_frame error """
@@ -15,7 +16,7 @@ def named(name):
       from libtbx import pyframe
 
       def f(i):
-        for j in xrange(i):
+        for j in range(i):
           g(j)
 
       def g(j):
@@ -56,7 +57,7 @@ def up(n):
   f = inspect.currentframe()
   f = f.f_back
   caller_name = f.f_code.co_name
-  for i in xrange(n):
+  for i in range(n):
     if f is None:
       raise error("asked for the frame %i steps up the function '%s'"
                   " but the calling stack is not that tall.")

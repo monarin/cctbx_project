@@ -19,7 +19,7 @@ namespace iotbx { namespace pdb {
     }
     if (error_line_number_ != 0) {
       char buf[64];
-      std::sprintf(buf, "line %u", error_line_number_);
+      std::snprintf(buf, sizeof(buf), "line %u", error_line_number_);
       result += buf;
     }
     if (result.size() == 0) {
@@ -700,6 +700,7 @@ namespace detail {
       sym_mat3(-1,-1,-1,-1,-1,-1), // siguij
       0, //fp
       0, //fdp
+      0, //resolution
       hetero,
       str5(line_info.data,line_info.size, 6,' '), // serial
       str4(line_info.data,line_info.size,12,' '), // name

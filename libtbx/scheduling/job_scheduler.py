@@ -19,11 +19,11 @@ Scheduler methods:
   process_count(): return number of running processes
 """
 
-from __future__ import division
+from __future__ import absolute_import, division, print_function
 
 import time
 from collections import deque
-from Queue import Empty
+from six.moves.queue import Empty
 
 from libtbx.scheduling import result
 from libtbx.scheduling import identifier
@@ -44,6 +44,16 @@ class limited(object):
 
     return self.njobs <= njobs
 
+  def reduce_capacity_if_possible(self, target = None):
+    if target is None or target >= self.njobs:
+      target = self.njobs - 1
+
+    if target > 0:
+      self.njobs = target
+      return True # success
+    else:
+      self.njobs = 1
+      return False
 
 class unlimited(object):
   """
@@ -63,7 +73,7 @@ def job_cycle(outqueue, jobid, target, args, kwargs):
   try:
     value = target( *args, **kwargs )
 
-  except Exception, e:
+  except Exception as e:
     res = result.error( exception = e, traceback = result.get_traceback_info() )
 
   else:
@@ -188,7 +198,7 @@ class manager(object):
   def poll(self):
 
     # Check existing jobs
-    for jobid in self.process_data_for.keys():
+    for jobid in list(self.process_data_for):
       process = self.process_data_for[ jobid ]
 
       if not process.is_alive():
@@ -217,8 +227,18 @@ class manager(object):
         target = job_cycle,
         args = ( self.inqueue, jobid, target, args, kwargs ),
         )
+      try:
+        process.start()
+      except Exception as e:
+        # It will crash if process cannot start. See if we can just reduce
+        #   capacity
+        if hasattr(self.capacity, 'reduce_capacity_if_possible'):
+          ok = self.capacity.reduce_capacity_if_possible(
+            target = self.process_count())
+          if ok:
+            continue # back to top
+        raise Exception(e) # Process could not start
 
-      process.start()
       self.process_data_for[ jobid ] = process
 
 

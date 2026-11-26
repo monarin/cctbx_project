@@ -1,4 +1,3 @@
-
 """
 This module provides a generic frontend to all of the reflection file formats
 supported in ``iotbx``.  Note that this module can also be used indirectly via
@@ -51,7 +50,7 @@ Other formats (CNS, unmerged Scalepack) may have incomplete or missing crystal
 symmetry.  MTZ, XDS, and (usually) CIF files will be more complete.
 """
 
-from __future__ import division
+from __future__ import absolute_import, division, print_function
 from iotbx import mtz
 from iotbx.scalepack import merge as scalepack_merge
 from iotbx.scalepack import no_merge_original_index as scalepack_no_merge
@@ -68,12 +67,18 @@ from iotbx.option_parser import option_parser
 from cctbx import miller
 from cctbx import crystal
 from libtbx import easy_pickle
+from libtbx import smart_open
 from libtbx.utils import Sorry, detect_binary_file
 import sys, os, os.path
 import re
 
 def unpickle_miller_arrays(file_name):
   result = easy_pickle.load(file_name)
+  # Python 3 pickle fix
+  # =========================================================================
+  if sys.version_info.major == 3:
+    result = easy_pickle.fix_py2_pickle(result)
+  # =========================================================================
   if (isinstance(result, miller.array)):
     return [result]
   result = list(result)
@@ -82,42 +87,22 @@ def unpickle_miller_arrays(file_name):
       return None
   return result
 
-def try_all_readers(file_name):
-  try: content = mtz.object(file_name=file_name)
-  except RuntimeError: pass
-  else: return ("ccp4_mtz", content)
-  if (detect_binary_file.from_initial_block(file_name=file_name)):
-    try: content = unpickle_miller_arrays(file_name=file_name)
-    except KeyboardInterrupt: raise
-    except Exception: pass
-    else: return ("cctbx.miller.array", content)
-    return (None, None)
-  try: content = cns_reflection_reader.cns_reflection_file(
-    open(file_name))
-  except cns_reflection_reader.CNS_input_Error: pass
-  else: return ("cns_reflection_file", content)
-  try: content = cns_index_fobs_sigma_reader.reader(
-    file_name=file_name)
-  except RuntimeError: pass
-  else: return ("cns_index_fobs_sigma", content)
-  try: content = scalepack_merge.reader(
-    open(file_name))
-  except scalepack_merge.FormatError: pass
-  else: return ("scalepack_merge", content)
-  try: content = scalepack_no_merge.reader(file_name)
-  except KeyboardInterrupt: raise
-  except Exception: pass
-  else: return ("scalepack_no_merge_original_index", content)
-  try: content = dtrek_reflnlist_reader.reflnlist(
-    open(file_name))
-  except KeyboardInterrupt: raise
-  except Exception: pass
-  else: return ("dtrek_reflnlist", content)
-  try: content = shelx_hklf.reader(
-    file_name=file_name)
-  except KeyboardInterrupt: raise
-  except Exception: pass
-  else: return ("shelx_hklf", content)
+def _cif_prefilter(file_name):
+  """Cheap test that file_name may be a cif: the extension, or a first
+  non-comment line starting with data_."""
+  f_root, f_ext = os.path.splitext(file_name)
+  if f_ext.lower() == '.gz': f_root, f_ext = os.path.splitext(f_root)
+  if f_ext.lower() in ['.cif', '.mmcif', '.dic']: return True
+  with open(file_name, 'rb') as f:
+    for l in f:
+      l = l.strip()
+      if l.startswith(b'#'): continue
+      if not l: continue
+      return l.lower().startswith(b'data_')
+  return False
+
+def _try_cif_reader(file_name):
+  """Returns the iotbx.cif.reader for a reflection cif, None otherwise."""
   try:
     content = cif_reader(file_path=file_name)
     looks_like_a_reflection_file = False
@@ -128,10 +113,65 @@ def try_all_readers(file_name):
     if not looks_like_a_reflection_file:
       raise RuntimeError
   except KeyboardInterrupt: raise
+  except Exception: return None
+  return content
+
+def try_all_readers(file_name):
+  if file_name.endswith(smart_open.compressed_suffixes):
+    # Of the readers below only iotbx.cif.reader decompresses (through
+    # smart_open); the others read the raw bytes, and the text readers fail
+    # on compressed input with a UnicodeDecodeError that is not one of the
+    # format errors they catch.
+    if _cif_prefilter(file_name):
+      content = _try_cif_reader(file_name)
+      if content is not None: return ("cif", content)
+    return (None, None)
+  try: content = mtz.object(file_name=file_name)
+  except RuntimeError: pass
+  else: return ("ccp4_mtz", content)
+  if (detect_binary_file.from_initial_block(file_name=file_name)):
+    try: content = unpickle_miller_arrays(file_name=file_name)
+    except KeyboardInterrupt: raise
+    except Exception: pass
+    else: return ("cctbx.miller.array", content)
+  # A file that looks like a cif goes to the cif reader before the text
+  # probes below since it is more likely to be cif.
+  if _cif_prefilter(file_name):
+    content = _try_cif_reader(file_name)
+    if content is not None: return ("cif", content)
+  # If it is not a reflection cif after all, check the rest.
+  try:
+    with open(file_name) as fh:
+      content = cns_reflection_reader.cns_reflection_file(fh)
+  except cns_reflection_reader.CNS_input_Error: pass
+  else: return ("cns_reflection_file", content)
+  try: content = cns_index_fobs_sigma_reader.reader(
+    file_name=file_name)
+  except RuntimeError: pass
+  else: return ("cns_index_fobs_sigma", content)
+  try:
+    with open(file_name) as fh:
+      content = scalepack_merge.reader(fh)
+  except scalepack_merge.FormatError: pass
+  else: return ("scalepack_merge", content)
+  try: content = scalepack_no_merge.reader(file_name)
+  except KeyboardInterrupt: raise
   except Exception: pass
-  else: return ("cif", content)
-  try: content = xds_ascii_reader(
-    open(file_name))
+  else: return ("scalepack_no_merge_original_index", content)
+  try:
+    with open(file_name) as fh:
+      content = dtrek_reflnlist_reader.reflnlist(fh)
+  except KeyboardInterrupt: raise
+  except Exception: pass
+  else: return ("dtrek_reflnlist", content)
+  try: content = shelx_hklf.reader(
+    file_name=file_name)
+  except KeyboardInterrupt: raise
+  except Exception: pass
+  else: return ("shelx_hklf", content)
+  try:
+    with open(file_name) as fh:
+      content = xds_ascii_reader(fh)
   except KeyboardInterrupt: raise
   except Exception: pass
   else: return ("xds_ascii", content)
@@ -188,8 +228,9 @@ class any_reflection_file(object):
     self._file_type = None
     file_name = self._file_name
     try:
-      open(file_name) # test read access
-    except IOError, e:
+      with open(file_name): # test read access
+        pass
+    except IOError as e:
       if (ensure_read_access):
         raise Sorry(str(e))
       return
@@ -225,6 +266,8 @@ class any_reflection_file(object):
                        base_array_info=None,
                        assume_shelx_observation_type_is=None,
                        enforce_positive_sigmas=False,
+                       anomalous=None,
+                       reconstruct_amplitudes=True
      ):
     """
     Convert the contents of the reflection file into a list of
@@ -242,6 +285,11 @@ class any_reflection_file(object):
     :param assume_shelx_observation_type_is: if specified, instead of raising
       an exception if the SHELX file type is not known from the file name plus
       data type tag, the function will force the specified data type.
+    :param reconstruct_amplitudes: ignored by all other readers than mtz reader.
+      If set to True mean amplitudes and adjacent anomalous diffference columns will be
+      fused into anomalous miller_array object.
+      If False, tells the reader not to fuse mean amplitude and adjacent anomalous
+      difference columns into anomalous miller_array objects.
     """
     assert (assume_shelx_observation_type_is in
             [None, "amplitudes", "intensities"])
@@ -290,11 +338,11 @@ class any_reflection_file(object):
           raise Sorry("Can't open files %s.ins or %s.res"
                       "required by the option hklf+ins/res" % ((name,)*2))
         crystal_symmetry = crystal_symmetry_from_ins.extract_from(
-          file=shelx_file)
+          file=shelx_file, close_file=False)
         shelx_file.seek(0)
         remaining = shelx_file.read()
         shelx_file.close()
-        m = re.search("^HKLF\s*(\d)", remaining, re.X|re.M|re.S)
+        m = re.search(r"^HKLF\s*(\d)", remaining, re.X|re.M|re.S)
         if m is None:
           raise Sorry("%s does not contain the mandatory HKLF instruction"
                       % shelx_file.name)
@@ -304,20 +352,31 @@ class any_reflection_file(object):
           self._observation_type = "amplitudes"
         else:
           raise Sorry("HKLF %s not supported" % m.group(1))
-    result = self._file_content.as_miller_arrays(
-      crystal_symmetry=crystal_symmetry,
-      force_symmetry=force_symmetry,
-      merge_equivalents=merge_equivalents,
-      base_array_info=base_array_info,
+    if (self._file_type == "ccp4_mtz"):
+      result = self._file_content.as_miller_arrays(
+        crystal_symmetry=crystal_symmetry,
+        force_symmetry=force_symmetry,
+        merge_equivalents=merge_equivalents,
+        base_array_info=base_array_info,
+        anomalous=anomalous,
+        reconstruct_amplitudes=reconstruct_amplitudes
+      )
+    else:
+      result = self._file_content.as_miller_arrays(
+        crystal_symmetry=crystal_symmetry,
+        force_symmetry=force_symmetry,
+        merge_equivalents=merge_equivalents,
+        base_array_info=base_array_info,
+        anomalous=anomalous,
       )
     if (self.file_type() == "shelx_hklf"):
       if ((self._observation_type == "intensities") or
-          (assume_shelx_observation_type_is == "intensities")) :
+          (assume_shelx_observation_type_is == "intensities")):
         result[0].set_info(result[0].info().customized_copy(
           labels=["Iobs", "SigIobs"]))
         result[0].set_observation_type_xray_intensity()
       elif ((self._observation_type == "amplitudes") or
-            (assume_shelx_observation_type_is == "amplitudes")) :
+            (assume_shelx_observation_type_is == "amplitudes")):
         result[0].set_info(result[0].info().customized_copy(
           labels=["Fobs", "SigFobs"]))
         result[0].set_observation_type_xray_amplitude()
@@ -346,7 +405,7 @@ class any_reflection_file(object):
     # discard reflections where sigma <= 0
     # XXX note that this will happen after data merging, so for unmerged data
     # it is better to specify merge_equivalents=False!
-    if (enforce_positive_sigmas) :
+    if (enforce_positive_sigmas):
       result_ = []
       for array in result :
         result_.append(array.enforce_positive_sigmas())
@@ -369,13 +428,13 @@ def collect_arrays(
     result = []
   for file_name in file_names:
     if (verbose > 0):
-      print >> report_out
-      print >> report_out, "file_name:", file_name
+      print(file=report_out)
+      print("file_name:", file_name, file=report_out)
       report_out.flush()
     reflection_file = any_reflection_file(file_name)
     if (verbose > 0):
-      print >> report_out, "file_type:", reflection_file.file_type()
-      print >> report_out
+      print("file_type:", reflection_file.file_type(), file=report_out)
+      print(file=report_out)
     miller_arrays = reflection_file.as_miller_arrays(
       crystal_symmetry=crystal_symmetry,
       force_symmetry=force_symmetry,
@@ -388,7 +447,7 @@ def collect_arrays(
           miller_array.show_summary(f=report_out)
         if (verbose > 2):
           miller_array.show_array(f=report_out)
-        print >> report_out
+        print(file=report_out)
     if (not discard_arrays):
       result.extend(miller_arrays)
   return result
@@ -439,7 +498,7 @@ def run(args):
         raise Sorry("Input file is already a pickle file.")
     if (not pickle_file_name.lower().endswith(".pickle")):
       pickle_file_name += ".pickle"
-    print
-    print "Writing all Miller arrays to file:", pickle_file_name
+    print()
+    print("Writing all Miller arrays to file:", pickle_file_name)
     easy_pickle.dump(pickle_file_name, all_miller_arrays)
-    print
+    print()

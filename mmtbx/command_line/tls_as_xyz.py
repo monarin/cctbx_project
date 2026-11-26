@@ -1,4 +1,5 @@
-from __future__ import division
+"""Generate ensemble of models consistent with TLS parameters"""
+from __future__ import absolute_import, division, print_function
 # LIBTBX_SET_DISPATCHER_NAME phenix.tls_as_xyz
 
 import sys
@@ -24,9 +25,9 @@ def master_params():
   return iotbx.phil.parse(master_params_str)
 
 def run(args, log=sys.stdout):
-  print >> log, "-"*79
-  print >> log, legend
-  print >> log, "-"*79
+  print("-"*79, file=log)
+  print(legend, file=log)
+  print("-"*79, file=log)
   inputs = mmtbx.utils.process_command_line_args(args = args,
     master_params = master_params())
   params = inputs.params.extract()
@@ -41,3 +42,4 @@ def run(args, log=sys.stdout):
 
 if (__name__ == "__main__"):
   run(args=sys.argv[1:])
+

@@ -1,8 +1,9 @@
-from __future__ import division
+from __future__ import absolute_import, division, print_function
 #!/usr/bin/env python
 
 from scitbx import matrix
 from rstbx.bpcx import sensor
+from six.moves import range
 
 class detector:
     '''An abstract class definition for X-ray detectors which are assumed to
@@ -65,7 +66,7 @@ class reflection_predictor:
     def intersect(self, ray, sensor):
         '''Compute intersection of sensor with ray from frame origin, returning
         none if intersection not within limits.'''
-        raise RuntimeError, 'overload me'
+        raise RuntimeError('overload me')
 
 class reflection_predictor_thomas(reflection_predictor):
     '''Implementation of reflection_predictor using David Thomas' matrix
@@ -136,7 +137,7 @@ def test_all():
         # the closest intersection should be on panel3
         assert rpi[0][0] == 3
 
-    print 'OK'
+    print('OK')
 
 def test_work():
     '''Test all features of the module using a detector composed of four
@@ -172,7 +173,7 @@ def test_work():
         intersection_vector = rpi['vector'][j]
         assert(intersection_matrix[0] == intersection_vector[0])
 
-    print 'OK'
+    print('OK')
 
 if __name__ == '__main__':
     test_work()

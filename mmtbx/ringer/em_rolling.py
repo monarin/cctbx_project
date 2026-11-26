@@ -10,12 +10,15 @@ Reference:
 
 ########################################################################
 # Package imports
-from __future__ import division
+from __future__ import absolute_import, division, print_function
 from libtbx import easy_pickle
 from collections import defaultdict
 import argparse
 import os
 import sys
+
+import six
+from six.moves import range
 
 # from matplotlib import rcParams
 # rcParams['figure.autolayout'] = True
@@ -41,19 +44,19 @@ class RingerDict(object):
         self.add_residue(residue)
 
   def add_residue(self, residue):
-    if residue.chain_id not in self.dict.keys():
+    if residue.chain_id not in self.dict:
       self.dict[residue.chain_id] = {}
-    if 1 in residue._angles.keys():
+    if 1 in residue._angles:  # TODO: verify this is a dict
       self.dict[residue.chain_id][residue.resid] = residue._angles[1]
 
   def get_peak(self, chain_id, residue_id):
-    if (chain_id in self.dict.keys() and residue_id in self.dict[chain_id].keys()):
+    if chain_id in self.dict and residue_id in self.dict[chain_id]:
       return self.dict[chain_id][residue_id]
     else:
       return None
 
   def get_chains(self):
-    return self.dict.keys()
+    return list(self.dict.keys())
 
   def get_residues(self, chain_id):
     return sorted(self.dict[chain_id].keys())
@@ -61,7 +64,7 @@ class RingerDict(object):
 def ranges(p):
     q = sorted(p)
     i = 0
-    for j in xrange(1,len(q)):
+    for j in range(1,len(q)):
         if q[j] > 1+q[j-1]:
             yield (q[i],q[j-1])
             i = j
@@ -73,26 +76,26 @@ def identify_regions(results,
       extension=10,
       out=sys.stdout):
   import numpy as np
-  for chain, chain_out in results.iteritems():
+  for chain, chain_out in six.iteritems(results):
     outliers = []
-    print >> out, "For Chain %s:" % chain
+    print("For Chain %s:" % chain, file=out)
     for k in chain_out:
       if ((np.divide(k[2],k[1]) > thresholded_cutoff) and
-          (np.divide(k[3],k[2]) < rotamer_cutoff)) :
+          (np.divide(k[3],k[2]) < rotamer_cutoff)):
         for i in range(k[0]-extension, k[0]+extension):
           outliers.append(i)
     if len(outliers) > 0:
-      print >> out, list(ranges(outliers))
-      print >> out, ""
+      print(list(ranges(outliers)), file=out)
+      print("", file=out)
     else:
-      print >> out, "No outliers at this threshold \n"
+      print("No outliers at this threshold \n", file=out)
 
 def make_dir(f):
     if not os.path.exists(f):
         os.makedirs(f)
 
-class main (object) :
-  def __init__ (self,
+class main(object):
+  def __init__(self,
       ringer_results,
       dir_name=None,
       threshold=0,
@@ -102,12 +105,12 @@ class main (object) :
       graph=False,
       save=True,
       rel=False,
-      out=sys.stdout) :
+      out=sys.stdout):
     self.threshold = threshold
     self.extension = extension
     self.threshold_cutoff = thresholded_cutoff
     self.rotamer_cutoff = rotamer_cutoff
-    if (dir_name is None) and (save) :
+    if (dir_name is None) and (save):
       dir_name = os.getcwd()
     hierarchy = RingerDict(ringer_results, 0)
     self.results_a = defaultdict(list)
@@ -135,7 +138,7 @@ class main (object) :
                 if chi.deviation <= 30:
                   n_deviate += 1
         self.results_a[chain].append((i, total_n, threshold_n, n_deviate))
-    print >> out, "====Low-scoring, high-signal regions===="
+    print("====Low-scoring, high-signal regions====", file=out)
     identify_regions(self.results_a, out=out)
     if graph or save:
       plot_results(self.results_a,
@@ -144,7 +147,7 @@ class main (object) :
         graph=graph,
         save=save)
 
-  def draw_wx_plot (self, plot, chain_id, threshold=0) :
+  def draw_wx_plot(self, plot, chain_id, threshold=0):
     plot.figure.clear()
     _plot_results_for_chain(
       figure=plot.figure,
@@ -154,10 +157,10 @@ class main (object) :
       extension=self.extension)
 
   @property
-  def chain_ids (self) :
+  def chain_ids(self):
     return sorted(self.results_a.keys())
 
-def _plot_results_for_chain (figure, results_a, chain_id, extension=10,
+def _plot_results_for_chain(figure, results_a, chain_id, extension=10,
     threshold=0):
   import numpy as np
   ax = figure.add_subplot(111)
@@ -177,9 +180,9 @@ def _plot_results_for_chain (figure, results_a, chain_id, extension=10,
   ax.yaxis.set_ticks_position('left') # this one is optional but I still recommend it...
   ax.xaxis.set_ticks_position('bottom')
 
-def plot_results (results_a, dir_name, threshold, graph=False, save=True) :
+def plot_results(results_a, dir_name, threshold, graph=False, save=True):
   import matplotlib.pyplot as plt
-  for chain in results_a.keys() :
+  for chain in results_a.keys():
     fig = plt.figure(1)
     _plot_results_for_chain(
       figure=fig,
@@ -193,7 +196,7 @@ def plot_results (results_a, dir_name, threshold, graph=False, save=True) :
       fig.savefig(output)
     plt.close()
 
-def run (args, out=sys.stdout) :
+def run(args, out=sys.stdout):
   parser = argparse.ArgumentParser()
   parser.add_argument("file",nargs="?")
   parser.add_argument("-o", dest="offset", type=int, default=0)
@@ -218,7 +221,7 @@ def run (args, out=sys.stdout) :
   import matplotlib
   matplotlib.use("Agg")
   dir_name = None
-  if (options.save) :
+  if (options.save):
     dir_name = os.path.splitext(options.file)[0] + ".output"
     make_dir(dir_name)
   result = easy_pickle.load(options.file)

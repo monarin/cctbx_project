@@ -3,11 +3,28 @@ from __future__ import absolute_import, division, print_function
 import os
 import subprocess
 import sys
+import threading
+import signal
+import shlex  # <--- Added for secure tokenization
+from six.moves import range
+
 
 def _show_lines(lines, out, prefix):
   if (out is None): out = sys.stdout
   for line in lines:
     print(prefix+line, file=out)
+
+def macos_dyld():
+  '''
+  Convenience function for returning either DYLD_LIBRARY_PATH or
+  DYLD_FALLBACK_LIBRARY_PATH (for conda environments)
+  '''
+  dyld_options = ['DYLD_LIBRARY_PATH', 'DYLD_FALLBACK_LIBRARY_PATH']
+  for dyld in dyld_options:
+    dyld_path = os.environ.get(dyld)
+    if (dyld_path is not None):
+      return '%s="%s"' % (dyld, dyld_path)
+  return 'DYLD_LIBRARY_PATH= '
 
 class fully_buffered_base(object):
 
@@ -98,9 +115,9 @@ implementation should cover most practical situations.
       child_stdin, child_stdout, child_stderr = os.popen3(command,"t",bufsize)
     if (stdin_lines is not None):
       if (not isinstance(stdin_lines, str)):
-        stdin_lines = os.linesep.join(stdin_lines)
+        stdin_lines = '\n'.join(stdin_lines)
         if (len(stdin_lines) != 0):
-          stdin_lines += os.linesep
+          stdin_lines += '\n'
       child_stdin.write(stdin_lines)
     child_stdin.close()
     if (stdout_splitlines):
@@ -123,55 +140,109 @@ class fully_buffered_subprocess(fully_buffered_base):
 
   def __init__(self,
         command,
+        timeout=None,
+        use_shell_in_subprocess=True,
         stdin_lines=None,
         join_stdout_stderr=False,
         stdout_splitlines=True,
-        bufsize=-1):
+        bufsize=-1,
+        cwd=None):
+    def target(process, lines, result):
+      o, e = process.communicate(input=lines)
+      result[0] = o
+      result[1] = e
+
     self.command = command
     self.join_stdout_stderr = join_stdout_stderr
-    if (not isinstance(command, str)):
-      command = subprocess.list2cmdline(command)
-    if (sys.platform == 'darwin'):   # bypass SIP on OS X 10.11
-      command = ("DYLD_LIBRARY_PATH=%s exec "%\
-                 os.environ.get("DYLD_LIBRARY_PATH","")) + command
+
+    # --- MODIFICATION START ---
+    run_env = None  # Default: behaves identical to legacy (inherit env)
+
+    if use_shell_in_subprocess:
+        # LEGACY BEHAVIOR (Exact Match)
+        if (not isinstance(command, str)):
+          command = subprocess.list2cmdline(command)
+        if (sys.platform == 'darwin'):   # bypass SIP on OS X 10.11
+          command = ('%s exec ' % macos_dyld()) + command
+    else:
+        # SECURE BEHAVIOR
+        # 1. Parse string to list if needed
+        if isinstance(command, str):
+            command = shlex.split(command)
+
+        # 2. Handle Mac SIP manually (only needed because we lack a shell)
+        if (sys.platform == 'darwin'):
+            run_env = os.environ.copy()
+            # Manually extract the vars that macos_dyld() was injecting
+            for dyld in ['DYLD_LIBRARY_PATH', 'DYLD_FALLBACK_LIBRARY_PATH']:
+                val = os.environ.get(dyld)
+                if val: run_env[dyld] = val
+    # --- MODIFICATION END ---
+
+    # [DELETED] Redundant check removed here.
+
+    # Timeout functionality based on:
+    # https://stackoverflow.com/questions/1191374/using-module-subprocess-with-timeout
+    # https://stackoverflow.com/questions/4789837/how-to-terminate-a-python-subprocess-launched-with-shell-true
+
     if (stdin_lines is not None):
       if (not isinstance(stdin_lines, str)):
-        stdin_lines = os.linesep.join(stdin_lines)
+        stdin_lines = '\n'.join(stdin_lines)
         if (len(stdin_lines) != 0):
-          stdin_lines += os.linesep
+          stdin_lines += '\n'
     if (join_stdout_stderr):
       stderr = subprocess.STDOUT
     else:
       stderr = subprocess.PIPE
+
     p = subprocess.Popen(
       args=command,
-      shell=True,
+      shell=use_shell_in_subprocess, # True by default
       bufsize=bufsize,
       stdin=subprocess.PIPE,
       stdout=subprocess.PIPE,
       stderr=stderr,
+      env=run_env, # <--- PASSING NONE IS IDENTICAL TO LEGACY
+      cwd=cwd,
       universal_newlines=True,
-      close_fds=(sys.platform != 'win32'))
-    o, e = p.communicate(input=stdin_lines)
+      close_fds=(sys.platform != 'win32'),
+      preexec_fn=os.setsid if sys.platform != 'win32' else None)
+
+    if timeout is not None:
+      if sys.platform != 'win32':
+        r = [None, None]
+        thread = threading.Thread(target=target, args=(p, stdin_lines, r))
+        thread.start()
+        thread.join(timeout)
+        if thread.is_alive():
+          os.killpg(os.getpgid(p.pid), signal.SIGTERM)
+          thread.join()
+        o, e = r[0], r[1]
+      else: # sys.platform == 'win32'
+        # don't respect timeout for now
+        o, e = p.communicate(input=stdin_lines)
+    else:
+      o, e = p.communicate(input=stdin_lines)
     if (stdout_splitlines):
       self.stdout_buffer = None
-      self.stdout_lines = o.splitlines()
+      self.stdout_lines = o.splitlines() if o else []
     else:
       self.stdout_buffer = o
       self.stdout_lines = None
     if (join_stdout_stderr):
       self.stderr_lines = []
     else:
-      self.stderr_lines = e.splitlines()
+      self.stderr_lines = e.splitlines() if e else []
     self.return_code = p.returncode
 
 fully_buffered = fully_buffered_subprocess
 
-def go(command, stdin_lines=None,join_stdout_stderr=True):
+def go(command, stdin_lines=None, join_stdout_stderr=True, use_shell_in_subprocess=True):
   return fully_buffered(
     command=command,
     stdin_lines=stdin_lines,
-    join_stdout_stderr=join_stdout_stderr)
+    join_stdout_stderr=join_stdout_stderr,
+    use_shell_in_subprocess=use_shell_in_subprocess)
 
 def call(command):
   """
@@ -198,12 +269,11 @@ def call(command):
     flush = getattr(s, "flush", None)
     if (flush is not None): flush()
   if (sys.platform == 'darwin'):   # bypass SIP on OS X 10.11
-    command = ("DYLD_LIBRARY_PATH=%s exec "%\
-               os.environ.get("DYLD_LIBRARY_PATH","")) + command
+    command = ('%s exec ' % macos_dyld()) + command
   return subprocess.call(args=command, shell=True)
 
 def exercise(args=None):
-  from cStringIO import StringIO
+  from six.moves import cStringIO as StringIO
   if (args is None): args = sys.argv[1:]
   verbose = "--verbose" in args
   #
@@ -212,6 +282,27 @@ def exercise(args=None):
   else:
     fb = fully_buffered
   #
+  # Test multiple commands on same line
+  command = "echo 'first command' ; echo 'second command'"
+  for result in [fb(command=command).raise_if_errors(),
+                   fb(command=command, join_stdout_stderr=True),
+                   go(command=command)]:
+    if verbose: print(result.stdout_lines)
+    if (sys.platform == 'darwin'):   # mac osx has different legacy behavior
+      assert result.stdout_lines == ["first command"]
+    elif (sys.platform == 'win32'): # windows
+      assert result.stdout_lines == ["'first command' ; echo 'second command'"]
+    else: # linux
+      assert result.stdout_lines == ["first command", "second command"]
+  if (sys.platform != 'win32'):
+    for result in [
+      fb(command=command,use_shell_in_subprocess=False).raise_if_errors(),
+      fb(command=command,use_shell_in_subprocess=False, join_stdout_stderr=True),
+      go(command=command,use_shell_in_subprocess=False)]:
+      if verbose: print(result.stdout_lines)
+      # All platforms only first command should be executed
+      assert result.stdout_lines == ["first command ; echo second command"]
+
   for command in ["echo hello world", ("echo", "hello", "world")]:
     for result in [fb(command=command).raise_if_errors(),
                    fb(command=command, join_stdout_stderr=True),
@@ -277,24 +368,38 @@ def exercise(args=None):
   for stdout_splitlines in [True, False]:
     result = fb(
       command="%s -V" % pyexe,
-      stdout_splitlines=stdout_splitlines).raise_if_output()
-    if verbose: print(result.stderr_lines)
-    assert result.stderr_lines[0].startswith("Python " + sys.version.split()[0])
-    if (stdout_splitlines):
-      assert result.stdout_buffer is None
-      assert result.stdout_lines == []
+      stdout_splitlines=stdout_splitlines)
+    # python -V outputs to stdout or stderr depending on version
+    # https://bugs.python.org/issue18338
+    if (len(result.stderr_lines) > 0):
+      if verbose: print(result.stderr_lines)
+      assert result.stderr_lines[0].startswith(
+        "Python " + sys.version.split()[0])
+      if (stdout_splitlines):
+        assert result.stdout_buffer is None
+        assert result.stdout_lines == []
+      else:
+        assert result.stdout_buffer == ""
+        assert result.stdout_lines is None
     else:
-      assert result.stdout_buffer == ""
-      assert result.stdout_lines is None
+      if verbose: print(result.stdout_lines)
+      if (stdout_splitlines):
+        assert result.stdout_buffer is None
+        assert result.stdout_lines[0].startswith(
+          "Python " + sys.version.split()[0])
+      else:
+        assert result.stdout_buffer.startswith(
+          "Python " + sys.version.split()[0])
+        assert result.stdout_lines is None
   result = go(command="%s -V" % pyexe)
   if verbose: print(result.stdout_lines)
   assert result.stdout_lines[0].startswith("Python " + sys.version.split()[0])
   result = fb(
-    command='%s -c "print 3+4"' % pyexe).raise_if_errors()
+    command='%s -c "print(3+4)"' % pyexe).raise_if_errors()
   if verbose: print(result.stdout_lines)
   assert result.stdout_lines == ["7"]
   command = command = pyexe \
-    + ' -c "import sys; print len(sys.stdin.read().splitlines())"'
+    + ' -c "import sys; print(len(list(filter(bool, sys.stdin.read().splitlines()))))"'
   result = fb(command=command).raise_if_errors()
   if verbose: print(result.stdout_lines)
   assert result.stdout_lines == ["0"]
@@ -319,7 +424,7 @@ def exercise(args=None):
   else:
     n_lines_e = 10000
   result = fb(
-    command=command, stdin_lines=[str(i) for i in xrange(n_lines_o)]) \
+    command=command, stdin_lines=[str(i) for i in range(n_lines_o)]) \
     .raise_if_errors()
   if verbose: print(result.stdout_lines)
   assert result.stdout_lines == [str(n_lines_o)]
@@ -348,47 +453,52 @@ def exercise(args=None):
 >:bye
 """
   result = fb(
-    command=command, stdin_lines=[str(i) for i in xrange(n_lines_o)]) \
+    command=command, stdin_lines=[str(i) for i in range(n_lines_o)]) \
     .raise_if_errors()
+  result.stdout_lines = list(filter(bool, result.stdout_lines))
   if verbose: print(result.stdout_lines[:5], result.stdout_lines[-5:])
   assert len(result.stdout_lines) == n_lines_o
   assert result.stdout_lines[:5] == ["0","1","2","3","4"]
   assert result.stdout_lines[-5:] == [str(s)
-    for s in xrange(n_lines_o-5, n_lines_o)]
+    for s in range(n_lines_o-5, n_lines_o)]
   command = pyexe \
     + ' -c "import sys; sys.stderr.write(sys.stdin.read())"'
   result = fb(
-    command=command, stdin_lines=[str(i) for i in xrange(n_lines_e,0,-1)])
+    command=command, stdin_lines=[str(i) for i in range(n_lines_e,0,-1)])
   assert len(result.stdout_lines) == 0
+  result.stderr_lines = list(filter(bool, result.stderr_lines))
   if verbose: print(result.stderr_lines[:5], result.stderr_lines[-5:])
   assert len(result.stderr_lines) == n_lines_e
   assert result.stderr_lines[:5] == [str(s)
-    for s in xrange(n_lines_e, n_lines_e-5, -1)]
+    for s in range(n_lines_e, n_lines_e-5, -1)]
   assert result.stderr_lines[-5:] == ["5","4","3","2","1"]
   command = pyexe + "; ".join((''' -c "\
 import sys, os
 lines = sys.stdin.read()
 sys.stdout.write(lines)
 sys.stdout.flush()
-lines = lines.splitlines()[:%d]
+lines = list(filter(bool, lines.splitlines()))[:%d]
 lines.reverse()
 nl = chr(%d)
 sys.stderr.write(nl.join(lines)+nl)
 sys.stderr.flush()"''' % (n_lines_e, ord("\n"))).splitlines())
   result = fb(
-    command=command, stdin_lines=[str(i) for i in xrange(n_lines_o)])
+    command=command, stdin_lines=[str(i) for i in range(n_lines_o)])
+  result.stdout_lines = list(filter(bool, result.stdout_lines))
+  result.stderr_lines = list(filter(bool, result.stderr_lines))
   if verbose: print(result.stdout_lines[:5], result.stdout_lines[-5:])
   if verbose: print(result.stderr_lines[:5], result.stderr_lines[-5:])
   assert len(result.stdout_lines) == n_lines_o
   assert result.stdout_lines[:5] == ["0","1","2","3","4"]
   assert result.stdout_lines[-5:] == [str(s)
-    for s in xrange(n_lines_o-5, n_lines_o)]
+    for s in range(n_lines_o-5, n_lines_o)]
   assert len(result.stderr_lines) == n_lines_e
   assert result.stderr_lines[:5] == [str(s)
-    for s in xrange(n_lines_e-1, n_lines_e-6, -1)]
+    for s in range(n_lines_e-1, n_lines_e-6, -1)]
   assert result.stderr_lines[-5:] == ["4","3","2","1","0"]
   result = go(
-    command=command, stdin_lines=[str(i) for i in xrange(n_lines_o)])
+    command=command, stdin_lines=[str(i) for i in range(n_lines_o)])
+  result.stdout_lines = list(filter(bool, result.stdout_lines))
   if verbose: print(result.stdout_lines[:5], result.stdout_lines[-5:])
   assert len(result.stdout_lines) == n_lines_o + n_lines_e
   assert result.stdout_lines[:5] == ["0","1","2","3","4"]
@@ -408,7 +518,7 @@ sys.stderr.flush()"''' % (n_lines_e, ord("\n"))).splitlines())
       try:
         fb(
           command=cat_command,
-          stdin_lines=[str(i) for i in xrange(n)],
+          stdin_lines=[str(i) for i in range(n)],
           stdout_splitlines=stdout_splitlines).raise_if_output()
       except RuntimeError as e:
         if verbose: print(e)
@@ -435,3 +545,4 @@ sys.stderr.flush()"''' % (n_lines_e, ord("\n"))).splitlines())
 
 if (__name__ == "__main__"):
   exercise()
+

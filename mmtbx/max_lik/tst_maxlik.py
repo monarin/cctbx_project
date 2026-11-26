@@ -1,4 +1,4 @@
-from __future__ import division
+from __future__ import absolute_import, division, print_function
 from cctbx import crystal
 from cctbx import sgtbx
 from cctbx import xray
@@ -13,6 +13,7 @@ from cctbx.development import random_structure
 from cctbx.eltbx.xray_scattering import wk1995
 import random
 import math
+from six.moves import range
 
 if (1): # fixed random seed to avoid rare failures
   random.seed(0)
@@ -26,7 +27,7 @@ def test_1():
   symmetry = crystal.symmetry(unit_cell=(15.67, 25.37, 35.68, 90, 90, 90),
                               space_group_symbol="P 21 21 21")
   structure = xray.structure(crystal_symmetry=symmetry)
-  for k in xrange(1000):
+  for k in range(1000):
     scatterer = xray.scatterer(
                  site = ((1.+k*abs(math.sin(k)))/1000.0,
                          (1.+k*abs(math.cos(k)))/1000.0,
@@ -51,17 +52,17 @@ def test_1():
   d_star_sq = 1./flex.pow2(f_obs.d_spacings().data())
 
   assert approx_equal(flex.max(f_calc.data()),6810.19834824)
-  assert approx_equal(flex.min(f_calc.data()),0.019589341727)
-  assert approx_equal(flex.mean(f_calc.data()),76.651506629)
-  assert approx_equal(flex.max(f_obs.data()),6962.58343229)
-  assert approx_equal(flex.min(f_obs.data()),0.00111552904935)
-  assert approx_equal(flex.mean(f_obs.data()),74.5148786464)
+  assert approx_equal(flex.min(f_calc.data()),0.018874744476)
+  assert approx_equal(flex.mean(f_calc.data()),76.65087291)
+  assert approx_equal(flex.max(f_obs.data()),6962.53948244)
+  assert approx_equal(flex.min(f_obs.data()),0.00847246396994)
+  assert approx_equal(flex.mean(f_obs.data()),74.5161254867)
   assert f_obs.size() == f_calc.size()
 
 # define test set reflections
   flags=flex.bool(f_calc_partial.indices().size(), False)
   k=0
-  for i in xrange(f_calc_partial.indices().size()):
+  for i in range(f_calc_partial.indices().size()):
     k=k+1
     if (k !=10):
       flags[i]=False
@@ -83,10 +84,10 @@ def test_1():
 
   assert alpha.data().size() == beta.data().size()
   assert alpha.data().size() == f_obs.size()
-  assert approx_equal(flex.min(alpha.data()),0.914152454693)
-  assert approx_equal(flex.max(alpha.data()),0.914152454693)
-  assert approx_equal(flex.min(beta.data()),818.503411782)
-  assert approx_equal(flex.max(beta.data()),818.503411782)
+  assert approx_equal(flex.min(alpha.data()),0.914157569731)
+  assert approx_equal(flex.max(alpha.data()),0.914157569731)
+  assert approx_equal(flex.min(beta.data()),818.694602259)
+  assert approx_equal(flex.max(beta.data()),818.694602259)
 # *********************************************************TEST = 2
   alpha, beta = maxlik.alpha_beta_est_manager(
     f_obs  = f_obs,
@@ -98,10 +99,10 @@ def test_1():
 
   assert alpha.data().size() == beta.data().size()
   assert alpha.data().size() == f_obs.size()
-  assert approx_equal(flex.min(alpha.data()), 0.910350007113)
-  assert approx_equal(flex.max(alpha.data()), 1.07104387776)
-  assert approx_equal(flex.min(beta.data()), 21.7374310013)
-  assert approx_equal(flex.max(beta.data()), 4222.81104745)
+  assert approx_equal(flex.min(alpha.data()), 0.910358013403)
+  assert approx_equal(flex.max(alpha.data()), 1.07106412775)
+  assert approx_equal(flex.min(beta.data()), 21.7645131556)
+  assert approx_equal(flex.max(beta.data()), 4223.40719298)
 # *********************************************************TEST = 3
   alpha, beta = maxlik.alpha_beta_calc(
                     f   = f_obs,
@@ -212,7 +213,7 @@ def test_2():
     # define test set reflections
       flags=flex.bool(f_calc_partial.indices().size(), False)
       k=0
-      for i in xrange(f_calc_partial.indices().size()):
+      for i in range(f_calc_partial.indices().size()):
         k=k+1
         if (k !=10):
           flags[i]=False
@@ -413,7 +414,7 @@ def test_4():
    # define test set reflections
    flags=flex.int(beta.size(), 0)
    k=0
-   for i in xrange(flags.size()):
+   for i in range(flags.size()):
      k=k+1
      if (k !=10):
        flags[i]=0
@@ -448,7 +449,7 @@ def run():
   test_2()
   test_3()
   test_4()
-  print format_cpu_times()
+  print(format_cpu_times())
 
 if (__name__ == "__main__"):
   run()

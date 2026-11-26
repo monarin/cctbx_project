@@ -1,4 +1,5 @@
-from __future__ import division
+from __future__ import absolute_import, division, print_function
+from six.moves import range
 # -*- mode: python; coding: utf-8; indent-tabs-mode: nil; python-indent: 2 -*-
 #
 # LIBTBX_SET_DISPATCHER_NAME frame.unpickler
@@ -9,7 +10,7 @@ from dials.array_family import flex
 from scitbx.array_family import flex as sciflex
 from libtbx import easy_pickle
 from libtbx.utils import Sorry
-from dials.util.options import OptionParser
+from dials.util.options import ArgumentParser
 from dxtbx.model import BeamFactory, DetectorFactory
 from dxtbx.format import FormatMultiImage
 from dxtbx.model import Experiment, ExperimentList
@@ -30,7 +31,7 @@ def int_pickle_to_filename(int_name, prefix, suffix):
 def find_matching_img(pickle, img_location=None):
   # find the image associated with the pickle file to be processed, or use the pickle file itself as a placeholder
   if pickle is None:
-    raise Sorry, "Cannot find matching image for NoneType in place of pickle"
+    raise Sorry("Cannot find matching image for NoneType in place of pickle")
   if img_location is None:
     if os.path.exists(pickle.split(".pickle")[0] + ".cbf"):
       return pickle.split(".pickle")[0] + ".cbf"
@@ -60,8 +61,8 @@ class construct_reflection_table_and_experiment_list(object):
       if proceed_without_image:
         self.img_location = []
       else:
-        raise Sorry, "No image found at specified location. Override by setting proceed_without_image to False" \
-        + "to produce experiment lists that may only be read when check_format is False."
+        raise Sorry("No image found at specified location. Override by setting proceed_without_image to False"
+        + "to produce experiment lists that may only be read when check_format is False.")
     else:
       self.img_location = [img_location]
 
@@ -123,7 +124,7 @@ class construct_reflection_table_and_experiment_list(object):
       else:
         found_it = True
         if 'mosaicity' in self.data and self.data['mosaicity'] > 0:
-          print "Warning, two kinds of mosaicity found. Using Sauter2014 model"
+          print("Warning, two kinds of mosaicity found. Using Sauter2014 model")
         from dxtbx.model import MosaicCrystalSauter2014
         self.crystal = MosaicCrystalSauter2014(real_a, real_b, real_c, space_group=lattice)
         self.crystal.set_half_mosaicity_deg(self.data['ML_half_mosaicity_deg'][0])
@@ -136,7 +137,7 @@ class construct_reflection_table_and_experiment_list(object):
       else:
         from dxtbx.model import Crystal
         self.crystal = Crystal(real_a, real_b, real_c, space_group=lattice)
-    if 'identified_isoform' in self.data.keys() and self.data['identified_isoform'] is not None:
+    if 'identified_isoform' in self.data and self.data['identified_isoform'] is not None:
       self.crystal.identified_isoform = self.data['identified_isoform']
 
   def expt_detector_maker(self):
@@ -190,10 +191,9 @@ class construct_reflection_table_and_experiment_list(object):
     else:
       loc = path_name
     name = os.path.basename(self.pickle).split(".pickle")[0]
-    expt_name = int_pickle_to_filename(name, "idx-", "_experiments.json")
+    expt_name = int_pickle_to_filename(name, "idx-", ".expt")
     experiments = os.path.join(loc, expt_name)
-    dumper = experiment_list.ExperimentListDumper(self.experiment_list)
-    dumper.as_json(experiments)
+    self.experiment_list.as_file(experiments)
 
   # construct the reflection table
   def refl_table_maker(self):
@@ -241,7 +241,7 @@ class construct_reflection_table_and_experiment_list(object):
   def refl_s1_maker(self):
     from scitbx.matrix import col
     self.reflections['s1'] = sciflex.vec3_double(self.length)
-    for idx in xrange(self.length):
+    for idx in range(self.length):
       coords = col(self.detector[0].get_pixel_lab_coord(self.reflections['xyzobs.px.value'][idx][0:2])).normalize()
       self.reflections['s1'][idx] = tuple(coords)
 
@@ -285,8 +285,8 @@ class construct_reflection_table_and_experiment_list(object):
       loc = os.path.dirname(self.pickle)
     else:
       loc = path_name
-    name = os.path.basename(self.pickle).split(".pickle")[0]
-    refl_name = int_pickle_to_filename(name, "idx-", "_integrated.pickle")
+    name = os.path.basename(self.pickle).split(".refl")[0]
+    refl_name = int_pickle_to_filename(name, "idx-", "_integrated.refl")
     reflections = os.path.join(loc, refl_name)
     self.reflections.as_pickle(reflections)
 
@@ -314,7 +314,7 @@ if __name__ == "__main__":
       .type = bool
       .help = override raising exceptions if no image can be found. Write a json with a dummy image (pickle name)
     """)
-  parser = OptionParser(phil=master_phil_scope)
+  parser = ArgumentParser(phil=master_phil_scope)
   params, options = parser.parse_args(show_diff_phil=False)
   for pickle_file in os.listdir(params.pickle_location):
     pickle_path = os.path.join(params.pickle_location, pickle_file)
@@ -325,5 +325,5 @@ if __name__ == "__main__":
       result.experiments_to_json(params.json_location)
       result.reflections_to_pickle(params.refl_location)
     else:
-      print "Skipping unreadable pickle file at", pickle_path
-  print 'Generated experiments.json and integrated.pickle files.'
+      print("Skipping unreadable pickle file at", pickle_path)
+  print('Generated experiments.expt and integrated.refl files.')

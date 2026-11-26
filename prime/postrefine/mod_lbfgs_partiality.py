@@ -1,7 +1,7 @@
-from __future__ import division
+from __future__ import absolute_import, division, print_function
 from cctbx.array_family import flex
 from cctbx.uctbx import unit_cell
-from mod_partiality import partiality_handler
+from .mod_partiality import partiality_handler
 """
 lbfgs_partiality_handler
 calculate the minimization function according to given arguments and return sum(error^2)

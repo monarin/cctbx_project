@@ -1,4 +1,4 @@
-from __future__ import division
+from __future__ import absolute_import, division, print_function
 from mmtbx import density_modification
 import mmtbx.utils
 from cctbx.array_family import flex
@@ -13,6 +13,8 @@ import mmtbx.maps
 from mmtbx.ncs import ncs
 from scitbx.math import nearest_phase, phase_error
 import os, sys
+from six.moves import range
+from iotbx import extract_xtal_data
 
 master_params_including_IO_str = """\
 density_modification {
@@ -80,15 +82,15 @@ density_modification {
 include scope libtbx.phil.interface.tracking_params
 %s
 }
-""" %(mmtbx.utils.data_and_flags_str,
-      mmtbx.utils.experimental_phases_params_str,
-      mmtbx.utils.map_coefficents_params_str,
+""" %(iotbx.extract_xtal_data.data_and_flags_str,
+      iotbx.extract_xtal_data.experimental_phases_params_str,
+      mmtbx.utils.map_coefficients_params_str,
       density_modification.master_params_str)
 
 def defaults(log):
   parsed = iotbx.phil.parse(
     master_params_including_IO_str, process_includes=True)
-  print >> log
+  print(file=log)
   return parsed
 
 def run(args, log = sys.stdout, as_gui_program=False):
@@ -128,21 +130,17 @@ def run(args, log = sys.stdout, as_gui_program=False):
       reflection_files.setdefault(
         rfn, iotbx.reflection_file_reader.any_reflection_file(
           file_name=rfn, ensure_read_access=False))
+  # TODO is reflection_files a dict ?
   server = iotbx.reflection_file_utils.reflection_file_server(
     crystal_symmetry=crystal_symmetry,
-    reflection_files=reflection_files.values())
-  fo = mmtbx.utils.determine_data_and_flags(
+    reflection_files=list(reflection_files.values()))
+  o = extract_xtal_data.run(
     server,
     parameters=params.input.reflection_data,
-    extract_r_free_flags=False,log=log).f_obs
-  hl_coeffs = mmtbx.utils.determine_experimental_phases(
-    server,
-    params.input.experimental_phases,
-    log=log,
-    parameter_scope="",
-    working_point_group=None,
-    symmetry_safety_check=True,
-    ignore_all_zeros=True)
+    experimental_phases_params=params.input.experimental_phases,
+    extract_r_free_flags=False)
+  fo = o.f_obs
+  hl_coeffs = o.experimental_phases
   if params.input.map_coefficients.file_name is not None:
     map_coeffs = server.get_phases_deg(
       file_name=params.input.map_coefficients.file_name,
@@ -213,13 +211,13 @@ map_coefficients {
     log=log,
     as_gui_program=as_gui_program)
   time_dm = time.time()-t0
-  print >> log, "Time taken for density modification: %.2fs" %time_dm
+  print("Time taken for density modification: %.2fs" %time_dm, file=log)
   # run cns
   if 0:
     from cctbx.development import cns_density_modification
     cns_result = cns_density_modification.run(params, fo, hl_coeffs)
-    print cns_result.modified_map.all()
-    print dm.map.all()
+    print(cns_result.modified_map.all())
+    print(dm.map.all())
     dm_map_coeffs = dm.map_coeffs_in_original_setting
     from cctbx import maptbx, miller
     crystal_gridding = maptbx.crystal_gridding(
@@ -228,14 +226,14 @@ map_coefficients {
       pre_determined_n_real=cns_result.modified_map.all())
     dm_map = miller.fft_map(crystal_gridding, dm_map_coeffs).apply_sigma_scaling()
     corr = flex.linear_correlation(cns_result.modified_map.as_1d(), dm_map.real_map_unpadded().as_1d())
-    print "CNS dm/mmtbx dm correlation:"
+    print("CNS dm/mmtbx dm correlation:")
     corr.show_summary()
     if dm.model_map_coeffs is not None:
       model_map = miller.fft_map(
         crystal_gridding,
         dm.miller_array_in_original_setting(dm.model_map_coeffs)).apply_sigma_scaling()
       corr = flex.linear_correlation(cns_result.modified_map.as_1d(), model_map.real_map_unpadded().as_1d())
-      print "CNS dm/model correlation:"
+      print("CNS dm/model correlation:")
       corr.show_summary()
 
   if output_plots:
@@ -289,14 +287,14 @@ map_coefficients {
       fig = pyplot.figure()
       ax = fig.add_subplot(1,1,1)
       ax.set_title("correlation coefficient")
-      ax.plot(range(1, dm.i_cycle+2), data)
+      ax.plot(list(range(1, dm.i_cycle+2)), data)
       pdf.savefig(fig)
       #
       data = dm.mean_phase_errors
       fig = pyplot.figure()
       ax = fig.add_subplot(1,1,1)
       ax.set_title("Mean effective phase errors")
-      ax.plot(range(1, dm.i_cycle+2), data)
+      ax.plot(list(range(1, dm.i_cycle+2)), data)
       pdf.savefig(fig)
 
     for plot in plots_to_make:
@@ -304,7 +302,7 @@ map_coefficients {
       fig = pyplot.figure()
       ax = fig.add_subplot(1,1,1)
       ax.set_title(plot.replace("_", " "))
-      ax.plot(range(1, dm.i_cycle+2), data)
+      ax.plot(list(range(1, dm.i_cycle+2)), data)
       pdf.savefig(fig)
 
     data = [stats.get_cycle_stats(i).rms_solvent_density/
@@ -313,7 +311,7 @@ map_coefficients {
     fig = pyplot.figure()
     ax = fig.add_subplot(1,1,1)
     ax.set_title("RMS solvent/protein density ratio")
-    ax.plot(range(1, dm.i_cycle+2), data)
+    ax.plot(list(range(1, dm.i_cycle+2)), data)
     pdf.savefig(fig)
 
     pdf.close()
@@ -352,8 +350,8 @@ map_coefficients {
     orig_fom,final_fom=dm.start_and_end_fom()
     if mtz_params.skip_output_if_worse and final_fom < orig_fom:
       ok_to_write_mtz=False
-      print "Not writing out mtz. Final FOM (%7.3f) worse than start (%7.3f)" %(
-        final_fom,orig_fom)
+      print("Not writing out mtz. Final FOM (%7.3f) worse than start (%7.3f)" %(
+        final_fom,orig_fom))
     else:  # usual
       ok_to_write_mtz=True
   else:
@@ -422,8 +420,8 @@ class density_modify(density_modification.density_modification):
       ).apply_sigma_scaling()
       corr = flex.linear_correlation(
         model_fft_map.real_map_unpadded().as_1d(), fft_map.real_map_unpadded().as_1d())
-      print "Starting dm/model correlation: %.6f" %corr.coefficient()
-      print "Final dm/model correlation:    %.6f" %self.correlation_coeffs[-1]
+      print("Starting dm/model correlation: %.6f" %corr.coefficient())
+      print("Final dm/model correlation:    %.6f" %self.correlation_coeffs[-1])
       fft_map.as_ccp4_map(file_name="starting.map", labels=[])
 
   def compute_map(self):
@@ -434,58 +432,58 @@ class density_modify(density_modification.density_modification):
         resolution_factor=self.params.grid_resolution_factor).apply_sigma_scaling()
       dm_map = dm_coeffs.fft_map(
         resolution_factor=self.params.grid_resolution_factor).apply_sigma_scaling()
-      print
+      print()
       corr = flex.linear_correlation(
         fft_map.real_map_unpadded().as_1d(), dm_map.real_map_unpadded().as_1d())
-      print "dm/model correlation:"
+      print("dm/model correlation:")
       corr.show_summary()
       self.correlation_coeffs.append(corr.coefficient())
       self.mean_phase_errors.append(flex.mean(phase_error(
         flex.arg(model_coeffs.data()),
         flex.arg(dm_coeffs.data())))/density_modification.pi_180)
 
-def validate_params (params) :
+def validate_params(params):
   params_ = params.density_modification
-  if (params_.input.reflection_data.file_name is None) :
+  if (params_.input.reflection_data.file_name is None):
     raise Sorry("No reflection data provided.")
-  if (params_.input.reflection_data.labels is None) :
+  if (params_.input.reflection_data.labels is None):
     raise Sorry("Data labels not specified.")
-  if (params_.input.experimental_phases.file_name is None) :
+  if (params_.input.experimental_phases.file_name is None):
     raise Sorry("Experimental phases (Hendrickson-Lattman coefficients " +
                 "not specified.")
-  if (params_.input.experimental_phases.labels is None) :
+  if (params_.input.experimental_phases.labels is None):
     raise Sorry("Experimental phase labels not specified.")
   if ((params_.output.map.file_name is None) and
-      (params_.output.mtz.file_name is None)) :
+      (params_.output.mtz.file_name is None)):
     raise Sorry("No output requested!")
-  if (params_.solvent_fraction is None) :
+  if (params_.solvent_fraction is None):
     raise Sorry("Please specify the solvent fraction!")
 
-class launcher (runtime_utils.target_with_save_result) :
-  def run (self) :
+class launcher(runtime_utils.target_with_save_result):
+  def run(self):
     return run(args=list(self.args),
       log=sys.stdout, # 2012-03-09 should be called with log defined?
       as_gui_program=True)
 
-class result (object) :
-  def __init__ (self, map_file, mtz_file, stats) :
+class result(object):
+  def __init__(self, map_file, mtz_file, stats):
     adopt_init_args(self, locals())
 
-  def extract_loggraph (self) :
+  def extract_loggraph(self):
     return self.stats.extract_loggraph()
 
-  def get_final_job_statistics (self) :
+  def get_final_job_statistics(self):
     stats = [
       ("FOM", self.stats.get_cycle_stats(-1).fom),
       ("Skewness", self.stats.get_cycle_stats(-1).skewness)
     ]
     return stats
 
-  def finish_job (self) :
+  def finish_job(self):
     output_files = []
-    if (self.mtz_file is not None) :
+    if (self.mtz_file is not None):
       output_files.append((self.mtz_file, "Map coefficients"))
-    if (self.map_file is not None) :
+    if (self.map_file is not None):
       output_files.append((self.map_file, "Real-space map"))
     stats = self.get_final_job_statistics()
     return (output_files, stats)

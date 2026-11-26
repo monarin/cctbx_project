@@ -1,4 +1,4 @@
-from __future__ import division
+from __future__ import absolute_import, division, print_function
 import mmtbx.monomer_library.pdb_interpretation
 import cctbx.geometry_restraints.flags
 from cctbx.array_family import flex
@@ -83,8 +83,7 @@ def exercise(d_min = 2.0, resolution_factor = 0.1):
     max_iterations = 250)
   flags = cctbx.geometry_restraints.flags.flags(reference_coordinate=True, default=True)
   states_collector = mmtbx.utils.states(
-    pdb_hierarchy  = pdb_hierarchy,
-    xray_structure = xrs_poor)
+    pdb_hierarchy  = pdb_hierarchy)
   states_collector.add(sites_cart = residue_poor.atoms().extract_xyz())
   for i in [1,2]:
     minimized = mmtbx.refinement.real_space.rigid_body.refine(
@@ -101,13 +100,16 @@ def exercise(d_min = 2.0, resolution_factor = 0.1):
     pdb_hierarchy.adopt_xray_structure(xrs_poor)
     pdb_hierarchy.write_pdb_file(file_name = "refined.pdb")
   #
+  # The result depends on tiny changes of the target map (structure factors
+  # computed with FFT): max and mean distances were 0.125 and 0.079, and are
+  # 0.143 and 0.085 with the table of exponents interpolated.
   dist = xrs_answer.max_distance(other = xrs_poor)
-  assert dist < 0.15, dist
+  assert dist < 0.2, dist
   dist = xrs_answer.mean_distance(other = xrs_poor)
-  assert dist < 0.08, dist
+  assert dist < 0.1, dist
   states_collector.write(file_name = "all.pdb")
 
 if(__name__ == "__main__"):
   t0 = time.time()
   exercise()
-  print "Time: %6.2f" % (time.time()-t0)
+  print("Time: %6.2f" % (time.time()-t0))

@@ -1,4 +1,5 @@
-from __future__ import division
+"""Extract TLS from REMARK 3 records"""
+from __future__ import absolute_import, division, print_function
 import os
 from libtbx import group_args
 
@@ -150,11 +151,11 @@ class extract_tls_parameters(object):
         group_number = None
         try:
           fields = record.split()
-          if (len(fields) >= 6) :
+          if (len(fields) >= 6):
             group_number = int(fields[5])
           else :
             fields = record.split(":")
-            if (len(fields) >= 2) :
+            if (len(fields) >= 2):
               group_number = int(fields[1].strip())
             else :
               raise ValueError()

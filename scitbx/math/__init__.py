@@ -1,11 +1,17 @@
-from __future__ import division, absolute_import
+from __future__ import absolute_import, division, print_function
+
+import functools
+import math
+import operator
+
 from scitbx.math.ext import *
 import scitbx.linalg.eigensystem
 import scitbx.math.gaussian # implicit import
 from scitbx import matrix
 from scitbx.array_family import flex
-from boost import rational # implicit import
-import math
+from boost_adaptbx.boost import rational # implicit import
+from six.moves import range
+from six.moves import zip
 
 gaussian_fit_1d_analytical.__doc__ = """
 Fits a gaussian function to a list of points.
@@ -30,6 +36,28 @@ Examples
 >>> fit = gaussian_fit_1d_analytical(x, y)
 >>> print fit.a, fit.b
 1.0 2.30258509299
+"""
+
+golden_spiral.__doc__ = """
+Unit vectors spread over the sphere on a golden-angle spiral.
+
+The heights along y step evenly by 2 / count from next to the -y pole, half
+a step in from each pole, and the azimuth about y advances by the golden
+angle, pi * (3 - sqrt(5)).
+
+Parameters
+----------
+count : int
+  Number of points.
+
+Attributes
+----------
+count : int
+  Number of points.
+unit_area : float
+  The area of the unit sphere each point stands for, 4 pi / count.
+points : golden_spiral_points_range
+  The count unit vectors, from next to the -y pole; iterable.
 """
 
 def median_statistics(data):
@@ -88,12 +116,11 @@ def r3_rotation_average_rotation_matrix_from_matrices(*matrices):
   """
 
   if not matrices:
-    raise TypeError, "Average of empty sequence"
+    raise TypeError("Average of empty sequence")
 
-  import operator
   import scitbx.matrix
 
-  average = reduce(
+  average = functools.reduce(
     operator.add,
     [ scitbx.matrix.col( r3_rotation_matrix_as_unit_quaternion( e ) )
       for e in matrices ]
@@ -111,13 +138,12 @@ def r3_rotation_average_rotation_via_lie_algebra(matrices, maxiter = 100, conver
   """
 
   if not matrices:
-    raise TypeError, "Average of empty sequence"
+    raise TypeError("Average of empty sequence")
 
   if maxiter < 0 or convergence <= 0:
-    raise ValueError, "Invalid iteration parameters"
+    raise ValueError("Invalid iteration parameters")
 
   from scitbx.math import so3_lie_algebra
-  import operator
 
   conv_sq = convergence * convergence
   norm = 1.0 / len( matrices )
@@ -125,7 +151,7 @@ def r3_rotation_average_rotation_via_lie_algebra(matrices, maxiter = 100, conver
 
   for i in range( maxiter ):
     inverse = current.inverse()
-    log_diff = norm * reduce(
+    log_diff = norm * functools.reduce(
       operator.add,
       [ so3_lie_algebra.element.from_rotation_matrix( matrix = inverse * m )
         for m in matrices ]
@@ -136,7 +162,7 @@ def r3_rotation_average_rotation_via_lie_algebra(matrices, maxiter = 100, conver
 
     current *= log_diff.exponential()
 
-  raise RuntimeError, "Iteration limit exceeded"
+  raise RuntimeError("Iteration limit exceeded")
 
 def euler_angles_as_matrix(angles, deg=False):
   if (deg):
@@ -174,7 +200,7 @@ class erf_verification(object):
       if (self.max_delta < delta):
         self.max_delta = delta
         if (delta > self.tolerance):
-          print x, expected_result, result, delta
+          print(x, expected_result, result, delta)
 
 class minimum_covering_sphere_nd(object):
 
@@ -196,7 +222,7 @@ class minimum_covering_sphere_nd(object):
       return
     n_dim = len(points[0].elems)
     w = 1./len(points)
-    weights = matrix.row([w for i in xrange(len(points))])
+    weights = matrix.row([w for i in range(len(points))])
     while 1:
       x = matrix.col([0]*n_dim)
       for w,t in zip(weights.elems,points):
@@ -365,6 +391,38 @@ def point_on_sphere(r, s_deg, t_deg, center):
   z = center[2] + r * cos(t)
   return x,y,z
 
+def saff_kuijlaars_spiral(n):
+  """Unit vectors spread over the sphere on the Saff-Kuijlaars spiral.
+
+  The heights h along y step evenly from -1 up to 1, both poles included,
+  and the azimuth about y advances by 3.6 / sqrt(n * (1 - h**2)). E. B.
+  Saff and A. B. J. Kuijlaars, "Distributing many points on a sphere",
+  Mathematical Intelligencer 19 (1997) 5-11.
+
+  Parameters
+  ----------
+  n : int
+    Number of points, at least 2.
+
+  Returns
+  -------
+  scitbx.array_family.flex.vec3_double
+    The n unit vectors, from the -y pole to the +y pole.
+  """
+  assert n >= 2, n
+  points = flex.vec3_double()
+  phi = 0
+  for k in range(n):
+    h = -1 + 2.0 * k / (n - 1)
+    theta = math.acos(h)
+    if k == 0 or k == n - 1:
+      phi = 0
+    else:
+      phi = (phi + 3.6 / math.sqrt(n * (1 - h * h))) % (2 * math.pi)
+    points.append((math.sin(phi) * math.sin(theta), math.cos(theta),
+                   math.cos(phi) * math.sin(theta)))
+  return points
+
 def equally_spaced_points_on_vector(start, end, n=None, step=None):
   assert [n, step].count(None) == 1
   vec = [end[0]-start[0],end[1]-start[1],end[2]-start[2]]
@@ -377,7 +435,7 @@ def equally_spaced_points_on_vector(start, end, n=None, step=None):
     n = int(vec_length/step)-1
   dr = r*(1/float(n+1))
   points = flex.vec3_double()
-  for i in xrange(n+1):
+  for i in range(n+1):
     points.extend(dr * i + start)
   points.append(end)
   return points
@@ -419,7 +477,7 @@ class sin_cos_table(object):
     self.step = 2*math.pi/self.n
     self.sin_table = flex.double()
     self.cos_table = flex.double()
-    for i in xrange(self.n):
+    for i in range(self.n):
       self.sin_table.append(math.sin(i*self.step))
       self.cos_table.append(math.cos(i*self.step))
 
@@ -451,13 +509,24 @@ def similarity_indices(x, eps):
   return y
 
 def simpson(f, a, b, n):
-  """
-  Integral of f on [a,b] using composite Simpson's rule.
-  """
-  if(n % 2 != 0): raise ValueError("n must be even" % n)
-  h = (b - a) / n
-  s = f(a) + f(b)
-  for i in range(1, n, 1):
-    if(i%2==0): s += 4 * f(a + i * h)
-    else:       s += 2 * f(a + i * h)
-  return s * h / 3
+    """
+    Integral of f on [a,b] using composite Simpson's rule.
+    f : function
+        The integrand function.
+    a : float
+        The lower limit of integration.
+    b : float
+        The upper limit of integration.
+    n : int
+        The number of subintervals (must be even).
+    Returns:
+    float
+        The approximate value of the integral.
+    """
+    if n % 2 != 0: raise ValueError("n must be even")
+    h = (b - a) / n
+    s = f(a) + f(b)
+    for i in range(1, n):
+      if i % 2 == 0: s += 2 * f(a + i * h)
+      else:          s += 4 * f(a + i * h)
+    return s * h / 3

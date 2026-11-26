@@ -1,9 +1,11 @@
-from __future__ import division
+from __future__ import absolute_import, division, print_function
+
+import sys
 
 from libtbx.utils import null_out
-from cStringIO import StringIO
+from six.moves import cStringIO as StringIO
 from mmtbx.secondary_structure.find_ss_from_ca import find_secondary_structure
-from libtbx import test_utils
+
 
 def remove_blank(text):
   return text.replace(" ","").replace("\n","")
@@ -667,8 +669,204 @@ ATOM    200  CA  VALzy 129     119.824 497.272 644.564  1.00 30.00           C
 ATOM    201  CA  ASPzy 130     121.341 496.425 647.959  1.00 30.00           C
 ATOM    202  CA  ILEzy 131     119.598 498.577 650.580  1.00 30.00           C
 """
+strands_text="""
+ATOM      1  N   GLY B  23      75.748  31.574 -24.376  1.00 58.86           N
+ATOM      2  CA  GLY B  23      76.475  30.862 -25.415  1.00 59.81           C
+ATOM      3  C   GLY B  23      77.927  30.531 -25.134  1.00 60.79           C
+ATOM      4  O   GLY B  23      78.447  30.790 -24.037  1.00 61.67           O
+ATOM      5  N   PHE B  24      78.585  29.965 -26.144  1.00 61.14           N
+ATOM      6  CA  PHE B  24      79.949  29.472 -26.012  1.00 61.19           C
+ATOM      7  C   PHE B  24      80.944  30.243 -26.876  1.00 63.09           C
+ATOM      8  O   PHE B  24      80.642  30.610 -28.010  1.00 64.18           O
+ATOM      9  N   ARG B  25      82.129  30.486 -26.333  1.00 64.55           N
+ATOM     10  CA  ARG B  25      83.259  31.022 -27.092  1.00 66.14           C
+ATOM     11  C   ARG B  25      84.369  30.015 -26.941  1.00 67.43           C
+ATOM     12  O   ARG B  25      84.649  29.575 -25.829  1.00 67.73           O
+ATOM     13  N   HIS B  26      85.003  29.620 -28.035  1.00 69.33           N
+ATOM     14  CA  HIS B  26      86.018  28.591 -27.914  1.00 70.83           C
+ATOM     15  C   HIS B  26      87.300  28.976 -28.604  1.00 71.56           C
+ATOM     16  O   HIS B  26      87.385  30.005 -29.255  1.00 71.19           O
+ATOM     17  N   GLN B  27      88.303  28.131 -28.423  1.00 73.27           N
+ATOM     18  CA  GLN B  27      89.565  28.220 -29.128  1.00 74.94           C
+ATOM     19  C   GLN B  27      90.136  26.807 -29.242  1.00 75.41           C
+ATOM     20  O   GLN B  27      90.278  26.098 -28.245  1.00 75.24           O
+ATOM     21  N   ASN B  28      90.430  26.392 -30.470  1.00 76.59           N
+ATOM     22  CA  ASN B  28      91.030  25.085 -30.727  1.00 77.27           C
+ATOM     23  C   ASN B  28      92.077  25.140 -31.836  1.00 78.04           C
+ATOM     24  O   ASN B  28      92.478  26.226 -32.274  1.00 77.66           O
+ATOM     25  N   GLY B  31      91.225  27.382 -34.660  1.00 77.75           N
+ATOM     26  CA  GLY B  31      91.082  28.818 -34.394  1.00 77.38           C
+ATOM     27  C   GLY B  31      90.111  29.130 -33.271  1.00 77.12           C
+ATOM     28  O   GLY B  31      90.048  28.415 -32.267  1.00 76.86           O
+ATOM     29  N   THR B  32      89.356  30.213 -33.433  1.00 76.72           N
+ATOM     30  CA  THR B  32      88.434  30.670 -32.391  1.00 75.83           C
+ATOM     31  C   THR B  32      87.081  31.029 -32.982  1.00 75.68           C
+ATOM     32  O   THR B  32      87.014  31.617 -34.052  1.00 75.73           O
+ATOM     33  N   GLY B  33      86.011  30.676 -32.272  1.00 75.64           N
+ATOM     34  CA  GLY B  33      84.637  30.973 -32.708  1.00 74.81           C
+ATOM     35  C   GLY B  33      83.704  31.316 -31.559  1.00 73.94           C
+ATOM     36  O   GLY B  33      84.134  31.411 -30.406  1.00 74.08           O
+ATOM     37  N   GLN B  34      82.423  31.488 -31.885  1.00 72.72           N
+ATOM     38  CA  GLN B  34      81.403  31.939 -30.933  1.00 71.35           C
+ATOM     39  C   GLN B  34      80.018  31.496 -31.400  1.00 69.74           C
+ATOM     40  O   GLN B  34      79.642  31.760 -32.530  1.00 70.46           O
+ATOM     41  N   ALA B  35      79.250  30.842 -30.538  1.00 67.76           N
+ATOM     42  CA  ALA B  35      77.893  30.432 -30.897  1.00 66.29           C
+ATOM     43  C   ALA B  35      76.934  30.553 -29.715  1.00 65.90           C
+ATOM     44  O   ALA B  35      77.299  30.262 -28.574  1.00 66.09           O
+ATOM     45  N   ALA B  36      75.712  30.988 -30.000  1.00 64.80           N
+ATOM     46  CA  ALA B  36      74.680  31.141 -28.988  1.00 63.86           C
+ATOM     47  C   ALA B  36      74.125  29.759 -28.638  1.00 63.78           C
+ATOM     48  O   ALA B  36      74.159  28.866 -29.479  1.00 64.19           O
+TER
+ATOM     49  N   GLY D  23      83.971  32.951   6.721  1.00 45.61           N
+ATOM     50  CA  GLY D  23      85.372  32.663   6.691  1.00 46.22           C
+ATOM     51  C   GLY D  23      85.873  31.235   6.715  1.00 45.42           C
+ATOM     53  CA  PHE D  24      87.986  30.081   7.243  1.00 46.15           C
+ATOM     54  C   PHE D  24      88.639  29.840   8.586  1.00 45.73           C
+ATOM     55  N   ARG D  25      88.677  28.529   8.785  1.00 46.53           N
+ATOM     56  CA  ARG D  25      89.502  27.858   9.773  1.00 46.92           C
+ATOM     57  C   ARG D  25      90.351  26.863   9.012  1.00 48.22           C
+ATOM     58  O   ARG D  25      89.902  26.301   8.005  1.00 48.21           O
+ATOM     59  N   HIS D  26      91.589  26.663   9.458  1.00 49.57           N
+ATOM     60  CA  HIS D  26      92.485  25.737   8.758  1.00 50.26           C
+ATOM     61  C   HIS D  26      93.451  25.007   9.666  1.00 50.46           C
+ATOM     62  O   HIS D  26      93.608  25.375  10.824  1.00 49.89           O
+ATOM     63  N   GLN D  27      94.091  23.974   9.118  1.00 51.49           N
+ATOM     64  CA  GLN D  27      95.222  23.320   9.764  1.00 52.01           C
+ATOM     65  C   GLN D  27      96.246  22.782   8.749  1.00 51.98           C
+ATOM     66  N   ASN D  28      97.431  23.381   8.906  1.00 53.20           N
+ATOM     67  CA  ASN D  28      98.667  23.022   8.198  1.00 53.62           C
+ATOM     68  C   ASN D  28      99.782  22.741   9.188  1.00 53.76           C
+ATOM     69  O   ASN D  28      99.562  22.726  10.389  1.00 54.00           O
+ATOM     70  N   GLY D  31     100.345  24.907  12.346  1.00 50.53           N
+ATOM     71  CA  GLY D  31      99.329  24.965  13.394  1.00 50.19           C
+ATOM     72  C   GLY D  31      97.937  25.229  12.840  1.00 50.80           C
+ATOM     73  O   GLY D  31      97.654  24.926  11.672  1.00 52.16           O
+ATOM     74  N   THR D  32      97.064  25.791  13.673  1.00 49.82           N
+ATOM     75  CA  THR D  32      95.691  26.083  13.281  1.00 49.15           C
+ATOM     76  C   THR D  32      95.490  27.580  13.139  1.00 50.69           C
+ATOM     77  O   THR D  32      96.305  28.374  13.631  1.00 51.88           O
+ATOM     78  N   GLY D  33      94.399  27.976  12.477  1.00 51.32           N
+ATOM     79  CA  GLY D  33      94.117  29.407  12.250  1.00 50.79           C
+ATOM     80  C   GLY D  33      92.666  29.678  11.925  1.00 50.08           C
+ATOM     81  O   GLY D  33      91.908  28.728  11.662  1.00 49.88           O
+ATOM     82  N   GLN D  34      92.291  30.966  11.956  1.00 49.01           N
+ATOM     83  CA  GLN D  34      90.926  31.420  11.677  1.00 49.25           C
+ATOM     84  C   GLN D  34      90.983  32.793  10.985  1.00 48.70           C
+ATOM     85  O   GLN D  34      91.799  33.610  11.349  1.00 49.25           O
+ATOM     86  N   ALA D  35      90.136  33.053   9.985  1.00 48.59           N
+ATOM     87  CA  ALA D  35      90.096  34.388   9.361  1.00 48.02           C
+ATOM     88  C   ALA D  35      88.791  34.664   8.628  1.00 48.49           C
+ATOM     89  O   ALA D  35      88.251  33.788   7.951  1.00 49.54           O
+ATOM     90  N   ALA D  36      88.285  35.881   8.768  1.00 48.74           N
+ATOM     91  CA  ALA D  36      87.038  36.277   8.117  1.00 49.59           C
+ATOM     92  C   ALA D  36      87.257  36.465   6.633  1.00 50.35           C
+ATOM     93  O   ALA D  36      88.340  36.838   6.226  1.00 50.20           O
+TER
+END
+"""
+strands_add_o_text="""
+ATOM      1  N   GLY B  23      75.748  31.574 -24.376  1.00 58.86           N
+ATOM      2  CA  GLY B  23      76.475  30.862 -25.415  1.00 59.81           C
+ATOM      3  C   GLY B  23      77.927  30.531 -25.134  1.00 60.79           C
+ATOM      4  O   GLY B  23      78.447  30.790 -24.037  1.00 61.67           O
+ATOM      5  N   PHE B  24      78.585  29.965 -26.144  1.00 61.14           N
+ATOM      6  CA  PHE B  24      79.949  29.472 -26.012  1.00 61.19           C
+ATOM      7  C   PHE B  24      80.944  30.243 -26.876  1.00 63.09           C
+ATOM      8  O   PHE B  24      80.642  30.610 -28.010  1.00 64.18           O
+ATOM      9  N   ARG B  25      82.129  30.486 -26.333  1.00 64.55           N
+ATOM     10  CA  ARG B  25      83.259  31.022 -27.092  1.00 66.14           C
+ATOM     11  C   ARG B  25      84.369  30.015 -26.941  1.00 67.43           C
+ATOM     12  O   ARG B  25      84.649  29.575 -25.829  1.00 67.73           O
+ATOM     13  N   HIS B  26      85.003  29.620 -28.035  1.00 69.33           N
+ATOM     14  CA  HIS B  26      86.018  28.591 -27.914  1.00 70.83           C
+ATOM     15  C   HIS B  26      87.300  28.976 -28.604  1.00 71.56           C
+ATOM     16  O   HIS B  26      87.385  30.005 -29.255  1.00 71.19           O
+ATOM     17  N   GLN B  27      88.303  28.131 -28.423  1.00 73.27           N
+ATOM     18  CA  GLN B  27      89.565  28.220 -29.128  1.00 74.94           C
+ATOM     19  C   GLN B  27      90.136  26.807 -29.242  1.00 75.41           C
+ATOM     20  O   GLN B  27      90.278  26.098 -28.245  1.00 75.24           O
+ATOM     21  N   ASN B  28      90.430  26.392 -30.470  1.00 76.59           N
+ATOM     22  CA  ASN B  28      91.030  25.085 -30.727  1.00 77.27           C
+ATOM     23  C   ASN B  28      92.077  25.140 -31.836  1.00 78.04           C
+ATOM     24  O   ASN B  28      92.478  26.226 -32.274  1.00 77.66           O
+ATOM     25  N   GLY B  31      91.225  27.382 -34.660  1.00 77.75           N
+ATOM     26  CA  GLY B  31      91.082  28.818 -34.394  1.00 77.38           C
+ATOM     27  C   GLY B  31      90.111  29.130 -33.271  1.00 77.12           C
+ATOM     28  O   GLY B  31      90.048  28.415 -32.267  1.00 76.86           O
+ATOM     29  N   THR B  32      89.356  30.213 -33.433  1.00 76.72           N
+ATOM     30  CA  THR B  32      88.434  30.670 -32.391  1.00 75.83           C
+ATOM     31  C   THR B  32      87.081  31.029 -32.982  1.00 75.68           C
+ATOM     32  O   THR B  32      87.014  31.617 -34.052  1.00 75.73           O
+ATOM     33  N   GLY B  33      86.011  30.676 -32.272  1.00 75.64           N
+ATOM     34  CA  GLY B  33      84.637  30.973 -32.708  1.00 74.81           C
+ATOM     35  C   GLY B  33      83.704  31.316 -31.559  1.00 73.94           C
+ATOM     36  O   GLY B  33      84.134  31.411 -30.406  1.00 74.08           O
+ATOM     37  N   GLN B  34      82.423  31.488 -31.885  1.00 72.72           N
+ATOM     38  CA  GLN B  34      81.403  31.939 -30.933  1.00 71.35           C
+ATOM     39  C   GLN B  34      80.018  31.496 -31.400  1.00 69.74           C
+ATOM     40  O   GLN B  34      79.642  31.760 -32.530  1.00 70.46           O
+ATOM     41  N   ALA B  35      79.250  30.842 -30.538  1.00 67.76           N
+ATOM     42  CA  ALA B  35      77.893  30.432 -30.897  1.00 66.29           C
+ATOM     43  C   ALA B  35      76.934  30.553 -29.715  1.00 65.90           C
+ATOM     44  O   ALA B  35      77.299  30.262 -28.574  1.00 66.09           O
+ATOM     45  N   ALA B  36      75.712  30.988 -30.000  1.00 64.80           N
+ATOM     46  CA  ALA B  36      74.680  31.141 -28.988  1.00 63.86           C
+ATOM     47  C   ALA B  36      74.125  29.759 -28.638  1.00 63.78           C
+ATOM     48  O   ALA B  36      74.159  28.866 -29.479  1.00 64.19           O
+TER
+ATOM     49  N   GLY D  23      83.971  32.951   6.721  1.00 45.61           N
+ATOM     50  CA  GLY D  23      85.372  32.663   6.691  1.00 46.22           C
+ATOM     51  C   GLY D  23      85.873  31.235   6.715  1.00 45.42           C
+ATOM     52  N   PHE D  24      87.131  31.246   7.173  1.00 46.55           N
+ATOM     53  CA  PHE D  24      87.986  30.081   7.243  1.00 46.15           C
+ATOM     54  C   PHE D  24      88.639  29.840   8.586  1.00 45.73           C
+ATOM     54  O   PHE D  24      88.639  31.000   9.400  1.00 45.73           C
+ATOM     55  N   ARG D  25      88.677  28.529   8.785  1.00 46.53           N
+ATOM     56  CA  ARG D  25      89.502  27.858   9.773  1.00 46.92           C
+ATOM     57  C   ARG D  25      90.351  26.863   9.012  1.00 48.22           C
+ATOM     58  O   ARG D  25      89.902  26.301   8.005  1.00 48.21           O
+ATOM     59  N   HIS D  26      91.589  26.663   9.458  1.00 49.57           N
+ATOM     60  CA  HIS D  26      92.485  25.737   8.758  1.00 50.26           C
+ATOM     61  C   HIS D  26      93.451  25.007   9.666  1.00 50.46           C
+ATOM     62  O   HIS D  26      93.608  25.375  10.824  1.00 49.89           O
+ATOM     63  N   GLN D  27      94.091  23.974   9.118  1.00 51.49           N
+ATOM     64  CA  GLN D  27      95.222  23.320   9.764  1.00 52.01           C
+ATOM     65  C   GLN D  27      96.246  22.782   8.749  1.00 51.98           C
+ATOM     66  N   ASN D  28      97.431  23.381   8.906  1.00 53.20           N
+ATOM     67  CA  ASN D  28      98.667  23.022   8.198  1.00 53.62           C
+ATOM     68  C   ASN D  28      99.782  22.741   9.188  1.00 53.76           C
+ATOM     69  O   ASN D  28      99.562  22.726  10.389  1.00 54.00           O
+ATOM     70  N   GLY D  31     100.345  24.907  12.346  1.00 50.53           N
+ATOM     71  CA  GLY D  31      99.329  24.965  13.394  1.00 50.19           C
+ATOM     72  C   GLY D  31      97.937  25.229  12.840  1.00 50.80           C
+ATOM     73  O   GLY D  31      97.654  24.926  11.672  1.00 52.16           O
+ATOM     74  N   THR D  32      97.064  25.791  13.673  1.00 49.82           N
+ATOM     75  CA  THR D  32      95.691  26.083  13.281  1.00 49.15           C
+ATOM     76  C   THR D  32      95.490  27.580  13.139  1.00 50.69           C
+ATOM     77  O   THR D  32      96.305  28.374  13.631  1.00 51.88           O
+ATOM     78  N   GLY D  33      94.399  27.976  12.477  1.00 51.32           N
+ATOM     79  CA  GLY D  33      94.117  29.407  12.250  1.00 50.79           C
+ATOM     80  C   GLY D  33      92.666  29.678  11.925  1.00 50.08           C
+ATOM     81  O   GLY D  33      91.908  28.728  11.662  1.00 49.88           O
+ATOM     82  N   GLN D  34      92.291  30.966  11.956  1.00 49.01           N
+ATOM     83  CA  GLN D  34      90.926  31.420  11.677  1.00 49.25           C
+ATOM     84  C   GLN D  34      90.983  32.793  10.985  1.00 48.70           C
+ATOM     85  O   GLN D  34      91.799  33.610  11.349  1.00 49.25           O
+ATOM     86  N   ALA D  35      90.136  33.053   9.985  1.00 48.59           N
+ATOM     87  CA  ALA D  35      90.096  34.388   9.361  1.00 48.02           C
+ATOM     88  C   ALA D  35      88.791  34.664   8.628  1.00 48.49           C
+ATOM     89  O   ALA D  35      88.251  33.788   7.951  1.00 49.54           O
+ATOM     90  N   ALA D  36      88.285  35.881   8.768  1.00 48.74           N
+ATOM     91  CA  ALA D  36      87.038  36.277   8.117  1.00 49.59           C
+ATOM     92  C   ALA D  36      87.257  36.465   6.633  1.00 50.35           C
+ATOM     93  O   ALA D  36      88.340  36.838   6.226  1.00 50.20           O
+TER
+END
+"""
 def tst_00():
-  print "Finding sheets, splitting and merging...",
+  print("Finding sheets, splitting and merging...", end=' ')
   import iotbx.pdb
   from cctbx.array_family import flex
   hierarchy=iotbx.pdb.input(source_info='text',
@@ -678,17 +876,17 @@ def tst_00():
   import iotbx.pdb.secondary_structure as ioss
   annotation=ioss.annotation.from_records(records=flex.split_lines(records))
   f=StringIO()
-  print >>f, "New records: \n",annotation.as_pdb_str()
+  print("New records: \n",annotation.as_pdb_str(), file=f)
   spl=annotation.split_sheets()
-  print >>f, "After split_sheets: \n",spl.as_pdb_str()
+  print("After split_sheets: \n",spl.as_pdb_str(), file=f)
   merged=spl.merge_sheets()
-  print >>f, "After merge_sheets: \n",merged.as_pdb_str()
-  print >>f, "\nSpl:\n",spl.as_pdb_str()
+  print("After merge_sheets: \n",merged.as_pdb_str(), file=f)
+  print("\nSpl:\n",spl.as_pdb_str(), file=f)
   assert merged.is_same_as(annotation)
-  print >>f, "\nComparing merged and spl:"
-  print >>f, "\nMerged:\n",merged.as_pdb_str()
-  print >>f, "\nSpl:\n",spl.as_pdb_str()
-  print >>f, "\nFINAL PDB selections:\n",merged.as_atom_selections()
+  print("\nComparing merged and spl:", file=f)
+  print("\nMerged:\n",merged.as_pdb_str(), file=f)
+  print("\nSpl:\n",spl.as_pdb_str(), file=f)
+  print("\nFINAL PDB selections:\n",merged.as_atom_selections(), file=f)
   assert merged.is_same_as(spl)
   found_text=f.getvalue()
 
@@ -760,15 +958,15 @@ FINAL PDB selections:
 ["chain 'Aa' and resid 32  through 36 ", "chain 'Aa' and resid 17  through 22 ", "chain 'Aa' and resid 52  through 55 ", "chain 'Aa' and resid 40  through 45 ", "chain 'Aa' and resid 7  through 12 ", "chain 'Aa' and resid 58  through 63 ", "chain 'Aa' and resid 66  through 71 "]
   """
   if remove_blank(found_text)!=remove_blank(expected_text):
-    print "Expected: \n%s \nFound: \n%s" %(expected_text,found_text)
-    raise AssertionError, "FAILED"
+    print("Expected: \n%s \nFound: \n%s" %(expected_text,found_text))
+    raise AssertionError("FAILED")
 
 
-  print "OK"
+  print("OK")
 
 
 def tst_01():
-  print "Finding helices...",
+  print("Finding helices...", end=' ')
   import iotbx.pdb
   from cctbx.array_family import flex
   hierarchy=iotbx.pdb.input(source_info='text',
@@ -795,9 +993,9 @@ FINAL PDB selections:
   found_text=f.getvalue()
   #assert not test_utils.show_diff(found_text, expected_text)
   if remove_blank(found_text)!=remove_blank(expected_text):
-    print "Expected: \n%s \nFound: \n%s" %(expected_text,found_text)
-    raise AssertionError, "FAILED"
-  print "OK"
+    print("Expected: \n%s \nFound: \n%s" %(expected_text,found_text))
+    raise AssertionError("FAILED")
+  print("OK")
 
 def tst_02():
   text="""
@@ -826,7 +1024,7 @@ ATOM    173  CA  ARG A  24      18.059   5.674  18.276  1.00 27.11
 ATOM    184  CA  GLN A  25      15.836   6.730  15.339  1.00 37.50
 ATOM    193  CA  GLN A  26      13.132   4.360  16.583  1.00 46.66
 """
-  print "Finding helices...",
+  print("Finding helices...", end=' ')
   import iotbx.pdb
   from cctbx.array_family import flex
   hierarchy=iotbx.pdb.input(source_info='text',
@@ -854,12 +1052,12 @@ FINAL PDB selections:
   found_text=f.getvalue()
   #assert not test_utils.show_diff(found_text, expected_text)
   if remove_blank(found_text)!=remove_blank(expected_text):
-    print "Expected: \n%s \nFound: \n%s" %(expected_text,found_text)
-    raise AssertionError, "FAILED"
-  print "OK"
+    print("Expected: \n%s \nFound: \n%s" %(expected_text,found_text))
+    raise AssertionError("FAILED")
+  print("OK")
 
 def tst_03():
-  print "Finding alpha,3-10 and pi helices...",
+  print("Finding alpha,3-10 and pi helices...", end=' ')
   import iotbx.pdb
   from cctbx.array_family import flex
   hierarchy=iotbx.pdb.input(source_info='text',
@@ -891,9 +1089,9 @@ FINAL PDB selections:
   found_text=f.getvalue()
   #assert not test_utils.show_diff(found_text, expected_text)
   if remove_blank(found_text)!=remove_blank(expected_text):
-    print "Expected: \n%s \nFound: \n%s" %(expected_text,found_text)
-    raise AssertionError, "FAILED"
-  print "OK"
+    print("Expected: \n%s \nFound: \n%s" %(expected_text,found_text))
+    raise AssertionError("FAILED")
+  print("OK")
 
 def tst_04():
   text="""
@@ -968,7 +1166,7 @@ ATOM    203  CA  SERAa  70     190.301 128.219 277.907  1.00100.00           C
 ATOM    206  CA  GLUAa  71     189.167 129.249 281.377  1.00100.00           C
 ATOM    209  CA  GLYAa  72     186.003 131.073 282.428  1.00100.00           C
 """
-  print "Finding sheets...",
+  print("Finding sheets...", end=' ')
   import iotbx.pdb
   from cctbx.array_family import flex
   hierarchy=iotbx.pdb.input(source_info='text',
@@ -996,21 +1194,22 @@ SHEET    3   2 4 LYSAa  58  THRAa  63 -1  N  GLNAa  62   O  VALAa   9
 SHEET    4   2 4 GLYAa  66  GLUAa  71 -1  N  SERAa  70   O  ALAAa  59
 
 
-
 FINAL PDB selections:
-" ( chain 'Aa' and resid 32  through 36 )  or  ( chain 'Aa' and resid 17  through 22 )  or  ( chain 'Aa' and resid 52  through 55 )  or  ( chain 'Aa' and resid 40  through 45 )  or  ( chain 'Aa' and resid 7  through 12 )  or  ( chain 'Aa' and resid 58  through 63 )  or  ( chain 'Aa' and resid 66  through 71 ) "
+"(chain 'Aa' and resid   32  through   36 ) or (chain 'Aa' and resid   17  through   22 ) or (chain 'Aa' and resid   52  through   55 ) or (chain 'Aa' and resid   40  through   45 ) or (chain 'Aa' and resid    7  through   12 ) or (chain 'Aa' and resid   58  through   63 ) or (chain 'Aa' and resid   66  through   71 )"
+
+
 """
   f=StringIO()
   fss.show_summary(out=f,verbose=True)
   found_text=f.getvalue()
   #assert not test_utils.show_diff(found_text, expected_text)
   if remove_blank(found_text)!=remove_blank(expected_text):
-    print "Expected: \n%s \nFound: \n%s" %(expected_text,found_text)
-    raise AssertionError, "FAILED"
-  print "OK"
+    print("Expected: \n%s \nFound: \n%s" %(expected_text,found_text))
+    raise AssertionError("FAILED")
+  print("OK")
 
 def tst_05():
-  print "Finding sheets with separate chains...",
+  print("Finding sheets with separate chains...", end=' ')
   import iotbx.pdb
   from cctbx.array_family import flex
   hierarchy=iotbx.pdb.input(source_info='text',
@@ -1038,9 +1237,9 @@ FINAL PDB selections:
   fss.show_summary(out=f,verbose=True)
   found_text=f.getvalue()
   if remove_blank(found_text)!=remove_blank(expected_text):
-    print "Expected: \n%s \nFound: \n%s" %(expected_text,found_text)
-    raise AssertionError, "FAILED"
-  print "OK"
+    print("Expected: \n%s \nFound: \n%s" %(expected_text,found_text))
+    raise AssertionError("FAILED")
+  print("OK")
 
 def tst_06():
   text="""
@@ -1066,7 +1265,7 @@ ATOM    238  CA  LEU A  20      30.139  16.927  13.574  1.00  6.81           C
 HETATM  257  CA  23F A  21      28.460  20.242  12.654  1.00  8.80           C
 ATOM    275  CA  ALA A  22      27.017  18.382   9.700  1.00  7.89           C
 """
-  print "Finding sheets with unusual residues...",
+  print("Finding sheets with unusual residues...", end=' ')
   import iotbx.pdb
   from cctbx.array_family import flex
   hierarchy=iotbx.pdb.input(source_info='text',
@@ -1087,9 +1286,9 @@ FINAL PDB selections:
   fss.show_summary(out=f,verbose=True)
   found_text=f.getvalue()
   if remove_blank(found_text)!=remove_blank(expected_text):
-    print "Expected: \n%s \nFound: \n%s" %(expected_text,found_text)
-    raise AssertionError, "FAILED"
-  print "OK"
+    print("Expected: \n%s \nFound: \n%s" %(expected_text,found_text))
+    raise AssertionError("FAILED")
+  print("OK")
 
 def tst_07():
   text="""
@@ -1105,7 +1304,7 @@ ATOM    702  CA AGLY E   6      13.074   9.621 -23.839  0.50 12.65           C
 ATOM    703  CA BGLY E   6      11.932  10.884 -15.276  0.50  7.99           C
 ATOM    710  CA APRO E   7      15.262  10.063 -20.808  0.50 15.34           C
 ATOM    711  CA BPRO E   7      13.150  12.796 -12.241  0.50  9.73           C  """
-  print "Finding sheets with alt confs where there is no A for first res..."
+  print("Finding sheets with alt confs where there is no A for first res...")
   import iotbx.pdb
   from cctbx.array_family import flex
   hierarchy=iotbx.pdb.input(source_info='text',
@@ -1119,12 +1318,12 @@ Class:  Beta strand  N: 4 Start: 4 End: 7  Rise: 3.27 A Dot: 0.91"""
   fss.show_summary(out=f,verbose=True)
   found_text=f.getvalue()
   if remove_blank(found_text)!=remove_blank(expected_text):
-    print "Expected: \n%s \nFound: \n%s" %(expected_text,found_text)
-    raise AssertionError, "FAILED"
-  print "OK"
+    print("Expected: \n%s \nFound: \n%s" %(expected_text,found_text))
+    raise AssertionError("FAILED")
+  print("OK")
 
 def tst_08():
-  print "Checking similar annotations and overlapping annotations"
+  print("Checking similar annotations and overlapping annotations")
 
   import iotbx.pdb
   from cctbx.array_family import flex
@@ -1137,7 +1336,7 @@ def tst_08():
   ann_one_helix=get_annotation(one_helix_text)
   for h1 in ann_one_helix_beg.helices:
     for h2 in ann_one_helix_beg.helices:
-       print "Should be same:",h1.is_similar_to(other=h2,hierarchy=hierarchy)
+       print("Should be same:",h1.is_similar_to(other=h2,hierarchy=hierarchy))
        assert h1.is_similar_to(other=h2,hierarchy=hierarchy)
   for maximum_length_difference in [4,8]:
     for minimum_overlap in [6,10]:
@@ -1146,7 +1345,7 @@ def tst_08():
            value=h1.is_similar_to(other=h2,hierarchy=hierarchy,
              maximum_length_difference=maximum_length_difference,
              minimum_overlap=minimum_overlap)
-           print "Comparison:",value
+           print("Comparison:",value)
            assert (value and maximum_length_difference==8 and
               minimum_overlap==6) or not value
 
@@ -1216,12 +1415,12 @@ SHEET    1   1 3 HISAa  32  LEUAa  36 -1  O  SERAa  33   N  ILEAa  20
   s1_diff=ioss.annotation.from_records(records=flex.split_lines(s1_diff_records))
   s1_reverse_diff=ioss.annotation.from_records(records=flex.split_lines(s1_reverse_diff_records))
 
-  print "\nChecking overlap:"
+  print("\nChecking overlap:")
   assert s1_full.overlaps_with(other=s1_similar,hierarchy=hierarchy)
   assert not s1_full.overlaps_with(other=s1_diff,hierarchy=hierarchy)
   assert not s1_full.overlaps_with(other=s1_not_overlap,hierarchy=hierarchy)
 
-  print "\nChecking similar strands:",
+  print("\nChecking similar strands:", end=' ')
   f=StringIO()
   for s1 in s1_full.sheets:
     for str1 in s1.strands:
@@ -1229,8 +1428,8 @@ SHEET    1   1 3 HISAa  32  LEUAa  36 -1  O  SERAa  33   N  ILEAa  20
         for str2 in s2.strands:
           value=str1.is_similar_to(other=str2,hierarchy=hierarchy,
              maximum_length_difference=4)
-          print str1.as_atom_selections(),str2.as_atom_selections(),value
-          print >>f,str1.as_atom_selections(),str2.as_atom_selections(),value
+          print(str1.as_atom_selections(),str2.as_atom_selections(),value)
+          print(str1.as_atom_selections(),str2.as_atom_selections(),value, file=f)
   assert f.getvalue()=="""chain 'Aa' and resid   32  through   36  chain 'Aa' and resid   32  through   36  True
 chain 'Aa' and resid   32  through   36  chain 'Aa' and resid   18  through   22  False
 chain 'Aa' and resid   32  through   36  chain 'Aa' and resid   50  through   57  False
@@ -1242,52 +1441,52 @@ chain 'Aa' and resid   52  through   55  chain 'Aa' and resid   18  through   22
 chain 'Aa' and resid   52  through   55  chain 'Aa' and resid   50  through   57  True
 """
 
-  print "\nChecking different strands:",
+  print("\nChecking different strands:", end=' ')
   for s1 in s1_full.sheets:
     for str1 in s1.strands:
       for s2 in s1_diff.sheets:
         for str2 in s2.strands:
-          print str1.as_atom_selections(),str2.as_atom_selections(),\
+          print(str1.as_atom_selections(),str2.as_atom_selections(),\
             str1.is_similar_to(other=str2,hierarchy=hierarchy,
-             maximum_length_difference=4)
+             maximum_length_difference=4))
 
-  print "\nChecking similar sheets:",
+  print("\nChecking similar sheets:", end=' ')
   for s1 in s1_full.sheets:
     for s2 in s1_similar.sheets:
       value=s1.is_similar_to(other=s2,hierarchy=hierarchy,
             maximum_length_difference=4)
-      print value
+      print(value)
       assert value
 
-  print "\nChecking non-similar sheets:",
+  print("\nChecking non-similar sheets:", end=' ')
   for s1 in s1_full.sheets:
     for s2 in s1_diff.sheets:
       value=s1.is_similar_to(other=s2,hierarchy=hierarchy,
             maximum_length_difference=4)
-      print value
+      print(value)
       assert not value
 
-  print "\nChecking similar overall annotations:",
+  print("\nChecking similar overall annotations:", end=' ')
   value=s1_full.is_similar_to(other=s1_similar,hierarchy=hierarchy,
             maximum_length_difference=4)
-  print value
+  print(value)
   assert value
 
-  print "\nChecking different overall annotations:",
+  print("\nChecking different overall annotations:", end=' ')
   value=s1_full.is_similar_to(other=s1_diff,hierarchy=hierarchy,
             maximum_length_difference=4)
-  print value
+  print(value)
   assert not value
 
-  print "\nChecking different overall directions:",
+  print("\nChecking different overall directions:", end=' ')
   value=s1_full.is_similar_to(other=s1_reverse_diff,hierarchy=hierarchy,
             maximum_length_difference=4)
-  print value
+  print(value)
   assert not value
 
 
   # parallel strands
-  print "\n\nChecking parallel strands..."
+  print("\n\nChecking parallel strands...")
 
   hierarchy=iotbx.pdb.input(source_info='text',
        lines=flex.split_lines(two_chain_text)).construct_hierarchy()
@@ -1325,30 +1524,30 @@ SHEET    2   1 2 LEU B 278  ALA B 282  1  O  ILE B 280   N  ILE A  51
   s2_similar_2=ioss.annotation.from_records(records=flex.split_lines(s2_similar_records_2))
   s2_different=ioss.annotation.from_records(records=flex.split_lines(s2_different_records))
 
-  print "\nChecking similar overall annotations (offset by 2):",
+  print("\nChecking similar overall annotations (offset by 2):", end=' ')
   value=s2_full.is_similar_to(other=s2_similar,hierarchy=hierarchy,
             maximum_length_difference=4)
-  print value
+  print(value)
   assert value
 
-  print "\nChecking similar overall annotations (switch N/O):",
+  print("\nChecking similar overall annotations (switch N/O):", end=' ')
   value=s2_full.is_similar_to(other=s2_similar_2,hierarchy=hierarchy,
             maximum_length_difference=4)
-  print value
+  print(value)
   assert value
 
-  print "\nChecking different overall annotations (offset by 1):",
+  print("\nChecking different overall annotations (offset by 1):", end=' ')
   value=s2_full.is_similar_to(other=s2_different,hierarchy=hierarchy,
             maximum_length_difference=4)
-  print value
+  print(value)
   assert not value
 
-  print "\nOK"
+  print("\nOK")
 
 
 
 def tst_09():
-  print "Comparing sheets and helices...",
+  print("Comparing sheets and helices...", end=' ')
 
   helix_1="""
 HELIX    1   1 GLY A    1  VAL A    8  1                                   8
@@ -1386,7 +1585,7 @@ SHEET    4   2 4 GLYAa  66  GLUAa  71 -1  N  SERAa  70   O  ALAAa  59
       for sa in a.strands:
         for sb in b.strands:
           assert (sa==sb and sa.is_same_as(sb)) or (not sa.is_same_as(sb))
-  print "OK"
+  print("OK")
 
 
 def get_annotation(text):
@@ -1430,45 +1629,45 @@ SHEET    2   1 2 LEU B 278  ALA B 282  1  N  ILE B 280   O  ILE A  51
   hs1=ioss.annotation.from_records(records=flex.split_lines(text_helix_1+text_sheet_1))
   hs2=ioss.annotation.from_records(records=flex.split_lines(text_helix_2+text_sheet_2))
 
-  print "\nCombining annotations"
+  print("\nCombining annotations")
 
   ann_all=get_annotation(one_full_helix_text+two_chain_text)
-  print "\nFull annotation\n",ann_all.as_pdb_str()
+  print("\nFull annotation\n",ann_all.as_pdb_str())
 
-  print "\nCombining annotations from two parts"
+  print("\nCombining annotations from two parts")
   ann_one_full_helix=get_annotation(one_full_helix_text)
-  print "\nAnnotation for helix:\n",ann_one_full_helix.as_pdb_str()
+  print("\nAnnotation for helix:\n",ann_one_full_helix.as_pdb_str())
   ann_two_chain=get_annotation(two_chain_text)
-  print "\nAnnotation for two chains:\n",ann_two_chain.as_pdb_str()
+  print("\nAnnotation for two chains:\n",ann_two_chain.as_pdb_str())
 
   ann_combined=ann_one_full_helix.combine_annotations(other=ann_two_chain,
     hierarchy=hierarchy)
   if ann_combined:
-    print "Combined: \n",ann_combined.as_pdb_str()
+    print("Combined: \n",ann_combined.as_pdb_str())
 
-  print "\nCombining annotations from overlapping helix annotations"
-  print "\nHelix 1 and 2: \n",h1.as_pdb_str(),"\n",h2.as_pdb_str()
+  print("\nCombining annotations from overlapping helix annotations")
+  print("\nHelix 1 and 2: \n",h1.as_pdb_str(),"\n",h2.as_pdb_str())
   ann_combined=h1.combine_annotations(other=h2,hierarchy=hierarchy)
-  print "\nCombined: \n",ann_combined.as_pdb_str()
+  print("\nCombined: \n",ann_combined.as_pdb_str())
 
-  print "\nCombining annotations from overlapping strand annotations"
-  print "\nStrand 1 and 2: \n",s1.as_pdb_str(),"\n",s2.as_pdb_str()
+  print("\nCombining annotations from overlapping strand annotations")
+  print("\nStrand 1 and 2: \n",s1.as_pdb_str(),"\n",s2.as_pdb_str())
   ann_combined=s1.combine_annotations(other=s2,hierarchy=hierarchy,
      minimum_overlap=3,out=sys.stdout)
-  print "\nCombined: \n",ann_combined.as_pdb_str()
+  print("\nCombined: \n",ann_combined.as_pdb_str())
 
-  print "\nCombining annotations from overlapping strand and helix annotations"
-  print "\nStrand/helix 1:\n",hs1.as_pdb_str(),"Strand/helix 2:\n",hs2.as_pdb_str()
+  print("\nCombining annotations from overlapping strand and helix annotations")
+  print("\nStrand/helix 1:\n",hs1.as_pdb_str(),"Strand/helix 2:\n",hs2.as_pdb_str())
   ann_combined=hs1.combine_annotations(other=hs2,hierarchy=hierarchy,
      minimum_overlap=3,out=sys.stdout)
-  print "\nCombined: \n",ann_combined.as_pdb_str()
+  print("\nCombined: \n",ann_combined.as_pdb_str())
 
 
-  print "OK"
+  print("OK")
 
 def tst_11():
 
-  print "\nCounting H-bonds"
+  print("\nCounting H-bonds")
 
   import iotbx.pdb
   import iotbx.pdb.secondary_structure as ioss
@@ -1477,76 +1676,76 @@ def tst_11():
        lines=flex.split_lines(two_chain_text)).construct_hierarchy()
   fss=find_secondary_structure(hierarchy=hierarchy,ss_by_chain=False,out=null_out())
   ann=fss.get_annotation()
-  print ann.as_pdb_str()
+  print(ann.as_pdb_str())
 
-  print "Good H-bonds: %d  Poor H-Bonds: %d" %(
+  print("Good H-bonds: %d  Poor H-Bonds: %d" %(
          fss.number_of_good_h_bonds,
-         fss.number_of_poor_h_bonds,)
+         fss.number_of_poor_h_bonds,))
   assert fss.number_of_good_h_bonds==4 and fss.number_of_poor_h_bonds==0
 
-  print "\nCounting H-bonds using ioss.annotation:"
+  print("\nCounting H-bonds using ioss.annotation:")
 
   number_of_good_h_bonds,number_of_poor_h_bonds=ann.count_h_bonds(
     hierarchy=hierarchy)
-  print "Good H-bonds: %d  Poor H-Bonds: %d" %(
+  print("Good H-bonds: %d  Poor H-Bonds: %d" %(
          fss.number_of_good_h_bonds,
-         fss.number_of_poor_h_bonds,)
+         fss.number_of_poor_h_bonds,))
   assert fss.number_of_good_h_bonds==4 and fss.number_of_poor_h_bonds==0
 
-  print "\nCounting residues in secondary structure:",
-  print ann.count_residues(hierarchy=hierarchy)
+  print("\nCounting residues in secondary structure:", end=' ')
+  print(ann.count_residues(hierarchy=hierarchy))
   assert ann.count_residues(hierarchy=hierarchy)==10
 
-  print "\nCounting H-bonds in helix:"
+  print("\nCounting H-bonds in helix:")
 
   hierarchy=iotbx.pdb.input(source_info='text',
        lines=flex.split_lines(one_full_helix_text)).construct_hierarchy()
   fss=find_secondary_structure(hierarchy=hierarchy,ss_by_chain=False,out=null_out())
   ann=fss.get_annotation()
-  print ann.as_pdb_str()
+  print(ann.as_pdb_str())
 
-  print "\nH-bonds with cutoff=3.5 (default):\n"
+  print("\nH-bonds with cutoff=3.5 (default):\n")
   number_of_good_h_bonds,number_of_poor_h_bonds=ann.count_h_bonds(
     hierarchy=hierarchy)
-  print "Good H-bonds: %d  Poor H-Bonds: %d" %(
+  print("Good H-bonds: %d  Poor H-Bonds: %d" %(
          number_of_good_h_bonds,
-         number_of_poor_h_bonds,)
+         number_of_poor_h_bonds,))
   assert number_of_good_h_bonds==3 and number_of_poor_h_bonds==0
 
-  print "\nH-bonds with cutoff=3.0:\n"
+  print("\nH-bonds with cutoff=3.0:\n")
   number_of_good_h_bonds,number_of_poor_h_bonds=ann.count_h_bonds(
     hierarchy=hierarchy,max_h_bond_length=3.0)
-  print "Good H-bonds: %d  Poor H-Bonds: %d" %(
+  print("Good H-bonds: %d  Poor H-Bonds: %d" %(
          number_of_good_h_bonds,
-         number_of_poor_h_bonds,)
+         number_of_poor_h_bonds,))
   assert number_of_good_h_bonds==1 and number_of_poor_h_bonds==2
 
-  print "\nCount number of residues in secondary structure:",
-  print ann.count_residues(hierarchy=hierarchy)
+  print("\nCount number of residues in secondary structure:", end=' ')
+  print(ann.count_residues(hierarchy=hierarchy))
   assert ann.count_residues(hierarchy=hierarchy) ==7
 
-  print "\nH-bonds in mixed helix/strand"
+  print("\nH-bonds in mixed helix/strand")
 
   hierarchy=iotbx.pdb.input(source_info='text',
        lines=flex.split_lines(two_chain_text+one_full_helix_text)
          ).construct_hierarchy()
   fss=find_secondary_structure(hierarchy=hierarchy,ss_by_chain=False,out=null_out())
   ann=fss.get_annotation()
-  print ann.as_pdb_str()
+  print(ann.as_pdb_str())
 
-  print "\nH-bonds with cutoff=3.0 :\n"
+  print("\nH-bonds with cutoff=3.0 :\n")
   number_of_good_h_bonds,number_of_poor_h_bonds=ann.count_h_bonds(
     hierarchy=hierarchy,max_h_bond_length=3.0)
-  print "Good H-bonds: %d  Poor H-Bonds: %d" %(
+  print("Good H-bonds: %d  Poor H-Bonds: %d" %(
          number_of_good_h_bonds,
-         number_of_poor_h_bonds,)
+         number_of_poor_h_bonds,))
   assert number_of_good_h_bonds==5 and number_of_poor_h_bonds==2
 
-  print "\nCount number of residues in secondary structure:",
-  print ann.count_residues(hierarchy=hierarchy)
+  print("\nCount number of residues in secondary structure:", end=' ')
+  print(ann.count_residues(hierarchy=hierarchy))
   assert ann.count_residues(hierarchy=hierarchy) ==17
 
-  print "\nMake sure force and original ss are equivalent"
+  print("\nMake sure force and original ss are equivalent")
   force_fss=find_secondary_structure(hierarchy=hierarchy,ss_by_chain=False,
       user_annotation_text=ss_text,
       force_secondary_structure_input=True,
@@ -1555,19 +1754,19 @@ def tst_11():
   number_of_good_h_bonds,number_of_poor_h_bonds=\
       force_fss.get_annotation().count_h_bonds(
       hierarchy=hierarchy,max_h_bond_length=3.0)
-  print "Good H-bonds: %d  Poor H-Bonds: %d" %(
+  print("Good H-bonds: %d  Poor H-Bonds: %d" %(
          number_of_good_h_bonds,
-         number_of_poor_h_bonds,)
+         number_of_poor_h_bonds,))
   assert number_of_good_h_bonds==5 and number_of_poor_h_bonds==2
 
-  print "\nInput annotation:"
-  print fss.get_annotation().as_pdb_str()
-  print "\nOutput annotation:"
-  print force_fss.get_annotation().as_pdb_str()
-  print "\nIs same: ",fss.get_annotation().is_similar_to(
-     other=force_fss.get_annotation(),hierarchy=hierarchy)
+  print("\nInput annotation:")
+  print(fss.get_annotation().as_pdb_str())
+  print("\nOutput annotation:")
+  print(force_fss.get_annotation().as_pdb_str())
+  print("\nIs same: ",fss.get_annotation().is_similar_to(
+     other=force_fss.get_annotation(),hierarchy=hierarchy))
 
-  print "\nCorrect bad H-bond register in input"
+  print("\nCorrect bad H-bond register in input")
   fix_fss=find_secondary_structure(hierarchy=hierarchy,ss_by_chain=False,
       user_annotation_text=bad_two_chain_helix_ss,
       force_secondary_structure_input=False,
@@ -1576,18 +1775,18 @@ def tst_11():
   fss=find_secondary_structure(hierarchy=hierarchy,ss_by_chain=False,
       combine_annotations=False,
       out=null_out())
-  print "\nInput:"
-  print bad_two_chain_helix_ss
-  print "\nFixed:"
-  print fix_fss.get_annotation().as_pdb_str()
-  print "\nGood:"
-  print fss.get_annotation().as_pdb_str()
-  print "Is same: ",  fix_fss.get_annotation().is_similar_to(
-    hierarchy=hierarchy,other=fss.get_annotation())
+  print("\nInput:")
+  print(bad_two_chain_helix_ss)
+  print("\nFixed:")
+  print(fix_fss.get_annotation().as_pdb_str())
+  print("\nGood:")
+  print(fss.get_annotation().as_pdb_str())
+  print("Is same: ",  fix_fss.get_annotation().is_similar_to(
+    hierarchy=hierarchy,other=fss.get_annotation()))
   assert fix_fss.get_annotation().is_similar_to(
     hierarchy=hierarchy,other=fss.get_annotation())
 
-  print "\nForce bad H-bond register in input"
+  print("\nForce bad H-bond register in input")
 
   import iotbx.pdb.secondary_structure as ioss
   bad_anno=ioss.annotation.from_records(records=flex.split_lines(
@@ -1598,18 +1797,18 @@ def tst_11():
       force_secondary_structure_input=True,
       combine_annotations=False,
       search_secondary_structure=False,out=null_out())
-  print "\nInput:"
-  print bad_anno.as_pdb_str()
-  print "\nNot fixed:"
-  print no_fix_fss.get_annotation().as_pdb_str()
-  print "\nGood:"
-  print fss.get_annotation().as_pdb_str()
-  print "Is same as unfixed: ",  no_fix_fss.get_annotation().is_similar_to(
-    hierarchy=hierarchy,other=bad_anno)
+  print("\nInput:")
+  print(bad_anno.as_pdb_str())
+  print("\nNot fixed:")
+  print(no_fix_fss.get_annotation().as_pdb_str())
+  print("\nGood:")
+  print(fss.get_annotation().as_pdb_str())
+  print("Is same as unfixed: ",  no_fix_fss.get_annotation().is_similar_to(
+    hierarchy=hierarchy,other=bad_anno))
   assert no_fix_fss.get_annotation().is_similar_to(
     hierarchy=hierarchy,other=bad_anno)
 
-  print "\nNegative residue numbers..."
+  print("\nNegative residue numbers...")
   hierarchy=iotbx.pdb.input(source_info='text',
        lines=flex.split_lines(negative_residues)
          ).construct_hierarchy()
@@ -1620,10 +1819,10 @@ def tst_11():
 SHEET    1   1 2 ASP A  -5  HIS A  -2  0
 SHEET    2   1 2 GLY A 138  ASN A 141 -1  N  ASN A 141   O  ASP A  -5
 """))
-  print fss.get_annotation().as_pdb_str()
+  print(fss.get_annotation().as_pdb_str())
   assert fss.get_annotation().is_same_as(expected)
 
-  print "\nHybrid-36 residue numbers..."
+  print("\nHybrid-36 residue numbers...")
   hierarchy=iotbx.pdb.input(source_info='text',
        lines=flex.split_lines(hybrid_residues)
          ).construct_hierarchy()
@@ -1634,11 +1833,11 @@ SHEET    2   1 2 GLY A 138  ASN A 141 -1  N  ASN A 141   O  ASP A  -5
 SHEET    1   1 2 ASP AXYB2  HIS AXYB5  0
 SHEET    2   1 2 GLY A 138  ASN A 141 -1  N  ASN A 141   O  ASP AXYB2
 """))
-  print fss.get_annotation().as_pdb_str()
+  print(fss.get_annotation().as_pdb_str())
   assert fss.get_annotation().is_same_as(expected)
 
 
-  print "\nNow for antiparallel:Make sure force and original ss are equivalent"
+  print("\nNow for antiparallel:Make sure force and original ss are equivalent")
   hierarchy=iotbx.pdb.input(source_info='text',
        lines=flex.split_lines(antiparallel_text)
          ).construct_hierarchy()
@@ -1653,19 +1852,19 @@ SHEET    2   1 2 GLY A 138  ASN A 141 -1  N  ASN A 141   O  ASP AXYB2
   number_of_good_h_bonds,number_of_poor_h_bonds=\
       force_fss.get_annotation().count_h_bonds(
       hierarchy=hierarchy,max_h_bond_length=3.0)
-  print "Good H-bonds: %d  Poor H-Bonds: %d" %(
+  print("Good H-bonds: %d  Poor H-Bonds: %d" %(
          number_of_good_h_bonds,
-         number_of_poor_h_bonds,)
+         number_of_poor_h_bonds,))
   assert number_of_good_h_bonds==3 and number_of_poor_h_bonds==1
 
-  print "\nInput annotation:"
-  print fss.get_annotation().as_pdb_str()
-  print "\nOutput annotation:"
-  print force_fss.get_annotation().as_pdb_str()
-  print "\nIs same: ",fss.get_annotation().is_similar_to(
-     other=force_fss.get_annotation(),hierarchy=hierarchy)
+  print("\nInput annotation:")
+  print(fss.get_annotation().as_pdb_str())
+  print("\nOutput annotation:")
+  print(force_fss.get_annotation().as_pdb_str())
+  print("\nIs same: ",fss.get_annotation().is_similar_to(
+     other=force_fss.get_annotation(),hierarchy=hierarchy))
 
-  print "\nRemove annotation with too few H-bonds"
+  print("\nRemove annotation with too few H-bonds")
   force_fss=find_secondary_structure(hierarchy=hierarchy,ss_by_chain=False,
       user_annotation_text=antiparallel_ss,
       force_secondary_structure_input=True,
@@ -1675,9 +1874,9 @@ SHEET    2   1 2 GLY A 138  ASN A 141 -1  N  ASN A 141   O  ASP AXYB2
   number_of_good_h_bonds,number_of_poor_h_bonds=\
       force_fss.get_annotation().count_h_bonds(
       hierarchy=hierarchy)
-  print "Good H-bonds: %d  Poor H-Bonds: %d" %(
+  print("Good H-bonds: %d  Poor H-Bonds: %d" %(
          number_of_good_h_bonds,
-         number_of_poor_h_bonds,)
+         number_of_poor_h_bonds,))
   assert number_of_good_h_bonds==4 and number_of_poor_h_bonds==0
 
   force_fss=find_secondary_structure(hierarchy=hierarchy,ss_by_chain=False,
@@ -1688,12 +1887,12 @@ SHEET    2   1 2 GLY A 138  ASN A 141 -1  N  ASN A 141   O  ASP AXYB2
   number_of_good_h_bonds,number_of_poor_h_bonds=\
       force_fss.get_annotation().count_h_bonds(
       hierarchy=hierarchy)
-  print "Good H-bonds: %d  Poor H-Bonds: %d" %(
+  print("Good H-bonds: %d  Poor H-Bonds: %d" %(
          number_of_good_h_bonds,
-         number_of_poor_h_bonds,)
+         number_of_poor_h_bonds,))
   assert number_of_good_h_bonds==0 and number_of_poor_h_bonds==0
 
-  print "\nNow remove annotation with too many poor H-bonds"
+  print("\nNow remove annotation with too many poor H-bonds")
   force_fss=find_secondary_structure(hierarchy=hierarchy,ss_by_chain=False,
       user_annotation_text=antiparallel_ss,
       combine_annotations=False,
@@ -1702,9 +1901,9 @@ SHEET    2   1 2 GLY A 138  ASN A 141 -1  N  ASN A 141   O  ASP AXYB2
   number_of_good_h_bonds,number_of_poor_h_bonds=\
       force_fss.get_annotation().count_h_bonds(
       hierarchy=hierarchy)
-  print "Good H-bonds: %d  Poor H-Bonds: %d" %(
+  print("Good H-bonds: %d  Poor H-Bonds: %d" %(
          number_of_good_h_bonds,
-         number_of_poor_h_bonds,)
+         number_of_poor_h_bonds,))
   assert number_of_good_h_bonds==0 and number_of_poor_h_bonds==0
 
 
@@ -2312,14 +2511,14 @@ SHEET    4   1 4 VAL A 103  ILE A 107 -1  N  ALA A 106   O  ILE A  82
   first_annotation=ioss.annotation.from_records(records=flex.split_lines(first_annotation_text))
   second_annotation=ioss.annotation.from_records(records=flex.split_lines(second_annotation_text))
 
-  print "\nMerging annotations and checking on sheet numbering"
-  print "\nFirst annotation: "
-  print first_annotation.as_pdb_str()
-  print "\nSecond annotation: "
-  print second_annotation.as_pdb_str()
+  print("\nMerging annotations and checking on sheet numbering")
+  print("\nFirst annotation: ")
+  print(first_annotation.as_pdb_str())
+  print("\nSecond annotation: ")
+  print(second_annotation.as_pdb_str())
   merged=second_annotation.combine_annotations(other=first_annotation, hierarchy=hierarchy)
-  print "\nMerged: "
-  print merged.as_pdb_str()
+  print("\nMerged: ")
+  print(merged.as_pdb_str())
   assert merged.is_similar_to(other=second_annotation,hierarchy=hierarchy)
 
 
@@ -2395,15 +2594,15 @@ SHEET    3   1 4 ARG A  81  GLY A  87  1  N  VAL A  83   O  ALA A  12
 SHEET    4   1 4 VAL A 103  ILE A 107 -1  N  ALA A 106   O  ILE A  82
 """
 
-  print "\nRemoving bad annotation and duplicate annotation\n"
+  print("\nRemoving bad annotation and duplicate annotation\n")
 
-  print "\nRemoving duplicate sheets"
+  print("\nRemoving duplicate sheets")
   annotation=ioss.annotation.from_records(records=flex.split_lines(sheet_anno))
-  print annotation.as_pdb_str()
+  print(annotation.as_pdb_str())
   new_annotation=annotation.remove_overlapping_annotations(
       hierarchy=hierarchy)
-  print "New annotation:"
-  print new_annotation.as_pdb_str()
+  print("New annotation:")
+  print(new_annotation.as_pdb_str())
   expected=ioss.annotation.from_records(records=flex.split_lines("""
 SHEET    1   1 4 LYS A  40  VAL A  43  0
 SHEET    2   1 4 ALA A  12  VAL A  18 -1  N  ILE A  17   O  VAL A  41
@@ -2412,14 +2611,14 @@ SHEET    4   1 4 VAL A 103  ILE A 107 -1  N  ALA A 106   O  ILE A  82
    """))
   assert new_annotation.is_same_as(expected)
 
-  print "\nRemoving bad sheets"
+  print("\nRemoving bad sheets")
   annotation=ioss.annotation.from_records(records=flex.split_lines(
       bad_sheet_anno))
-  print annotation.as_pdb_str()
+  print(annotation.as_pdb_str())
   from mmtbx.secondary_structure.find_ss_from_ca import remove_bad_annotation
   new_annotation=remove_bad_annotation(annotation,hierarchy=hierarchy)
-  print "New annotation:"
-  print new_annotation.as_pdb_str()
+  print("New annotation:")
+  print(new_annotation.as_pdb_str())
   expected=ioss.annotation.from_records(records=flex.split_lines("""
 SHEET    1   3 2 ARG A  81  GLY A  87  0
 SHEET    2   3 2 VAL A 103  ILE A 107 -1  N  ALA A 106   O  ILE A  82   """))
@@ -2437,20 +2636,20 @@ SHEET    2   3 2 VAL A 103  ILE A 107 -1  N  ALA A 106   O  ILE A  82   """))
   import iotbx.pdb.secondary_structure as ioss
   annotation=ioss.annotation.from_records(records=flex.split_lines(anno))
 
-  print "\nRemoving duplicate helices"
-  print annotation.as_pdb_str()
+  print("\nRemoving duplicate helices")
+  print(annotation.as_pdb_str())
 
-  print "\nRemoving duplicate helix annotation\n"
+  print("\nRemoving duplicate helix annotation\n")
   expected=ioss.annotation.from_records(records=flex.split_lines("""
 HELIX    1   1 ALA E    8  ALA E   14  1                                   7
   """))
 
   new_annotation=annotation.remove_overlapping_annotations(
       hierarchy=std_hierarchy)
-  print new_annotation.as_pdb_str()
+  print(new_annotation.as_pdb_str())
   assert new_annotation.is_same_as(expected)
 
-  print "\nRemoving bad annotation\n"
+  print("\nRemoving bad annotation\n")
   expected=ioss.annotation.from_records(records=flex.split_lines("""
 HELIX    1   1 ALA E    9  ALA E   14  1                                   7
   """))
@@ -2458,7 +2657,7 @@ HELIX    1   1 ALA E    9  ALA E   14  1                                   7
   from mmtbx.secondary_structure.find_ss_from_ca import remove_bad_annotation
   new_annotation=remove_bad_annotation(annotation,hierarchy=short_hierarchy,
     out=null_out())
-  print new_annotation.as_pdb_str()
+  print(new_annotation.as_pdb_str())
   assert new_annotation.is_same_as(expected)
 
 
@@ -2515,36 +2714,35 @@ SHEET    2   1 3 TYR A 170  ASN A 175 -1  N  ASN A 175   O  VAL A 161
   import iotbx.pdb.secondary_structure as ioss
   hierarchy=iotbx.pdb.input(source_info='text',
         lines=flex.split_lines(text)).construct_hierarchy()
-  annotation=ioss.annotation.from_records(records=flex.split_lines(anno))
-  print "\nAnnotation with insertion codes"
-  print "\nInput annotation:"
-  print annotation.as_pdb_str()
+  input_annotation=ioss.annotation.from_records(records=flex.split_lines(anno))
+  print("\nAnnotation with insertion codes")
+  print("\nInput annotation:")
+  print(input_annotation.as_pdb_str())
+
   fss=find_secondary_structure(hierarchy=hierarchy,ss_by_chain=False,out=null_out())
   new_annotation=fss.get_annotation()
-  print "\nNew annotation:"
-  expected=ioss.annotation.from_records(records=flex.split_lines("""
+  print("\nNew annotation:")
+  print(new_annotation.as_pdb_str())
+
+  expected_new=ioss.annotation.from_records(records=flex.split_lines("""
 HELIX    1   1 TRP A  181  TYR A  186  3                                   6
 SHEET    1   1 3 VAL A 161  VAL A 164  0
 SHEET    2   1 3 TYR A 170  ASN A 175 -1  N  ASN A 175   O  VAL A 161
 SHEET    3   1 3 ILE A 187  ALA A 190 -1  N  ILE A 189   O  TRP A 171
 """))
 
-  print new_annotation.as_pdb_str()
-  assert expected.is_same_as(new_annotation)
+  print(new_annotation.as_pdb_str())
+  assert expected_new.is_same_as(new_annotation)
 
-  print "\nNew forcing input annotation"
-  expected=ioss.annotation.from_records(records=flex.split_lines("""
-SHEET    1   1 2 GLN A 156A VAL A 164  0
-SHEET    2   1 2 TYR A 170  ASN A 175 -1
-"""))
+  print("\nNew forcing input annotation")
 
   force_fss=find_secondary_structure(hierarchy=hierarchy,ss_by_chain=False,
-      user_annotation_text=annotation.as_pdb_str(),
+      user_annotation_text=input_annotation.as_pdb_str(),
       force_secondary_structure_input=True,
       combine_annotations=False,
       out=null_out()).get_annotation()
-  print force_fss.as_pdb_str()
-  assert expected.is_same_as(force_fss)
+  print(force_fss.as_pdb_str())
+  assert input_annotation.is_same_as(force_fss)
 
   helix_icode="""
 ATOM      2  CA  ALA A   1A     11.323  32.055  11.635  1.00 40.00           C
@@ -2572,25 +2770,25 @@ HELIX    1   1 ALA A    1A ALA A   16  1                                  16
         lines=flex.split_lines(helix_icode)).construct_hierarchy()
   annotation=ioss.annotation.from_records(
      records=flex.split_lines(helix_icode_ss))
-  print "\nHelix annotation with insertion codes"
-  print "NOTE: currently misses the residues with insertion codes except those"
-  print "at the ends of a string of insertion codes"
+  print("\nHelix annotation with insertion codes")
+  print("NOTE: currently misses the residues with insertion codes except those")
+  print("at the ends of a string of insertion codes")
   fss=find_secondary_structure(hierarchy=hierarchy,ss_by_chain=False,
       out=null_out()).get_annotation()
-  print fss.as_pdb_str()
+  print(fss.as_pdb_str())
   expected=ioss.annotation.from_records(
      records=flex.split_lines("""
 HELIX    1   1 ALA A    4D ALA A   16  1                                  13
 """))
   assert expected.is_same_as(fss)
 
-  print "\nHelix annotation with input annotation and insertion codes"
+  print("\nHelix annotation with input annotation and insertion codes")
   force_fss=find_secondary_structure(hierarchy=hierarchy,ss_by_chain=False,
       user_annotation_text=annotation.as_pdb_str(),
       force_secondary_structure_input=True,
       combine_annotations=False,
       out=null_out()).get_annotation()
-  print force_fss.as_pdb_str()
+  print(force_fss.as_pdb_str())
   expected=ioss.annotation.from_records(
      records=flex.split_lines("""
 HELIX    1   1 ALA A    1A ALA A   16  1                                  16
@@ -2634,14 +2832,14 @@ HELIX    1   1 VAL U   72  GLY U   77  5                                   6
   annotation=ioss.annotation.from_records(records=flex.split_lines(annotation_text))
   overlapping_annotation=ioss.annotation.from_records(records=flex.split_lines(overlapping_text))
 
-  print "\nMerging annotations that overlap"
-  print "First annotation"
-  print annotation.as_pdb_str()
-  print "Overlapping annotation"
-  print overlapping_annotation.as_pdb_str()
+  print("\nMerging annotations that overlap")
+  print("First annotation")
+  print(annotation.as_pdb_str())
+  print("Overlapping annotation")
+  print(overlapping_annotation.as_pdb_str())
   merged=overlapping_annotation.combine_annotations(other=annotation, hierarchy=hierarchy)
-  print "\nMerged: "
-  print merged.as_pdb_str()
+  print("\nMerged: ")
+  print(merged.as_pdb_str())
   assert merged.is_same_as(other=annotation)
 
 def tst_15():
@@ -2657,13 +2855,96 @@ def tst_15():
      hierarchy=hierarchy,ss_by_chain=True,use_representative_chains=False,out=null_out()).get_annotation()
   annotation_chains_rep=find_secondary_structure(
      hierarchy=hierarchy,ss_by_chain=True,use_representative_chains=True,out=null_out()).get_annotation()
-  print annotation_std
+  print(annotation_std)
   assert annotation_std.is_same_as(other=annotation_chains)
   assert annotation_std.is_same_as(other=annotation_chains_rep)
-  print "OK"
+  print("OK")
+
+
+def tst_16():
+  print("Checking missing atoms...", end=' ')
+  import iotbx.pdb
+  from cctbx.array_family import flex
+  hierarchy=iotbx.pdb.input(source_info='text',
+       lines=flex.split_lines(strands_text)).construct_hierarchy()
+  fss=find_secondary_structure(hierarchy=hierarchy,ss_by_chain=False,out=null_out())
+
+  expected_text="""
+Model 1  N: 6  Start: 23 End: 28
+Class:  Beta strand  N: 6 Start: 23 End: 28  Rise: 3.42 A Dot: 0.97
+
+Model 2  N: 6  Start: 31 End: 36
+Class:  Beta strand  N: 6 Start: 31 End: 36  Rise: 3.54 A Dot: 0.98
+
+Model 3  N: 6  Start: 23 End: 28
+Class:  Beta strand  N: 6 Start: 23 End: 28  Rise: 3.44 A Dot: 0.96
+
+Model 4  N: 6  Start: 31 End: 36
+Class:  Beta strand  N: 6 Start: 31 End: 36  Rise: 3.56 A Dot: 0.98
+
+FINAL PDB RECORDS:
+SHEET    1   1 2 GLY B  23  ASN B  28  0
+SHEET    2   1 2 GLY B  31  ALA B  36 -1  N  ALA B  35   O  PHE B  24
+SHEET    1   2 2 GLY D  23  ASN D  28  0
+SHEET    2   2 2 GLY D  31  ALA D  36 -1  N  ALA D  35   O  PHE D  24
+
+
+FINAL PDB selections:
+"(chain 'B' and resid   23  through   28 ) or (chain 'B' and resid   31  through   36 ) or (chain 'D' and resid   23  through   28 ) or (chain 'D' and resid   31  through   36 )"
+
+"""
+  f=StringIO()
+  fss.show_summary(out=f,verbose=True)
+  found_text=f.getvalue()
+  #assert not test_utils.show_diff(found_text, expected_text)
+  if remove_blank(found_text)!=remove_blank(expected_text):
+    print("Expected: \n%s \nFound: \n%s" %(expected_text,found_text))
+    raise AssertionError("FAILED")
+  print("OK")
+
+def tst_17():
+  print("Checking missing atoms part 2...", end=' ')
+  import iotbx.pdb
+  from cctbx.array_family import flex
+  hierarchy=iotbx.pdb.input(source_info='text',
+       lines=flex.split_lines(strands_add_o_text)).construct_hierarchy()
+  fss=find_secondary_structure(hierarchy=hierarchy,ss_by_chain=False,out=null_out())
+
+  expected_text="""
+Model 1  N: 6  Start: 23 End: 28
+Class:  Beta strand  N: 6 Start: 23 End: 28  Rise: 3.42 A Dot: 0.97
+
+Model 2  N: 6  Start: 31 End: 36
+Class:  Beta strand  N: 6 Start: 31 End: 36  Rise: 3.54 A Dot: 0.98
+
+Model 3  N: 6  Start: 23 End: 28
+Class:  Beta strand  N: 6 Start: 23 End: 28  Rise: 3.44 A Dot: 0.96
+
+Model 4  N: 6  Start: 31 End: 36
+Class:  Beta strand  N: 6 Start: 31 End: 36  Rise: 3.56 A Dot: 0.98
+
+FINAL PDB RECORDS:
+SHEET    1   1 2 GLY B  23  ASN B  28  0
+SHEET    2   1 2 GLY B  31  ALA B  36 -1  N  ALA B  35   O  PHE B  24
+SHEET    1   2 2 GLY D  23  ASN D  28  0
+SHEET    2   2 2 GLY D  31  ALA D  36 -1  N  ALA D  35   O  PHE D  24
+
+
+FINAL PDB selections:
+"(chain 'B' and resid   23  through   28 ) or (chain 'B' and resid   31  through   36 ) or (chain 'D' and resid   23  through   28 ) or (chain 'D' and resid   31  through   36 )"
+"""
+  f=StringIO()
+  fss.show_summary(out=f,verbose=True)
+  found_text=f.getvalue()
+  #assert not test_utils.show_diff(found_text, expected_text)
+  if remove_blank(found_text)!=remove_blank(expected_text):
+    print("Expected: \n%s \nFound: \n%s" %(expected_text,found_text))
+    raise AssertionError("FAILED")
+  print("OK")
+
 
 if __name__=="__main__":
-  import sys
+
   tst_00()
   tst_01()
   tst_02()
@@ -2680,4 +2961,6 @@ if __name__=="__main__":
   tst_13()
   tst_14()
   tst_15()
-  print "OK"
+  tst_16()
+  tst_17()
+  print("OK")

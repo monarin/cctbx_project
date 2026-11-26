@@ -1,4 +1,4 @@
-from __future__ import division
+from __future__ import absolute_import, division, print_function
 import iotbx.phil
 from libtbx.utils import Sorry
 from math import sqrt
@@ -6,6 +6,7 @@ from cctbx import geometry_restraints
 from cctbx.geometry_restraints import linking_class
 from cctbx.array_family import flex
 import sys
+from six.moves import range
 
 origin_ids = linking_class.linking_class()
 
@@ -38,6 +39,14 @@ helix
     .type = float
   top_out = False
     .type = bool
+  angle_sigma_scale = 1
+    .type = float
+    .help = Multiply sigmas for h-bond angles by this value. Original sigmas \
+      range from 5 to 10.
+  angle_sigma_set = None
+    .type = float
+    .help = Use this parameter to set sigmas for h-bond angles to a particular \
+      value
   hbond
     .multiple = True
     .optional = True
@@ -87,6 +96,14 @@ sheet
     .type = float
   top_out = False
     .type = bool
+  angle_sigma_scale = 1
+    .type = float
+    .help = Multiply sigmas for h-bond angles by this value. Original sigmas \
+      range from 5 to 10.
+  angle_sigma_set = None
+    .type = float
+    .help = Use this parameter to set sigmas for h-bond angles to a particular \
+      value
   hbond
     .multiple = True
     .optional = True
@@ -129,6 +146,8 @@ def _create_hbond_angles_proxies(
     O_atom,
     prev_atoms,
     angle_restraint_type=0, # 0-No restraint, 1-outside, 2-inside, 3-beta
+    angle_sigma_scale=1.,
+    angle_sigma_set=None,
     ):
   result = []
   if angle_restraint_type == 0:
@@ -157,29 +176,41 @@ def _create_hbond_angles_proxies(
       # print "    ",atom.id_str()
   # building angle restraints
   for C_atom in C_atoms:
+    if angle_sigma_set is not None:
+      sigma = angle_sigma_set
+    else:
+      sigma = angle_restraints_values[angle_restraint_type-1]["C"][1] * angle_sigma_scale
     p = geometry_restraints.angle_proxy(
         i_seqs=[C_atom.i_seq, O_atom.i_seq, N_atom.i_seq],
         angle_ideal=angle_restraints_values[angle_restraint_type-1]["C"][0],
-        weight=1./angle_restraints_values[angle_restraint_type-1]["C"][1]**2,
+        weight=1./sigma**2,
         origin_id=origin_ids.get_origin_id('hydrogen bonds'))
     result.append(p)
   for CA_atom in CA_atoms:
+    if angle_sigma_set is not None:
+      sigma = angle_sigma_set
+    else:
+      sigma = angle_restraints_values[angle_restraint_type-1]["CA"][1] * angle_sigma_scale
     p = geometry_restraints.angle_proxy(
         i_seqs=[CA_atom.i_seq, N_atom.i_seq, O_atom.i_seq],
         angle_ideal=angle_restraints_values[angle_restraint_type-1]["CA"][0],
-        weight=1./angle_restraints_values[angle_restraint_type-1]["CA"][1]**2,
+        weight=1./sigma**2,
         origin_id=origin_ids.get_origin_id('hydrogen bonds'))
     result.append(p)
   for C_1_atom in C_1_atoms:
+    if angle_sigma_set is not None:
+      sigma = angle_sigma_set
+    else:
+      sigma = angle_restraints_values[angle_restraint_type-1]["C-1"][1] * angle_sigma_scale
     p = geometry_restraints.angle_proxy(
         i_seqs=[C_1_atom.i_seq, N_atom.i_seq, O_atom.i_seq],
         angle_ideal=angle_restraints_values[angle_restraint_type-1]["C-1"][0],
-        weight=1./angle_restraints_values[angle_restraint_type-1]["C-1"][1]**2,
+        weight=1./sigma**2,
         origin_id=origin_ids.get_origin_id('hydrogen bonds'))
     result.append(p)
   return result
 
-def _create_hbond_proxy (
+def _create_hbond_proxy(
     acceptor_atoms,
     donor_atoms,
     hbond_counts,
@@ -191,17 +222,19 @@ def _create_hbond_proxy (
     weight=1.0,
     sigma=None,
     slack=None,
+    angle_sigma_scale=1.,
+    angle_sigma_set=None,
     top_out=False,
-    log=sys.stdout) :
+    log=sys.stdout):
   assert sigma is not None
   assert slack is not None
   donors = []
   acceptors = []
   for atom in acceptor_atoms :
-    if (atom.name == ' O  ') :
+    if (atom.name == ' O  '):
       acceptors.append(atom)
   for atom in donor_atoms :
-    if (atom.name == ' N  ') :
+    if (atom.name == ' N  '):
       donors.append(atom)
   result = []
   angle_proxies = []
@@ -219,28 +252,28 @@ def _create_hbond_proxy (
         donor_acceptor_pairs.append((donor, acceptors[0]))
     for donor, acceptor in donor_acceptor_pairs:
       # print "  linking:", donor.id_str(), acceptor.id_str()
-      if (hbond_counts[donor.i_seq] > 0) :
-        print >> log, "      WARNING: donor atom is already bonded, skipping"
-        print >> log, "    %s" % donor_labels.id_str()
+      if (hbond_counts[donor.i_seq] > 0):
+        print("      WARNING: donor atom is already bonded, skipping", file=log)
+        print("    %s" % donor_labels.id_str(), file=log)
         return result, angle_proxies
-      elif (hbond_counts[acceptor.i_seq] > 0) :
-        print >> log, "      WARNING: acceptor atom is already bonded, skipping"
-        print >> log, "    %s" % acceptor_labels.id_str()
+      elif (hbond_counts[acceptor.i_seq] > 0):
+        print("      WARNING: acceptor atom is already bonded, skipping", file=log)
+        print("    %s" % acceptor_labels.id_str(), file=log)
         return result, angle_proxies
-      if (remove_outliers) and (distance_cut > 0) :
+      if (remove_outliers) and (distance_cut > 0):
         dist = donor.distance(acceptor)
-        if (dist > distance_cut) :
-          print >> log, "      removed outlier: %.3fA  %s --> %s (cutoff:%.3fA)"%(
-              dist, donor.id_str(), acceptor.id_str(), distance_cut)
+        if (dist > distance_cut):
+          print("      removed outlier: %.3fA  %s --> %s (cutoff:%.3fA)"%(
+              dist, donor.id_str(), acceptor.id_str(), distance_cut), file=log)
           return result, angle_proxies
         if dist > 10:
-          print >> log, "      removed unreasonable: %.3fA  %s --> %s (cutoff:%.3fA)"%(
-              dist, donor.id_str(), acceptor.id_str(), distance_cut)
+          print("      removed unreasonable: %.3fA  %s --> %s (cutoff:%.3fA)"%(
+              dist, donor.id_str(), acceptor.id_str(), distance_cut), file=log)
           return results, angle_proxies
       limit = -1
-      if (top_out) :
+      if (top_out):
         limit = (distance_cut - distance_ideal)**2 * weight/(sigma**2)
-        print "limit: %.2f" % limit
+        print("limit: %.2f" % limit)
       proxy = geometry_restraints.bond_simple_proxy(
         i_seqs=(donor.i_seq, acceptor.i_seq),
         distance_ideal=distance_ideal,
@@ -255,14 +288,17 @@ def _create_hbond_proxy (
             N_atom=donor,
             O_atom=acceptor,
             prev_atoms=prev_atoms,
-            angle_restraint_type=angle_restraint_type)
+            angle_restraint_type=angle_restraint_type,
+            angle_sigma_scale=angle_sigma_scale,
+            angle_sigma_set=angle_sigma_set,
+            )
         angle_proxies += ap
     return result, angle_proxies
   else :
-    print >> log, "WARNING: missing atoms!"
+    print("WARNING: missing atoms!", file=log)
     return result, angle_proxies
 
-def create_helix_hydrogen_bond_proxies (
+def create_helix_hydrogen_bond_proxies(
     params,
     pdb_hierarchy,
     selection_cache,
@@ -272,7 +308,7 @@ def create_helix_hydrogen_bond_proxies (
     distance_cut,
     remove_outliers,
     restrain_hbond_angles,
-    log=sys.stdout) :
+    log=sys.stdout):
   assert (not None in [distance_ideal, distance_cut])
   generated_proxies = geometry_restraints.shared_bond_simple_proxy()
   hb_angle_proxies = []
@@ -284,12 +320,12 @@ def create_helix_hydrogen_bond_proxies (
   elif helix_class == "3_10" :
     helix_step = 3
   else :
-    print >> log, "  Don't know bonding for helix class %s." % helix_class
+    print("  Don't know bonding for helix class %s." % helix_class, file=log)
     return generated_proxies, hb_angle_proxies
   try :
     helix_selection = selection_cache.selection(params.selection)
-  except Exception, e :
-    print >> log, str(e)
+  except Exception as e :
+    print(str(e), file=log)
     return generated_proxies, hb_angle_proxies
   assert (helix_step in [3, 4, 5])
   helix_rgs = _get_residue_groups_from_selection(pdb_hierarchy, helix_selection)
@@ -297,8 +333,8 @@ def create_helix_hydrogen_bond_proxies (
   just_after_pro = False
   while i < len(helix_rgs)-helix_step:
     if helix_rgs[i+helix_step].atom_groups()[0].resname.strip() == "PRO":
-      print >> log, "      Proline residue: %s - end of helix" % \
-        (helix_rgs[i+helix_step].id_str())
+      print("      Proline residue: %s - end of helix" % \
+        (helix_rgs[i+helix_step].id_str()), file=log)
       i += 3
       just_after_pro = True
       continue # XXX is this safe?
@@ -321,6 +357,8 @@ def create_helix_hydrogen_bond_proxies (
       weight=weight,
       sigma=params.sigma,
       slack=params.slack,
+      angle_sigma_scale=params.angle_sigma_scale,
+      angle_sigma_set=params.angle_sigma_set,
       log=log)
     for proxy in proxies:
       generated_proxies.append(proxy)
@@ -328,7 +366,7 @@ def create_helix_hydrogen_bond_proxies (
     i += 1
   return generated_proxies, hb_angle_proxies
 
-def create_sheet_hydrogen_bond_proxies (
+def create_sheet_hydrogen_bond_proxies(
     sheet_params,
     pdb_hierarchy,
     selection_cache,
@@ -338,7 +376,7 @@ def create_sheet_hydrogen_bond_proxies (
     distance_cut,
     remove_outliers,
     restrain_hbond_angles,
-    log=sys.stdout) :
+    log=sys.stdout):
   assert (not None in [distance_ideal, distance_cut])
   angle_restraint_type = 0
   if restrain_hbond_angles:
@@ -352,7 +390,7 @@ def create_sheet_hydrogen_bond_proxies (
   n_proxies = 0
   k = 0
   generated_proxies = geometry_restraints.shared_bond_simple_proxy()
-  while k < len(sheet_params.strand) :
+  while k < len(sheet_params.strand):
     curr_strand = sheet_params.strand[k]
     curr_selection = selection_cache.selection(curr_strand.selection)
     curr_start = None
@@ -372,21 +410,24 @@ def create_sheet_hydrogen_bond_proxies (
         error_msg = """\
 Wrong registration in SHEET record. One of these selections
 "%s" or "%s"
-yielded zero or several atoms. Possible reason for it is the presence of
-insertion codes or alternative conformations for one of these residues or
-the .pdb file was edited without updating SHEET records.""" \
+yielded zero or several atoms. Possible reasons for this are:
+  - the presence of insertion codes or alternative conformations
+    for one of these residues;
+  - the model file was edited without updating SHEET records;
+  - SHEET definition in model header or parameter file mismatch
+    (delete or update SHEET definitions).""" \
 % (curr_strand.bond_start_current, curr_strand.bond_start_previous)
         raise Sorry(error_msg)
 
       current_start_res_is_donor = pdb_hierarchy.atoms().select(curr_start)[0].name.strip() == 'N'
-      if (len_curr_residues > 0) and (len_prev_residues > 0) :
+      if (len_curr_residues > 0) and (len_prev_residues > 0):
         i = _find_start_residue(
           residues=prev_rgs,
           start_selection=prev_start)
         j = _find_start_residue(
           residues=curr_rgs,
           start_selection=curr_start)
-        if (i >= 0) and (j >= 0) :
+        if (i >= 0) and (j >= 0):
           # move i,j pointers from registration residues to the beginning of
           # beta-strands
           while (1 < i and
@@ -398,7 +439,7 @@ the .pdb file was edited without updating SHEET records.""" \
             elif curr_strand.sense == "antiparallel":
               i -= 2
               j += 2
-          if (curr_strand.sense == "parallel") :
+          if (curr_strand.sense == "parallel"):
             # some tweaking for ensure correct donor assignment
             if i >= 2 and not current_start_res_is_donor:
               i -= 2
@@ -435,14 +476,16 @@ the .pdb file was edited without updating SHEET records.""" \
                     sigma=sheet_params.sigma,
                     slack=sheet_params.slack,
                     top_out=sheet_params.top_out,
+                    angle_sigma_scale=sheet_params.angle_sigma_scale,
+                    angle_sigma_set=sheet_params.angle_sigma_set,
                     log=log)
                 for proxy in proxies:
                   generated_proxies.append(proxy)
                 hb_angle_proxies += angle_proxies
-          elif (curr_strand.sense == "antiparallel") :
+          elif (curr_strand.sense == "antiparallel"):
             while(i < len_prev_residues and j >= 0):
               prev_atoms = None
-              if (prev_rgs[i].atom_groups()[0].resname.strip() != "PRO") :
+              if (prev_rgs[i].atom_groups()[0].resname.strip() != "PRO"):
                 if i > 0:
                   prev_atoms = prev_rgs[i-1].atoms()
                 proxies, angle_proxies = _create_hbond_proxy(
@@ -458,13 +501,15 @@ the .pdb file was edited without updating SHEET records.""" \
                   sigma=sheet_params.sigma,
                   slack=sheet_params.slack,
                   top_out=sheet_params.top_out,
+                  angle_sigma_scale=sheet_params.angle_sigma_scale,
+                  angle_sigma_set=sheet_params.angle_sigma_set,
                   log=log)
                 for proxy in proxies:
                   generated_proxies.append(proxy)
                 hb_angle_proxies += angle_proxies
 
               prev_atoms = None
-              if (curr_rgs[j].atom_groups()[0].resname.strip() != "PRO") :
+              if (curr_rgs[j].atom_groups()[0].resname.strip() != "PRO"):
                 if j > 0:
                   prev_atoms = curr_rgs[j-1].atoms()
                 proxies, angle_proxies = _create_hbond_proxy(
@@ -480,6 +525,8 @@ the .pdb file was edited without updating SHEET records.""" \
                   sigma=sheet_params.sigma,
                   slack=sheet_params.slack,
                   top_out=sheet_params.top_out,
+                  angle_sigma_scale=sheet_params.angle_sigma_scale,
+                  angle_sigma_set=sheet_params.angle_sigma_set,
                   log=log)
                 for proxy in proxies:
                   generated_proxies.append(proxy)
@@ -487,30 +534,30 @@ the .pdb file was edited without updating SHEET records.""" \
               i += 2;
               j -= 2;
           else :
-            print >> log, "  WARNING: strand direction not defined!"
-            print >> log, "    previous: %s" % prev_strand
-            print >> log, "    current: %s" % curr_strand.selection
+            print("  WARNING: strand direction not defined!", file=log)
+            print("    previous: %s" % prev_strand, file=log)
+            print("    current: %s" % curr_strand.selection, file=log)
         else :
-          print >> log, "  WARNING: can't find start of bonding for strands!"
-          print >> log, "    previous: %s" % prev_strand
-          print >> log, "    current: %s" % curr_strand.selection
+          print("  WARNING: can't find start of bonding for strands!", file=log)
+          print("    previous: %s" % prev_strand, file=log)
+          print("    current: %s" % curr_strand.selection, file=log)
       else :
-        print >> log, "  WARNING: can't find one or more strands!"
-        print >> log, "    previous: %s" % prev_strand
-        print >> log, "    current: %s" % curr_strand.selection
+        print("  WARNING: can't find one or more strands!", file=log)
+        print("    previous: %s" % prev_strand, file=log)
+        print("    current: %s" % curr_strand.selection, file=log)
     k += 1
     prev_strand = curr_strand.selection
     prev_selection = curr_selection
     prev_rgs = curr_rgs
   return generated_proxies, hb_angle_proxies
 
-def _find_start_residue (
+def _find_start_residue(
     residues,
-    start_selection) :
+    start_selection):
   start_i_seqs = start_selection.iselection()
-  for i, residue in enumerate(residues) :
+  for i, residue in enumerate(residues):
     atom_i_seqs = residue.atoms().extract_i_seq()
-    if (atom_i_seqs.intersection(start_i_seqs).size() > 0) :
+    if (atom_i_seqs.intersection(start_i_seqs).size() > 0):
       return i
   return -1
 
@@ -518,6 +565,9 @@ def _get_residue_groups_from_selection(pdb_hierarchy, bool_selection):
   # Selection should cover only one chain
   assert isinstance(bool_selection, flex.bool)
   i_seqs = bool_selection.iselection()
+  if len(i_seqs) == 0:
+    raise Sorry(
+        "Error in SS definitions, most likely atoms are absent for one of them.")
   a = pdb_hierarchy.atoms()[i_seqs[0]]
   ch_id = a.parent().parent().parent().id
   rgs = []
@@ -527,7 +577,8 @@ def _get_residue_groups_from_selection(pdb_hierarchy, bool_selection):
         for rg in chain.residue_groups():
           if bool_selection[rg.atoms()[0].i_seq]:
             rgs.append(rg)
-        return rgs
+        if len(rgs)>0:
+          return rgs
   return rgs
 
 ########################################################################
@@ -535,7 +586,7 @@ def _get_residue_groups_from_selection(pdb_hierarchy, bool_selection):
 #
 # Won't be used soon
 #
-class find_helices_simple (object) :
+class find_helices_simple(object):
   """
   Identify helical regions, defined as any three or more contiguous residues
   with phi and psi within specified limits:
@@ -544,69 +595,69 @@ class find_helices_simple (object) :
   This is much more tolerant of distorted models than KSDSSP, but will still
   miss helices in poor structures.
   """
-  def __init__ (self, pdb_hierarchy) :
+  def __init__(self, pdb_hierarchy):
     self.pdb_hierarchy = pdb_hierarchy
     self._helices = []
     self._current_helix = []
     self.run()
 
-  def process_break (self) :
-    if (len(self._current_helix) > 3) :
+  def process_break(self):
+    if (len(self._current_helix) > 3):
       self._helices.append(self._current_helix)
     self._current_helix = []
 
-  def push_back (self, chain_id, resseq) :
-    if (len(self._current_helix) > 0) :
+  def push_back(self, chain_id, resseq):
+    if (len(self._current_helix) > 0):
       last_chain, last_resseq = self._current_helix[-1]
-      if (last_chain == chain_id) :
+      if (last_chain == chain_id):
         self._current_helix.append((chain_id,resseq))
     else :
       self._current_helix = [(chain_id, resseq)]
 
-  def run (self) :
+  def run(self):
     import mmtbx.rotamer
     import iotbx.pdb
     get_class = iotbx.pdb.common_residue_names_get_class
     atoms = self.pdb_hierarchy.atoms()
     sites_cart = atoms.extract_xyz()
     current_helix = []
-    for model in self.pdb_hierarchy.models() :
-      for chain in model.chains() :
+    for model in self.pdb_hierarchy.models():
+      for chain in model.chains():
         main_conf = chain.conformers()[0]
         residues = main_conf.residues()
-        for i_res in range(len(residues) - 1) :
+        for i_res in range(len(residues) - 1):
           residue1 = residues[i_res]
-          if (get_class(residue1.resname) == "common_amino_acid") :
+          if (get_class(residue1.resname) == "common_amino_acid"):
             residue0 = None
-            if (i_res > 0) :
+            if (i_res > 0):
               residue0 = residues[i_res - 1]
             residue2 = residues[i_res+1]
             resseq1 = residue1.resseq_as_int()
             resseq2 = residue2.resseq_as_int()
-            if (residue0 is not None) :
+            if (residue0 is not None):
               if ((resseq2 == (resseq1 + 1)) or
                   ((resseq2 == resseq1) and
-                   (residue1.icode != residue2.icode))) :
+                   (residue1.icode != residue2.icode))):
                 resseq0 = residue0.resseq_as_int()
                 if ((resseq0 == (resseq1 - 1)) or ((resseq0 == resseq1) and
-                    (residue0.icode != residue1.icode))) :
+                    (residue0.icode != residue1.icode))):
                   phi_psi_i_seqs = mmtbx.rotamer.get_phi_psi_indices(
                     prev_res=residue0,
                     residue=residue1,
                     next_res=residue2)
-                  if (phi_psi_i_seqs.count(None) > 0) :
+                  if (phi_psi_i_seqs.count(None) > 0):
                     continue
                   (phi, psi) = mmtbx.rotamer.phi_psi_from_sites(
                     i_seqs=phi_psi_i_seqs,
                     sites_cart=sites_cart)
-                  if is_approximately_helical(phi, psi) :
+                  if is_approximately_helical(phi, psi):
                     self.push_back(chain.id, resseq1)
                     continue
                   else :
                     pass
             self.process_break()
 
-  def build_selections (self) :
+  def build_selections(self):
     atom_selections = []
     for helix in self._helices :
       chain_id = helix[0][0]
@@ -615,47 +666,47 @@ class find_helices_simple (object) :
       atom_selections.append(selection)
     return atom_selections
 
-  def as_restraint_group_phil (self) :
+  def as_restraint_group_phil(self):
     phil_strs = []
-    for selection in self.build_selections() :
+    for selection in self.build_selections():
       helix_str = """helix {\n  selection = "%s"\n}""" % selection
       phil_strs.append(helix_str)
-    if (len(phil_strs) > 0) :
+    if (len(phil_strs) > 0):
       master_phil = iotbx.phil.parse(helix_group_params_str)
       helix_phil = iotbx.phil.parse("\n".join(phil_strs))
       return master_phil.fetch(source=helix_phil)
     return None
 
-  def as_restraint_groups (self) :
+  def as_restraint_groups(self):
     helix_phil = self.as_restraint_group_phil()
-    if (helix_phil is not None) :
+    if (helix_phil is not None):
       return helix_phil.extract()
     return None
 
-  def as_pdb_records (self) :
+  def as_pdb_records(self):
     pass
 
-  def show (self, out=sys.stdout) :
-    if (len(self._helices) == 0) :
-      print >> out, "No recognizable helices."
+  def show(self, out=sys.stdout):
+    if (len(self._helices) == 0):
+      print("No recognizable helices.", file=out)
     else :
-      print >> out, "%d helix-like regions found:" % len(self._helices)
-    for selection in self.build_selections() :
-      print >> out, "  %s" % selection
+      print("%d helix-like regions found:" % len(self._helices), file=out)
+    for selection in self.build_selections():
+      print("  %s" % selection, file=out)
 
-def is_approximately_helical (phi, psi) :
-  if (-120 < phi < -20) and (-80 < psi < -10) :
+def is_approximately_helical(phi, psi):
+  if (-120 < phi < -20) and (-80 < psi < -10):
     return True
   return False
 
 # FIXME
-def _find_strand_bonding_start (atoms,
+def _find_strand_bonding_start(atoms,
     prev_strand_donors,
     prev_strand_acceptors,
     curr_strand_donors,
     curr_strand_acceptors,
     sense,
-    max_distance_cutoff=4.5) :
+    max_distance_cutoff=4.5):
   assert sense != "unknown"
   assert prev_strand_donors.size() == prev_strand_acceptors.size()
   assert curr_strand_donors.size() == curr_strand_acceptors.size()
@@ -667,6 +718,6 @@ def _find_strand_bonding_start (atoms,
       (x1, y1, z1) = sites_cart[donor_i_seq]
       (x2, y2, z2) = sites_cart[acceptor_j_seq]
       dist = sqrt((x2-x1)**2 + (y2-y1)**2 + (z2-z1)**2)
-      if (dist < min_dist) :
+      if (dist < min_dist):
         best_pair = (donor_i_seq, acceptor_i_seq)
   return best_pair

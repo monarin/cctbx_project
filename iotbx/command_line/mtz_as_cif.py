@@ -1,4 +1,6 @@
-from __future__ import division
+"""Convert MTZ reflection file to mmCIF"""
+
+from __future__ import absolute_import, division, print_function
 # LIBTBX_SET_DISPATCHER_NAME phenix.mtz_as_cif
 
 import os
@@ -11,6 +13,7 @@ from iotbx import reflection_file_utils
 
 from iotbx.cif_mtz_data_labels import phenix_to_cif_labels_dict,\
   ccp4_to_cif_labels_dict
+from six.moves import zip
 # Probably we can align with what PDB choose to use
 # http://mmcif.wwpdb.org/dictionaries/mmcif_pdbx_v40.dic/Categories/refln.html
 # comply with newer version:
@@ -63,7 +66,7 @@ cif_labels = None
 """)
 
 def format_usage_message(log=sys.stdout):
-  print >> log, "-"*79
+  print("-"*79, file=log)
   msg = """\
 phenix.mtz_as_cif: Convert mtz to CIF format.
 The tool will automatically recognize most of the labels from Phenix and CCP4
@@ -80,20 +83,20 @@ Usage examples:
   phenix.mtz_as_cif data.mtz output_file=custom.cif mtz_labels="FOBS SIGFOBS"
       cif_labels="_refln.custom1 _refln.custom2"
 """
-  print >> log, msg
-  print >> log, "-"*79
-  print >> log, master_phil.show()
+  print(msg, file=log)
+  print("-"*79, file=log)
+  print(master_phil.show(), file=log)
 
 def run(args, params=None, out=sys.stdout):
   from iotbx import file_reader
   work_params = params
-  if (work_params is None) :
+  if (work_params is None):
     cmdline = iotbx.phil.process_command_line_with_files(
       args=args,
       master_phil=master_phil,
       reflection_file_def="mtz_as_cif.mtz_file")
     work_params = cmdline.work.extract()
-  if (len(work_params.mtz_as_cif.mtz_file) == 0) :
+  if (len(work_params.mtz_as_cif.mtz_file) == 0):
     format_usage_message(log = out)
     return
   work_params = work_params.mtz_as_cif
@@ -101,7 +104,7 @@ def run(args, params=None, out=sys.stdout):
   for file_name in work_params.mtz_file :
     input_file = file_reader.any_file(file_name)
     input_file.check_file_type("hkl")
-    if (input_file.file_object.file_type() != 'ccp4_mtz') :
+    if (input_file.file_object.file_type() != 'ccp4_mtz'):
       raise Sorry("Error reading '%s' - only MTZ files may be used as input."
         % file_name)
     mtz_objects.append(input_file.file_object.file_content())
@@ -113,7 +116,7 @@ def run(args, params=None, out=sys.stdout):
       custom_cif_labels_dict.setdefault(mtz_label, cif_label)
   output_files = []
   for mtz_file_name, mtz_object in zip(work_params.mtz_file, mtz_objects):
-    print >> out, "Converting %s" %mtz_file_name
+    print("Converting %s" %mtz_file_name, file=out)
     cif_blocks = mtz_as_cif_blocks(
       mtz_object, custom_cif_labels_dict=custom_cif_labels_dict).cif_blocks
 
@@ -124,7 +127,7 @@ def run(args, params=None, out=sys.stdout):
     cif_model = iotbx.cif.model.cif()
     # This is gross... refactor some time the whole thing.
     for key in cif_blocks.keys():
-      print key
+      print(key)
       if key == "xray" and cif_blocks["xray"] is not None:
         cif_model[prefix] = cif_blocks["xray"].cif_block
 
@@ -133,10 +136,10 @@ def run(args, params=None, out=sys.stdout):
 
       elif cif_blocks[key] is not None:
         cif_model[prefix+"_"+key] = cif_blocks[key].cif_block
-    with open(output_file, "wb") as f:
-      print >> out, "Writing data and map coefficients to CIF file:\n  %s" % \
-        (f.name)
-      print >> f, cif_model
+    with open(output_file, "w") as f:
+      print("Writing data and map coefficients to CIF file:\n  %s" % \
+        (f.name), file=out)
+      print(cif_model, file=f)
       output_files.append(output_file)
   return output_files
 
@@ -241,13 +244,13 @@ class mtz_as_cif_blocks(object):
           self.cif_blocks[data_type].add_miller_array(array, column_names=column_names)
 
     if len(unknown_mtz_labels):
-      print >> log, "Warning: Unknown mtz label%s: %s" %(
-        plural_s(len(unknown_mtz_labels))[1], ", ".join(unknown_mtz_labels))
-      print >> log, "  Use mtz_labels and cif_labels keywords to provide translation for custom labels."
+      print("Warning: Unknown mtz label%s: %s" %(
+        plural_s(len(unknown_mtz_labels))[1], ", ".join(unknown_mtz_labels)), file=log)
+      print("  Use mtz_labels and cif_labels keywords to provide translation for custom labels.", file=log)
 
-    data_types = set(["xray"])
+    data_types = ["xray"]
     if self.cif_blocks['neutron'] is not None:
-      data_types.add("neutron")
+      data_types.append("neutron")
 
     if input_observations_xray is None and f_obs_filtered_xray is not None:
       self.cif_blocks["xray"].add_miller_array(
@@ -275,7 +278,13 @@ class mtz_as_cif_blocks(object):
           array=r_free, column_name='_refln.pdbx_r_free_flag')
 
       if input_obs is None or r_free is None: continue
-      if (test_flag_value is None) :
+      # it may happen that there is an Rfree array but the values are all identical
+      if (r_free.data().all_eq(r_free.data()[0])):
+        refln_status = r_free.array(data=flex.std_string(r_free.size(), "o"))
+        self.cif_blocks[data_type].add_miller_array(
+          array=refln_status, column_name="_refln.status")
+        continue
+      if (test_flag_value is None):
         test_flag_value = reflection_file_utils.guess_r_free_flag_value(
           miller_array=r_free)
       assert (test_flag_value is not None)
@@ -301,19 +310,18 @@ class mtz_as_cif_blocks(object):
       return column_names
     else:
       result = []
-      assert array.anomalous_flag()
-      ref_type = 'F'
+      #  assert array.anomalous_flag()  # No it is not anomalous (only one
+      #    number per reflection...it is anomalous data though
+      result = ["_refln.pdbx_anom_difference",
+                "_refln.pdbx_anom_difference_sigma",]
+
       if labels[0].lower().find('i-obs') >= 0:
-        ref_type = 'I'
-      result = ["_refln.pdbx_%s_plus" % ref_type,
-          "_refln.pdbx_%s_plus_sigma" % ref_type,
-          "_refln.pdbx_%s_minus" % ref_type,
-          "_refln.pdbx_%s_minus_sigma" % ref_type]
+        raise Sorry("Cannot convert anomalous differences on intensity to CIF")
       return result
 
 
-def validate_params (params) :
-  if (len(params.mtz_as_cif.mtz_file) == 0) :
+def validate_params(params):
+  if (len(params.mtz_as_cif.mtz_file) == 0):
     raise Sorry("No MTZ file(s) specified!")
   return True
 

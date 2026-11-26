@@ -1,16 +1,16 @@
-from __future__ import division
+from __future__ import absolute_import, division, print_function
 
 import libtbx.load_env
 from libtbx.test_utils import approx_equal
 from libtbx.utils import null_out
 import os
 
-def exercise () :
+def exercise():
   hkl_file = libtbx.env.find_in_repositories(
     relative_path="phenix_regression/reflection_files/1yjp.mtz",
     test=os.path.isfile)
-  if (hkl_file is None) :
-    print "Skipping"
+  if (hkl_file is None):
+    print("Skipping")
     return
   from iotbx.command_line import reindex
   from iotbx import file_reader
@@ -25,6 +25,6 @@ def exercise () :
     (23.477, 4.866, 21.937, 90.0, 107.08, 90.0), eps=0.001))
   assert (arrays_out[0].info().labels == ["FOBS_X","SIGFOBS_X"])
 
-if (__name__ == "__main__") :
+if (__name__ == "__main__"):
   exercise()
-  print "OK"
+  print("OK")

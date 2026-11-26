@@ -1,7 +1,5 @@
-from __future__ import division
+from __future__ import absolute_import, division, print_function
 import mmtbx.model
-from mmtbx import monomer_library
-import mmtbx.monomer_library.pdb_interpretation
 import iotbx.pdb
 import time
 from libtbx.utils import null_out
@@ -99,20 +97,19 @@ def run():
   Check metal linking (make sure CE1 is not included).
   """
   pdb_inp = iotbx.pdb.input(lines=pdb_str, source_info=None)
-  params = monomer_library.pdb_interpretation.master_params.extract()
-  params.automatic_linking.link_metals=True
+  params = mmtbx.model.manager.get_default_pdb_interpretation_params()
+  params.pdb_interpretation.automatic_linking.link_metals=True
   m = mmtbx.model.manager(
-    model_input               = pdb_inp,
-    build_grm                 = True,
-    pdb_interpretation_params = params,
-    log                       = null_out())
+    model_input = pdb_inp,
+    log         = null_out())
+  m.process(pdb_interpretation_params=params, make_restraints=True)
   grm = m.get_restraints_manager()
   ph = m.get_hierarchy()
   atoms = list(ph.atoms())
   assert atoms[73].element.strip().upper() == "FE"
   bond_proxies_simple, asu = grm.geometry.get_all_bond_proxies(
     sites_cart = ph.atoms().extract_xyz())
-  expected_link_atoms = ['NE2', "NE2", "OE1", "OE2", "O", "O", "O"]
+  expected_link_atoms = ['NE2', "OE2", "O", "O", "O"]
   expected_link_atoms.sort()
   linked_atoms_found = []
   for p in bond_proxies_simple:
@@ -128,4 +125,4 @@ def run():
 if (__name__ == "__main__"):
   t0 = time.time()
   run()
-  print "Time: %6.3f"%(time.time()-t0)
+  print("Time: %6.3f"%(time.time()-t0))

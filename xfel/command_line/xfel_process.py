@@ -2,23 +2,28 @@
 #
 # LIBTBX_SET_DISPATCHER_NAME cctbx.xfel.process
 
-from __future__ import division
+from __future__ import absolute_import, division, print_function
+from libtbx.mpi4py import mpi_abort_on_exception
 
 help_message = '''
 
-See dials.stills_process.
+See dials.stills_process. This version adds mysql database logging for each event.
 
 '''
 
+from dials.util import show_mail_on_error
 from libtbx.phil import parse
 control_phil_str = '''
   input {
+    run_num = None
+      .type = str
+      .help = Run name (not necessarily a number)
     trial = None
       .type = int
-      .help = Optional. Trial number for this run.
+      .help = Trial number for this run.
     rungroup = None
       .type = int
-      .help = Optional. Useful for organizing runs with similar parameters into logical \
+      .help = Useful for organizing runs with similar parameters into logical \
               groupings.
    }
 '''
@@ -54,10 +59,7 @@ radial_average_phil_str = '''
   }
 '''
 
-import dials.command_line.stills_process
 from xfel.ui.db.frame_logging import DialsProcessorWithLogging
-dials.command_line.stills_process.Processor = DialsProcessorWithLogging
-
 from dials.command_line.stills_process import dials_phil_str, program_defaults_phil_str, Script as DialsScript, control_phil_str as dials_control_phil_str
 from xfel.ui import db_phil_str
 
@@ -68,7 +70,7 @@ class Script(DialsScript):
   '''A class for running the script.'''
   def __init__(self):
     '''Initialise the script.'''
-    from dials.util.options import OptionParser
+    from dials.util.options import ArgumentParser
     import libtbx.load_env
 
     # The script usage
@@ -76,18 +78,25 @@ class Script(DialsScript):
 
     self.tag = None
     self.reference_detector = None
+    self._lookup_cache: dict = {}
 
     # Create the parser
-    self.parser = OptionParser(
+    self.parser = ArgumentParser(
       usage=usage,
       phil=phil_scope,
       epilog=help_message
       )
 
+  @mpi_abort_on_exception
+  def run(self):
+    super().run()
+
+
+
 if __name__ == '__main__':
-  from dials.util import halraiser
-  try:
+  import dials.command_line.stills_process
+  dials.command_line.stills_process.Processor = DialsProcessorWithLogging
+
+  with show_mail_on_error():
     script = Script()
     script.run()
-  except Exception as e:
-    halraiser(e)

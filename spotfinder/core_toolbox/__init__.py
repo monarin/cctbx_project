@@ -1,10 +1,11 @@
-from __future__ import division
+from __future__ import absolute_import, division, print_function
+from six.moves import range
 import spotfinder.array_family.flex # implicit import
 
-import boost.python
-ext = boost.python.import_ext("spotfinder_distltbx_ext")
+import boost_adaptbx.boost.python as bp
+ext = bp.import_ext("spotfinder_distltbx_ext")
 from spotfinder_distltbx_ext import *
-boost.python.import_ext("spotfinder_hough_ext")
+bp.import_ext("spotfinder_hough_ext")
 from spotfinder_hough_ext import *
 from libtbx import adopt_init_args
 from libtbx.utils import Sorry
@@ -55,8 +56,8 @@ class Distl(w_Distl):
     self.get_underload()
     try:
       self.pxlclassify()
-    except Exception, e:
-      if str(e).find("cannot distinguish signal")>0: print e
+    except Exception as e:
+      if str(e).find("cannot distinguish signal")>0: print(e)
       else: raise e
     self.search_icerings()
     self.search_maximas()
@@ -81,20 +82,20 @@ class Distl(w_Distl):
       edge_count = 0
       nx,ny = graph.focus()
       # count the edges along x:
-      for xc in xrange(nx):
-        for yc in xrange(ny-1):
+      for xc in range(nx):
+        for yc in range(ny-1):
           if graph[(xc,yc)] and graph[(xc,yc+1)]:  edge_count+=1
       # count the edges along y:
-      for yc in xrange(ny):
-        for xc in xrange(nx-1):
+      for yc in range(ny):
+        for xc in range(nx-1):
           if graph[(xc,yc)] and graph[(xc+1,yc)]:  edge_count+=1
       # count forward diagonals:
-      for xc in xrange(nx-1):
-        for yc in xrange(ny-1):
+      for xc in range(nx-1):
+        for yc in range(ny-1):
           if graph[(xc,yc)] and graph[(xc+1,yc+1)]:  edge_count+=1
       # count backward diagonals:
-      for xc in xrange(nx-1):
-        for yc in xrange(1,ny):
+      for xc in range(nx-1):
+        for yc in range(1,ny):
           if graph[(xc,yc)] and graph[(xc+1,yc-1)]:  edge_count+=1
 
       vertex_count = spot.bodypixels.size()
@@ -157,7 +158,8 @@ class Distl(w_Distl):
         raise Sorry( """dataset_preferences.py parameters -bx0 -bx1 -bx2 are no longer allowed; found %s.
     Use command line option distl.scanbox_windows=bx0,bx1,bx2 instead with three integer arguments."""%self.options)
 
-class _(boost.python.injector, SpotFilterAgent):
+@bp.inject_into(SpotFilterAgent)
+class _():
   def __getinitargs__(self):
     return (self.pixel_size, self.xbeam, self.ybeam, self.distance,
             self.wavelength, self.icerings)

@@ -1,11 +1,12 @@
-from __future__ import division
+from __future__ import absolute_import, division, print_function
 import iotbx.phil
 from mmtbx.validation import ramalyze
 from mmtbx.validation import rotalyze
-import boost.python
+import boost_adaptbx.boost.python as bp
 import sys
+from six.moves import range
 
-ext = boost.python.import_ext("mmtbx_ramachandran_restraints_ext")
+ext = bp.import_ext("mmtbx_ramachandran_restraints_ext")
 
 def get_master_phil():
   return iotbx.phil.parse(input_string="""
@@ -30,7 +31,7 @@ def construct_complete_sidechain(residue,altloc):
   atom_dict = {}
   #print residue.resname
   if not rotalyze.has_heavy_atoms(residue.atoms()) : return {}
-  for atom in residue.atoms() :
+  for atom in residue.atoms():
     #handle hydrogen/deuterium swaps
     #print atom.name
     if atom_dict.get(atom.name) == None:
@@ -46,9 +47,9 @@ def construct_complete_sidechain(residue,altloc):
     return complete_dict
   return {}
 
-class ValidationResidue(object) :
+class ValidationResidue(object):
 
-  def __init__(self,three,rama_eval,rota_eval,rotamer_id,index=1) :
+  def __init__(self,three,rama_eval,rota_eval,rotamer_id,index=1):
     self.three = three
     self.rama_eval = rama_eval
     self.rota_eval = rota_eval
@@ -69,24 +70,24 @@ class ValidationResidue(object) :
     if phi_psi_atoms :
       # FIXME you are adding non alts twice because threes method.
       self.set_rama_result(phi_psi_atoms)
-      print self.rama_result
+      print(self.rama_result)
     self.set_rota_result()
-    if self.resname not in ['GLY','ALA'] : print self.rota_result
+    if self.resname not in ['GLY','ALA'] : print(self.rota_result)
     if self.resname != "GLY" :
       self.set_cbeta_result()
-      print self.cbeta_result
+      print(self.cbeta_result)
     if self.index >= 1 :
       self.set_omega_result()
-      print self.omega_result.as_string()
+      print(self.omega_result.as_string())
 
-  def get_start_kwargs(self) :
+  def get_start_kwargs(self):
     return {'chain_id':self.chain_id,
             'resseq':self.resseq,
             'icode':self.icode,
             'resname':self.resname,
             'altloc':self.altloc}
 
-  def set_omega_result(self) :
+  def set_omega_result(self):
     from mmtbx.validation import omegalyze
     kwargs = self.get_start_kwargs()
     if self.index == 1 : omega_return = 'middle'
@@ -116,7 +117,7 @@ class ValidationResidue(object) :
                    'highest_mc_b':highest_mc_b})
     self.omega_result = omegalyze.omega_result(**kwargs)
 
-  def set_cbeta_result(self) :
+  def set_cbeta_result(self):
     from mmtbx.validation import cbetadev
     kwargs = self.get_start_kwargs()
     # get relevant_atoms
@@ -141,7 +142,7 @@ class ValidationResidue(object) :
                   'outlier':(dev >= 0.25)})
     self.cbeta_result = cbetadev.cbeta(**kwargs)
 
-  def set_rota_result(self) :
+  def set_rota_result(self):
     from mmtbx.rotamer.sidechain_angles import SidechainAngles
     sidechain_angles = SidechainAngles(show_errs=True)
     if self.resname == "MSE" : curres = "MET"
@@ -156,14 +157,14 @@ class ValidationResidue(object) :
     except AttributeError :
       kwargs['incomplete'] = True
       result = rotamer(**kwargs)
-      print >> sys.stderr, '%s is missing some sidechain atoms'%result.id_str()
+      print('%s is missing some sidechain atoms'%result.id_str(), file=sys.stderr)
       self.rota_result = rotalyze.rotamer(**kwargs)
       return
     #print all_dict.get(self.altloc).keys()
     if None in chis :
       result = rotamer(**kwargs)
-      print >> sys.stderr, '%s may be missing some sidechain atoms' %\
-                               result.id_str()
+      print('%s may be missing some sidechain atoms' %\
+                               result.id_str(), file=sys.stderr)
       self.rota_result = rotalyze.rotamer(**kwargs)
       return
     cur_res = self.resname.lower().strip()
@@ -193,7 +194,7 @@ class ValidationResidue(object) :
     kwargs['chi_angles'] = wrap_chis
     self.rota_result = rotalyze.rotamer(**kwargs)
 
-  def set_rama_result(self,phi_psi_atoms) :
+  def set_rama_result(self,phi_psi_atoms):
     import mmtbx.rotamer
     res_type = self.three.get_ramalyze_key()
     r_name = self.three.get_resnames()[1]
@@ -209,8 +210,8 @@ class ValidationResidue(object) :
     c_alphas = None
     if is_outlier :
       c_alphas = []
-      for a in self.three.atoms() :
-        if (a.name.strip() == "CA") :
+      for a in self.three.atoms():
+        if (a.name.strip() == "CA"):
           a_ = ramalyze.atom(pdb_atom=a)
           c_alphas.append(ramalyze.c_alpha(
             id_str=a_.atom_group_id_str(),
@@ -227,14 +228,14 @@ class ValidationResidue(object) :
                    'c_alphas':c_alphas})
     self.rama_result = ramalyze.ramachandran(**kwargs)
 
-class ComprehensiveResidueValidation(object) :
+class ComprehensiveResidueValidation(object):
 
-  def __init__(self, pdb_hierarchy) :
+  def __init__(self, pdb_hierarchy):
     self.pdb_hierarchy = pdb_hierarchy
     self.residues = []
     self.validate_residues()
 
-  def validate_residues(self) :
+  def validate_residues(self):
     from mmtbx.conformation_dependent_library import generate_protein_threes
     from mmtbx.rotamer import ramachandran_eval,rotamer_eval
     # this is so we generate rama_eval only once
@@ -246,7 +247,7 @@ class ComprehensiveResidueValidation(object) :
         include_non_linked=True,
         backbone_only=False,
         geometry=None)
-    for i,three in enumerate(threes) :
+    for i,three in enumerate(threes):
       if i == 0 :
         self.residues.append(ValidationResidue(three,rama_eval,
                                                rota_eval,rotamer_id,index=0))
@@ -256,7 +257,7 @@ class ComprehensiveResidueValidation(object) :
         self.residues.append(ValidationResidue(three,rama_eval,
                                                rota_eval,rotamer_id,index=2))
 
-def run (args, out=sys.stdout, quiet=False) :
+def run(args, out=sys.stdout, quiet=False):
   cmdline = iotbx.phil.process_command_line_with_files(
     args=args,
     master_phil=get_master_phil(),
@@ -270,7 +271,7 @@ def run (args, out=sys.stdout, quiet=False) :
   hierarchy = pdb_in.file_object.hierarchy
   hierarchy.atoms().reset_i_seq()
   result = ComprehensiveResidueValidation(pdb_hierarchy = hierarchy)
-  print "Elapsed time = %.5f" % (time.time() - start_time)
+  print("Elapsed time = %.5f" % (time.time() - start_time))
 
-if (__name__ == "__main__") :
+if (__name__ == "__main__"):
   run(sys.argv[1:])

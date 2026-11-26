@@ -1,4 +1,4 @@
-from __future__ import division
+from __future__ import absolute_import, division, print_function
 import os
 import mmtbx.model
 import libtbx.load_env
@@ -6,7 +6,6 @@ from mmtbx import monomer_library
 import mmtbx.monomer_library.server
 from mmtbx import ias
 import iotbx.pdb
-from iotbx import file_reader
 import copy
 
 def exercise():
@@ -15,7 +14,6 @@ def exercise():
   ener_lib = monomer_library.server.ener_lib()
   cif_file = libtbx.env.find_in_repositories(
             relative_path="phenix_regression/pdb/tyr.cif", test=os.path.isfile)
-  # cif_objects = [(cif_file, file_reader.any_file(cif_file))]
   cif_objects = []
   mon_lib_srv.process_cif(file_name= cif_file)
   ener_lib.process_cif(file_name= cif_file)
@@ -29,12 +27,11 @@ def exercise():
   for opt in [["L"], ["R"], ["B"], ["BH"], all]:
     mol = mmtbx.model.manager(
         model_input=copy.deepcopy(pdb_inp),
-        restraint_objects=cif_objects,
-        build_grm=True)
+        restraint_objects=cif_objects)
+    mol.process(make_restraints=True)
     if(opt == ["L"]):
       params.build_ias_types = opt
       mol.add_ias(fmodel = None, ias_params = params)
-      mol.set_sites_cart_from_xrs()
       f = open("zz.pdb","w")
       pdb_str = mol.model_as_pdb()
       f.write(pdb_str)
@@ -77,4 +74,4 @@ def run():
 
 if (__name__ == "__main__"):
   run()
-  print "OK"
+  print("OK")

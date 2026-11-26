@@ -1,15 +1,18 @@
-from __future__ import division
+from __future__ import absolute_import, division, print_function
+from six.moves import range
 # -*- Mode: Python; c-basic-offset: 2; indent-tabs-mode: nil; tab-width: 8 -*-
 #
 # LIBTBX_SET_DISPATCHER_NAME cctbx.xfel.xtc_dump
 #
+import errno
 import psana
 from xfel.cftbx.detector import cspad_cbf_tbx
 from xfel.cxi.cspad_ana import cspad_tbx, rayonix_tbx
 import os, sys
 import libtbx.load_env
 from libtbx.utils import Sorry, Usage
-from dials.util.options import OptionParser
+from dials.util import show_mail_on_error
+from dials.util.options import ArgumentParser
 from libtbx.phil import parse
 from libtbx import easy_pickle
 
@@ -107,7 +110,7 @@ class Script(object):
  format.file_format=pickle format.pickle.cfg=path
     """%(libtbx.env.dispatcher_name, libtbx.env.dispatcher_name)
 
-    self.parser = OptionParser(
+    self.parser = ArgumentParser(
       usage = self.usage,
       phil = phil_scope)
 
@@ -140,18 +143,20 @@ class Script(object):
       else:
         tmp_dir = os.path.join(params.output.tmp_output_dir, '.tmp')
       if not os.path.exists(tmp_dir):
-        try:
-          os.makedirs(tmp_dir)
-        except Exception as e:
-          if not os.path.exists(tmp_dir):
-            halraiser(e)
+        with show_mail_on_error():
+          try:
+            os.makedirs(tmp_dir)
+            # Can fail if running multiprocessed - that's OK if the folder was created
+          except OSError as e:  # In Python 2, a FileExistsError is just an OSError
+            if e.errno != errno.EEXIST:  # If this OSError is not a FileExistsError
+              raise
       os.environ['CBF_TMP_DIR'] = tmp_dir
 
     # Save the paramters
     self.params = params
     self.options = options
 
-    from mpi4py import MPI
+    from libtbx.mpi4py import MPI
     comm = MPI.COMM_WORLD
     rank = comm.Get_rank() # each process in MPI has a unique id, 0-indexed
     size = comm.Get_size() # size: number of processes running in this job
@@ -175,7 +180,7 @@ class Script(object):
 
     # set this to sys.maxint to analyze all events
     if params.dispatch.max_events is None:
-      max_events = sys.maxint
+      max_events = sys.maxsize
     else:
       max_events = params.dispatch.max_events
 
@@ -188,7 +193,8 @@ class Script(object):
             raise Sorry("Couldn't load calibration file for run %d"%run.run())
         elif params.format.cbf.mode == "rayonix":
           # load a header only rayonix cbf from the input parameters
-          base_dxtbx = rayonix_tbx.get_dxtbx_from_params(params.format.cbf.rayonix)
+          detector_size = rayonix_tbx.get_rayonix_detector_dimensions(ds.env())
+          base_dxtbx = rayonix_tbx.get_dxtbx_from_params(params.format.cbf.rayonix, detector_size)
 
       # list of all events
       times = run.times()
@@ -197,40 +203,40 @@ class Script(object):
       nevents = min(len(times),max_events)
       # chop the list into pieces, depending on rank.  This assigns each process
       # events such that the get every Nth event where N is the number of processes
-      mytimes = [times[i] for i in xrange(nevents) if (i+rank)%size == 0]
+      mytimes = [times[i] for i in range(nevents) if (i+rank)%size == 0]
 
-      for i in xrange(len(mytimes)):
+      for i in range(len(mytimes)):
         evt = run.event(mytimes[i])
         id = evt.get(psana.EventId)
-        print "Event #",i," has id:",id
+        print("Event #",i," has id:",id)
 
         timestamp = cspad_tbx.evt_timestamp(cspad_tbx.evt_time(evt)) # human readable format
         if timestamp is None:
-          print "No timestamp, skipping shot"
+          print("No timestamp, skipping shot")
           continue
 
         if evt.get("skip_event") or "skip_event" in [key.key() for key in evt.keys()]:
-          print "Skipping event",timestamp
+          print("Skipping event",timestamp)
           continue
 
         t = timestamp
         s = t[0:4] + t[5:7] + t[8:10] + t[11:13] + t[14:16] + t[17:19] + t[20:23]
-        print "Processing shot", s
+        print("Processing shot", s)
 
         if params.format.file_format == "pickle":
           if evt.get("skip_event"):
-            print "Skipping event",id
+            print("Skipping event",id)
             continue
           # the data needs to have already been processed and put into the event by psana
           data = evt.get(params.format.pickle.out_key)
           if data is None:
-            print "No data"
+            print("No data")
             continue
 
           # set output paths according to the templates
           path = os.path.join(params.output.output_dir, "shot-" + s + ".pickle")
 
-          print "Saving", path
+          print("Saving", path)
           easy_pickle.dump(path, data)
 
         elif params.format.file_format == "cbf":
@@ -248,37 +254,34 @@ class Script(object):
             distance = params.format.cbf.detz_offset
 
           if distance is None:
-            print "No distance, skipping shot"
+            print("No distance, skipping shot")
             continue
 
           if self.params.format.cbf.override_energy is None:
             wavelength = cspad_tbx.evt_wavelength(evt)
             if wavelength is None:
-              print "No wavelength, skipping shot"
+              print("No wavelength, skipping shot")
               continue
           else:
             wavelength = 12398.4187/self.params.format.cbf.override_energy
 
           # stitch together the header, data and metadata into the final dxtbx format object
           if params.format.cbf.mode == "cspad":
-            image = cspad_cbf_tbx.format_object_from_data(base_dxtbx, data, distance, wavelength, timestamp, params.input.address)
+            image = cspad_cbf_tbx.format_object_from_data(base_dxtbx, data, distance, wavelength, timestamp, params.input.address, round_to_int=False)
           elif params.format.cbf.mode == "rayonix":
             image = rayonix_tbx.format_object_from_data(base_dxtbx, data, distance, wavelength, timestamp, params.input.address)
           path = os.path.join(params.output.output_dir, "shot-" + s + ".cbf")
-          print "Saving", path
+          print("Saving", path)
 
           # write the file
           import pycbf
-          image._cbf_handle.write_widefile(path, pycbf.CBF,\
+          image._cbf_handle.write_widefile(path.encode(), pycbf.CBF,\
             pycbf.MIME_HEADERS|pycbf.MSG_DIGEST|pycbf.PAD_4K, 0)
 
       run.end()
     ds.end()
 
 if __name__ == "__main__":
-  from dials.util import halraiser
-  try:
+  with show_mail_on_error():
     script = Script()
     script.run()
-  except Exception as e:
-    halraiser(e)

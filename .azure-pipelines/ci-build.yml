@@ -1,0 +1,21 @@
+# Parameters:
+#   modules: <modules artifact name>
+
+jobs:
+  - template: ./conda-win.yml
+    parameters:
+      vmImage: windows-2022
+      vs: 2022
+      modules: modules
+  - template: ./conda-linux.yml
+    parameters:
+      distribution: cctbx/rockylinux
+      version: [9]
+      modules: ${{ parameters.modules }}
+      template: ./unix-conda-build.yml
+  - template: ./conda-osx.yml
+    parameters:
+      vmImage: [15]
+      xcode_version: [16, 4]
+      modules: modules
+      template: ./unix-conda-build.yml

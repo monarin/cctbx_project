@@ -1,4 +1,4 @@
-from __future__ import division
+from __future__ import absolute_import, division, print_function
 from iotbx.pdb import rna_dna_detection
 from cctbx import geometry_restraints
 from cctbx import uctbx
@@ -7,6 +7,8 @@ from libtbx.utils import if_none
 from libtbx import slots_getstate_setstate
 import copy
 import sys
+from six.moves import zip
+from six.moves import range
 
 peptide_comp_groups = ("L-peptide", "D-peptide")
 dna_rna_comp_groups = ("DNA", "RNA")
@@ -65,21 +67,36 @@ class looped_data(object):
   def show(self, f=None):
     if (f is None): f = sys.stdout
     for key in self.cif_keywords():
-      print >> f, "_%s.%s: %s" % (
-        self.__class__.__name__, key, getattr(self, key))
+      print("_%s.%s: %s" % (
+        self.__class__.__name__, key, getattr(self, key)), file=f)
 
-  def show_loop_header(self, f):
-    print >> f, "loop_"
+  def show_loop_header(self, f=None):
+    if (f is None): f = sys.stdout
+    print("loop_", file=f)
     for key in self.cif_keywords():
-      print >> f, "_%s.%s" % (
-        self.__class__.__name__, key)
+      print("_%s.%s" % (
+        self.__class__.__name__, key), file=f)
 
-  def show_loop_data(self, f):
+  def generate_loop_data(self):
+    rc = []
     for key in self.cif_keywords():
       val = getattr(self, key)
       if (val in (None, "")): val = "."
-      print >> f, val,
-    print >> f
+      yield val
+
+  def show_loop_data(self, f=None):
+    if (f is None): f = sys.stdout
+    print(" ".join([str(val) for val in self.generate_loop_data()]), file=f)
+
+  def as_cif_loop(self):
+    import iotbx
+    out_loop = iotbx.cif.model.loop(
+      header=['_%s.%s' % (self.__class__.__name__, x) for x in self.cif_keywords()])
+    row = []
+    for val in self.generate_loop_data():
+      row.append(val)
+    out_loop.add_row(row)
+    return out_loop
 
 def show_loop(data_list, f):
   first = True
@@ -89,7 +106,7 @@ def show_loop(data_list, f):
       first = False
     datum.show_loop_data(f=f)
   if (not first):
-    print >> f
+    print(file=f)
 
 def apply_chem_mod_list(label, mod_list, result_list):
   for mod in mod_list:
@@ -178,6 +195,7 @@ class comp_comp_id(slots_getstate_setstate):
     "classification",
     "normalized_rna_dna",
     "cif_object",
+    'skipped_deletes',
     ]
 
   def __init__(self, source_info, chem_comp):
@@ -194,21 +212,23 @@ class comp_comp_id(slots_getstate_setstate):
     self.classification = None
     self.normalized_rna_dna = None
     self.cif_object = None
+    self.skipped_deletes=[]
 
   def normalize_atom_ids_in_place(self):
     atom_ids_mod = []
     atom_ids_mod_set = set()
-    is_rna_dna = (self.get_classification() in ["RNA", "RNAv3", "DNA", "DNAv3"])
+    is_rna_dna = (self.get_classification() in ["RNA", "RNAv2", "DNA", "DNAv2"])
     normalized = False
     for atom in self.atom_list:
-      atom_id = atom.atom_id.replace("'", "*")
-      if is_rna_dna:
-        if atom_id == "OP1":
-          normalized = True
-          atom_id = "O1P"
-        elif atom_id == "OP2":
-          normalized = True
-          atom_id = "O2P"
+      atom_id = atom.atom_id
+      # if is_rna_dna:
+      #   atom_id = atom.atom_id.replace("'", "*")
+      #   if atom_id == "OP1":
+      #     normalized = True
+      #     atom_id = "O1P"
+      #   elif atom_id == "OP2":
+      #     normalized = True
+      #     atom_id = "O2P"
       if (atom_id in atom_ids_mod_set):
         return False # changing ids results in ambiguity
       atom_ids_mod.append(atom_id)
@@ -284,7 +304,7 @@ class comp_comp_id(slots_getstate_setstate):
     return None
 
   def i_atom_by_id(self, atom_id):
-    for i_atom in xrange(len(self.atom_list)):
+    for i_atom in range(len(self.atom_list)):
       if (self.atom_list[i_atom].atom_id == atom_id):
         return i_atom
       if (atom_id.find("'")>-1):
@@ -407,9 +427,37 @@ class comp_comp_id(slots_getstate_setstate):
     result = copy.copy(self)
     for mod_atom in mod.atom_list:
       if (mod_atom.function == "add"):
+        # an H the residue already has is replaced, not added twice, if it is
+        # on the atom the mod bonds it to: CCD-style entries have H2 on N and
+        # NH3 adds H2 again, with another H2-N-CA (3d5k SCY). On another atom
+        # (2KZ H2 on CB) it would move that H: an error. Heavy atoms (OXT,
+        # mod_COO) are left as before.
+        name = mod_atom.new_atom_id
+        i_old = result.i_atom_by_id(name)
+        if (i_old is not None
+            and str(result.atom_list[i_old].type_symbol).strip().upper()
+              in ("H", "D")):
+          def partners(bonds, add_only):
+            return sorted(set([b.atom_id_2 if b.atom_id_1 == name
+              else b.atom_id_1 for b in bonds if name in (b.atom_id_1,
+              b.atom_id_2) and (not add_only or b.function == "add")]))
+          old = partners(result.bond_list, False)
+          new = partners(mod.bond_list, True)
+          if (not set(old) & set(new)):
+            raise RuntimeError(
+              "%s: modification %s adds %s bonded to %s, but the residue has"
+              " %s bonded to %s" % (self.chem_comp.id, mod.chem_mod.id, name,
+              ", ".join(new) or "no atom", name, ", ".join(old) or "no atom"))
+          result.delete_atom_in_place(name)
         result.atom_list.append(mod_atom.as_chem_comp())
       elif (mod_atom.function == "delete"):
-        result.delete_atom_in_place(mod_atom.atom_id)
+        try:
+          result.delete_atom_in_place(mod_atom.atom_id)
+        except Exception as e:
+          if str(e).find('unknown atom_id')>-1:
+            result.skipped_deletes.append(mod_atom.atom_id)
+          else:
+            raise e
       elif (mod_atom.function == "change"):
         result.change_atom_in_place(mod_atom)
       else:
@@ -447,7 +495,7 @@ class comp_comp_id(slots_getstate_setstate):
       atom_dict=atom_dict, bond_list=self.bond_list)
 
   def test_for_water(self, atom_dict):
-    atom_list = atom_dict.keys()
+    atom_list = list(atom_dict.keys())
     atom_list.sort()
     if (atom_list == ["H1", "H2", "O"]):
       return "water"
@@ -482,7 +530,7 @@ class comp_comp_id(slots_getstate_setstate):
     return self.get_classification() == "DNA"
 
   def is_rna_dna(self):
-    return self.get_classification() in ("RNA", "DNA")
+    return self.get_classification() in ("RNA", "DNA", 'RNAv2', 'DNAv2')
 
   def is_water(self):
     return self.get_classification() == "water"
@@ -613,13 +661,39 @@ _chem_comp.number_atoms_nh:int
 _chem_comp.desc_level
   """
 
+def formal_charge_and_problem(value):
+  """
+  (formal charge as int, None) from a _chem_comp_atom.charge value (e.g. -1, 0,
+  1, +1, 1+, 1.0); (None, reason) for None (no column), '?', '.', '' or a
+  non-integral value.
+  """
+  if value is None:
+    return None, "no charge column"
+  s = str(value).strip()
+  if s in ("", ".", "?"):
+    return None, "charge %r" % (s or ".")
+  if len(s) > 1 and s[-1] in "+-" and s[0] not in "+-":
+    s = s[-1] + s[:-1]
+  try:
+    f = float(s)
+  except ValueError:
+    return None, "charge %r not a number" % str(value)
+  if f != int(f):
+    return None, "charge %r not integral" % str(value)
+  return int(f), None
+
 class chem_comp_atom(looped_data):
   """
 _chem_comp_atom.atom_id
 _chem_comp_atom.type_symbol
 _chem_comp_atom.type_energy
 _chem_comp_atom.partial_charge:float
+_chem_comp_atom.charge
   """
+
+  def formal_charge(self):
+    """The formal charge as int, None if absent, '?', '.' or not integral."""
+    return formal_charge_and_problem(getattr(self, "charge", None))[0]
 
 class chem_comp_tree(looped_data):
   """
@@ -802,6 +876,12 @@ class link_link_id:
 
   def get_planes(self):
     return group_planes(self.plane_list)
+
+  def as_cif_block(self):
+    import iotbx
+    block = iotbx.cif.model.block()
+    for loop in self.cif_object.iterloops(): block.add_loop(loop)
+    return block
 
   def as_geometry_restraints_motif_manipulation(self):
     result = geometry_restraints.motif_manipulation()

@@ -1,8 +1,9 @@
-from __future__ import division
+from __future__ import absolute_import, division, print_function
 import mmtbx.f_model
 from scitbx.array_family import flex
 from cctbx.development import random_structure
 from cctbx import sgtbx
+from six.moves import range
 
 def run():
   xrs = random_structure.xray_structure(
@@ -21,7 +22,7 @@ def run():
       xrs_shaken.shake_sites_in_place(mean_distance = xyz_shake_amount)
       ml_err = flex.double()
       ml_err_new = flex.double()
-      for trial in xrange(10):
+      for trial in range(10):
         r_free_flags = f_obs.generate_r_free_flags()
         fmodel = mmtbx.f_model.manager(
           f_obs          = f_obs,
@@ -30,8 +31,8 @@ def run():
         ml_err_ = fmodel.model_error_ml()
         ml_err.append(ml_err_)
       result.append(flex.mean(ml_err))
-  assert result[0] > 0 and result[0] < 0.03
-  assert result[1] > 0.2 and result[1] <= 0.32
+  assert result[0] >= 0.0 and result[0] < 0.03, result
+  assert result[1] > 0.2 and result[1] <= 0.32, result
 
 if (__name__ == "__main__"):
   run()

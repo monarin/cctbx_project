@@ -1,4 +1,5 @@
-from __future__ import division
+from __future__ import absolute_import, division, print_function
+import six
 
 '''
 Author      : Lyubimov, A.Y.
@@ -9,8 +10,11 @@ Description : XFEL UI Custom Widgets and Controls
 
 import os
 import wx
+import wx.grid
 import wx.lib.agw.floatspin as fs
+import wx.richtext as rt
 from wxtbx import metallicbutton as mb
+from xfel.ui.components.tooltips import setup_tooltip
 
 # Platform-specific stuff
 # TODO: Will need to test this on Windows at some point
@@ -31,6 +35,33 @@ elif (wx.Platform == '__WXMSW__'):
   CAPTION_SIZE = 9
 
 icons = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'icons/')
+
+# --------------------------------- Tool tip overrides ----------------------- #
+
+class TextCtrl(wx.TextCtrl):
+  def __init__(self, *args, **kwargs):
+    super(TextCtrl, self).__init__(*args, **kwargs)
+    setup_tooltip(self)
+
+class Button(wx.Button):
+  def __init__(self, *args, **kwargs):
+    super(Button, self).__init__(*args, **kwargs)
+    setup_tooltip(self)
+
+class BitmapButton(wx.BitmapButton):
+  def __init__(self, *args, **kwargs):
+    super(BitmapButton, self).__init__(*args, **kwargs)
+    setup_tooltip(self)
+
+class Choice(wx.Choice):
+  def __init__(self, *args, **kwargs):
+    super(Choice, self).__init__(*args, **kwargs)
+    setup_tooltip(self)
+
+class RichTextCtrl(rt.RichTextCtrl):
+  def __init__(self, *args, **kwargs):
+    super(RichTextCtrl, self).__init__(*args, **kwargs)
+    setup_tooltip(self)
 
 # --------------------------------- Buttons ---------------------------------- #
 
@@ -77,26 +108,47 @@ class RunBlockButton(GradButton):
   def __init__(self, parent, block, size=wx.DefaultSize):
     self.block = block
     db = block.app
-    self.first_run = db.get_run(run_number=block.startrun).run
     self.rnum = block.rungroup_id
-    if block.endrun is None:
-      self.last_run = None
-    else:
-      self.last_run = db.get_run(run_number=block.endrun).run
+    self.first_run, self.last_run = block.get_first_and_last_runs()
+    self.use_ids = db.params.facility.name not in ['lcls']
 
     GradButton.__init__(self, parent=parent, label='',
                         size=size)
     self.update_label()
 
   def update_label(self):
-    first = self.first_run
+    if self.first_run is None:
+      first = ' ...'
+    else:
+      if self.use_ids:
+        first = self.first_run.id
+      else:
+        first = self.first_run.run
+
     if self.last_run is None:
       last = ' ...'
     else:
-      last = ' - {}'.format(self.last_run)
+      last = ' - {}'.format(self.last_run.id if self.use_ids else self.last_run.run)
 
     self.block_label = '[{}] runs {}{}'.format(self.rnum, first, last)
     self.SetLabel(self.block_label)
+    self.Refresh()
+
+class TaskButton(GradButton):
+  def __init__(self, parent, task, size=wx.DefaultSize):
+    self.task = task
+    self.db = task.app
+
+    GradButton.__init__(self, parent=parent, label='',
+                        size=size)
+    self.update_label()
+
+  def update_label(self):
+    if self.task.trial is None:
+      self.task_label = '[{}] {}'.format(self.task.task_id, self.task.type)
+    else:
+      self.task_label = '[{}] {} trial {}'.format(self.task.task_id, self.task.type, self.task.trial.trial)
+    self.SetLabel(self.task_label)
     self.Refresh()
 
 class TagButton(GradButton):
@@ -163,9 +215,9 @@ class CtrlBase(wx.Panel):
                parent,
                label_style='normal',
                content_style='normal',
-               size=wx.DefaultSize):
+               size=wx.DefaultSize, **kwargs):
 
-    wx.Panel.__init__(self, parent=parent, id=wx.ID_ANY, size=size)
+    wx.Panel.__init__(self, parent=parent, id=wx.ID_ANY, size=size, **kwargs)
     if label_style == 'normal':
       self.font = wx.Font(norm_font_size, wx.DEFAULT, wx.NORMAL, wx.NORMAL)
     elif label_style == 'bold':
@@ -200,11 +252,11 @@ class InputCtrl(CtrlBase):
     self.txt.SetFont(self.font)
     output_box.Add(self.txt)
 
-    self.ctr = wx.TextCtrl(self) #, size=ctr_size)
+    self.ctr = TextCtrl(self) #, size=ctr_size)
     self.ctr.SetValue(value)
     output_box.Add(self.ctr, flag=wx.EXPAND)
 
-    self.btn_browse = wx.Button(self, label='Browse...')
+    self.btn_browse = Button(self, label='Browse...')
     self.btn_mag = wx.BitmapButton(self,
                                    bitmap=wx.Bitmap('{}/16x16/viewmag.png'
                                                     ''.format(icons)))
@@ -218,7 +270,7 @@ class InputCtrl(CtrlBase):
     output_box.AddGrowableCol(1, 1)
     self.SetSizer(output_box)
 
-class TextCtrl(CtrlBase):
+class PanelTextCtrl(CtrlBase):
   ''' Generic panel placing only a text box'''
 
   def __init__(self, parent,
@@ -231,7 +283,7 @@ class TextCtrl(CtrlBase):
     self.txt.SetFont(self.font)
     output_box.Add(self.txt)
 
-    self.ctr = wx.TextCtrl(self, size=ctrl_size)
+    self.ctr = TextCtrl(self, size=ctrl_size)
     self.ctr.SetValue(value)
     output_box.Add(self.ctr, flag=wx.EXPAND)
 
@@ -250,20 +302,20 @@ class TextButtonCtrl(CtrlBase):
                big_button_label='Browse...',
                big_button_size=wx.DefaultSize,
                ghost_button=True,
-               value=''):
+               value='', **kwargs):
 
-    CtrlBase.__init__(self, parent=parent, label_style=label_style)
+    CtrlBase.__init__(self, parent=parent, label_style=label_style, **kwargs)
 
     output_box = wx.FlexGridSizer(1, 4, 0, 10)
     self.txt = wx.StaticText(self, label=label, size=label_size)
     self.txt.SetFont(self.font)
     output_box.Add(self.txt)
 
-    self.ctr = wx.TextCtrl(self, style=text_style, size=ctrl_size)
+    self.ctr = TextCtrl(self, name=self.Name + "_ctr", style=text_style, size=ctrl_size)
     self.ctr.SetValue(value)
     output_box.Add(self.ctr, flag=wx.EXPAND)
 
-    self.btn_big = wx.Button(self, label=big_button_label, size=big_button_size)
+    self.btn_big = Button(self, name=self.Name + "_btn_big", label=big_button_label, size=big_button_size)
     if ghost_button:
       output_box.Add(self.btn_big, flag=wx.RESERVE_SPACE_EVEN_IF_HIDDEN)
     else:
@@ -274,6 +326,34 @@ class TextButtonCtrl(CtrlBase):
 
     output_box.AddGrowableCol(1, 1)
     self.SetSizer(output_box)
+    setup_tooltip(self)
+
+class ComboTextCtrl(CtrlBase):
+  ''' Generic panel that will place an editable combo box with a label: the
+      user picks one of the choices or types any other value '''
+
+  def __init__(self, parent,
+               label='', label_size=(100, -1),
+               label_style='normal',
+               ctrl_size=(200, -1),
+               choices=(),
+               value='', **kwargs):
+
+    CtrlBase.__init__(self, parent=parent, label_style=label_style, **kwargs)
+
+    output_box = wx.FlexGridSizer(1, 2, 0, 10)
+    self.txt = wx.StaticText(self, label=label, size=label_size)
+    self.txt.SetFont(self.font)
+    output_box.Add(self.txt, flag=wx.ALIGN_CENTER_VERTICAL)
+
+    self.ctr = wx.ComboBox(self, name=self.Name + "_ctr", size=ctrl_size,
+                           choices=list(choices), style=wx.CB_DROPDOWN)
+    self.ctr.SetValue(value)
+    output_box.Add(self.ctr, flag=wx.EXPAND)
+
+    output_box.AddGrowableCol(1, 1)
+    self.SetSizer(output_box)
+    setup_tooltip(self)
 
 class TwoButtonCtrl(CtrlBase):
   ''' Generic panel that will place a text control, with a label and an
@@ -289,29 +369,30 @@ class TwoButtonCtrl(CtrlBase):
                button2=False,
                button2_label='Default',
                button2_size=wx.DefaultSize,
-               value=''):
+               value='', **kwargs):
 
-    CtrlBase.__init__(self, parent=parent, label_style=label_style)
+    CtrlBase.__init__(self, parent=parent, label_style=label_style, **kwargs)
 
     output_box = wx.FlexGridSizer(1, 5, 0, 10)
     self.txt = wx.StaticText(self, label=label, size=label_size)
     self.txt.SetFont(self.font)
     output_box.Add(self.txt)
 
-    self.ctr = wx.TextCtrl(self, style=text_style)
+    self.ctr = TextCtrl(self, style=text_style)
     self.ctr.SetValue(value)
     output_box.Add(self.ctr, flag=wx.EXPAND)
 
     if button1:
-      self.button1 = wx.Button(self, label=button1_label, size=button1_size)
+      self.button1 = Button(self, label=button1_label, size=button1_size)
       output_box.Add(self.button1)
 
     if button2:
-      self.button2 = wx.Button(self, label=button2_label, size=button2_size)
+      self.button2 = Button(self, label=button2_label, size=button2_size)
       output_box.Add(self.button2)
 
     output_box.AddGrowableCol(1, 1)
     self.SetSizer(output_box)
+    setup_tooltip(self)
 
 class OptionCtrl(CtrlBase):
   ''' Generic panel will place a text control w/ label '''
@@ -319,10 +400,11 @@ class OptionCtrl(CtrlBase):
                label='',
                label_size=(100, -1),
                label_style='normal',
-               sub_labels=[],
-               ctrl_size=(300, -1)):
+               sub_labels=(),
+               ctrl_size=(300, -1),
+               **kwargs):
 
-    CtrlBase.__init__(self, parent=parent, label_style=label_style)
+    CtrlBase.__init__(self, parent=parent, label_style=label_style, **kwargs)
 
     if label != '':
       opt_box = wx.FlexGridSizer(1, len(items) * 2 + 1, 0, 10)
@@ -333,22 +415,22 @@ class OptionCtrl(CtrlBase):
       opt_box = wx.FlexGridSizer(1, len(items) * 2, 0, 10)
 
     for key, value in items:
-      if sub_labels != []:
-        sub_label = sub_labels[items.index((key, value))].decode('utf-8')
+      if sub_labels:
+        sub_label = sub_labels[items.index((key, value))]
       else:
         sub_label = key
 
-      if len(items) > 1:
-        opt_label = wx.StaticText(self, id=wx.ID_ANY, label=sub_label)
-        opt_box.Add(opt_label, flag=wx.ALIGN_CENTER_VERTICAL)
+      opt_label = wx.StaticText(self, id=wx.ID_ANY, label=sub_label)
+      opt_box.Add(opt_label, flag=wx.ALIGN_CENTER_VERTICAL)
 
-      item = wx.TextCtrl(self, id=wx.ID_ANY, size=ctrl_size,
-                         style=wx.TE_PROCESS_ENTER)
+      item = TextCtrl(self, name = self.Name+"_"+key, id=wx.ID_ANY, size=ctrl_size,
+                      style=wx.TE_PROCESS_ENTER)
       item.SetValue(str(value))
       opt_box.Add(item, flag=wx.ALIGN_CENTER_VERTICAL)
       self.__setattr__(key, item)
 
     self.SetSizer(opt_box)
+    setup_tooltip(self)
 
 class VerticalOptionCtrl(CtrlBase):
   ''' Generic panel will place a text control w/ label in column'''
@@ -356,7 +438,7 @@ class VerticalOptionCtrl(CtrlBase):
                label='',
                label_size=(100, -1),
                label_style='normal',
-               sub_labels=[],
+               sub_labels=(),
                ctrl_size=(300, -1)):
 
     CtrlBase.__init__(self, parent=parent, label_style=label_style)
@@ -371,8 +453,8 @@ class VerticalOptionCtrl(CtrlBase):
       opt_box = wx.FlexGridSizer(len(items) * 2, 2, 10, 10)
 
     for key, value in items:
-      if sub_labels != []:
-        sub_label = sub_labels[items.index((key, value))].decode('utf-8')
+      if sub_labels:
+        sub_label = sub_labels[items.index((key, value))]
       else:
         sub_label = key
 
@@ -380,8 +462,8 @@ class VerticalOptionCtrl(CtrlBase):
         opt_label = wx.StaticText(self, id=wx.ID_ANY, label=sub_label)
         opt_box.Add(opt_label, flag=wx.ALIGN_CENTER_VERTICAL)
 
-      item = wx.TextCtrl(self, id=wx.ID_ANY, size=ctrl_size,
-                         style=wx.TE_PROCESS_ENTER)
+      item = TextCtrl(self, id=wx.ID_ANY, size=ctrl_size,
+                      style=wx.TE_PROCESS_ENTER)
       item.SetValue(str(value))
       opt_box.Add(item, flag=wx.ALIGN_CENTER_VERTICAL)
       self.__setattr__(key, item)
@@ -389,6 +471,10 @@ class VerticalOptionCtrl(CtrlBase):
     self.SetSizer(opt_box)
 
 class IntFloatSpin(fs.FloatSpin):
+  def __init__(self, *args, **kwargs):
+    super(IntFloatSpin, self).__init__(*args, **kwargs)
+    setup_tooltip(self)
+
   def GetValue(self):
     float_value = super(IntFloatSpin, self).GetValue()
     int_value = int(round(float_value))
@@ -405,23 +491,26 @@ class SpinCtrl(CtrlBase):
                ctrl_max=10,
                ctrl_min=0,
                ctrl_step=1,
-               ctrl_digits=0):
+               ctrl_digits=0,
+               **kwargs):
 
-    CtrlBase.__init__(self, parent=parent, label_style=label_style)
+    CtrlBase.__init__(self, parent=parent, label_style=label_style, **kwargs)
 
     ctr_box = wx.FlexGridSizer(1, 3, 0, 10)
-    self.txt = wx.StaticText(self, label=label.decode('utf-8'),
+    self.txt = wx.StaticText(self, label=label,
                              size=label_size)
     self.txt.SetFont(self.font)
 
     floatspin_class = IntFloatSpin if ctrl_digits == 0 else fs.FloatSpin
-    self.ctr = floatspin_class(self, value=ctrl_value, max_val=(ctrl_max),
-                              min_val=(ctrl_min), increment=ctrl_step,
-                              digits=ctrl_digits, size=ctrl_size)
+    self.ctr = floatspin_class(self, name=self.Name + "_ctr",
+                               value=ctrl_value, max_val=(ctrl_max),
+                               min_val=(ctrl_min), increment=ctrl_step,
+                               digits=ctrl_digits, size=ctrl_size)
     ctr_box.Add(self.txt, flag=wx.ALIGN_CENTER_VERTICAL)
     ctr_box.Add(self.ctr, flag=wx.ALIGN_CENTER_VERTICAL)
 
     self.SetSizer(ctr_box)
+    setup_tooltip(self)
 
 class ChoiceCtrl(CtrlBase):
   ''' Generic panel will place a choice control w/ label '''
@@ -431,9 +520,9 @@ class ChoiceCtrl(CtrlBase):
                label='',
                label_size=(200, -1),
                label_style='normal',
-               ctrl_size=(100, -1)):
+               ctrl_size=(100, -1), **kwargs):
 
-    CtrlBase.__init__(self, parent=parent, label_style=label_style)
+    CtrlBase.__init__(self, parent=parent, label_style=label_style, **kwargs)
     ctr_box = wx.FlexGridSizer(1, 3, 0, 10)
     self.txt = wx.StaticText(self, label=label, size=label_size)
     self.txt.SetFont(self.font)
@@ -441,17 +530,18 @@ class ChoiceCtrl(CtrlBase):
     # Check if choices are tuples, extract data and assign to items if so
     if all(isinstance(i, tuple) for i in choices):
       items = [i[0] for i in choices]
-      self.ctr = wx.Choice(self, size=ctrl_size, choices=items)
+      self.ctr = Choice(self, name=self.Name + "_ctr", size=ctrl_size, choices=items)
       for choice in choices:
         item_idx = self.ctr.FindString(choice[0])
         self.ctr.SetClientData(item_idx, choice[1])
     else:
-      self.ctr = wx.Choice(self, size=ctrl_size, choices=choices)
+      self.ctr = Choice(self, name=self.Name + "_ctr", size=ctrl_size, choices=choices)
 
     ctr_box.Add(self.txt, flag=wx.ALIGN_CENTER_VERTICAL)
     ctr_box.Add(self.ctr, flag=wx.ALIGN_CENTER_VERTICAL)
 
     self.SetSizer(ctr_box)
+    setup_tooltip(self)
 
 class CheckListCtrl(CtrlBase):
   def __init__(self, parent,
@@ -473,12 +563,16 @@ class CheckListCtrl(CtrlBase):
     else:
       if direction == 'horizontal':
         ctr_box = wx.FlexGridSizer(1, 2, 0, 10)
+        ctr_box.AddGrowableRow(0)
+        ctr_box.AddGrowableCol(1)
       elif direction == 'vertical':
         ctr_box = wx.FlexGridSizer(2, 1, 10, 0)
+        ctr_box.AddGrowableRow(1)
+        ctr_box.AddGrowableCol(0)
       ctr_box.Add(self.txt, flag=wx.ALIGN_CENTER_VERTICAL)
 
-    ctr_box.Add(self.ctr, proportion=1,
-                flag=wx.ALIGN_CENTER_VERTICAL | wx.EXPAND)
+    # The list takes whatever room the parent gives the control
+    ctr_box.Add(self.ctr, proportion=1, flag=wx.EXPAND)
 
     self.SetSizer(ctr_box)
 
@@ -498,12 +592,12 @@ class MultiChoiceCtrl(CtrlBase):
     self.txt.SetFont(self.font)
     choice_box.Add(self.txt, flag=wx.ALIGN_CENTER_VERTICAL)
 
-    for key, choices in items.iteritems():
+    for key, choices in six.iteritems(items):
       if len(items) > 1:
         ch_label =wx.StaticText(self, id=wx.ID_ANY, label=key)
         choice_box.Add(ch_label, flag=wx.ALIGN_CENTER_VERTICAL)
 
-      item = wx.Choice(self, id=wx.ID_ANY, size=ctrl_size, choices=choices)
+      item = Choice(self, id=wx.ID_ANY, size=ctrl_size, choices=choices)
       choice_box.Add(item, flag=wx.ALIGN_CENTER_VERTICAL)
       self.__setattr__(key, item)
 
@@ -514,11 +608,11 @@ class TableCtrl(CtrlBase):
       Data must be a list of lists for multi-column tables '''
 
   def __init__(self, parent,
-               clabels=[],
+               clabels=(),
                clabel_size=(200, -1),
-               rlabels=[],
+               rlabels=(),
                rlabel_size=(200, -1),
-               contents=[],
+               contents=(),
                label_style='normal',
                content_style='normal'):
 
@@ -535,7 +629,7 @@ class TableCtrl(CtrlBase):
     # add column labels (xlabels)
     if len(clabels) > 0:
       self.sizer.Add(wx.StaticText(self, label=''))
-      for item in column_labels:
+      for i in clabels:
         clabel = wx.StaticText(self, label=i.decode('utf-8'), size=clabel_size)
         clabel.SetFont(self.font)
         self.sizer.Add(clabel)
@@ -564,8 +658,9 @@ class RadioCtrl(CtrlBase):
                label_style='normal',
                ctrl_size=(100, -1),
                direction='horizontal',
-               items={}):
-    CtrlBase.__init__(self, parent=parent, label_style=label_style)
+               items=None, **kwargs):
+    CtrlBase.__init__(self, parent=parent, label_style=label_style, **kwargs)
+    items = {} if items is None else items
 
     if direction == 'horizontal':
       radio_group = wx.FlexGridSizer(1, len(items) + 1, 0, 10)
@@ -576,24 +671,26 @@ class RadioCtrl(CtrlBase):
       self.txt.SetFont(self.font)
       radio_group.Add(self.txt, flag=wx.ALIGN_CENTER_VERTICAL)
 
-    for key, value in items.iteritems():
+    for key, value in six.iteritems(items):
       button = wx.RadioButton(self, id=wx.ID_ANY, label=value)
       radio_group.Add(button)
       self.__setattr__(key, button)
 
     self.SetSizer(radio_group)
+    setup_tooltip(self)
 
 # Use a mixin to support sorting by columns
 import wx.lib.mixins.listctrl as listmix
 
 class SortableListCtrl(wx.ListCtrl, listmix.ColumnSorterMixin):
   def __init__(self, parent, style=wx.LC_ICON):
+    self.integer_columns = set()
     self.parent = parent
     self.sortable_mixin = listmix
     wx.ListCtrl.__init__(self, parent, style=style)
 
-  def initialize_sortable_columns(self, n_col=0, itemDataMap={}):
-    self.itemDataMap = itemDataMap
+  def initialize_sortable_columns(self, n_col=0, itemDataMap=None):
+    self.itemDataMap = {} if itemDataMap is None else itemDataMap
     self.sortable_mixin.ColumnSorterMixin.__init__(self, n_col)
     sortable_list = self.GetListCtrl()
     if sortable_list:
@@ -602,7 +699,7 @@ class SortableListCtrl(wx.ListCtrl, listmix.ColumnSorterMixin):
   def __OnColClick(self, e):
     self._col = e.GetColumn()
     self._colSortFlag[self._col] = int(not self._colSortFlag[self._col])
-    self.GetListCtrl().SortItems(self.GetColumnSorter())
+    self.GetListCtrl().SortItems(self.get_appropriate_sorter())
     self.OnSortOrderChanged()
     if hasattr(self.parent, 'onColClick'):
       self.parent.onColClick(e)
@@ -610,11 +707,32 @@ class SortableListCtrl(wx.ListCtrl, listmix.ColumnSorterMixin):
   def RestoreSortOrder(self, col, colSortFlag):
     self._col = col
     self._colSortFlag = colSortFlag
-    self.GetListCtrl().SortItems(self.GetColumnSorter())
+    self.GetListCtrl().SortItems(self.get_appropriate_sorter())
     self.OnSortOrderChanged()
 
   def GetListCtrl(self):
     return self
+
+  def get_appropriate_sorter(self):
+    return self.integer_column_sorter if self._col in self.integer_columns \
+      else self.GetColumnSorter()
+
+  def integer_column_sorter(self, key1, key2):
+    col = self._col
+    ascending = self._colSortFlag[col]
+    try:
+      item1 = int(self.itemDataMap[key1][col])
+    except (ValueError, SystemError):
+      item1 = -1073741820
+    try:
+      item2 = int(self.itemDataMap[key2][col])
+    except (ValueError, SystemError):
+      item2 = -1073741820
+    difference = item1 - item2
+    if difference == 0:
+      difference = 1 if key1 > key2 else -1
+    return difference if ascending else -difference
+
 
 # ------------------------------- UI Elements -------------------------------- #
 
@@ -629,15 +747,28 @@ class RunBlock(CtrlBase):
                       content_style=content_style)
 
     self.sizer = wx.FlexGridSizer(1, 2, 0, 5)
-    self.new_runblock = RunBlockButton(self, size=(200, -1), block=block)
-    # self.del_runblock = wx.BitmapButton(self,
-    #                     bitmap=wx.Bitmap('{}/16x16/delete.png'.format(icons)))
+    self.new_runblock = RunBlockButton(self, size=(225, 30), block=block)
 
     self.sizer.Add(self.new_runblock)
-    # self.sizer.Add(self.del_runblock)
 
     self.SetSizer(self.sizer)
 
+class TaskCtrl(CtrlBase):
+  def __init__(self, parent, task,
+               label_style='normal',
+               content_style='normal'):
+
+    self.task = task
+
+    CtrlBase.__init__(self, parent=parent, label_style=label_style,
+                      content_style=content_style)
+
+    self.sizer = wx.FlexGridSizer(1, 2, 0, 5)
+    self.new_task = TaskButton(self, size=(250, 30), task=task)
+
+    self.sizer.Add(self.new_task)
+
+    self.SetSizer(self.sizer)
 
 class PHILBox(CtrlBase):
   def __init__(self, parent,
@@ -661,25 +792,25 @@ class PHILBox(CtrlBase):
     self.sizer = wx.GridBagSizer(5, 5)
     self.SetSizer(self.sizer)
 
-    self.ctr = wx.richtext.RichTextCtrl(self,
-                                        size=ctr_size,
-                                        style=wx.VSCROLL,
-                                        value=ctr_value)
+    self.ctr = RichTextCtrl(self,
+                            size=ctr_size,
+                            style=wx.VSCROLL,
+                            value=ctr_value)
     span_counter = 0
     if btn_import:
-      self.btn_import = wx.Button(self,
+      self.btn_import = Button(self,
                                   label=btn_import_label,
                                   size=btn_import_size)
       self.sizer.Add(self.btn_import, pos=(span_counter, 0))
       span_counter += 1
     if btn_export:
-      self.btn_export = wx.Button(self,
+      self.btn_export = Button(self,
                                   label=btn_export_label,
                                   size=btn_export_size)
       self.sizer.Add(self.btn_export, pos=(span_counter, 0))
       span_counter += 1
     if btn_default:
-      self.btn_default = wx.Button(self,
+      self.btn_default = Button(self,
                                    label=btn_default_label,
                                    size=btn_default_size)
       self.sizer.Add(self.btn_default, pos=(span_counter, 0))
@@ -710,7 +841,7 @@ class GaugeBar(CtrlBase):
                choice_label_size=(120, -1),
                choice_size=(100, -1),
                choice_style='normal',
-               choices=[],
+               choices=(),
                gauge_max=100):
     CtrlBase.__init__(self, parent=parent, label_style=label_style,
                       content_style=content_style)
@@ -737,7 +868,7 @@ class GaugeBar(CtrlBase):
     self.sizer.Add(self.bins)
 
     if button:
-      self.btn = wx.Button(self, label=button_label, size=button_size)
+      self.btn = Button(self, label=button_label, size=button_size)
       self.sizer.Add(self.btn, 1, wx.ALIGN_RIGHT | wx.ALIGN_CENTER)
 
     self.SetSizer(self.sizer)
@@ -813,12 +944,12 @@ class IsoformInfoCtrl(CtrlBase):
     self.txt_num = wx.StaticText(self, label='No. Images')
     self.txt_uc = wx.StaticText(self, label='Unit Cell')
 
-    self.ctr_iso = wx.TextCtrl(self, size=(30, -1), style=wx.TE_READONLY)
-    self.ctr_pg = wx.TextCtrl(self, size=(50, -1), style=wx.TE_READONLY)
-    self.ctr_num = wx.TextCtrl(self, size=(50, -1), style=wx.TE_READONLY)
-    self.ctr_uc = wx.TextCtrl(self, size=(200, -1), style=wx.TE_READONLY)
+    self.ctr_iso = TextCtrl(self, size=(30, -1), style=wx.TE_READONLY)
+    self.ctr_pg = TextCtrl(self, size=(50, -1), style=wx.TE_READONLY)
+    self.ctr_num = TextCtrl(self, size=(50, -1), style=wx.TE_READONLY)
+    self.ctr_uc = TextCtrl(self, size=(200, -1), style=wx.TE_READONLY)
 
-    self.btn_hist = wx.Button(self, label='Histogram')
+    self.btn_hist = Button(self, label='Histogram')
 
     self.sizer.Add(self.txt_iso, flag=wx.ALIGN_CENTER_VERTICAL)
     self.sizer.Add(self.ctr_iso, flag=wx.ALIGN_CENTER_VERTICAL)
@@ -841,3 +972,65 @@ class IsoformInfoCtrl(CtrlBase):
       plotter = pltr.PopUpCharts()
       plotter.plot_uc_histogram(info_list=[self.uc_values], legend_list=[])
       plotter.plt.show()
+
+class CopyGrid(wx.grid.Grid):
+  ''' Read-only grid of strings. Ctrl+C copies the selected cells to the
+      clipboard as tab-separated text, one line per row; Ctrl+A selects all. '''
+
+  def __init__(self, parent, columns, **kwargs):
+    wx.grid.Grid.__init__(self, parent, **kwargs)
+    self.CreateGrid(0, len(columns))
+    for i, name in enumerate(columns):
+      self.SetColLabelValue(i, name)
+    self.EnableEditing(False)
+    self.SetRowLabelSize(0)
+    self.Bind(wx.EVT_KEY_DOWN, self.onKey)
+
+  def set_rows(self, rows):
+    ''' Replace the contents with rows, a list of lists of strings '''
+    self.BeginBatch()
+    if self.GetNumberRows():
+      self.DeleteRows(0, self.GetNumberRows())
+    self.AppendRows(len(rows))
+    for r, row in enumerate(rows):
+      for c, value in enumerate(row):
+        self.SetCellValue(r, c, value)
+    self.AutoSizeColumns()
+    self.EndBatch()
+
+  def onKey(self, e):
+    if e.ControlDown() and e.GetKeyCode() == ord('C'):
+      self.copy_selection()
+    elif e.ControlDown() and e.GetKeyCode() == ord('A'):
+      self.SelectAll()
+    else:
+      e.Skip()
+
+  def selected_cells(self):
+    ''' The selected (row, col) pairs, from blocks, whole rows and columns
+        and single cells; the cursor cell when nothing is selected '''
+    cells = set((c.GetRow(), c.GetCol()) for c in self.GetSelectedCells())
+    for tl, br in zip(self.GetSelectionBlockTopLeft(), self.GetSelectionBlockBottomRight()):
+      for r in range(tl.GetRow(), br.GetRow() + 1):
+        for c in range(tl.GetCol(), br.GetCol() + 1):
+          cells.add((r, c))
+    for r in self.GetSelectedRows():
+      for c in range(self.GetNumberCols()):
+        cells.add((r, c))
+    for c in self.GetSelectedCols():
+      for r in range(self.GetNumberRows()):
+        cells.add((r, c))
+    if not cells:
+      cells.add((self.GetGridCursorRow(), self.GetGridCursorCol()))
+    return cells
+
+  def selection_text(self):
+    cells = self.selected_cells()
+    rows = sorted(set(r for r, c in cells))
+    cols = sorted(set(c for r, c in cells))
+    return "\n".join("\t".join(self.GetCellValue(r, c) if (r, c) in cells else "" for c in cols) for r in rows)
+
+  def copy_selection(self):
+    if wx.TheClipboard.Open():
+      wx.TheClipboard.SetData(wx.TextDataObject(self.selection_text()))
+      wx.TheClipboard.Close()

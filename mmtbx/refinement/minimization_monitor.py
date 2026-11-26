@@ -1,5 +1,6 @@
-from __future__ import division
+from __future__ import absolute_import, division, print_function
 from libtbx import adopt_init_args, Auto, group_args
+from six.moves import range
 
 class minimization_monitor(object):
   def __init__(self,
@@ -18,12 +19,15 @@ class minimization_monitor(object):
       return True
     if self.current_cycle >= self.max_number_of_cycles:
       return False
+    if self.mode == "simple_cycles" and self.current_cycle >= number_of_cycles:
+      return False
     if self.number_of_cycles is not Auto:
       return self.current_cycle < self.number_of_cycles
     elif self.mode == "min_outliers":
       return self.geometry_improved() or not self.geometry_is_ok()
     elif self.mode == "no_outliers":
       return not (self.geometry_is_perfect() or self.converged())
+    return False
 
   def save_cycle_results(self, geometry=None):
     self.current_cycle += 1
@@ -93,7 +97,7 @@ class minimization_monitor(object):
       result = False
     else:
       result = True
-      for i in xrange(1,4):
+      for i in range(1,4):
         if self.cycles_params[-i]["did_wo"]:
           result = False
     self.cycles_params.append({"did_wo": result})

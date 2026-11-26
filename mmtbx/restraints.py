@@ -1,10 +1,9 @@
-
 """
 Wrapper module for computing targets and gradients for restraints (or other
 energy functions) on coordinates and B-factors; used in phenix.refine.
 """
 
-from __future__ import division
+from __future__ import absolute_import, division, print_function
 import cctbx.adp_restraints
 import math
 from cctbx.array_family import flex
@@ -26,56 +25,20 @@ class manager(object):
         geometry=None,
         cartesian_ncs_manager=None,
         normalization=False,
-        use_amber=False,
-        use_sander=False,
-        amber_structs=None,
         use_afitt=False, #afitt
-        afitt_object=None) :
+        afitt_object=None):
     self.geometry = geometry
     self.cartesian_ncs_manager = cartesian_ncs_manager
     self.normalization = normalization
-    # amber
-    self.use_amber = use_amber
-    self.amber_structs = amber_structs
-    self.sander = None
-    #afitt
+    # amber moved to a Base_geometry class
+    # afitt
     self.use_afitt = use_afitt
     self.afitt_object = afitt_object
 
-  def init_amber(self, params, pdb_hierarchy, log):
-    if hasattr(params, "amber"):
-      self.use_amber = params.amber.use_amber
-      print_amber_energies = params.amber.print_amber_energies
-      if (self.use_amber) :
-        sites_cart = pdb_hierarchy.atoms().extract_xyz()
-        compute_gradients=False
-        make_header("Initializing AMBER", out=log)
-        print >> log, "  topology    : %s" % params.amber.topology_file_name
-        print >> log, "  coordinates : %s" % params.amber.coordinate_file_name
-        from amber_adaptbx import interface
-        self.amber_structs, sander = interface.get_amber_struct_object(params)
-        self.sander=sander # used for cleanup
-        import amber_adaptbx
-        amber_geometry_manager = amber_adaptbx.geometry_manager(
-          sites_cart=sites_cart,
-          #number_of_restraints=geometry_energy.number_of_restraints,
-          gradients_factory=flex.vec3_double,
-          amber_structs=self.amber_structs)
-        geometry = amber_geometry_manager.energies_sites(
-          crystal_symmetry = self.geometry.crystal_symmetry,
-          compute_gradients = compute_gradients)
-
-  def cleanup_amber(self):
-    if self.sander and self.amber_structs:
-      if self.amber_structs.is_LES:
-        import sanderles; sanderles.cleanup()
-      else:
-        import sander; sander.cleanup()
-
   def init_afitt(self, params, pdb_hierarchy, log):
-    if hasattr(params, "afitt") :
+    if hasattr(params, "afitt"):
       use_afitt = params.afitt.use_afitt
-      if (use_afitt) :
+      if (use_afitt):
         from mmtbx.geometry_restraints import afitt
         # this only seems to work for a single ligand
         # multiple ligands are using the monomers input
@@ -104,7 +67,7 @@ class manager(object):
             pdb_hierarchy,
             params.afitt.ff,
             params.afitt.scale)
-        print >> log, afitt_object
+        print(afitt_object, file=log)
         afitt_object.check_covalent(self.geometry)
         # afitt log output
         afitt_object.initial_energies = afitt.get_afitt_energy(
@@ -127,16 +90,12 @@ class manager(object):
     if (self.cartesian_ncs_manager is None):
       cartesian_ncs_manager = None
     else:
-      if(not isinstance(selection, flex.size_t)):
-        selection = selection.iselection()
-      cartesian_ncs_manager = self.cartesian_ncs_manager.select(iselection=selection)
+      cartesian_ncs_manager = self.cartesian_ncs_manager.select(selection=selection)
 
     return manager(
       geometry=geometry,
       cartesian_ncs_manager=cartesian_ncs_manager,
       normalization=self.normalization,
-      use_amber=self.use_amber,
-      amber_structs=self.amber_structs,
       )
 
   def energies_sites(self,
@@ -149,14 +108,24 @@ class manager(object):
         force_restraints_model=False,
         disable_asu_cache=False,
         hd_selection=None,
+        normalization_exclude=None,
         ):
     """
     Compute energies for coordinates.  Originally this just used the standard
     geometry restraints from the monomer library, but it has since been
     extended to optionally incorporate a variety of external energy functions.
 
+    normalization_exclude (flex.bool or None): atoms whose geometry
+    restraints are left out of the restraint count that normalizes the
+    target; used only when this manager normalizes.
+
     :returns: scitbx.restraints.energies object
     """
+    # The keyword is passed on only when needed: geometry managers outside
+    # cctbx (amber, QM gradients) may not know it.
+    kw = {}
+    if (self.normalization and normalization_exclude is not None):
+      kw["normalization_exclude"] = normalization_exclude
     result = scitbx.restraints.energies(
       compute_gradients=compute_gradients,
       gradients=gradients,
@@ -166,34 +135,9 @@ class manager(object):
     if (self.geometry is None):
       result.geometry = None
     else:
-      if (self.use_amber and not force_restraints_model) :
-        geometry_energy = self.geometry.energies_sites(
-          sites_cart=sites_cart,
-          flags=geometry_flags,
-          external_energy_function=external_energy_function,
-          custom_nonbonded_function=custom_nonbonded_function,
-          compute_gradients=False,
-          gradients=None,
-          disable_asu_cache=disable_asu_cache,
-          normalization=False)
-        ##################################################################
-        #                                                                #
-        # AMBER CALL - Amber force field gradients and target            #
-        #                                                                #
-        ##################################################################
-        import amber_adaptbx
-        amber_geometry_manager = amber_adaptbx.geometry_manager(
-          sites_cart=sites_cart,
-          number_of_restraints=geometry_energy.number_of_restraints,
-          gradients_factory=flex.vec3_double,
-          amber_structs=self.amber_structs)
-        result.geometry = amber_geometry_manager.energies_sites(
-          crystal_symmetry = self.geometry.crystal_symmetry,
-          compute_gradients = compute_gradients)
-
-      elif (self.use_afitt and
-            len(sites_cart)==self.afitt_object.total_model_atoms
-            ):
+      if (self.use_afitt and
+          len(sites_cart)==self.afitt_object.total_model_atoms
+          ):
         ##################################################################
         #                                                                #
         # AFITT CALL - OpenEye AFITT gradients and target                #
@@ -229,7 +173,8 @@ class manager(object):
           compute_gradients=compute_gradients,
           gradients=result.gradients,
           disable_asu_cache=disable_asu_cache,
-          normalization=False)
+          normalization=False,
+          **kw)
       result += result.geometry
     if (self.cartesian_ncs_manager is None):
       result.cartesian_ncs_manager = None
@@ -269,7 +214,7 @@ class manager(object):
       result.geometry = None
     else:
       result.geometry = cctbx.adp_restraints.energies_iso(
-        geometry_restraints_manager=self.geometry,
+        plain_pair_sym_table=self.geometry.plain_pair_sym_table,
         xray_structure=xray_structure,
         parameters=parameters,
         wilson_b=wilson_b,
@@ -365,16 +310,16 @@ class manager(object):
       if (out is None): out = sys.stdout
       if (header_lines is not None):
         for line in header_lines:
-          print >> out, prefix+line
+          print(prefix+line, file=out)
       sub_hierarchy = hierarchy.select(atom_selection=selection)
-      s = sub_hierarchy.as_pdb_string()
+      s = sub_hierarchy.as_pdb_or_mmcif_string()
       if (len(s) == 0 and header_lines is not None):
         s = "  None\n"
       if (prefix == ""):
         out.write(s)
       else:
         for line in s.splitlines():
-          print >> out, prefix+line
+          print(prefix+line, file=out)
 
     outf_descriptor = None
     if file_name is None:
@@ -397,12 +342,12 @@ class manager(object):
           site_labels=site_labels,
           excessive_distance_limit=excessive_distance_limit,
           out=outf_descriptor)
-      print >> outf_descriptor
+      print(file=outf_descriptor)
       self.cartesian_ncs_manager.show_adp_iso_differences_to_average(
           u_isos=xray_structure.extract_u_iso_or_u_equiv(),
           site_labels=site_labels,
           out=outf_descriptor)
-      print >> outf_descriptor
+      print(file=outf_descriptor)
       # show_atoms_without_ncs_restraints
       show_selected_atoms(
           selection = ~self.cartesian_ncs_manager.selection_restrained(
@@ -410,6 +355,6 @@ class manager(object):
           hierarchy = hierarchy,
           header_lines = ["Atoms without NCS restraints:"],
           out = outf_descriptor)
-      print >> outf_descriptor
+      print(file=outf_descriptor)
     if file_name is not None:
       outf_descriptor.close()

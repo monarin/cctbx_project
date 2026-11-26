@@ -1,5 +1,6 @@
-from __future__ import division
+from __future__ import absolute_import, division, print_function
 
+from six.moves import range
 class MultiQueue(object):
 
   def __init__(self):
@@ -9,8 +10,8 @@ class MultiQueue(object):
 
   def create(self, name):
 
-    import Queue
-    self.queue_for[ name ] = Queue.Queue()
+    from six.moves import queue
+    self.queue_for[ name ] = queue.Queue()
 
 
   def remove(self, name):
@@ -133,14 +134,13 @@ class Manager(object):
     multiqueue = MultiQueue()
     QManager.register( "get", lambda: multiqueue )
 
-    import socket
-    import string
+    import socket, string
     import random
 
     manager = QManager(
       address = ( socket.getfqdn(), port ),
       authkey = "".join(
-        random.choice( string.ascii_letters ) for i in range( keylength )
+        random.choice( string.ascii_letters ) for i in list(range( keylength))
         ),
       )
     manager.start()

@@ -1,9 +1,16 @@
-from __future__ import division
+"""algorithms for aligning two protein
+sequences, where each sequence is represented as a string of one-letter
+amino-acid codes"""
+
+from __future__ import absolute_import, division, print_function
 import scitbx.array_family.flex
 from scitbx.array_family import flex
 
-import boost.python
-ext = boost.python.import_ext("mmtbx_alignment_ext")
+import boost_adaptbx.boost.python as bp
+from six import string_types
+from six.moves import zip
+from six.moves import range
+ext = bp.import_ext("mmtbx_alignment_ext")
 
 """
 Written by Tom Ioerger (http://faculty.cs.tamu.edu/ioerger).
@@ -71,7 +78,8 @@ class align(ext.align):
         style="global",
         gap_opening_penalty=1,
         gap_extension_penalty=1,
-        similarity_function="identity"):
+        similarity_function="identity",
+        masking_a=None):
     assert style in ["global", "local", "no_end_gaps"]
     sim_fun_str = similarity_function
     self.similarity_function_call = None
@@ -85,22 +93,32 @@ class align(ext.align):
     elif (isinstance(similarity_function, str)):
       raise RuntimeError(
         'Unknown similarity_function: "%s"' % similarity_function)
-    if isinstance(seq_a, basestring):
+    from six import string_types
+    if isinstance(seq_a, string_types):
       seq_a = seq_a.upper()
       seq_b = seq_b.upper()
     else:
       seq_a = flex.std_string(seq_a)
       seq_b = flex.std_string(seq_b)
 
+    if masking_a:  #  Gap penalty for insertion scaled by masking_a after
+                   #   corresponding position in sequence a and scaled by
+                   #   masking_a for deletion before corresponding position in
+                   #   sequence a.  Allows increasing mask everywhere
+                   #   except where you want a gap to occur
+      assert len(list(masking_a))==len(seq_a)
+    else:
+      masking_a=[1] * len(seq_a)  #  no masking; standard gap penalty everywhere
+    m = flex.float(masking_a)
     super(align, self).__init__(
         seq_a=seq_a,
         seq_b=seq_b,
+        masking=m,
         style=style,
         gap_opening_penalty=gap_opening_penalty,
         gap_extension_penalty=gap_extension_penalty,
         similarity_function=sim_fun_str,
         )
-
     self.seq_a = seq_a
     self.seq_b = seq_b
     self.style = style
@@ -110,15 +128,15 @@ class align(ext.align):
   def show_matrix(self, data, label=None, out=None):
     if (out is None): out = sys.stdout
     if (label is not None):
-      print >> out, label
-    for a in '  '+self.seq_b: print >> out, "%5c" % a,
-    print >> out
+      print(label, file=out)
+    for a in '  '+self.seq_b: print("%5c" % a, end=' ', file=out)
+    print(file=out)
     seq = ' '+self.seq_a
     for i in range(self.m):
-      print >> out, "%5c" % seq[i],
+      print("%5c" % seq[i], end=' ', file=out)
       for j in range(self.n):
-        print >> out, "%5.1f" % data[i,j],
-      print >> out
+        print("%5.1f" % data[i,j], end=' ', file=out)
+      print(file=out)
 
   def show_matrices(self, out=None):
     for label, data in [("D", self.D),
@@ -138,17 +156,17 @@ class align(ext.align):
 
     elif self.style=="local":
       (best,ii,jj) = (self.M[0,0],0,0)
-      for i in xrange(self.m+1):
-        for j in xrange(self.n+1):
+      for i in range(self.m+1):
+        for j in range(self.n+1):
           if self.M[i,j]>best: (best,ii,jj) = (self.M[i,j],i,j)
       return (ii,jj)
 
     else: # NO_END_GAPS, search edges of matrix
       (best,ii,jj) = (self.M[0,0],0,0)
-      for i in xrange(self.m+1):
+      for i in range(self.m+1):
         j = self.n
         if self.M[i,j]>best: (best,ii,jj) = (self.M[i,j],i,j)
-      for j in xrange(self.n+1):
+      for j in range(self.n+1):
         i = self.m
         if self.M[i,j]>best: (best,ii,jj) = (self.M[i,j],i,j)
       return (ii,jj)
@@ -173,14 +191,14 @@ class align(ext.align):
         elif E[i,j]==0: mcap('m'); i -= 1; j -= 1
       while i>0: mcap('d'); i -= 1
       while j>0: mcap('i'); j -= 1
-      F,G = range(len(self.seq_a)), range(len(self.seq_b))
+      F,G = list(range(len(self.seq_a))), list(range(len(self.seq_b)))
     else:
       (p,q) = (i,j)
       while M[i,j]>0:
         if E[i,j]==-1: mcap('i'); j -= 1
         elif E[i,j]==1: mcap('d'); i -= 1
         elif E[i,j]==0: mcap('m'); i -= 1; j -= 1
-      F,G = range(i,p+1),range(j,q+1) # sub-sequences
+      F,G = list(range(i,p+1)),list(range(j,q+1)) # sub-sequences
     match_codes.reverse()
     match_codes = "".join(match_codes)
 
@@ -211,7 +229,8 @@ class align(ext.align):
         v += 1
         ib.append(i)
         sb.append(self.seq_b[i])
-    if isinstance(self.seq_a, basestring):
+    from six import string_types
+    if isinstance(self.seq_a, string_types):
       sa = "".join(sa)
       sb = "".join(sb)
     return alignment(
@@ -256,7 +275,7 @@ class alignment(object):
       similarity_function=blosum50,
       is_similar_threshold=is_similar_threshold)
 
-  def calculate_sequence_identity (self, skip_chars=()) :
+  def calculate_sequence_identity(self, skip_chars=()):
     """
     Returns fractional sequence identity, defined here as the number of matches
     between the aligned sequences divided by the number of valid residues in
@@ -266,13 +285,13 @@ class alignment(object):
     skip_chars = list(skip_chars)
     skip_chars.append("-")
     n_matches = n_total = 0
-    for a, b in zip(self.a, self.b) :
+    for a, b in zip(self.a, self.b):
       # XXX should gaps in 'b' be discounted?
       if (not a in skip_chars) : # and (not b in skip_cars)
         n_total += 1
-        if (a == b) :
+        if (a == b):
           n_matches += 1
-    if (n_total == 0) or (n_matches == 0) :
+    if (n_total == 0) or (n_matches == 0):
       return 0.
     return n_matches / n_total
 
@@ -292,18 +311,18 @@ class alignment(object):
     bot_str = (bottom_name+" "*8)[0:8]
     ruler = ""
     count=0
-    for ii in xrange(n_block):
-      for jj in xrange(block_size):
+    for ii in range(n_block):
+      for jj in range(block_size):
         count += 1
         ruler += "%s"%( count%10 )
       ruler+="     "
-    print >> out
-    print >> out
+    print(file=out)
+    print(file=out)
     if comment is not None:
-      print >> out, comment
-    if (show_ruler) :
-      print >> out, "              "+ruler
-      print >> out
+      print(comment, file=out)
+    if (show_ruler):
+      print("              "+ruler, file=out)
+      print(file=out)
 
     done=False
     n=len(self.a)
@@ -313,42 +332,42 @@ class alignment(object):
       offset=count*block_size*n_block
 
       # top
-      print >> out, top_str+"     ",
-      for ii in xrange(n_block):
+      print(top_str+"     ", end=' ', file=out)
+      for ii in range(n_block):
         start=offset+ii*block_size
         stop=offset+(ii+1)*block_size
         if stop > n:
           stop = n
         if start < n:
           tmp=self.a[start:stop]
-          print >> out, tmp, "   ",
-      print >> out
+          print(tmp, "   ", end=' ', file=out)
+      print(file=out)
 
       #middle
-      print >> out, "             ",
-      for ii in xrange(n_block):
+      print("             ", end=' ', file=out)
+      for ii in range(n_block):
         start=offset+ii*block_size
         stop=offset+(ii+1)*block_size
         if stop > n:
           stop = n
         if start < n:
           tmp=matches[start:stop]
-          print >> out, tmp, "   ",
+          print(tmp, "   ", end=' ', file=out)
       count += 1
-      print >> out
+      print(file=out)
 
       # bottom
-      print >> out, bot_str+"     ",
-      for ii in xrange(n_block):
+      print(bot_str+"     ", end=' ', file=out)
+      for ii in range(n_block):
         start=offset+ii*block_size
         stop=offset+(ii+1)*block_size
         if stop > n:
           stop = n
         if start < n:
           tmp=self.b[start:stop]
-          print >> out, tmp, "   ",
-      print >> out
-      print >> out
+          print(tmp, "   ", end=' ', file=out)
+      print(file=out)
+      print(file=out)
       if count*block_size*n_block>n:
         done=True
 
@@ -359,6 +378,22 @@ class alignment(object):
     j_seqs = flex.size_t()
     for a, b, i, j in zip(self.a, self.b, self.i_seqs_a, self.i_seqs_b):
       if(a == b and a not in ["-", None]):
+        if(i is not None and j is not None):
+          i_seqs.append(i)
+          j_seqs.append(j)
+    return i_seqs, j_seqs
+
+  def exact_mismatch_selection(self):
+    """Returns i_seqs and j_seqs of residues that do not match, excluding
+    insertions and deletions.
+
+    Returns:
+        (flex.size_t, flex.size_t): i_seqs that mismatch
+    """
+    i_seqs = flex.size_t()
+    j_seqs = flex.size_t()
+    for a, b, i, j in zip(self.a, self.b, self.i_seqs_a, self.i_seqs_b):
+      if(a != b and a not in ["-", None] and b not in ["-", None]):
         if(i is not None and j is not None):
           i_seqs.append(i)
           j_seqs.append(j)
@@ -486,8 +521,8 @@ def exercise_similarity_scores():
   for m in [dayhoff_mdm78_similarity_scores, blosum50_similarity_scores]:
     assert flex.double(m).matrix_is_symmetric(relative_epsilon=1e-15)
 
-class pairwise_global (ext.pairwise_global) :
-  def __init__ (self, seq1, seq2) :
+class pairwise_global(ext.pairwise_global):
+  def __init__(self, seq1, seq2):
     seq1 = seq1.upper()
     seq2 = seq2.upper()
     ext.pairwise_global.__init__(self, seq1, seq2)
@@ -526,7 +561,7 @@ class pairwise_global_wrapper(pairwise_global):
 
     return overall_ranges1,overall_ranges2
 
-  def calculate_sequence_identity (self, skip_chars=()) :
+  def calculate_sequence_identity(self, skip_chars=()):
     a1 = self.result1
     a2 = self.result2
     assert len(a1) == len(a2)
@@ -534,8 +569,8 @@ class pairwise_global_wrapper(pairwise_global):
     n_matching = 0
     skip_chars = list(skip_chars)
     skip_chars.append("-")
-    for i in range(len(a1)) :
-      if (not a1[i] in skip_chars) and (not a2[i] in skip_chars) :
+    for i in range(len(a1)):
+      if (not a1[i] in skip_chars) and (not a2[i] in skip_chars):
         n_aligned_residues += 1
         if a1[i] == a2[i] :
           n_matching += 1

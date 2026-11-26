@@ -41,6 +41,9 @@ namespace cctbx { namespace xray { namespace structure_factors {
         if (scatterer.flags.use_u_aniso()) {
           f_t dw = adptbx::debye_waller_factor_u_star(g.hr, scatterer.u_star);
           term *= dw;
+          if (scatterer.anharmonic_adp) {
+            term *= scatterer.anharmonic_adp->calculate(g.hr);
+          }
         }
         f_calc += term;
       }
@@ -167,7 +170,7 @@ namespace cctbx { namespace xray { namespace structure_factors {
             }
             f_calc_beg[i] = sum.f_calc();
           }
-          catch (std::runtime_error e) {
+          catch (std::runtime_error const& e) {
             #pragma omp critical
             {
               // The first error will be recorded only.

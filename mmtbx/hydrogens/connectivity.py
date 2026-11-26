@@ -1,10 +1,16 @@
-from __future__ import division
+from __future__ import absolute_import, division, print_function
 import math
 from cctbx import geometry_restraints
 from libtbx.utils import Sorry
 from libtbx import group_args
 from scitbx.array_family import flex
 from scitbx.math import dihedral_angle
+from six.moves import zip,range
+
+# Staggered default dihedrals applied when the cif provides no torsion for a
+# solo H but the parent atom is structurally complete.
+STAGGERED_DEFAULT_1H = 180.0       # alg1b: solo H on a complete parent
+STAGGERED_DEFAULT_2H_ABS = 60.0    # alg1a NH2 fallback when no plane proxy
 
 class neighbors(object):
   def __init__(self,
@@ -17,7 +23,8 @@ class neighbors(object):
       h2 = {},
       b1 = {},
       number_h_neighbors = None,
-      number_non_h_neighbors = None):
+      number_non_h_neighbors = None,
+      is_in_plane = False):
     self.ih = ih
     self.a0 = a0
     self.a1 = a1
@@ -28,6 +35,7 @@ class neighbors(object):
     self.b1 = b1
     self.number_h_neighbors = number_h_neighbors
     self.number_non_h_neighbors = number_non_h_neighbors
+    self.is_in_plane = is_in_plane
 
 class determine_connectivity(object):
   """ Obtain information about the necessary number of neighbors to reconstruct
@@ -38,16 +46,21 @@ class determine_connectivity(object):
   :rtype: list[]"""
   def __init__(self,
       pdb_hierarchy,
-      geometry_restraints):
+      geometry_restraints,
+      mon_lib_srv=None):
     geometry = geometry_restraints
     self.atoms = pdb_hierarchy.atoms()
+    self.mon_lib_srv = mon_lib_srv
+    self._expected_count_cache = {}
     self.sites_cart = self.atoms.extract_xyz()
     bond_proxies_simple, asu = \
       geometry.get_all_bond_proxies(sites_cart = self.sites_cart)
     angle_proxies = geometry.get_all_angle_proxies()
     dihedral_proxies = geometry.dihedral_proxies # this should be function in GRM, like previous
+    const_dihedral_proxies = getattr(geometry, 'const_dihedral_proxies', None) or []
     planarity_proxies = geometry.planarity_proxies
-    fsc0 = geometry.shell_sym_tables[0].full_simple_connectivity()
+    self.fsc0 = geometry.shell_sym_tables[0].full_simple_connectivity()
+    fsc0 = self.fsc0  # keep local alias to avoid touching all uses below
     self.n_atoms = pdb_hierarchy.atoms_size()
     self.hd_sel = self.hd_selection()
     self.h_connectivity = [None]*self.n_atoms
@@ -67,7 +80,10 @@ class determine_connectivity(object):
     self.process_second_neighbors()
 
     # 5. Find third neighbors via dihedral proxies
-    self.find_third_neighbors(dihedral_proxies = dihedral_proxies)
+    self.h_torsions = {}
+    self.find_third_neighbors(
+      dihedral_proxies = dihedral_proxies,
+      const_dihedral_proxies = const_dihedral_proxies)
 
     # 6. Find angles involving a0 and covalently bound non-H atoms and
     #    find preliminary list of third neighbors in cases where no dihedral
@@ -75,12 +91,35 @@ class determine_connectivity(object):
     self.determine_a0_angles_and_third_neighbors_without_dihedral(
       angle_proxies = angle_proxies)
 
+    # 6a. A group whose torsion targets all have an H third atom: frame on a
+    #     heavy atom instead (needs the third neighbours of step 6)
+    self.heavy_frame_for_h_third()
+
     # 7. Assign the angles found previously and process preliminary list of
     #    third neighbors
     self.process_a0_angles_and_third_neighbors_without_dihedral()
 
     # Add slipped H atoms to h_connectivity
     self.add_slipped()
+
+    # Flag H atoms that participate in a planarity restraint so the
+    # parameterization can place them in-plane even when the ideal angles
+    # around the parent do not sum to 360 (e.g. the amide N-H of PCA).
+    for nb in self.h_connectivity:
+      if nb is None: continue
+      nb.is_in_plane = nb.ih in self.plane_h
+      # pyramidal NH2 (amine): the cif must say so; an NH3 or CH3 with one H
+      # missing looks the same in the model. Not if the H is in any plane
+      # restraint (is_in_plane flags only the first H of a plane)
+      if (nb.number_non_h_neighbors == 1 and nb.number_h_neighbors == 1 and
+          nb.a0 and 'iseq' in nb.a0 and nb.a1 and 'iseq' in nb.a1):
+        nb.pyramidal_nh2 = (nb.ih not in self.plane_member_h and
+          self._dictionary_pyramidal_nh2(nb.a0['iseq'], nb.a1['iseq']))
+        # heavy third atoms only: in placement an H is still at its seed
+        nb.torsions = [t for t in self.h_torsions.get(nb.ih, [])
+          if not self.hd_sel[t[0]]]
+        nb.heavy_thirds = self._heavy_third_neighbors(nb.a0['iseq'])
+        nb.b1_is_hd = 'iseq' in nb.b1 and self.hd_sel[nb.b1['iseq']]
 
 
   def find_first_neighbors(self, bond_proxies_simple, fsc0):
@@ -133,15 +172,16 @@ class determine_connectivity(object):
         if (self.h_connectivity[ih] is None): continue
         #assert(self.h_connectivity[ih].a0['iseq'] == i_parent)
         if (self.h_connectivity[ih].a0['iseq'] != i_parent):
-          if self.double_H[ih]:
+          if ih in self.double_H:
+          #if self.double_H[ih]:
             continue
-#          raise Sorry  (
-#            "It looks like angle and bond restraints are conflicting.\n\
-#             Bond proxies:  H atom %s is bound to %s. \n\
-#             Angle proxies: H atom %s is bound to %s" % \
-#    (self.atoms[ih].id_str(),
-#     self.atoms[self.h_connectivity[ih].a0['iseq']].id_str(),
-#     self.atoms[ih].id_str(), self.atoms[i_parent].id_str()  )   )
+          raise Sorry  (
+            "It looks like angle and bond restraints are conflicting.\n\
+             Bond proxies:  H atom %s is bound to %s. \n\
+             Angle proxies: H atom %s is bound to %s" % \
+    (self.atoms[ih].id_str(),
+     self.atoms[self.h_connectivity[ih].a0['iseq']].id_str(),
+     self.atoms[ih].id_str(), self.atoms[i_parent].id_str()  )   )
         self.second_neighbors_raw[ih].append(i_second)
         self.angle_dict[(ih, i_parent, i_second)] = ap.angle_ideal
 
@@ -151,10 +191,10 @@ class determine_connectivity(object):
     processed, mainly to avoid alternative conformations of the same atom"""
     self.a0a1_dict = {}
     self.a1_atoms = set()
-    for neighbors in self.h_connectivity:
-      if (neighbors is None): continue
-      ih = neighbors.ih
-      i_parent = neighbors.a0['iseq']
+    for neighbor_obj in self.h_connectivity:
+      if (neighbor_obj is None): continue
+      ih = neighbor_obj.ih
+      i_parent = neighbor_obj.a0['iseq']
       second_neighbors_reduced = []
       alt_conf_neighbors = []
       for i_second in self.second_neighbors_raw[ih]:
@@ -174,7 +214,7 @@ class determine_connectivity(object):
         i_parent         = i_parent,
         neighbors_list   = second_neighbors_non_H,
         neighbors_list_H = second_neighbors_H)
-      if (neighbors.number_non_h_neighbors == 1):
+      if (neighbor_obj.number_non_h_neighbors == 1):
         i_a1 = self.h_connectivity[ih].a1['iseq']
         self.a1_atoms.add(i_a1)
         if i_parent in self.a0a1_dict.keys():
@@ -206,19 +246,13 @@ class determine_connectivity(object):
             i_parent = ix
             i_third = iz
           elif (i_third == None):
-            raise  Sorry(
-  "It looks like angle restraints involving an H atom are missing.\n\
-  Check H atoms bound to %s and with second neighbor %s" % \
-    (self.atoms[ix].id_str(), self.atoms[iy].id_str()))
+            raise Sorry(self._missing_angle_message(ix, iy))
         elif (iz in self.parents and iz in self.a0a1_dict):
           if (iy in self.a0a1_dict[iz] and not is_hd_ix):
             i_parent = iz
             i_third = ix
           elif (i_third == None):
-            raise  Sorry(
-  "It looks like angle restraints involving an H atom are missing.\n\
-  Check H atoms bound to %s and with second neighbor %s" % \
-    (self.atoms[iz].id_str(), self.atoms[iy].id_str()))
+            raise Sorry(self._missing_angle_message(iz, iy))
         else:
           continue
         if (i_third not in self.third_neighbors_raw[i_parent]):
@@ -226,14 +260,49 @@ class determine_connectivity(object):
           if (i_third in self.parents):
             self.third_neighbors_raw[i_third].append(i_parent)
 
+  def _missing_angle_message(self, i_parent, i_second):
+    '''
+    Text of the Sorry for H on i_parent without the angle to i_second. If
+    another conformer lacks i_second but has atoms bonded to it, they are not
+    bonded there: name them (3ilz ARG A 228: NH1/NH2 in A and B, CZ in A
+    only).
+    '''
+    parent, second = self.atoms[i_parent], self.atoms[i_second]
+    msg = ("It looks like angle restraints involving an H atom are missing.\n"
+      "  Check H atoms bound to %s and with second neighbor %s" % (
+      parent.id_str(), second.id_str()))
+    ag = second.parent()
+    if not ag.altloc: return msg
+    rg = ag.parent()
+    # bonded by distance: the restraints of other conformers lack these bonds
+    bonded = [a.name.strip() for a in ag.atoms() if a is not second and
+              not a.element_is_hydrogen() and a.distance(second) < 2.0]
+    for other in rg.atom_groups():
+      if other.altloc in ('', ag.altloc): continue
+      if other.get_atom(second.name.strip()) is not None: continue
+      found = [n for n in bonded if other.get_atom(n) is not None]
+      if not found: continue
+      msg += ("\n  Conformer %s of %s %s %s%s has %s but no %s to bond %s to "
+        "(%s is in conformer %s). Complete or remove conformer %s." % (
+        other.altloc, ag.resname.strip(), rg.parent().id, rg.resseq.strip(),
+        rg.icode.strip(), ", ".join(found), second.name.strip(),
+        "them" if len(found) > 1 else "it", second.name.strip(), ag.altloc,
+        other.altloc))
+    return msg
+
   def process_a0_angles_and_third_neighbors_without_dihedral(self):
-    """Process raw list of third neighbors withouth ideal dihedral proxy."""
-    for neighbors in self.h_connectivity:
-      if (neighbors is None): continue
-      ih = neighbors.ih
-      i_parent = neighbors.a0['iseq']
+    """For solo-H atoms whose cif provides no torsion proxy, populate
+    b1.iseq and b1.dihedral_ideal with a staggered default - unless the
+    parent has lost an expected heavy neighbor (e.g. heavy atom missing
+    in the model), in which case wipe the connectivity entry so the H is
+    not parameterized.
+    """
+    for neighbor_obj in self.h_connectivity:
+      if (neighbor_obj is None): continue
+      ih = neighbor_obj.ih
+      i_parent = neighbor_obj.a0['iseq']
       self.assign_a0_angles(ih = ih)
-      if (neighbors.number_non_h_neighbors != 1 or 'iseq' in neighbors.b1):
+      if (neighbor_obj.number_non_h_neighbors != 1 or 'iseq' in neighbor_obj.b1):
         continue
       third_neighbors = self.third_neighbors_raw[i_parent]
       third_neighbors_reduced = []
@@ -246,14 +315,41 @@ class determine_connectivity(object):
           alt_conf_neighbors.append(i_third)
       third_neighbors_reduced.extend(self.process_alternate_neighbors(
         alt_conf_neighbors = alt_conf_neighbors))
-      # If there is no dihedral ideal angle, use randomly first atom
-      # in list of third neighbors
-      if third_neighbors_reduced:
-        self.h_connectivity[ih].b1 = {'iseq': third_neighbors_reduced[0]}
+
+      if not third_neighbors_reduced:
+        # No anchor for a dihedral; can't parameterize.
+        self.h_connectivity[ih] = neighbors(
+          ih = ih, number_non_h_neighbors = 0)
+        continue
+
+      if self._parent_lost_heavy_neighbor(i_parent):
+        # Heavy atom missing in the model; refuse to parameterize.
+        self.h_connectivity[ih] = neighbors(
+          ih = ih, number_non_h_neighbors = 0)
+        continue
+
+      i_third = third_neighbors_reduced[0]
+      if (neighbor_obj.number_h_neighbors == 2):
+        # NH2-like: try planarity-derived dihedral first; if no plane
+        # proxy applies, fall back to staggered +/- 60.
+        self.h_connectivity[ih].b1 = {'iseq': i_third}
         self.check_for_plane_proxy(ih)
+        if 'dihedral_ideal' not in self.h_connectivity[ih].b1:
+          sibling = neighbor_obj.h1.get('iseq') if neighbor_obj.h1 else None
+          if sibling is not None and ih < sibling:
+            self.h_connectivity[ih].b1['dihedral_ideal'] = STAGGERED_DEFAULT_2H_ABS
+          else:
+            self.h_connectivity[ih].b1['dihedral_ideal'] = -STAGGERED_DEFAULT_2H_ABS
+      else:
+        # Solo H: alg1b
+        self.h_connectivity[ih].b1 = {
+          'iseq': i_third,
+          'dihedral_ideal': STAGGERED_DEFAULT_1H,
+        }
 
   def process_plane_proxies(self, planarity_proxies):
     self.plane_h = {}
+    self.plane_member_h = set()
     for pp in planarity_proxies:
       hlist = []
       for i_test in pp.i_seqs:
@@ -261,6 +357,7 @@ class determine_connectivity(object):
           hlist.append(i_test)
       if hlist:
         self.plane_h[hlist[0]]=hlist[1:]
+        self.plane_member_h.update(hlist)
 
   def check_for_plane_proxy(self, ih):
     neighbors = self.h_connectivity[ih]
@@ -316,31 +413,129 @@ class determine_connectivity(object):
             number_non_h_neighbors = 0)
 
 
-  def find_third_neighbors(self, dihedral_proxies):
-    """ Loop through dihedral angle proxies to find third neighbor
-    Fill in neighbors.b1 with iseq and angle proxy"""
+  def find_third_neighbors(self, dihedral_proxies, const_dihedral_proxies):
+    """Loop through dihedral angle proxies to find third neighbor.
+    Fill in neighbors.b1 with iseq and angle proxy.
+
+    CONST dihedrals are processed first; Var dihedrals override via last-write
+    semantics (a Var entry on the same H wins because find sets b1 unconditionally),
+    except that a torsion with an H third atom never replaces one with a heavy
+    third atom (_keeps_heavy_b1): in placement that H is still at its seed.
+    """
+    # Process CONST first - their value_angle IS the ideal (no periodicity correction).
+    for dp in const_dihedral_proxies:
+      self._set_b1_from_const_proxy(dp)
+      self._collect_h_torsion(dp, 0)
+    # Process Var second - last-write wins, so Var overrides CONST.
     for dp in dihedral_proxies:
-      for i_test in dp.i_seqs:
-        if (self.h_connectivity[i_test] is None and not self.hd_sel[i_test]):
-          continue
-        ih = i_test
-        i1, i2, i3, i4 = dp.i_seqs
-        if (ih == i1):
-          i_third = i4
-        if (ih == i4):
-          i_third = i1
-        dihedral = dihedral_angle(
-              sites = [self.sites_cart[i1], self.sites_cart[i2],
-              self.sites_cart[i3],self.sites_cart[i4]])
-        dihedral_id = dp.angle_ideal
-        delta = geometry_restraints.angle_delta_deg(
-          angle_1 = math.degrees(dihedral),
-          angle_2 = dihedral_id,
-          periodicity = dp.periodicity)
-        dihedral_ideal = math.degrees(dihedral) + delta
-        b1 = {'iseq': i_third, 'dihedral_ideal': dihedral_ideal}
-        self.h_connectivity[ih].b1 = b1
-        self.assign_b1_for_H_atom_groups(ih = ih, i_third = i_third)
+      self._set_b1_from_var_proxy(dp)
+      self._collect_h_torsion(dp, dp.periodicity)
+
+  def _riding_torsion(self, dp, ih):
+    """riding_torsion() for the H ih and its parent; None without a parent"""
+    nb = self.h_connectivity[ih]
+    if nb is None or not nb.a0 or 'iseq' not in nb.a0: return None
+    return riding_torsion(dp.i_seqs, ih, nb.a0['iseq'])
+
+  def _keeps_heavy_b1(self, ih, i_third):
+    """True if an H third atom would replace the heavy third atom of the
+    group's b1 (assign_b1_for_H_atom_groups gives every H of the group the
+    same b1 atom)"""
+    b1 = self.h_connectivity[ih].b1
+    return (self.hd_sel[i_third] and 'iseq' in b1 and
+      not self.hd_sel[b1['iseq']])
+
+  def heavy_frame_for_h_third(self):
+    """
+    An alg1b H or a propeller (one heavy neighbour of the parent; 0 or 2
+    sibling H) whose b1 is an H, so all its torsion restraints have an H third
+    atom: frame on a heavy atom bonded to a1, at the staggered default 180 of
+    an H without torsions. In placement the H third is still at its seed, so
+    its target is arbitrary; in refinement these H keep their current torsion
+    whatever the frame. Kept when a1 has no other heavy neighbour (methanol).
+    Not for an NH2 (1 sibling): the planar path reads b1's target in every
+    idealization, where a constant would swap the two H, and the amine path
+    (nh2_frame) already frames on a heavy atom itself.
+    """
+    for nb in self.h_connectivity:
+      if nb is None or nb.number_non_h_neighbors != 1: continue
+      if nb.number_h_neighbors not in (0, 2): continue
+      if 'dihedral_ideal' not in nb.b1 or not self.hd_sel[nb.b1['iseq']]:
+        continue
+      heavy = self._heavy_third_neighbors(nb.a0['iseq'])
+      if not heavy: continue
+      nb.b1 = {'iseq': heavy[0], 'dihedral_ideal': STAGGERED_DEFAULT_1H}
+      self.assign_b1_for_H_atom_groups(ih = nb.ih, i_third = heavy[0])
+
+  def _collect_h_torsion(self, dp, periodicity):
+    """Every torsion restraint of an H (b1 keeps one per group), as
+    (third atom, ideal, periodicity) with the ideal for the riding convention
+    dihedral(third, a1, a0, H)"""
+    for ih in (dp.i_seqs[0], dp.i_seqs[3]):
+      t = self._riding_torsion(dp, ih)
+      if t is None: continue
+      i_third, sign = t
+      self.h_torsions.setdefault(ih, []).append(
+        (i_third, sign * dp.angle_ideal, periodicity))
+
+  def _set_b1_from_const_proxy(self, dp):
+    for i_test in dp.i_seqs:
+      # No entry: not an H, or an H whose parent bond is symmetry-related, so
+      # find_first_neighbors never saw it (6b8f ARG 63 altloc B HH22, frac
+      # x = -0.001). add_slipped gives it an entry later; it stays unparameterized.
+      if self.h_connectivity[i_test] is None:
+        continue
+      ih = i_test
+      # None: the H in the middle, or its parent not in the middle
+      t = self._riding_torsion(dp, ih)
+      if t is None:
+        continue
+      i_third, sign = t
+      if self._keeps_heavy_b1(ih, i_third):
+        continue
+      if not sign_sensitive(dp.angle_ideal, 0):
+        # 0 or 180: the value as before, to the bit
+        sign = 1 if ih == dp.i_seqs[0] else -1
+      b1 = {'iseq': i_third, 'dihedral_ideal': sign * dp.angle_ideal}
+      self.h_connectivity[ih].b1 = b1
+      self.assign_b1_for_H_atom_groups(ih = ih, i_third = i_third)
+
+  def _set_b1_from_var_proxy(self, dp):
+    for i_test in dp.i_seqs:
+      # No entry: not an H, or an H whose parent bond is symmetry-related, so
+      # find_first_neighbors never saw it (6b8f ARG 63 altloc B HH22, frac
+      # x = -0.001). add_slipped gives it an entry later; it stays unparameterized.
+      if self.h_connectivity[i_test] is None:
+        continue
+      ih = i_test
+      t = self._riding_torsion(dp, ih)
+      if t is None:
+        continue
+      i_third, sign = t
+      if self._keeps_heavy_b1(ih, i_third):
+        continue
+      if not sign_sensitive(dp.angle_ideal, dp.periodicity):
+        # the minima of the ideal and of its negative coincide: the minimum
+        # as before (the mirror of the nearest one when the proxy is
+        # reordered), so these H do not move
+        sign = 1
+      i1, i2, i3, i4 = dp.i_seqs
+      dihedral = dihedral_angle(
+            sites = [self.sites_cart[i1], self.sites_cart[i2],
+            self.sites_cart[i3],self.sites_cart[i4]])
+      if dihedral is None:
+        return
+      # the restraint minimum nearest the current torsion, both in riding's
+      # convention
+      current = sign * math.degrees(dihedral)
+      delta = geometry_restraints.angle_delta_deg(
+        angle_1 = current,
+        angle_2 = sign * dp.angle_ideal,
+        periodicity = dp.periodicity)
+      dihedral_ideal = current + delta
+      b1 = {'iseq': i_third, 'dihedral_ideal': dihedral_ideal}
+      self.h_connectivity[ih].b1 = b1
+      self.assign_b1_for_H_atom_groups(ih = ih, i_third = i_third)
 
   def assign_b1_for_H_atom_groups(self, ih, i_third):
     """ For atom groups (such as propeller), only one H atom has dihedral proxy
@@ -457,11 +652,89 @@ class determine_connectivity(object):
         ih = ih,
         number_non_h_neighbors = 0)
 
+  def _expected_heavy_neighbor_count(self, i_parent):
+    """Look up the parent atom's heavy-neighbor count from the monomer
+    library cif. Returns None when no info is available (mon_lib_srv is
+    None, comp not registered, or atom name not found in the comp's atom
+    dict). Caches per-resname maps on the instance."""
+    if self.mon_lib_srv is None:
+      return None
+    resname = self.atoms[i_parent].parent().resname.strip()
+    if resname not in self._expected_count_cache:
+      self._expected_count_cache[resname] = self._build_expected_count_map(resname)
+    counts = self._expected_count_cache[resname]
+    if counts is None:
+      return None
+    parent_atom_name = self.atoms[i_parent].name.strip()
+    return counts.get(parent_atom_name)
+
+  def _build_expected_count_map(self, resname):
+    """Build a dict mapping atom_id -> heavy-neighbor count for a resname.
+    Returns None if the comp is not registered in mon_lib_srv."""
+    comp = self.mon_lib_srv.get_comp_comp_id_direct(resname)
+    if comp is None:
+      return None
+    atom_dict = comp.atom_dict()
+    counts = {}
+    for atom_id in atom_dict:
+      counts[atom_id.strip()] = 0
+    for bond in comp.bond_list:
+      a1_id = bond.atom_id_1
+      a2_id = bond.atom_id_2
+      atom1 = atom_dict.get(a1_id)
+      atom2 = atom_dict.get(a2_id)
+      if atom1 is None or atom2 is None:
+        continue
+      if atom1.type_symbol != "H":
+        counts[a2_id.strip()] = counts.get(a2_id.strip(), 0) + 1
+      if atom2.type_symbol != "H":
+        counts[a1_id.strip()] = counts.get(a1_id.strip(), 0) + 1
+    return counts
+
+  def _heavy_third_neighbors(self, i_parent):
+    """Heavy atoms bonded to the parent's a1 (from angle proxies), one per
+    name in alternate conformations, as for H without torsion restraints"""
+    single, alt = [], []
+    for i_third in self.third_neighbors_raw[i_parent]:
+      (alt if self.atoms[i_third].parent().altloc else single).append(i_third)
+    return single + self.process_alternate_neighbors(alt_conf_neighbors = alt)
+
+  def _dictionary_pyramidal_nh2(self, i_parent, i_x):
+    """dictionary_pyramidal_nh2() for the model's parent and X"""
+    atom = self.atoms[i_parent]
+    return dictionary_pyramidal_nh2(self.mon_lib_srv,
+      atom.parent().resname.strip(), atom.name.strip(),
+      self.atoms[i_x].name.strip(), atom.element.strip().upper(),
+      self._expected_count_cache)
+
+  def _actual_heavy_neighbor_count(self, i_parent):
+    """Count logical (deduplicated by atom name) heavy neighbors of the
+    parent in the model. Altloc-aware: a heavy neighbor with multiple
+    altloc versions still counts once."""
+    parent_altloc = self.atoms[i_parent].parent().altloc
+    seen_names = set()
+    for j in self.fsc0[i_parent]:
+      if self.hd_sel[j]:
+        continue
+      j_altloc = self.atoms[j].parent().altloc
+      if parent_altloc and j_altloc and parent_altloc != j_altloc:
+        continue
+      seen_names.add(self.atoms[j].name.strip())
+    return len(seen_names)
+
+  def _parent_lost_heavy_neighbor(self, i_parent):
+    """True iff the cif declares more heavy neighbors than the model has."""
+    expected = self._expected_heavy_neighbor_count(i_parent)
+    if expected is None:
+      return False
+    actual = self._actual_heavy_neighbor_count(i_parent)
+    return actual < expected
+
   def get_diagnostics(self):
     h_in_connectivity = []
-    for neighbors in self.h_connectivity:
-      if (neighbors is not None):
-        h_in_connectivity.append(neighbors.ih)
+    for neighbor_obj in self.h_connectivity:
+      if (neighbor_obj is not None):
+        h_in_connectivity.append(neighbor_obj.ih)
     return group_args(
       double_H = self.double_H,
       connectivity_slipped = self.connectivity_slipped,
@@ -478,3 +751,98 @@ class determine_connectivity(object):
       result.append(atom.element_is_hydrogen())
     return result
 
+def riding_torsion(i_seqs, ih, i_parent):
+  """
+  For an H at an end of a dihedral proxy: (third atom, sign), where sign
+  times the proxy's angle and ideal gives riding's convention
+  dihedral(third, a1, a0, H). The registry stores sort_i_seqs() order
+  (i1 < i4, i2 < i3; the ideal negated per swap), so the atom next to the H
+  is its parent (+1) or the parent's neighbour (-1). None if the H is not at
+  an end or its parent is not in the middle.
+  """
+  i1, i2, i3, i4 = i_seqs
+  if ih == i1: i_third, i_next, i_far = i4, i2, i3
+  elif ih == i4: i_third, i_next, i_far = i1, i3, i2
+  else: return None
+  if i_next == i_parent: return i_third, 1
+  if i_far == i_parent: return i_third, -1
+  return None
+
+def sign_sensitive(angle_ideal, periodicity):
+  """
+  False if the minima of the ideal and of its negative are within 1 deg
+  (2 v = 0 modulo 360/periodicity; CONST, periodicity 0: 0 or 180), that is,
+  the ideal is within 0.5 deg of a value its negative also meets. Callers
+  then keep the target riding had before the sign was corrected, to the bit.
+  The 1 deg is a compatibility choice: below it the old sign costs < 1 deg
+  (< 0.02 A at the H), while the corrected one would turn a propeller by
+  120 deg (GeoStd 60/3) or move backbone N-H at chain breaks (170/72).
+  Those targets keep the old choice of minimum, which is the mirror of the
+  nearest one for a reordered proxy and so not idempotent.
+  """
+  p = 360. / periodicity if periodicity > 0 else 360.
+  w = (2 * angle_ideal) % p
+  return min(w, p - w) >= 1.0
+
+def dictionary_pyramidal_nh2(mon_lib_srv, resname, n, x, element='N',
+                             cache=None):
+  """True iff the cif of resname has atom n as an N with 2 H and 1 heavy
+  neighbour x, all its bonds single, and x is
+    - a C with 4 bonded atoms, all bonds single (alkyl amine),
+    - an N, all bonds single, not in a ring (hydrazine; a ring N may be
+      aromatic in a Kekule cif), or
+    - an O, all bonds single (hydroxylamine).
+  False without cif information. Not: sulfonamides (S=O), anilines,
+  amides, amidines, enamines (conjugated X). Shared by riding H
+  (connectivity) and placement (reduce_hydrogen: metal-bound NH2).
+  cache: dict for the residue's bond graph."""
+  if element != 'N': return False
+  if cache is None: cache = {}
+  key = ('pyramidal_nh2', resname)
+  if key not in cache:
+    cache[key] = _build_bond_graph(mon_lib_srv, resname)
+  graph = cache[key]
+  if graph is None: return False
+  elements, bonds = graph
+  if elements.get(n) != 'N' or n not in bonds: return False
+  nb_h = [b for b in bonds[n] if elements.get(b[0]) in ('H', 'D')]
+  nb_heavy = [b for b in bonds[n] if elements.get(b[0]) not in ('H', 'D')]
+  if len(nb_h) != 2 or len(nb_heavy) != 1 or nb_heavy[0][0] != x:
+    return False
+  if not all(single for _, single in bonds[n]): return False
+  if not all(single for _, single in bonds.get(x, [])): return False
+  ex = elements.get(x)
+  if ex == 'C': return len(bonds[x]) == 4
+  if ex == 'N': return not _in_ring(bonds, x)
+  return ex == 'O'
+
+def _build_bond_graph(mon_lib_srv, resname):
+  """({atom_id: element}, {atom_id: [(bonded atom_id, single bond)]}) from
+  the cif, or None if the comp is not in mon_lib_srv or has no bond types"""
+  if mon_lib_srv is None: return None
+  comp = mon_lib_srv.get_comp_comp_id_direct(resname)
+  if comp is None: return None
+  elements = dict((a.atom_id.strip(), a.type_symbol.strip().upper())
+    for a in comp.atom_list)
+  bonds = {}
+  for b in comp.bond_list:
+    t = (getattr(b, 'type', None) or '').strip().lower()
+    if not t or t in ('?', '.'): return None
+    single = t in ('single', 'sing', '1')
+    i, j = b.atom_id_1.strip(), b.atom_id_2.strip()
+    bonds.setdefault(i, []).append((j, single))
+    bonds.setdefault(j, []).append((i, single))
+  return elements, bonds
+
+def _in_ring(bonds, a):
+  """True if atom a is in a ring of the cif bond graph"""
+  for start, _ in bonds.get(a, []):
+    # a path from a neighbour back to a that avoids the bond to a
+    seen, stack = set([a, start]), [start]
+    while stack:
+      cur = stack.pop()
+      for nxt, _ in bonds.get(cur, []):
+        if nxt == a and cur != start: return True
+        if nxt not in seen:
+          seen.add(nxt); stack.append(nxt)
+  return False

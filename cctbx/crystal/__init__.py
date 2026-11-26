@@ -1,14 +1,17 @@
-from __future__ import division
+from __future__ import absolute_import, division, print_function
 # -*- coding: utf-8 -*-
 from cctbx.array_family import flex
-import boost.python
-ext = boost.python.import_ext("cctbx_crystal_ext")
+import boost_adaptbx.boost.python as bp
+from six.moves import range
+from six.moves import zip
+ext = bp.import_ext("cctbx_crystal_ext")
 from cctbx_crystal_ext import *
 from cctbx.crystal.find_best_cell import find_best_cell
 from cctbx import sgtbx
 from cctbx import uctbx
 from cctbx import covariance, geometry
 from libtbx.containers import OrderedDict
+from libtbx.forward_compatibility import object
 from scitbx.array_family import shared
 from scitbx import stl
 import scitbx.stl.set
@@ -32,6 +35,13 @@ pair_asu_j_sym_group = scitbx.stl.set.unsigned
 class symmetry(object):
   """This class represents the symmetry of a crystal and bundles information on its unit cell and space group.
   """
+  def __setstate__(self, state):
+    if sys.version_info.major > 2:
+      from libtbx.easy_pickle import fix_py2_pickle_orig
+      state = fix_py2_pickle_orig(state)
+    for name,value in state.items():
+      setattr(self, name, value)
+
   def __init__(self,
         unit_cell=None,
         space_group_symbol=None,
@@ -91,8 +101,8 @@ class symmetry(object):
             if (ls.endswith(" :H")):
               self._space_group_info = sgi.primitive_setting()
       if (assert_is_compatible_unit_cell):
-        if (raise_sorry_if_incompatible_unit_cell) :
-          if (not self.is_compatible_unit_cell()) :
+        if (raise_sorry_if_incompatible_unit_cell):
+          if (not self.is_compatible_unit_cell()):
             raise Sorry(("The space group '%s' is incompatible with unit cell "+
               "parameters %s.") % (str(self._space_group_info),
               str(self._unit_cell.parameters())))
@@ -118,6 +128,15 @@ class symmetry(object):
   def unit_cell(self):
     return self._unit_cell
 
+  def space_group_number(self):
+    sgi = self._space_group_info
+    if sgi and sgi.group() and sgi.group().info() and \
+       sgi.group().info().type() and \
+       (sgi.group().info().type().number() is not None):
+      return sgi.group().info().type().number()
+    else:
+      return None
+
   def space_group_info(self):
     return self._space_group_info
 
@@ -130,21 +149,42 @@ class symmetry(object):
     fmt = (
       'crystal.symmetry(\n'
       '%s  unit_cell=%s,\n'
-      '%s  space_group_symbol="%s")')
+      '%s  space_group_symbol=%s\n'
+      '%s)')
     return fmt % (
-      indent, str(self.unit_cell()),
-      indent, str(self.space_group_info()))
+      indent,
+      "(%.10g, %.10g, %.10g, %.10g, %.10g, %.10g)" % self.unit_cell().parameters()
+      if self.unit_cell() is not None else None,
+      indent,
+      '"%s"' % self.space_group_info().type().lookup_symbol()
+      if self.space_group_info() is not None else None,
+      indent
+    )
 
   def show_summary(self, f=None, prefix=""):
     if (f is None): f = sys.stdout
-    if (self.unit_cell() is None):
-      print >> f, prefix + "Unit cell:", None
-    else:
-      self.unit_cell().show_parameters(f=f, prefix=prefix+"Unit cell: ")
-    if (self.space_group_info() is None):
-      print >> f, prefix + "Space group:", None
-    else:
-      self.space_group_info().show_summary(f=f, prefix=prefix+"Space group: ")
+    print(self.as_str(prefix=prefix), file=f)
+
+  def as_str(self, prefix=""):
+    return (
+      prefix + "Unit cell: %s\n" % self.unit_cell() +
+      prefix + "Space group: %s" % (
+        self.space_group_info().symbol_and_number()
+        if self.space_group_info() is not None else None)
+    )
+
+  def __str__(self):
+    return self.as_str()
+
+  def __repr__(self):
+    return self.as_py_code(indent="  ")
+
+  def is_identical_symmetry(self, other):
+    ''' True if identical for self and other '''
+    return self.is_similar_symmetry(other,
+      relative_length_tolerance = 0,
+      absolute_angle_tolerance = 0,
+      absolute_length_tolerance = 0,)
 
   def is_similar_symmetry(self,
                           other,
@@ -439,12 +479,14 @@ class symmetry(object):
         result.append(self.unit_cell().orthogonalize(m3.elems*site_frac+t)[0])
     return result
 
-  def is_nonsence(self):
+  def is_nonsense(self):
     uc = self.unit_cell()
     if uc is None:
-      return False
+      return True
+    if(self.space_group_info() is None or self.space_group() is None):
+      return True
     ucp = uc.parameters()
-    return ((abs(1.-ucp[0])<1.e-3 and
+    result = ((abs(1.-ucp[0])<1.e-3 and
              abs(1.-ucp[1])<1.e-3 and
              abs(1.-ucp[2])<1.e-3) or
           (abs(0.-ucp[0])<1.e-3 and
@@ -456,9 +498,13 @@ class symmetry(object):
           (abs(0.-ucp[3])<1.e-3 and
              abs(0.-ucp[4])<1.e-3 and
              abs(0.-ucp[5])<1.e-3))
+    return result
 
   def is_empty(self):
     return self.unit_cell() is None and self.space_group_info() is None
+
+  def is_incomplete(self):
+    return self.unit_cell() is None or self.space_group() is None
 
 def select_crystal_symmetry(
       from_command_line     = None,
@@ -479,14 +525,14 @@ def select_crystal_symmetry(
     while cs0 is None and i<len(tmp):
       cs0 = tmp[i]
       if cs0 is not None:
-        if cs0.is_nonsence() or cs0.is_empty():
+        if cs0.is_nonsense() or cs0.is_empty():
           cs0 = None
       i += 1
     for cs in tmp[i:]:
-      if cs and not cs.is_nonsence() and not cs.is_empty():
+      if cs and not cs.is_nonsense() and not cs.is_empty():
         is_similar_cs = cs0.is_similar_symmetry(cs,
            absolute_angle_tolerance=absolute_angle_tolerance,
-           absolute_length_tolerance=absolute_angle_tolerance)
+           absolute_length_tolerance=absolute_length_tolerance)
         if(not is_similar_cs):
           msg = "Crystal symmetry mismatch between different files.\n"
           msg += "%s %s\n" % (cs0.unit_cell(), cs0.space_group_info())
@@ -513,8 +559,15 @@ def select_crystal_symmetry(
           break
   for crystal_symmetry in from_coordinate_files:
     if crystal_symmetry is not None:
-      result = result.join_symmetry(
-        other_symmetry=crystal_symmetry, force=False)
+      if enforce_similarity:  # usual, require compatibility here
+        result = result.join_symmetry(
+          other_symmetry=crystal_symmetry, force=False)
+      else:  # skip incompatible symmetries (can happen e.g. in map_box)
+        try:
+          result = result.join_symmetry(
+            other_symmetry=crystal_symmetry, force=False)
+        except Exception as e:
+          pass
   if (result.space_group_info() is None):
     for crystal_symmetry in from_reflection_files:
       space_group_info = None
@@ -526,7 +579,7 @@ def select_crystal_symmetry(
           space_group_info=space_group_info,
           assert_is_compatible_unit_cell=False)
         break
-  if result.is_nonsence():
+  if result.is_nonsense():
     return None
   if result.is_empty():
     return None
@@ -762,7 +815,8 @@ def correct_special_position(
     return site_special_frac
   return unit_cell.orthogonalize(site_special_frac)
 
-class _(boost.python.injector, pair_asu_table):
+@bp.inject_into(pair_asu_table)
+class _():
 
   def as_nested_lists(self):
     result = []
@@ -780,19 +834,19 @@ class _(boost.python.injector, pair_asu_table):
     if (f is None): f = sys.stdout
     if (site_labels is None):
       for i_seq, j_seq_dict in enumerate(self.table()):
-        print >> f, "i_seq:", i_seq
+        print("i_seq:", i_seq, file=f)
         for j_seq,j_sym_group in j_seq_dict.items():
-          print >> f, "  j_seq:", j_seq
+          print("  j_seq:", j_seq, file=f)
           for j_syms in j_sym_group:
-            print >> f, "    j_syms:", list(j_syms)
+            print("    j_syms:", list(j_syms), file=f)
     else:
       assert len(site_labels) == self.table().size()
       for i_seq, j_seq_dict in enumerate(self.table()):
-        print >> f, "%s(%d)" % (site_labels[i_seq], i_seq)
+        print("%s(%d)" % (site_labels[i_seq], i_seq), file=f)
         for j_seq,j_sym_group in j_seq_dict.items():
-          print >> f, "  %s(%d)" % (site_labels[j_seq], j_seq)
+          print("  %s(%d)" % (site_labels[j_seq], j_seq), file=f)
           for j_syms in j_sym_group:
-            print >> f, "    j_syms:", list(j_syms)
+            print("    j_syms:", list(j_syms), file=f)
 
   def show_distances(self,
         site_labels=None,
@@ -824,6 +878,23 @@ class _(boost.python.injector, pair_asu_table):
       keep_pair_asu_table=keep_pair_asu_table,
       out=out)
 
+  def show_dihedral_angles(self,
+        site_labels=None,
+        sites_frac=None,
+        sites_cart=None,
+        keep_pair_asu_table=False,
+        max_d=1.7,
+        max_angle=170,
+        out=None):
+    return show_dihedral_angles(
+      pair_asu_table=self,
+      site_labels=site_labels,
+      sites_frac=sites_frac,
+      sites_cart=sites_cart,
+      max_d=max_d,
+      max_angle=max_angle,
+      out=out)
+
 class calculate_distances(object):
 
   def __init__(self,
@@ -842,9 +913,9 @@ class calculate_distances(object):
     self.pair_counts = flex.size_t()
 
   def __iter__(self):
-    return self.next()
+    return next(self)
 
-  def next(self):
+  def __next__(self):
 
     class distance(object):
       def __init__(self,
@@ -969,13 +1040,13 @@ class show_distances(libtbx.slots_getstate_setstate):
             for x in unit_cell.orthogonalize(site_frac_i)]
         else:
           formatted_site = [" %7.4f" % x for x in site_frac_i]
-        print >> out, ("%%-%ds" % (label_len+23)) % s, \
-          "<<"+",".join(formatted_site)+">>"
+        print(("%%-%ds" % (label_len+23)) % s, \
+          "<<"+",".join(formatted_site)+">>", file=out)
       if (site_labels is None):
-        print >> out, " ", label_fmt % (j_seq+1) + ":",
+        print(" ", label_fmt % (j_seq+1) + ":", end=' ', file=out)
       else:
-        print >> out, " ", label_fmt % (site_labels[j_seq] + ":"),
-      print >> out, "%8.4f" % di.distance,
+        print(" ", label_fmt % (site_labels[j_seq] + ":"), end=' ', file=out)
+      print("%8.4f" % di.distance, end=' ', file=out)
       if di.i_j_sym != 0:
         s = "sym. equiv."
       else:
@@ -990,9 +1061,9 @@ class show_distances(libtbx.slots_getstate_setstate):
       if (not rt_mx_ji.is_unit_mx()):
         s += " sym=" + str(rt_mx_ji)
         self.have_sym = True
-      print >> out, s
+      print(s, file=out)
       if first_time_i_seq and di.pair_count == 0:
-        print >> out, "  no neighbors"
+        print("  no neighbors", file=out)
 
 class calculate_angles(object):
 
@@ -1014,9 +1085,9 @@ class calculate_angles(object):
     self.pair_counts = flex.size_t()
 
   def __iter__(self):
-    return self.next()
+    return next(self)
 
-  def next(self):
+  def __next__(self):
 
     class angle(object):
       def __init__(self,
@@ -1145,13 +1216,204 @@ class show_angles(object):
           k_label += "*%s" %k
         s = label_fmt % (j_label, i_label, k_label)
       s += " %6.2f" % a.angle
-      print >> out, s
+      print(s, file=out)
 
     self.angles = angles.angles
     self.distance = angles.distances
     for i, rt_mx in enumerate(rt_mxs):
-      print >> out, "*%s" %(i+1),
-      print >> out, rt_mx
+      print("*%s" %(i+1), end=' ', file=out)
+      print(rt_mx, file=out)
+
+
+class dihedral_angle_def(object):
+  def __init__(self, seqs, rt_mxs):
+    libtbx.adopt_init_args(self, locals())
+
+class calculate_dihedrals(object):
+  def __init__(self,
+               pair_asu_table,
+               sites_frac,
+               dihedral_defs=None, #angle definition
+               skip_j_seq_less_than_i_seq=True,
+               covariance_matrix=None,
+               cell_covariance_matrix=None,
+               parameter_map=None,
+               conformer_indices=None,
+               max_d = 1.9,
+               max_angle = 170):
+    libtbx.adopt_init_args(self, locals())
+    if self.covariance_matrix is not None:
+      self.variances = flex.double()
+    else:
+      self.variances = None
+    self.dihedrals = flex.double()
+
+  def __iter__(self):
+    return self.next()
+
+  def next(self):
+
+    class dihedral(object):
+      def __init__(self,
+                   angle,
+                   i_seqs,
+                   rt_mxs,
+                   variance=None):
+        libtbx.adopt_init_args(self, locals())
+      def __eq__(self, other):
+        for i in range(0,4):
+          if self.i_seqs[i] != other.i_seqs[i] or self.rt_mxs[i] != other.rt_mxs[i]:
+            return False
+        return True
+
+    asu_mappings = self.pair_asu_table.asu_mappings()
+    unit_cell = asu_mappings.unit_cell()
+    if self.covariance_matrix is not None:
+      assert self.parameter_map is not None
+      cov_cart = covariance.orthogonalize_covariance_matrix(
+        self.covariance_matrix, unit_cell, self.parameter_map)
+    if self.dihedral_defs is not None:
+      for ad in self.dihedral_defs:
+        sites = []
+        for i in range(0,4):
+          site_frac = ad.rt_mxs[i] * self.sites_frac[ad.seqs[i]]
+          sites.append(unit_cell.orthogonalize(site_frac))
+        a = geometry.dihedral(sites)
+        angle_ = a.dihedral_model
+        self.dihedrals.append(angle_)
+        if self.covariance_matrix is not None:
+          cov = covariance.extract_covariance_matrix_for_sites(
+            flex.size_t(ad.seqs), cov_cart, self.parameter_map)
+          if self.cell_covariance_matrix is not None:
+            var = a.variance(cov, unit_cell, ad.rt_mxs)
+          else:
+            var = a.variance(cov, unit_cell, ad.rt_mxs)
+          self.variances.append(var)
+        else:
+          var = None
+        yield dihedral(angle_, ad.seqs, ad.rt_mxs, variance=var)
+      return
+    table = self.pair_asu_table.table()
+    for i_seq,i_asu_dict in enumerate(table):
+      rt_mx_i_inv = asu_mappings.get_rt_mx(i_seq, 0).inverse()
+      i_site_frac = self.sites_frac[i_seq]
+      for j_seq,j_sym_groups in i_asu_dict.items():
+        if j_seq < i_seq: continue
+        rt_mx_j0_inv = asu_mappings.get_rt_mx(j_seq, 0).inverse()
+        for j_sym_group in j_sym_groups:
+          for j_sym_idx,j_sym in enumerate(j_sym_group):
+            rt_mx_j = rt_mx_i_inv.multiply(asu_mappings.get_rt_mx(j_seq, j_sym))
+            j_site_frac = rt_mx_j * self.sites_frac[j_seq]
+            for k_seq, k_sym_groups in table[j_seq].items():
+              if k_seq < i_seq: continue
+              if (self.conformer_indices is not None and
+                  self.conformer_indices[j_seq] !=
+                  self.conformer_indices[k_seq]):
+                continue
+              rt_mx_k0_inv = asu_mappings.get_rt_mx(k_seq, 0).inverse()
+              rt_mx_kj = rt_mx_j.multiply(rt_mx_j0_inv)
+              for k_sym_group in k_sym_groups:
+                for k_sym_idx,k_sym in enumerate(k_sym_group):
+                  rt_mx_k = rt_mx_kj.multiply(asu_mappings.get_rt_mx(k_seq, k_sym))
+                  k_site_frac = rt_mx_k *  self.sites_frac[k_seq]
+                  if k_site_frac == i_site_frac:
+                    continue
+                  if unit_cell.distance(j_site_frac, k_site_frac) > self.max_d:
+                    continue
+                  rt_mx_lk = rt_mx_k.multiply(rt_mx_k0_inv)
+                  for l_seq, l_sym_groups in table[k_seq].items():
+                    if l_seq < i_seq: continue
+                    if (self.conformer_indices is not None and
+                        self.conformer_indices[k_seq] !=
+                        self.conformer_indices[l_seq]):
+                      continue
+                    for l_sym_group in l_sym_groups:
+                      for l_sym_idx, l_sym in enumerate(l_sym_group):
+                        rt_mx_l = rt_mx_lk.multiply(asu_mappings.get_rt_mx(l_seq, l_sym))
+                        l_site_frac = rt_mx_l *  self.sites_frac[l_seq]
+                        if l_site_frac in (i_site_frac, j_site_frac):
+                          continue
+                        if unit_cell.angle(i_site_frac, j_site_frac, k_site_frac) > self.max_angle or\
+                           unit_cell.angle(j_site_frac, k_site_frac, l_site_frac) > self.max_angle:
+                          continue
+                        rt_mxs = [sgtbx.rt_mx(), rt_mx_j, rt_mx_k, rt_mx_l]
+                        sites = [i_site_frac, j_site_frac, k_site_frac, l_site_frac]
+                        seqs = [i_seq, j_seq, k_seq, l_seq]
+                        rtmx_count = [0,0,0,0]
+                        # find the most common matrix to eliminate
+                        for idx, rt_mx in enumerate(rt_mxs):
+                          for idx1 in range(idx+1, 4):
+                            if rt_mx == rt_mxs[idx1]:
+                              rtmx_count[idx] += 1
+                        max_idx = rtmx_count.index(max(rtmx_count))
+                        rt_mx_inv = rt_mxs[max_idx].inverse()
+                        for i in range(0, 4):
+                          sites[i] = rt_mxs[i].inverse() * sites[i]
+                          rt_mxs[i] = rt_mx_inv.multiply(rt_mxs[i])
+                          sites[i] = unit_cell.orthogonalize(rt_mxs[i] * sites[i])
+                        a = geometry.dihedral(sites)
+                        angle_ = a.dihedral_model
+                        self.dihedrals.append(angle_)
+                        if self.covariance_matrix is not None:
+                          cov = covariance.extract_covariance_matrix_for_sites(
+                            flex.size_t(seqs), cov_cart, self.parameter_map)
+                          if self.cell_covariance_matrix is not None:
+                            var = a.variance(cov, unit_cell, rt_mxs)
+                          else:
+                            var = a.variance(cov, unit_cell, rt_mxs)
+                          self.variances.append(var)
+                        else:
+                          var = None
+                        yield dihedral(angle_, seqs, rt_mxs, variance=var)
+
+class show_dihedral_angles(object):
+
+  def __init__(self,
+        pair_asu_table,
+        site_labels=None,
+        sites_frac=None,
+        sites_cart=None,
+        show_cartesian=False,
+        max_d=1.7,
+        max_angle=170,
+        out=None):
+
+    assert [sites_frac, sites_cart].count(None) == 1
+    if (out is None): out = sys.stdout
+    rt_mxs = []
+    if (site_labels is None):
+      label_len = len("%d" % (sites_frac.size()+1))
+      label_fmt = "site_%%0%dd" % label_len
+      label_len += 5
+    else:
+      label_len = 1
+      for label in site_labels:
+        label_len = max(label_len, len(label))
+      label_fmt = "%%-%ds" % (label_len+4)
+    angles = calculate_dihedrals(pair_asu_table, sites_frac,
+      max_d=max_d, max_angle=max_angle)
+    for d in angles:
+      if (site_labels is None):
+        s = label_fmt % (d.i_seqs[0]+1) + ":"
+      else:
+        s = ""
+        for idx, i_seq in enumerate(d.i_seqs):
+          label = label_fmt % site_labels[i_seq]
+          rt_mx = d.rt_mxs[idx]
+          if not rt_mx.is_unit_mx():
+            if rt_mx in rt_mxs:
+              j = rt_mxs.index(rt_mx) + 1
+            else:
+              rt_mxs.append(rt_mx)
+              j = len(rt_mxs)
+            label += "*%s" %j
+          s += label
+      s += " %6.2f" % d.angle
+      print(s, file=out)
+
+    self.dihedrals = angles.dihedrals
+    for i, rt_mx in enumerate(rt_mxs):
+      print("*%s %s" %(i+1, rt_mx), file=out)
 
 class sym_pair(libtbx.slots_getstate_setstate):
 
@@ -1165,7 +1427,8 @@ class sym_pair(libtbx.slots_getstate_setstate):
   def i_seqs(self):
     return (self.i_seq, self.j_seq)
 
-class _(boost.python.injector, pair_sym_table):
+@bp.inject_into(pair_sym_table)
+class _():
 
   def iterator(self):
     for i_seq,pair_sym_dict in enumerate(self):
@@ -1247,14 +1510,14 @@ class _(boost.python.injector, pair_sym_table):
     if (f is None): f = sys.stdout
     def show_i():
       if (site_labels is None):
-        print >> f, "i_seq:", i_seq
+        print("i_seq:", i_seq, file=f)
       else:
-        print >> f, "%s(%d)" % (site_labels[i_seq], i_seq)
+        print("%s(%d)" % (site_labels[i_seq], i_seq), file=f)
     def show_j():
       if (site_labels is None):
-        print >> f, "  j_seq:", j_seq
+        print("  j_seq:", j_seq, file=f)
       else:
-        print >> f, "  %s(%d)" % (site_labels[j_seq], j_seq)
+        print("  %s(%d)" % (site_labels[j_seq], j_seq), file=f)
     for i_seq,pair_sym_dict in enumerate(self):
       show_i()
       for j_seq,sym_ops in pair_sym_dict.items():
@@ -1262,14 +1525,14 @@ class _(boost.python.injector, pair_sym_table):
         if (site_symmetry_table is None):
           if (sites_frac is None):
             for rt_mx_ji in sym_ops:
-              print >> f, "   ", rt_mx_ji
+              print("   ", rt_mx_ji, file=f)
           elif (len(sym_ops) > 0):
             max_len = max([len(str(_)) for _ in sym_ops])
             fmt = "    %%-%ds  %%8.4f" % max_len
             for rt_mx_ji in sym_ops:
               d = unit_cell.distance(
                 sites_frac[i_seq], rt_mx_ji * sites_frac[j_seq])
-              print >> f, fmt % (str(rt_mx_ji), d)
+              print(fmt % (str(rt_mx_ji), d), file=f)
         else:
           max_len = 0
           sepis = []
@@ -1287,7 +1550,7 @@ class _(boost.python.injector, pair_sym_table):
                 if (sites_frac is not None):
                   d = "  %8.4f" % unit_cell.distance(
                     sites_frac[i_seq], s * sites_frac[j_seq])
-                print >> f, (fmt % (str(s), d, e)).rstrip()
+                print((fmt % (str(s), d, e)).rstrip(), file=f)
                 e = "  sym. equiv."
 
   def show_distances(self,
@@ -1314,7 +1577,7 @@ class _(boost.python.injector, pair_sym_table):
     if (skip_j_seq_less_than_i_seq):
       back_interactions = None
     else:
-      back_interactions = [set() for _ in xrange(self.size())]
+      back_interactions = [set() for _ in range(self.size())]
       for i_seq,pair_sym_dict in enumerate(self):
         for j_seq,sym_ops in pair_sym_dict.items():
           if (j_seq != i_seq):
@@ -1355,16 +1618,16 @@ class _(boost.python.injector, pair_sym_table):
           for x in unit_cell.orthogonalize(site_frac_i)]
       else:
         formatted_site = [" %7.4f" % x for x in site_frac_i]
-      print >> out, ("%%-%ds" % (label_len+23)) % s, \
-        "<<"+",".join(formatted_site)+">>"
+      print(("%%-%ds" % (label_len+23)) % s, \
+        "<<"+",".join(formatted_site)+">>", file=out)
       for distance,j_seq,_,sepi in distance_info:
         sym_equiv = "           "
         for rt_mx_ji_equiv in sepi:
           if (site_labels is None):
-            print >> out, " ", label_fmt % (j_seq+1) + ":",
+            print(" ", label_fmt % (j_seq+1) + ":", end=' ', file=out)
           else:
-            print >> out, " ", label_fmt % (site_labels[j_seq] + ":"),
-          print >> out, "%8.4f" % distance,
+            print(" ", label_fmt % (site_labels[j_seq] + ":"), end=' ', file=out)
+          print("%8.4f" % distance, end=' ', file=out)
           s = sym_equiv
           sym_equiv = "sym. equiv."
           site_frac_ji_equiv = rt_mx_ji_equiv * sites_frac[j_seq]
@@ -1376,11 +1639,11 @@ class _(boost.python.injector, pair_sym_table):
           s += " (" + ",".join(formatted_site) +")"
           if (not rt_mx_ji_equiv.is_unit_mx()):
             s += " sym=" + str(rt_mx_ji_equiv)
-          print >> out, s
+          print(s, file=out)
           if (skip_sym_equiv):
             break
       if (pair_count == 0):
-        print >> out, "  no neighbors"
+        print("  no neighbors", file=out)
       pair_counts.append(pair_count)
     return pair_counts
 
@@ -1535,9 +1798,9 @@ class incremental_clustering(_clustering_mix_in):
       if (scores is not None):
         scores = scores.select(selection)
     n_sites = sites_frac.size()
-    assignments = flex.size_t(xrange(n_sites))
+    assignments = flex.size_t(range(n_sites))
     n_clusters = n_sites
-    index_groups = [[i_seq] for i_seq in xrange(n_sites)]
+    index_groups = [[i_seq] for i_seq in range(n_sites)]
     symmetry_ops = [special_position_settings.space_group()(0)] * n_sites
     get_distance = unit_cell.distance
     for i_distance_cutoff,distance_cutoff in enumerate(distance_cutoffs):
@@ -1638,9 +1901,9 @@ class distance_based_clustering(_clustering_mix_in):
       assert site_symmetry_table.n_special_positions() == 0
       sites_frac = sites_frac.select(selection)
     n_sites = sites_frac.size()
-    assignments = flex.size_t(xrange(n_sites))
+    assignments = flex.size_t(range(n_sites))
     n_clusters = n_sites
-    index_groups = [[i_seq] for i_seq in xrange(n_sites)]
+    index_groups = [[i_seq] for i_seq in range(n_sites)]
     symmetry_ops = [special_position_settings.space_group()(0)] * n_sites
     asu_mappings = special_position_settings.asu_mappings(
       buffer_thickness=distance_cutoff,
@@ -1711,7 +1974,7 @@ def cluster_erosion(sites_cart, box_size, fraction_to_be_retained):
   box_coordinates = (sites_cart - box_origin) * (1./box_size)
   box_grid = flex.grid(n_boxes)
   box_counts = flex.size_t(box_grid.size_1d(), 0)
-  box_members = [flex.size_t() for i in xrange(box_counts.size())]
+  box_members = [flex.size_t() for i in range(box_counts.size())]
   for i_seq,x in enumerate(box_coordinates):
     box_index_3d = [max(0, min(int(i), n)) for i,n in zip(x, n_boxes)]
     box_index_1d = box_grid(box_index_3d)
@@ -1738,3 +2001,74 @@ def unit_crystal_symmetry():
   uc=uctbx.unit_cell((1,1,1,90,90,90))
   from cctbx import crystal
   return crystal.symmetry(unit_cell=uc,space_group_info=sg)
+
+bp.inject(ext.neighbors_simple_pair_generator, bp.py3_make_iterator)
+bp.inject_into(ext.neighbors_fast_pair_generator, bp.py3_make_iterator)
+
+def pairs_within(sites_cart, distance_cutoff, crystal_symmetry=None,
+                 i_seqs=None):
+  """
+  Pairs of sites closer than distance_cutoff, in the asymmetric unit and
+  with symmetry mates.
+
+  Parameters
+  ----------
+  sites_cart : flex.vec3_double
+    Cartesian coordinates of the sites.
+  distance_cutoff : float
+    Largest distance of a pair (A).
+  crystal_symmetry : cctbx.crystal.symmetry, optional
+    None, or without a unit cell: no symmetry mates, pairs of the sites
+    themselves only.
+  i_seqs : iterable of int, optional
+    Indices of the first sites of the pairs wanted. None: all sites.
+
+  Returns
+  -------
+  list of tuple
+    (i, j, rt_mx, distance): sites_cart[i] is distance (A) from the mate
+    rt_mx * sites_cart[j] of sites_cart[j], rt_mx a sgtbx.rt_mx acting on
+    fractional coordinates, the identity for a pair in the asymmetric unit.
+    Every position of a mate within the cutoff is listed, also when the
+    site i is on or close to a special position. Mates of a site closer
+    than 0.01 A to each other are one position, listed once (a site on a
+    2-fold axis, with the identity); a site is not listed with such a mate
+    of itself. A site farther from a special position is listed with its
+    own mates. A pair of distinct sites is listed with either site first,
+    unless i_seqs leaves one out.
+  """
+  if i_seqs is None:
+    order = list(range(sites_cart.size()))
+    n_first = len(order)
+  else:
+    order = list(i_seqs)
+    n_first = len(order)
+    first = set(order)
+    for i in range(sites_cart.size()):
+      if i not in first: order.append(i)
+  if n_first == 0: return []
+  sites = sites_cart.select(flex.size_t(order))
+  cs = crystal_symmetry
+  if cs is None or cs.unit_cell() is None:
+    box = uctbx.non_crystallographic_unit_cell_with_the_sites_in_its_center(
+      sites_cart=sites, buffer_layer=distance_cutoff)
+    cs = symmetry(unit_cell=box.unit_cell, space_group_symbol="P 1")
+    sites = box.sites_cart
+  # the default 0.5 A puts a site within 0.25 A of a 2-fold on the axis and
+  # loses the distinct mates of its neighbours; 0.01 A: coordinate rounding
+  settings = cs.special_position_settings(
+    min_distance_sym_equiv=0.01, assert_min_distance_sym_equiv=False)
+  pair_sym_table = settings.pair_asu_table(
+    distance_cutoff=distance_cutoff,
+    sites_cart=sites).extract_pair_sym_table(
+      skip_j_seq_less_than_i_seq=False,
+      all_interactions_from_inside_asu=True)
+  uc = cs.unit_cell()
+  sites_frac = uc.fractionalize(sites)
+  result = []
+  for i in range(n_first):
+    for j, rt_mxs in pair_sym_table[i].items():
+      for rt_mx in rt_mxs:
+        distance = uc.distance(sites_frac[i], rt_mx * sites_frac[j])
+        result.append((order[i], order[j], rt_mx, distance))
+  return result

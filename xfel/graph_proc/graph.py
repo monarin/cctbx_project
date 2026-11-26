@@ -3,7 +3,10 @@ crystallography images, treated as a graph problem.
 
 **Author:**   Oliver Zeldin <zeldin@stanford.edu>
 """
-from __future__ import division
+from __future__ import absolute_import, division, print_function
+from functools import reduce
+from six.moves import range
+from six.moves import zip
 
 __author__ = 'zeldin'
 
@@ -116,7 +119,7 @@ class Graph(Cluster):
     logging.debug("Edges added to graph.")
 
     # Position vertices
-    if not kwargs.has_key('pos') :
+    if 'pos' not in kwargs :
       kwargs['pos'] = nx.spring_layout(nx_graph, iterations=1000)
 
     # Organise Edge colors
@@ -431,4 +434,3 @@ class Graph(Cluster):
                              len(new_labels)))
 
       current_labels = new_labels
-

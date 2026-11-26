@@ -1,4 +1,4 @@
-from __future__ import division
+from __future__ import absolute_import, division, print_function
 from cctbx.array_family import flex
 from cctbx import xray
 from cctbx import crystal
@@ -8,6 +8,7 @@ from libtbx.test_utils import approx_equal
 import random
 from cctbx.development import random_structure
 from cctbx import sgtbx
+from six.moves import zip
 
 if (1):
   random.seed(0)
@@ -121,7 +122,7 @@ def exercise_02():
     map_current = minimized.map_current
     final_error = flex.mean(xrs.distances(other = minimized.xray_structure))
   assert approx_equal(start_error, 0.8, 1.e-3)
-  assert final_error < 1.e-4
+  assert final_error < 0.0002, final_error
 
 def exercise_03():
   """

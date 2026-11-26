@@ -9,7 +9,8 @@ XXX Better named cspad_common?
 
 XXX Read out detector temperature (see Hart et al., 2012)?
 """
-from __future__ import division
+from __future__ import absolute_import, division, print_function
+from six.moves import range
 
 import math
 import numpy
@@ -19,24 +20,16 @@ import time
 from libtbx import easy_pickle
 from scitbx.array_family import flex
 from xfel.cxi.cspad_ana.parse_calib import Section
+import six
+from six.moves import zip
+
+import serialtbx.util.time
+import serialtbx.detector.cspad
+from serialtbx.detector.cspad import pixel_size
+from serialtbx.detector.xtc import old_address_to_new_address, get_ebeam, env_detz, address_split # import dependency
 
 __version__ = "$Revision$"
 
-
-# The CAMP and CSpad counters are both 14 bits wide (Strüder et al
-# 2010; Philipp et al., 2007), which means the physical limit is 2**14 - 1.
-# However, in practice, when the pixels are in the low gain mode, after
-# correcting by a gain value of around 6.87, the pixels tend to saturate
-# around 90000. See xpp experiment xppe0314, run 184 as evidence.
-cspad_saturated_value = 90000
-
-# The dark average for the CSPAD detector is around 1100-1500. A pixel
-# histogram of a minimum projection of an uncorrected (raw) light run shows
-# a mostly flat tail up to ~800 ADU with a few bumps in the tail which
-# represent true underloads. Assume a dark average of 1200 ADU. After dark
-# subtraction, 800 - 1200 gives a minimum trusted value of -400. Reject
-# pixels less than this.
-cspad_min_trusted_value = -400
 
 # As long as the mask value is outside of the trusted range, the pixel should
 # be ignored by any downstream software.
@@ -45,14 +38,6 @@ cspad_mask_value = -100000
 # The side length of a square quadrant from the old XtcExplorer code.
 # XXX This should be obsoleted!
 npix_quad = 850
-
-# The pixel size in mm.  The pixel size is fixed and square, with side
-# length of 110 µm (Philipp et al., 2007).  XXX Should really clarify
-# this with Sol and Chris.
-#
-# XXX Andor: 13.5 µm square, CAMP: 75 µm, square (Strüder et al.,
-# 2010)
-pixel_size = 110e-3
 
 # origin of section in quad coordinate system.  x-position
 # correspond to column number.  XXX Note/reference the source!
@@ -66,51 +51,6 @@ ypos_sec2x1 = [[   0,    0,  214,    1,  425,  425,  615,  402],  # 2:5 were not
                [   0,    0,  214,    1,  425,  425,  615,  402],
                [   0,    0,  215,    3,  431,  431,  616,  403],
                [   0,    0,  214,    1,  425,  425,  615,  403]] # 2:5 were not measured
-
-
-def address_split(address, env=None):
-  """The address_split() function splits an address into its four
-  components.  Address strings are on the form
-  detector-detectorID|device-deviceID, where the detectors must be in
-  dir(xtc.DetInfo.Detector) and device must be in
-  (xtc.DetInfo.Device).
-  @param address Full data source address of the DAQ device
-  @param env     Optional env to dereference an alias into an address
-  @return        Four-tuple of detector name, detector ID, device, and
-                 device ID
-  """
-
-  import re
-
-  # pyana
-  m = re.match(
-    '^(?P<det>\S+)\-(?P<det_id>\d+)\|(?P<dev>\S+)\-(?P<dev_id>\d+)$', address)
-  if m is not None:
-    return (m.group('det'), m.group('det_id'), m.group('dev'), m.group('dev_id'))
-
-  # psana
-  m = re.match(
-    '^(?P<det>\S+)\.(?P<det_id>\d+)\:(?P<dev>\S+)\.(?P<dev_id>\d+)$', address)
-  if m is not None:
-    return (m.group('det'), m.group('det_id'), m.group('dev'), m.group('dev_id'))
-
-  # psana DetInfo string
-  m = re.match(
-    '^DetInfo\((?P<det>\S+)\.(?P<det_id>\d+)\:(?P<dev>\S+)\.(?P<dev_id>\d+)\)$', address)
-  if m is not None:
-    return (m.group('det'), m.group('det_id'), m.group('dev'), m.group('dev_id'))
-
-  if env is not None:
-    # Try to see if this is a detector alias, and if so, dereference it. Code from psana's Detector/PyDetector.py
-    amap = env.aliasMap()
-    alias_src = amap.src(address) # string --> DAQ-style psana.Src
-
-    # if it is an alias, look up the full name
-    if amap.alias(alias_src) != '':         # alias found
-      address = str(alias_src)
-      return address_split(address)
-
-  return (None, None, None, None)
 
 
 def cbcaa(config, sections):
@@ -139,8 +79,8 @@ def cbcaa(config, sections):
     # lower-right corner is exclusive.  XXX Should subtract one from
     # x, y on lower-right corner and verify with zoom.  XXX All this
     # should probably go by now
-    for q in xrange(4): # loop over quadrants
-      for i in xrange(8): # loop over two-by-one:s XXX variable name!
+    for q in range(4): # loop over quadrants
+      for i in range(8): # loop over two-by-one:s XXX variable name!
 
         # Skip this two-by-one if it is missing.
         if not (config.roiMask(q) & 0x1 << i):
@@ -224,7 +164,7 @@ def cbcaa(config, sections):
   else:
     q_mask = config.quadMask()
 
-  for q in xrange(len(sections)):
+  for q in range(len(sections)):
     if (not((1 << q) & q_mask)):
       continue
 
@@ -245,7 +185,7 @@ def cbcaa(config, sections):
       s_mask = config.roiMask()
     else:
       s_mask = config.roiMask(q)
-    for s in xrange(len(sections[q])):
+    for s in range(len(sections[q])):
       if (not((1 << s) & s_mask)):
         continue
       c = sections[q][s].corners_asic()
@@ -277,11 +217,11 @@ def CsPad2x2Image(data, config, sections):
   # cause any further breakage XXX Does this still work for runs 4 and
   # 5?
 #  s = config.sections
-#  mask = map(s, xrange(2))
+#  mask = map(s, range(2))
 
   # For this detector, the quadrant index is always zero.
   q_idx = 0
-  for s in xrange(2):
+  for s in range(2):
     # XXX DAQ misconfiguration?  This mask appears not to work
     # reliably for the Sc1 detector.
 #    if (s not in mask[q_idx]):
@@ -306,7 +246,7 @@ def evt_get_quads(address, evt, env):
     cspad = evt.get(CsPad.DataV2, src)
     if cspad is None:
       return None
-    quads = [cspad.quads(i) for i in xrange(cspad.quads_shape()[0])]
+    quads = [cspad.quads(i) for i in range(cspad.quads_shape()[0])]
   return quads
 
 def CsPadDetector(address, evt, env, sections, right=True, quads=None):
@@ -370,7 +310,7 @@ def CsPadDetector(address, evt, env, sections, right=True, quads=None):
       # psana
       # as above, using config.roiMask, a bitstring where the ith bit is true if the ith sensor is active. x << y means bitwise shift
       # x, y times, and & is the bitwise AND operator
-      q_mask = [i for i in xrange(len(sections[q_idx])) if 1 << i & config.roiMask(q_idx)]
+      q_mask = [i for i in range(len(sections[q_idx])) if 1 << i & config.roiMask(q_idx)]
 
     # For consistency, assert that there is data for each unmasked
     # section.
@@ -405,15 +345,15 @@ def CsPadElement(data3d, qn, config):
   """
 
   # If any sections are missing, insert zeros.
-  mask = map(config.sections, xrange(4))
+  mask = [config.sections(i) for i in range(4)]
   if (len(data3d) < 8):
     zsec = numpy.zeros((185, 388), dtype = data3d.dtype)
-    for i in xrange(8) :
+    for i in range(8) :
       if (i not in mask[qn]):
         data3d = numpy.insert(data3d, i, zsec, axis = 0)
 
   pairs = []
-  for i in xrange(8) :
+  for i in range(8) :
     # Insert gap between ASIC:s in the 2x1.
     asics = numpy.hsplit(data3d[i], 2)
     gap   = numpy.zeros((185, 4), dtype = data3d.dtype)
@@ -429,7 +369,7 @@ def CsPadElement(data3d, qn, config):
 
   # Make the array for this quadrant, and insert the 2x1 sections.
   quadrant = numpy.zeros((npix_quad, npix_quad), dtype = data3d.dtype)
-  for sec in xrange(8):
+  for sec in range(8):
     nrows, ncols = pairs[sec].shape
 
     # x,y  in quadrant coordinate system
@@ -445,82 +385,9 @@ def CsPadElement(data3d, qn, config):
     quadrant = numpy.rot90(quadrant, 4 - qn)
   return quadrant
 
-def dpack(active_areas=None,
-          address=None,
-          beam_center_x=None,
-          beam_center_y=None,
-          ccd_image_saturation=None,
-          data=None,
-          distance=None,
-          pixel_size=pixel_size,
-          saturated_value=None,
-          timestamp=None,
-          wavelength=None,
-          xtal_target=None,
-          min_trusted_value=None):
-  """XXX Check completeness.  Should fill in sensible defaults."""
-
-  # Must have data.
-  if data is None:
-    return None
-
-  # Create a time stamp of the current time if none was supplied.
-  if timestamp is None:
-    timestamp = evt_timestamp()
-
-  # For unknown historical reasons, the dictionary must contain both
-  # CCD_IMAGE_SATURATION and SATURATED_VALUE items.
-  if ccd_image_saturation is None:
-    if saturated_value is None:
-      ccd_image_saturation = cspad_saturated_value
-    else:
-      ccd_image_saturation = saturated_value
-  if saturated_value is None:
-    saturated_value = ccd_image_saturation
-
-  # Use a minimum value if provided for the pixel range
-  if min_trusted_value is None:
-    min_trusted_value = cspad_min_trusted_value
-
-  # By default, the beam center is the center of the image.  The slow
-  # (vertical) and fast (horizontal) axes correspond to x and y,
-  # respectively.
-  if beam_center_x is None:
-    beam_center_x = pixel_size * data.focus()[1] / 2
-  if beam_center_y is None:
-    beam_center_y = pixel_size * data.focus()[0] / 2
-
-  # By default, the entire detector image is an active area.  There is
-  # no sensible default for distance nor wavelength.  XXX But setting
-  # wavelength to zero may be disastrous?
-  if active_areas is None:
-    # XXX Verify order with non-square detector
-    active_areas = flex.int((0, 0, data.focus()[0], data.focus()[1]))
-  if distance is None:
-    distance = 0
-  if wavelength is None:
-    wavelength = 0
-
-  # The size must match the image dimensions.  The length along the
-  # slow (vertical) axis is SIZE1, the length along the fast
-  # (horizontal) axis is SIZE2.
-  return {'ACTIVE_AREAS': active_areas,
-          'BEAM_CENTER_X': beam_center_x,
-          'BEAM_CENTER_Y': beam_center_y,
-          'CCD_IMAGE_SATURATION': ccd_image_saturation,
-          'DATA': data,
-          'DETECTOR_ADDRESS': address,
-          'DISTANCE': distance,
-          'PIXEL_SIZE': pixel_size,
-          'SATURATED_VALUE': saturated_value,
-          'MIN_TRUSTED_VALUE': min_trusted_value,
-          'SIZE1': data.focus()[0],
-          'SIZE2': data.focus()[1],
-          'TIMESTAMP': timestamp,
-          'SEQUENCE_NUMBER': 0, # XXX Deprecated
-          'WAVELENGTH': wavelength,
-          'xtal_target': xtal_target}
-
+def dpack(*kwargs):
+  """ thin wrapper """
+  return serialtbx.detector.cspad.dpack(*kwargs)
 
 def hdf5pack(hdf5_file,
              active_areas=None,
@@ -575,7 +442,7 @@ def hdf5pack(hdf5_file,
 
   grp_event = hdf5_file.create_group(d['TIMESTAMP'])
   grp_detector = grp_event.create_group(address)
-  for (key, value) in d.iteritems():
+  for (key, value) in six.iteritems(d):
     if key == 'ACTIVE_AREAS':
       grp_detector.create_dataset(key, data=value.as_numpy_array())
     elif key == 'DATA':
@@ -667,7 +534,7 @@ def dwritef2(obj, path):
   """
 
   dirname = os.path.dirname(path)
-  if dirname is not "" and not os.path.isdir(dirname):
+  if dirname != "" and not os.path.isdir(dirname):
     os.makedirs(dirname)
 
   easy_pickle.dump(path, obj)
@@ -824,31 +691,6 @@ def pathsubst(format_string, evt, env, **kwargs):
                     subprocess=env.subprocess(),
                     user=getuser())
 
-def get_ebeam(evt):
-  try:
-    # pyana
-    ebeam = evt.getEBeam()
-  except AttributeError, e:
-    from psana import Source, Bld
-    src = Source('BldInfo(EBeam)')
-    ebeam = evt.get(Bld.BldDataEBeamV6, src)
-    if ebeam is None:
-      ebeam = evt.get(Bld.BldDataEBeamV5, src)
-    if ebeam is None:
-      ebeam = evt.get(Bld.BldDataEBeamV4, src)
-    if ebeam is None:
-      ebeam = evt.get(Bld.BldDataEBeamV3, src)
-    if ebeam is None:
-      ebeam = evt.get(Bld.BldDataEBeamV2, src)
-    if ebeam is None:
-      ebeam = evt.get(Bld.BldDataEBeamV1, src)
-    if ebeam is None:
-      ebeam = evt.get(Bld.BldDataEBeamV0, src)
-    if ebeam is None:
-      ebeam = evt.get(Bld.BldDataEBeam, src) # recent version of psana will return a V7 event or higher if this type is asked for
-
-  return ebeam
-
 def env_laser_status(env, laser_id):
   """The return value is a bool that indicates whether the laser in
   question was on for that particular shot.  Bear in mind that sample
@@ -892,83 +734,9 @@ def env_injector_xyz(env):
                              for i in range(3)])
 
 
-def env_detz(address, env):
-  """The env_detz() function returns the position of the detector with
-  the given address string on the z-axis in mm.  The zero-point is as
-  far away as possible from the sample, and values decrease as the
-  detector is moved towards the sample.
-  @param address Full data source address of the DAQ device
-  @param env     Environment object
-  @return        Detector z-position, in mm
-  """
-
-  if env is not None:
-    detector = address_split(address, env)[0]
-    if detector is None:
-      return None
-    elif detector == 'CxiDs1':
-      pv = env.epicsStore().value('CXI:DS1:MMS:06.RBV')
-      if pv is None:
-        # Even though potentially unsafe, fall back on the commanded
-        # value if the corresponding read-back value cannot be read.
-        # According to Sébastien Boutet, this particular motor has not
-        # caused any problem in the past.
-        pv = env.epicsStore().value('CXI:DS1:MMS:06')
-      if pv is None:
-        # Try the other detector. These are sometimes inconsistent
-        pv = env.epicsStore().value('CXI:DS2:MMS:06.RBV')
-    elif detector == 'CxiDsd' or detector == 'CxiDs2':
-      # XXX Note inconsistency in naming: Dsd vs Ds2!
-      pv = env.epicsStore().value('CXI:DS2:MMS:06.RBV')
-      if pv is None:
-        # Try the other detector. These are sometimes inconsistent
-        pv = env.epicsStore().value('CXI:DS1:MMS:06.RBV')
-    elif detector == 'XppGon':
-      # There is no distance recorded for the XPP's CSPAD on the robot
-      # arm.  Always return zero to allow the distance to be set using
-      # the offset.
-      return 0
-    elif detector == 'XppEndstation' or \
-         detector == 'MfxEndstation':
-      # There is no distance recorded for the XPP's or MFX's Rayonix
-      # on the robot arm.  Always return zero to allow the distance to
-      # be set using the offset.
-      return 0
-    else:
-      return None
-
-    if pv is None:
-      return None
-
-    if hasattr(pv, "values"):
-      if len(pv.values) == 1:
-        return pv.values[0]
-      else:
-        return None
-    return pv
-
-  return None
-
-
-def env_distance(address, env, offset):
-  """The env_distance() function returns the distance between the
-  sample and the detector with the given address string in mm.  The
-  distance between the sample and the the detector's zero-point can
-  vary by an inch or more between different LCLS runs.  According to
-  Sébastien Boutet the offset should be stable to within ±0.5 mm
-  during a normal experiment.
-
-  @param address Full data source address of the DAQ device
-  @param env     Environment object
-  @param offset  Detector-sample offset in mm, corresponding to
-                 longest detector-sample distance
-  @return        Detector-sample distance, in mm
-  """
-
-  detz = env_detz(address, env)
-  if detz is not None:
-    return detz + offset
-  return None
+def env_distance(*kwargs):
+  """ thin wrapper """
+  return serialtbx.detector.xtc.env_distance(*kwargs)
 
 
 def env_sifoil(env):
@@ -999,7 +767,7 @@ def env_sifoil(env):
           "XRT:DIA:MMS:11.RBV": 10240 }
 
   si_tot = 0
-  for pvname, si_len in dia.iteritems():
+  for pvname, si_len in six.iteritems(dia):
     pv = env.epicsStore().value(pvname)
 
     # XXX Why is this an EpicsPvTime object?  The absorption
@@ -1228,9 +996,7 @@ def evt_time(evt=None):
   """
 
   if evt is None:
-    t = time.time()
-    s = int(math.floor(t))
-    return (s, int(round((t - s) * 1000)))
+    return serialtbx.util.time.now_s_ms()
 
   if hasattr(evt, "getTime"):
     t = evt.getTime()
@@ -1252,57 +1018,11 @@ def evt_timestamp(t=None):
   @return  Human-readable ISO 8601 timestamp in string representation
   """
 
-  if t is None:
-    t = evt_time(evt=None)
-    if t is None:
-      return None
-  return time.strftime("%Y-%m-%dT%H:%MZ%S", time.gmtime(t[0])) + \
-      (".%03d" % t[1])
+  return serialtbx.util.time.timestamp(t)
 
-
-def evt_wavelength(evt, delta_k=0):
-  """The evt_wavelength() function returns the wavelength in Ångström
-  of the event pointed to by @p evt.  From Margaritondo & Rebernik
-  Ribic (2011): the dimensionless relativistic γ-factor is derived
-  from beam energy in MeV and the electron rest mass, K is a
-  dimensionless "undulator parameter", and L is the macroscopic
-  undulator period in Ångström.  See also
-  https://people.eecs.berkeley.edu/~attwood/srms/2007/Lec10.pdf
-
-  @param evt     Event data object, a configure object
-  @param delta_k Optional K-value correction
-  @return        Wavelength, in Ångström
-  """
-
-  if evt is not None:
-    ebeam = get_ebeam(evt)
-
-    if hasattr(ebeam, 'fEbeamPhotonEnergy') and ebeam.fEbeamPhotonEnergy > 0:
-      # pyana
-      return 12398.4187 / ebeam.fEbeamPhotonEnergy
-    if hasattr(ebeam, 'ebeamPhotonEnergy') and ebeam.ebeamPhotonEnergy() > 0:
-      # psana
-      return 12398.4187 / ebeam.ebeamPhotonEnergy()
-
-    if hasattr(ebeam, 'fEbeamL3Energy') and ebeam.fEbeamL3Energy > 0:
-      # pyana
-      gamma = ebeam.fEbeamL3Energy / 0.510998910
-    elif hasattr(ebeam, 'ebeamL3Energy') and ebeam.ebeamL3Energy() > 0:
-      # psana
-      gamma = ebeam.ebeamL3Energy() / 0.510998910
-    else:
-      return None
-    K = 3.5 + delta_k
-    L = 3.0e8
-    return L / (2 * gamma**2) * (1 + K**2 / 2)
-  return None
-
-def old_address_to_new_address(address):
-  """ Change between old and new style detector addresses.
-  I.E. CxiDs1-0|Cspad-0 becomes CxiDs1.0:Cspad.0
-  @param address detector address to convert
-  """
-  return address.replace('-','.').replace('|',':')
+def evt_wavelength(*args, **kwargs):
+  """ thin wrapper """
+  return serialtbx.detector.xtc.evt_wavelength(*args, **kwargs)
 
 def getConfig(address, env):
   """ Given a detector address, find the config object in an env object
@@ -1526,7 +1246,7 @@ def image_xpp(address, evt, env, aa, quads = None):
       # psana
       # as above, using config.roiMask, a bitstring where the ith bit is true if the ith sensor is active. x << y means bitwise shift
       # x, y times, and & is the bitwise AND operator
-      q_mask = [i for i in xrange(config.numSect()//config.numQuads()) if 1 << i & config.roiMask(q_idx)]
+      q_mask = [i for i in range(config.numSect()//config.numQuads()) if 1 << i & config.roiMask(q_idx)]
 
     # For consistency, one could/should verify that len(q_data) is
     # equal to len(sections[q_idx]).
@@ -1606,8 +1326,8 @@ def iplace(dst, src, angle, center):
     # components in coordinate system of the untransformed source
     # image, (xp, yp).  Then do bilinear interpolation based on the
     # four pixels with integer coordinates around (xp, yp).
-    for x in xrange(xlim[0], xlim[1]):
-        for y in xrange(ylim[0], ylim[1]):
+    for x in range(xlim[0], xlim[1]):
+        for y in range(ylim[0], ylim[1]):
             xp =  c * x + s * y + 0.5 * src.shape[0]
             yp = -s * x + c * y + 0.5 * src.shape[1]
             if (xp >= 0 and math.ceil(xp) < src.shape[0] and

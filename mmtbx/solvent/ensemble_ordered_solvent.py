@@ -1,4 +1,4 @@
-from __future__ import division
+from __future__ import absolute_import, division, print_function
 from libtbx import adopt_init_args
 from cctbx.array_family import flex
 import iotbx.phil
@@ -7,6 +7,7 @@ from mmtbx import find_peaks
 from cctbx import xray
 import random
 from mmtbx.dynamics.constants import boltzmann_constant_akma
+from six.moves import range
 
 master_params_str = """\
   tolerance = 1.0
@@ -187,7 +188,7 @@ class manager(object):
     assert self.params.primary_map_type is not None
 
     if self.verbose > 0:
-      print >> self.log, "\nCycle 1 - Evaluate Existing Solvent Atoms vs Primary Map and Secondary Map"
+      print("\nCycle 1 - Evaluate Existing Solvent Atoms vs Primary Map and Secondary Map", file=self.log)
     # map next to model (ignore hd)
     if self.params.ordered_solvent_map_to_model:
       closest_distances = self.model.get_xray_structure().closest_distances(
@@ -196,13 +197,13 @@ class manager(object):
                                         distance_cutoff = 10.0)
       existing_sf = self.existing_solvent_xrs.sites_frac()
       cntr = 0
-      for x in xrange(existing_sf.size()):
+      for x in range(existing_sf.size()):
         if existing_sf[x] != closest_distances.sites_frac[x]:
            cntr+=1
            if self.velocities is not None:
             self.existing_solvent_velocities[x] = self.randomize_velocity()
       if self.verbose > 0:
-        print >> self.log, "Map solvent next to model (atoms moved) : ", cntr
+        print("Map solvent next to model (atoms moved) : ", cntr, file=self.log)
       self.existing_solvent_xrs.set_sites_frac(closest_distances.sites_frac)
 
     #Calculate if existing atoms has a significant peak within 1.0A of either map
@@ -249,7 +250,7 @@ class manager(object):
     if(not self.is_water_last()):
       raise RuntimeError("Water picking failed: solvent must be last.")
     if self.verbose > 0:
-      print >> self.log, "\nCycle 2 - Picking New Solvent Atoms from Fo-Fc Map and 2Fo-Fc Map"
+      print("\nCycle 2 - Picking New Solvent Atoms from Fo-Fc Map and 2Fo-Fc Map", file=self.log)
     # Peak present in Fo-Fc AND 2Fo-Fc map
     self.sites = None
     self.heights = None
@@ -258,11 +259,11 @@ class manager(object):
     peaks_fo_fc = self.find_peaks(
       map_type     = self.params.primary_map_type,
       map_cutoff   = self.params.primary_map_cutoff).peaks_mapped()
-    if (peaks_fo_fc is not None) and (peaks_fo_fc.sites is not None) :
+    if (peaks_fo_fc is not None) and (peaks_fo_fc.sites is not None):
       new_scatterers = flex.xray_scatterer(
         peaks_fo_fc.sites.size(),
         xray.scatterer(occupancy       = self.params.occupancy,
-        b                              = self.params.b_iso,
+        b                              = 20,
         scattering_type                = self.params.scattering_type,
         label                          = 'HOH'))
       new_scatterers.set_sites(peaks_fo_fc.sites)
@@ -283,7 +284,7 @@ class manager(object):
         if x > 0:
           new_solvent_atoms_near_pick_selection[x] = True
       if self.verbose > 0:
-        print >> self.log, "Number of additional waters             : ", new_solvent_atoms_near_pick_selection.count(True)
+        print("Number of additional waters             : ", new_solvent_atoms_near_pick_selection.count(True), file=self.log)
       new_solvent_near_peak = new_solvent_xray_structure.select(new_solvent_atoms_near_pick_selection)
       #Return solvent atoms near peaks
       self.sites = new_solvent_near_peak.sites_frac()
@@ -298,7 +299,7 @@ class manager(object):
       self.randomize_new_velocities()
       self.velocities.extend(self.new_solvent_atom_velocities)
     if self.verbose > 0:
-      print >> self.log, "|"+"-"*77+"|\n"
+      print("|"+"-"*77+"|\n", file=self.log)
 
   def randomize_velocity(self):
     if self.params.seed is not None:
@@ -320,7 +321,7 @@ class manager(object):
     mass_oxygen = 16.0
     sigma = (kt / mass_oxygen)**0.5
     random_random()
-    for x in xrange(self.new_solvent_atom_velocities.size()):
+    for x in range(self.new_solvent_atom_velocities.size()):
       self.new_solvent_atom_velocities[x] = [random_gauss(0, sigma) for i in (1,2,3)]
 
   def compare_peaks_with_positions(self):
@@ -379,16 +380,31 @@ class manager(object):
     if self.verbose > 0:
       silent = False
     else: silent = True
-    return find_peaks.manager(fmodel          = self.fmodel,
-                              map_type        = map_type,
+    #
+    from cctbx import maptbx
+    e_map = self.fmodel.electron_density_map()
+    crystal_symmetry = self.fmodel.xray_structure.crystal_symmetry()
+    crystal_gridding = maptbx.crystal_gridding(
+      unit_cell        = crystal_symmetry.unit_cell(),
+      space_group_info = crystal_symmetry.space_group_info(),
+      symmetry_flags   = maptbx.use_space_group_symmetry,
+      step             = 0.6)
+    coeffs = e_map.map_coefficients(
+      map_type     = map_type,
+      fill_missing = False,
+      isotropize   = True)
+    fft_map = coeffs.fft_map(crystal_gridding = crystal_gridding)
+    fft_map.apply_sigma_scaling()
+    map_data = fft_map.real_map_unpadded()
+    #
+    return find_peaks.manager(map_data        = map_data,
+                              xray_structure  = self.fmodel.xray_structure,
                               map_cutoff      = map_cutoff,
                               params          = self.fpp,
-                              use_all_data    = False,
-                              silent          = silent,
                               log             = self.log)
 
   def add_new_solvent(self):
-    b_solv = self.params.b_iso
+    b_solv = 20
     new_scatterers = flex.xray_scatterer(
               self.sites.size(),
               xray.scatterer(occupancy       = self.params.occupancy,
@@ -418,6 +434,6 @@ class manager(object):
   def show(self, message = None):
     if message is not None:
       spacer = " " * (40 - len(message) )
-      print >> self.log, message+spacer+": ", self.model.number_of_ordered_solvent_molecules()
+      print(message+spacer+": ", self.model.number_of_ordered_solvent_molecules(), file=self.log)
     else:
-      print >> self.log, "Number of waters                        : ", self.model.number_of_ordered_solvent_molecules()
+      print("Number of waters                        : ", self.model.number_of_ordered_solvent_molecules(), file=self.log)

@@ -1,4 +1,5 @@
-from __future__ import division
+"""Extract extract rfactors resolutions sigma from reflection file"""
+from __future__ import absolute_import, division, print_function
 import sys
 from libtbx.str_utils import format_value
 from libtbx import smart_open
@@ -95,6 +96,8 @@ class get_r_rfree_sigma(object):
     r1 = line.startswith("REMARK   3   R VALUE            (WORKING SET) ")
     r2 = line.startswith(
       "REMARK   3   R VALUE          (WORKING SET, NO CUTOFF) ")
+    #r3 = line.startswith("REMARK   3   R VALUE     (WORKING + TEST SET)")
+    #return r1 or r2 or r3
     return r1 or r2
 
   def is_FreeRValue(self, line):
@@ -124,11 +127,11 @@ class get_r_rfree_sigma(object):
 
   def show(self, log = None):
     if(log is None): log = sys.stdout
-    print >> log, self.formatted_string()
+    print(self.formatted_string(), file=log)
 
 def extract_remark_2_and_3_records(file_name, file_lines=None):
   result = []
-  if (file_lines is None) :
+  if (file_lines is None):
     file_lines = smart_open.for_reading(
       file_name = file_name).read().splitlines()
   else :
@@ -138,7 +141,7 @@ def extract_remark_2_and_3_records(file_name, file_lines=None):
       start = True
       result.append(rec)
     else:
-      if(rec.startswith("ATOM ") or rec.startswith("HETATM ")):
+      if(rec.startswith("ATOM ") or rec.startswith("HETATM ")): # PDB OK
         break
   return result
 

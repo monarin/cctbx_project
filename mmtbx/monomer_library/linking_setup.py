@@ -1,5 +1,24 @@
 # see iotbx/pdb/common_residue_names.h; additionally here only: U I
-from __future__ import division
+from __future__ import absolute_import, division, print_function
+
+ad_hoc_single_metal_residue_element_types_more_complete = """\
+LI BE
+NA MG
+AL
+K  CA
+SC TI V  CR MN FE CO NI CU ZN
+GA GE AS SE
+RB SR
+Y  ZR NB MO TC RU RH PD AG CD
+IN SN SB TE I
+CS BA
+LA HF TA W  RE OS IR PT AU HG
+TL PB BI PO AT
+FR RA
+AC
+CE PR ND PM SM EU GD TB DY HO ER TM YB LU
+TB PA U  NP PU AM CM BK CF ES FM MD NO LW
+""".split()
 
 ad_hoc_single_metal_residue_element_types = """\
 ZN CA MG NA MN K FE CU CD HG NI CO SR CS PT BA TL PB SM AU RB YB LI
@@ -39,6 +58,13 @@ maximum_per_atom_links = {
   "common_rna_dna"    : 1,
   "common_amino_acid" : 1,
   "other"             : 1,
+  }
+# an atom past maximum_per_atom_links may take another covalent-range link
+# while covalent heavy neighbours + links stay below this. Nitrogen only: an
+# amine can be alkylated twice (2b5z LYS NZ), a sugar C1 between two ASN ND2
+# keeps one (tst_linking 38). O and S are full after one link anyway.
+neutral_valence = {
+  "N" : 3,
   }
 #
 skip_if_both = [
@@ -148,5 +174,25 @@ def skip_if_non_linking(lookup, atom1, atom2):
     assert 0
 
 if __name__=="__main__":
-  print skip_if_both
-  print skip_if_longer
+  from libtbx import easy_run
+  print(skip_if_both)
+  print(skip_if_longer)
+  from mmtbx.monomer_library.pdb_interpretation import ad_hoc_single_atom_residue_element_types
+  s1 = set(ad_hoc_single_metal_residue_element_types_more_complete)
+  s1 = set(ad_hoc_single_atom_residue_element_types)
+  s2 = set(ad_hoc_single_metal_residue_element_types)
+  print(s1)
+  print(s2)
+  print('-'*80)
+  print(s1.difference(s2))
+  print('-'*80)
+  print(s2.difference(s1))
+  print('-'*80)
+  # for e in ad_hoc_single_metal_residue_element_types_more_complete:
+  #   cmd='mmtbx.where_is_that_cif_file %s source=ccd' % e
+  #   print(cmd)
+  #   rc=easy_run.go(cmd)
+  #   print(dir(rc))
+  #   for line in rc.stdout_lines:
+  #     print(line)
+  #   # assert 0

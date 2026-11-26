@@ -1,9 +1,10 @@
-from __future__ import division
+from __future__ import absolute_import, division, print_function
+from six.moves import range
 from scitbx.array_family import flex
 import math
 
 from xfel.merging.algorithms.error_model.sdfac_refine import sdfac_refine_refltable
-from xfel.merging.algorithms.error_model import compute_normalized_deviations, apply_sd_error_params
+from xfel.merging.algorithms.error_model import compute_normalized_deviations, apply_sd_error_params, df_dpsq as df_dpsq_cpp
 
 def finite_difference(target, values, p, DELTA = 1.e-7):
   """ Compute finite difference given a target function """
@@ -59,7 +60,7 @@ class sdfac_refinery(object):
 
     if self.scaler.params.raw_data.error_models.sdfac_refine.plot_refinement_steps:
       all_sigmas_normalized = all_sigmas_normalized.select(all_sigmas_normalized != 0)
-      print self.modeler.normal_probability_plot(all_sigmas_normalized, (-0.5, 0.5), plot = True)
+      print(self.modeler.normal_probability_plot(all_sigmas_normalized, (-0.5, 0.5), plot = True))
     return f
 
   def functional(self, fvec):
@@ -83,6 +84,7 @@ class sdfac_refinery(object):
 
   def get_normalized_sigmas(self, values):
     orig_isigi = self.ISIGI['isigi'] * 1
+    # time split between these two functions
     self.apply_sd_error_params(self.ISIGI, values)
     all_sigmas_normalized = compute_normalized_deviations(self.ISIGI, self.indices)
 
@@ -92,23 +94,7 @@ class sdfac_refinery(object):
     return all_sigmas_normalized, sigma_prime
 
   def df_dpsq(self, all_sigmas_normalized, sigma_prime, dsigmasq_dpsq):
-    c = self.ISIGI['nn']*((self.ISIGI['scaled_intensity']-self.ISIGI['meanprime_scaled_intensity'])**2)
-
-    dsigmanormsq_dpsq = ( -c / ((sigma_prime**2)**2)) * dsigmasq_dpsq
-
-    g = flex.double(len(self.bins), 0)
-    for b, bin in enumerate(self.bins):
-      binned_normalized_sigmas = all_sigmas_normalized.select(bin)
-      n = len(binned_normalized_sigmas)
-      if n == 0: continue
-      if binned_normalized_sigmas.count(0) == n: continue
-
-      bnssq = binned_normalized_sigmas * binned_normalized_sigmas
-
-      t1 = 2*(1 - math.sqrt(flex.sum(bnssq)/n))
-      t2 = -0.5 / math.sqrt(flex.sum(bnssq)/n)
-      t3 = flex.sum(dsigmanormsq_dpsq.select(bin))/n
-      g[b] = t1 * t2 * t3
+    g = df_dpsq_cpp(all_sigmas_normalized, sigma_prime, dsigmasq_dpsq, self.ISIGI, self.modeler.bin_indices, len(self.bins))
     return g
 
   def df_dsdfacsq(self, values, all_sigmas_normalized, sigma_prime):
@@ -169,7 +155,7 @@ class lbfgs_minimizer(object):
       l = flex.double(self.n, 1e-8)
 
       if len(l) > 3:
-        for p in xrange(7,len(l)):
+        for p in range(7,len(l)):
           l[p] = 1e-15 # g*
 
       self.minimizer = lbfgsb.minimizer(
@@ -193,15 +179,15 @@ class lbfgs_minimizer(object):
 
     if self.show_finite_differences:
       finite_g = flex.double()
-      for x in xrange(self.n):
+      for x in range(self.n):
         finite_g.append(finite_difference(
           lambda v: self.refinery.functional(self.refinery.fvec_callable(v)),
           values, x))
 
-      for x in xrange(self.n):
-        print >> self.out, "p%d finite % 20.10f analytical % 20.10f"%(x, finite_g[x], self.g[x])
+      for x in range(self.n):
+        print("p%d finite % 20.10f analytical % 20.10f"%(x, finite_g[x], self.g[x]), file=self.out)
 
-    print >> self.out, "functional value % 20.3f"%functional,
+    print("functional value % 20.3f"%functional, end=' ', file=self.out)
     values.show(self.out)
     return self.f, self.g
 
@@ -220,15 +206,15 @@ class lbfgs_minimizer(object):
 
     if self.show_finite_differences:
       finite_g = flex.double()
-      for x in xrange(self.n):
+      for x in range(self.n):
         finite_g.append(finite_difference(
           lambda v: self.refinery.functional(self.refinery.fvec_callable(v)),
           values, x))
 
-      for x in xrange(self.n):
-        print >> self.out, "p%d finite % 20.10f analytical % 20.10f"%(x, finite_g[x], self.g[x])
+      for x in range(self.n):
+        print("p%d finite % 20.10f analytical % 20.10f"%(x, finite_g[x], self.g[x]), file=self.out)
 
-    print >> self.out, "functional value % 20.3f"%functional,
+    print("functional value % 20.3f"%functional, end=' ', file=self.out)
     values.show(self.out)
     return self.f, self.g, diag
 
@@ -241,6 +227,6 @@ class lbfgs_minimizer(object):
 
   def __del__(self):
     values = self.parameterization(self.x)
-    print >> self.out, "FINALMODEL",
-    print >> self.out, "functional value % 20.3f"%self.f,
+    print("FINALMODEL", end=' ', file=self.out)
+    print("functional value % 20.3f"%self.f, end=' ', file=self.out)
     values.show(self.out)

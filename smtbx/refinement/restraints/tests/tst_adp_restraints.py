@@ -1,9 +1,11 @@
-from __future__ import division
+from __future__ import absolute_import, division, print_function
+
 from libtbx.test_utils import approx_equal
 from smtbx.refinement.restraints import adp_restraints
 from smtbx import development
 from cctbx.array_family import flex
 from cctbx import crystal
+from six.moves import range
 
 def get_pair_sym_table(xray_structure):
   asu_mappings = xray_structure.asu_mappings(buffer_thickness=3.5)
@@ -135,11 +137,52 @@ def exercise_isotropic_adp():
       assert approx_equal(proxies[i].i_seqs[0], expected_i_seqs[i])
       assert approx_equal(proxies[i].weight, expected_weights[i])
 
-def run():
+def exercise_rigu():
+  xray_structure = development.sucrose()
+  pair_sym_table = get_pair_sym_table(xray_structure)
+  for table in (None,pair_sym_table):
+    if table is None: xs = xray_structure
+    else: xs = None
+    restraints = \
+      adp_restraints.rigu_restraints(
+        xray_structure=xs,
+        pair_sym_table=table)
+    assert restraints.proxies.size() == 60
+    i_seqs = (9,14,28,32,36,38)
+    restraints = \
+      adp_restraints.rigu_restraints(
+        xray_structure=xs,
+        pair_sym_table=table,
+        i_seqs=i_seqs)
+    expected_i_seqs = (
+      (9,32),(9,36),(14,36),(14,32),(14,38),(32,36),(32,38),(36,38))
+    expected_weights = [62500]*len(expected_i_seqs)
+    proxies = restraints.proxies
+    assert proxies.size() == len(expected_i_seqs)
+    for i in range(proxies.size()):
+      assert approx_equal(proxies[i].i_seqs, expected_i_seqs[i])
+      assert approx_equal(proxies[i].weight, expected_weights[i])
+    # add more restraints to same shared proxy
+    i_seqs = (10,40,42)
+    restraints = \
+      adp_restraints.rigu_restraints(
+        xray_structure=xs,
+        pair_sym_table=table,
+        proxies=proxies,
+        i_seqs=i_seqs)
+    expected_i_seqs = (
+      (9,32),(9,36),(14,36),(14,32),(14,38),(32,36),
+      (32,38),(36,38),(10,42),(10,40),(40,42))
+    expected_weights = [62500]*len(expected_i_seqs)
+    proxies = restraints.proxies
+    assert proxies.size() == len(expected_i_seqs)
+    for i in range(proxies.size()):
+      assert approx_equal(proxies[i].i_seqs, expected_i_seqs[i])
+      assert approx_equal(proxies[i].weight, expected_weights[i])
+
+if __name__ == '__main__':
   exercise_isotropic_adp()
   exercise_rigid_bond()
   exercise_adp_similarity()
-  print "OK"
-
-if __name__ == "__main__":
-  run()
+  exercise_rigu()
+  print('OK')

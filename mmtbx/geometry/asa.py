@@ -1,9 +1,10 @@
-from __future__ import division
+from __future__ import absolute_import, division, print_function
 
 import mmtbx.geometry.shared_types # import dependency
 
-import boost.python
-ext = boost.python.import_ext( "mmtbx_geometry_asa_ext" )
+import boost_adaptbx.boost.python as bp
+from six.moves import zip
+ext = bp.import_ext( "mmtbx_geometry_asa_ext" )
 from mmtbx_geometry_asa_ext import *
 
 from mmtbx.geometry import altloc
@@ -58,7 +59,7 @@ def get_optimal_indexer_for(descriptions):
 def get_voxelizer_for(descriptions, step = 7):
 
   lows = [ d.data.low for d in descriptions ]
-  ( low_xs, low_ys, low_zs ) = zip( *lows )
+  low_xs, low_ys, low_zs  = zip( *lows )
   low = ( min( low_xs ), min( low_ys ), min( low_zs ) )
 
   return mmtbx.geometry.shared_types.voxelizer(
@@ -276,8 +277,8 @@ def calculate(
 
   indexer = indexer_selector( descriptions = descriptions )
 
-  from mmtbx.geometry import sphere_surface_sampling
-  sampling = sphere_surface_sampling.golden_spiral( count = precision )
+  from scitbx.math import golden_spiral
+  sampling = golden_spiral( count = precision )
 
   values = [
     calculation( indexer = indexer, sampling = sampling, description = d )

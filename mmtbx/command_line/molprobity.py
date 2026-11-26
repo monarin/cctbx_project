@@ -1,20 +1,24 @@
+"""Run molprobity"""
 # LIBTBX_SET_DISPATCHER_NAME phenix.molprobity
 # LIBTBX_SET_DISPATCHER_NAME molprobity.molprobity
 # LIBTBX_PRE_DISPATCHER_INCLUDE_SH export PHENIX_GUI_ENVIRONMENT=1
 
-from __future__ import division
+from __future__ import absolute_import, division, print_function
 from libtbx.program_utils.result import program_result
 from libtbx.utils import Sorry, multi_out
 from libtbx import Auto, easy_pickle, runtime_utils
+import iotbx.phil
 import libtbx.load_env
 import mmtbx.model
 import os.path
 import sys
 
-def get_master_phil () :
+def get_master_phil():
   from mmtbx.command_line import generate_master_phil_with_inputs
-  return generate_master_phil_with_inputs(
+  phil_scope = generate_master_phil_with_inputs(
     enable_automatic_twin_detection=True,
+    enable_twin_law=True,
+    enable_experimental_phases=False,  # Off by default here in MolProbity
     enable_pdb_interpretation_params=True,
     enable_stop_for_unknowns=False,
     enable_unmerged_data=True,
@@ -107,6 +111,16 @@ output {
   include scope libtbx.phil.interface.tracking_params
 }
 """)
+  phil_extract = phil_scope.extract()
+
+  # change default
+  phil_extract.pdb_interpretation.clash_guard.nonbonded_distance_threshold = None
+  new_str = phil_scope.format(python_object=phil_extract).as_str(
+    expert_level=4, attributes_level=4)
+
+  phil_scope = iotbx.phil.parse(new_str, process_includes=True)
+
+  return phil_scope
 
 usage_string = """\
 phenix.molprobity model.pdb [data.mtz] [options ...]
@@ -115,20 +129,21 @@ Run comprehensive MolProbity validation plus R-factor calculation (if data
 supplied).
 """
 
-def run (args,
+def run(args,
     out=sys.stdout,
     program_name="phenix.molprobity",
     ignore_missing_modules=False,
     return_input_objects=False) : # for testing
+  print("\n**Starting %s **\n" %(program_name), file = out)
   rotarama_dir = libtbx.env.find_in_repositories(
     relative_path="chem_data/rotarama_data",
     test=os.path.isdir)
-  if (rotarama_dir is None) :
+  if (rotarama_dir is None):
     raise ImportError("Rotamer and Ramachandran distributions not available; "+
       "you will need these to run MolProbity.")
   elif (((not libtbx.env.has_module("reduce")) or
          (not libtbx.env.has_module("probe"))) and
-         (not ignore_missing_modules)) :
+         (not ignore_missing_modules)):
     raise ImportError("Reduce and/or Probe not configured.")
   import mmtbx.validation.molprobity
   import mmtbx.command_line
@@ -140,14 +155,15 @@ def run (args,
     process_pdb_file=True,
     usage_string=usage_string,
     prefer_anomalous=True,
-    out=out)
+    out=out,
+    mosaic=True)
   params = cmdline.params
   fmodel = cmdline.fmodel
-  if (params.output.maps is Auto) and (fmodel is not None) :
+  if (params.output.maps is Auto) and (fmodel is not None):
     params.output.maps = True
-  elif (params.output.maps == True) and (fmodel is None) :
+  elif (params.output.maps == True) and (fmodel is None):
     raise Sorry("Map output requires experimental data.")
-  if (params.molprobity.keep_hydrogens is Auto) :
+  if (params.molprobity.keep_hydrogens is Auto):
     params.molprobity.keep_hydrogens = \
       ( (params.input.scattering_table == "neutron") or
         (params.pdb_interpretation.use_neutron_distances) )
@@ -156,10 +172,10 @@ def run (args,
     pdb_hierarchy=cmdline.pdb_hierarchy)
   pdb_prefix = os.path.splitext(os.path.basename(
     params.input.pdb.file_name[0]))[0]
-  if (params.output.prefix is None) :
+  if (params.output.prefix is None):
     params.output.prefix = "molprobity"
   probe_file = None
-  if (params.output.probe_dots) or (params.output.kinemage) :
+  if (params.output.probe_dots) or (params.output.kinemage):
     probe_file = params.output.prefix + "_probe.txt"
   raw_data = cmdline.raw_data
 
@@ -192,9 +208,6 @@ def run (args,
     map_params=params)
   map_file = None
 
-  # model cannot be pickled
-  validation.model = None
-
   # polygon statistics
   validation.polygon_stats = validation.get_polygon_statistics(
     params.polygon.keys_to_show)
@@ -203,7 +216,7 @@ def run (args,
   if ('pdb_header_r_free' in params.polygon.keys_to_show):
     validation.polygon_stats['pdb_header_r_free'] = header_info.r_free
 
-  if (not params.output.quiet) :
+  if (not params.output.quiet):
     out2 = multi_out()
     out2.register("stdout", out)
     f = open(params.output.prefix + ".out", "w")
@@ -212,10 +225,10 @@ def run (args,
       outliers_only=params.molprobity.outliers_only,
       show_percentiles=params.output.percentiles)
     f.close()
-    print >> out, ""
-    print >> out, "Results written to %s.out" % params.output.prefix
-    if (params.output.kinemage) :
-      if (cmdline.pdb_hierarchy.models_size() == 1) :
+    print("", file=out)
+    print("Results written to %s.out" % params.output.prefix, file=out)
+    if (params.output.kinemage):
+      if (cmdline.pdb_hierarchy.models_size() == 1):
         assert (probe_file is not None)
         import mmtbx.kinemage.validation
         cmdline.pdb_hierarchy.atoms().reset_i_seq()
@@ -231,20 +244,22 @@ def run (args,
         f = open(kin_file, "w")
         f.write(kin_out)
         f.close()
-        if (not params.output.quiet) :
-          print >> out, "Wrote kinemage to %s" % kin_file
+        if (not params.output.quiet):
+          print("Wrote kinemage to %s" % kin_file, file=out)
       else :
-        print >> out, "Kinemage output not available for multiple MODELs."
-    if (params.output.pickle) :
+        print("Kinemage output not available for multiple MODELs.", file=out)
+    if (params.output.pickle):
+      if validation.hydrogens is not None:
+        validation.hydrogens.log = None
       easy_pickle.dump("%s.pkl" % params.output.prefix, validation)
-      if (not params.output.quiet) :
-        print >> out, "Saved result to %s.pkl" % params.output.prefix
-    if (params.output.coot) :
+      if (not params.output.quiet):
+        print("Saved result to %s.pkl" % params.output.prefix, file=out)
+    if (params.output.coot):
       coot_file = "%s_coot.py" % params.output.prefix
       validation.write_coot_script(coot_file)
-      if (not params.output.quiet) :
-        print >> out, "Wrote script for Coot: %s" % coot_file
-    if (params.output.maps == True) :
+      if (not params.output.quiet):
+        print("Wrote script for Coot: %s" % coot_file, file=out)
+    if (params.output.maps == True):
       import mmtbx.maps.utils
       import iotbx.map_tools
       map_file = "%s_maps.mtz" % params.output.prefix
@@ -254,28 +269,36 @@ def run (args,
         exclude_free_r_reflections=\
           params.output.map_options.exclude_free_r_reflections)
       anom_map = None
-      if (fmodel.f_obs().anomalous_flag()) :
+      if (fmodel.f_obs().anomalous_flag()):
         anom_map = mmtbx.maps.utils.get_anomalous_map(fmodel)
       iotbx.map_tools.write_map_coeffs(
         file_name=map_file,
         fwt_coeffs=two_fofc_map,
         delfwt_coeffs=fofc_map,
         anom_coeffs=anom_map)
-      print >> out, "Wrote map coefficients to %s" % map_file
+      print("Wrote map coefficients to %s" % map_file, file=out)
   else :
-    print >> out, ""
+    print("", file=out)
     validation.show_summary(out=out, show_percentiles=params.output.percentiles)
-  if (params.output.wxplots) :
+  if (params.output.wxplots):
     try :
       import wxtbx.app
-    except ImportError, e :
+    except ImportError as e :
       raise Sorry("wxPython not available.")
     else :
       app = wxtbx.app.CCTBXApp(0)
       validation.display_wx_plots()
       app.MainLoop()
-  if (return_input_objects) :
+  if (return_input_objects):
     return validation, cmdline
+
+  # remove unpicklable attributes
+  validation.model = None
+  validation.pdb_hierarchy = None
+  validation.model_statistics_geometry.model = None
+  if validation.hydrogens is not None:
+    validation.hydrogens.log = None
+
   return result(
     program_name="phenix.molprobity",
     job_title=params.output.job_title,
@@ -284,26 +307,27 @@ def run (args,
     other_result=validation,
     other_files=[ params.input.pdb.file_name[0] ])
 
-class launcher (runtime_utils.target_with_save_result) :
-  def run (self) :
+class launcher(runtime_utils.target_with_save_result):
+  def run(self):
     os.mkdir(self.output_dir)
     os.chdir(self.output_dir)
     return run(args=self.args, out=sys.stdout)
 
-class result (program_result) :
+class result(program_result):
   """
   Wrapper object for Phenix GUI.
   """
   @property
-  def validation (self) :
+  def validation(self):
     return self.other_result
 
   @property
-  def pdb_file (self) :
+  def pdb_file(self):
     return self.other_files[0]
 
-  def get_final_stats (self) :
+  def get_final_stats(self):
     return self.validation.get_statistics_for_phenix_gui()
 
-if (__name__ == "__main__") :
+if (__name__ == "__main__"):
   run(sys.argv[1:])
+

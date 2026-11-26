@@ -1,4 +1,5 @@
-from __future__ import division
+"""Save SHELX xray_structure as python code"""
+from __future__ import absolute_import, division, print_function
 from cctbx import xray
 
 def run(file_name, exclude_hydrogens=False):
@@ -6,7 +7,7 @@ def run(file_name, exclude_hydrogens=False):
                                  strictly_shelxl=False)
   if exclude_hydrogens:
     xs = xs.select(xs.hd_selection(), negate=True)
-  print xs.as_py_code()
+  print(xs.as_py_code())
 
 if __name__ == '__main__':
   import sys

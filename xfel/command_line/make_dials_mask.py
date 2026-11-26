@@ -1,4 +1,4 @@
-from __future__ import division
+from __future__ import absolute_import, division, print_function
 # -*- mode: python; coding: utf-8; indent-tabs-mode: nil; python-indent: 2 -*-
 #
 # LIBTBX_SET_DISPATCHER_NAME cxi.make_dials_mask
@@ -11,10 +11,11 @@ from __future__ import division
 # The result is a dials-style pickle file containing a list of flex.bool objects.
 #
 
-from dxtbx.format.Registry import Registry
+import dxtbx.format.Registry
 from scitbx.array_family import flex
 import sys
 from libtbx import easy_pickle
+from six.moves import zip
 
 def run(argv=None):
   import libtbx.option_parser
@@ -67,7 +68,7 @@ def run(argv=None):
   max_path    = paths[2]
 
   # load the three images
-  format_class = Registry.find(avg_path)
+  format_class = dxtbx.format.Registry.get_format_class_for_file(avg_path)
   avg_f = format_class(avg_path)
   avg_d = avg_f.get_raw_data()
   if not isinstance(avg_d, tuple):
@@ -85,18 +86,30 @@ def run(argv=None):
 
   mask = [flex.bool(flex.grid(p.focus()), True) for p in avg_d]
 
+  count_a = count_s = count_m = 0
+
   for mask_p, avg_p, stddev_p, max_p in zip(mask, avg_d, stddev_d, max_d):
     # first find all the pixels in the average that are less than zero or greater
     # than a cutoff and set them to the masking value
-    mask_p &= avg_p > 0
-    mask_p &= avg_p <= command_line.options.avg_max
+    sel = avg_p > 0
+    count_a += sel.count(False)
+    mask_p &= sel
+    sel = avg_p <= command_line.options.avg_max
+    count_a += sel.count(False)
+    mask_p &= sel
 
     # mask out the overly noisy or flat pixels
-    mask_p &= stddev_p > 0
-    mask_p &= stddev_p <= command_line.options.stddev_max # cxi.make_mask uses <
+    sel = stddev_p > 0
+    count_s += sel.count(False)
+    mask_p &= sel
+    sel = stddev_p <= command_line.options.stddev_max # cxi.make_mask uses <
+    count_s += sel.count(False)
+    mask_p &= sel
 
     # these are the non-bonded pixels
-    mask_p &= max_p >= command_line.options.maxproj_min
+    sel = max_p >= command_line.options.maxproj_min
+    count_m += sel.count(False)
+    mask_p &= sel
 
     # Add a border around the image
     if command_line.options.border > 0:
@@ -114,8 +127,12 @@ def run(argv=None):
   masked_out = sum([len(mask_p.as_1d().select((~mask_p).as_1d())) for mask_p in mask])
   total = sum([len(mask_p) for mask_p in mask])
 
-  print "Masked out %d pixels out of %d (%.2f%%)"% \
-    (masked_out,total,masked_out*100/total)
+  print("From average, masked out %d pixels"%count_a)
+  print("From stddev, masked out %d pixels"%count_s)
+  print("From max, masked out %d pixels"%count_m)
+
+  print("Masked out %d pixels out of %d (%.2f%%)"% \
+    (masked_out,total,masked_out*100/total))
 
 if (__name__ == "__main__"):
   sys.exit(run())

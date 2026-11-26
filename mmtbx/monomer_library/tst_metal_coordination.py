@@ -1,6 +1,7 @@
-from __future__ import division
+from __future__ import absolute_import, division, print_function
 import os
 from libtbx import easy_run
+from six.moves import range
 
 pdbs = {
   'linking_test_F3S.pdb' : '''
@@ -80,46 +81,83 @@ HETATM   15 FE1  SF4 A  84       2.436   8.034   6.473  1.00  3.03          Fe
 HETATM   16 FE2  SF4 A  84       4.585   9.549   7.307  1.00  3.10          Fe
 HETATM   17 FE3  SF4 A  84       3.040   8.257   9.103  1.00  3.11          Fe
 HETATM   18 FE4  SF4 A  84       2.046  10.381   7.746  1.00  3.04          Fe
-'''
+''',
+  'linking_test_SF4_FE.pdb' : '''
+CRYST1  366.325   97.352  133.276  90.00 108.37  90.00 C 1 2 1
+SCALE1      0.002730  0.000000  0.000907        0.00000
+SCALE2      0.000000  0.010272  0.000000        0.00000
+SCALE3      0.000000  0.000000  0.007906        0.00000
+ATOM      1  CB  CYS A 197      21.884  17.895  41.629  1.00 18.47           C
+ATOM      2  SG  CYS A 197      23.219  18.455  40.509  1.00 22.44           S
+TER       3      CYS A 197
+ATOM      3  CA  CYS G  11      18.621  25.073  31.833  1.00 23.66           C
+ATOM      4  CB  CYS G  11      18.380  24.228  33.075  1.00 23.77           C
+ATOM      5  SG  CYS G  11      19.849  24.012  34.110  1.00 27.62           S
+ATOM      6  N   CYS G  13      22.408  22.968  32.362  1.00 19.54           N
+ATOM      7  CA  CYS G  13      22.966  21.958  33.256  1.00 20.10           C
+ATOM      8  C   CYS G  13      24.416  21.774  32.862  1.00 24.21           C
+ATOM      9  CB  CYS G  13      22.188  20.647  33.204  1.00 20.72           C
+ATOM     10  SG  CYS G  13      22.629  19.484  34.522  1.00 24.93           S
+ATOM     26  N   CYS G  46      18.764  25.237  39.142  1.00 28.00           N
+ATOM     27  CA  CYS G  46      18.564  24.859  40.542  1.00 27.69           C
+ATOM     28  CB  CYS G  46      18.593  23.338  40.716  1.00 27.39           C
+ATOM     29  SG  CYS G  46      20.152  22.551  40.217  1.00 30.82           S
+ATOM     34  N   CYS G  71      15.783  19.220  34.124  1.00 27.22           N
+ATOM     35  CA  CYS G  71      15.862  17.804  34.451  1.00 27.48           C
+ATOM     36  CB  CYS G  71      16.848  17.607  35.600  1.00 28.10           C
+ATOM     37  SG  CYS G  71      16.505  18.649  37.042  1.00 32.48           S
+HETATM   52 FE    FE G 705      19.937  20.352  40.205  0.50 22.13          Fe
+HETATM   53  S1  SF4 G 706      21.592  22.331  36.609  1.00 24.36           S
+HETATM   54  S2  SF4 G 706      17.978  22.365  37.279  1.00 22.14           S
+HETATM   55  S3  SF4 G 706      19.266  20.138  34.768  1.00 23.53           S
+HETATM   56  S4  SF4 G 706      20.047  19.377  38.173  1.00 21.03           S
+HETATM   57 FE1  SF4 G 706      18.287  20.136  36.841  1.00 22.20          Fe
+HETATM   58 FE2  SF4 G 706      21.110  20.098  36.275  1.00 26.08          Fe
+HETATM   59 FE3  SF4 G 706      20.045  21.717  38.135  1.00 23.49          Fe
+HETATM   60 FE4  SF4 G 706      19.481  22.300  35.554  1.00 23.79          Fe
+''',
         }
 
 links = {
   'linking_test_F3S.pdb' : [0,3], # 3 bonds from F3S to SGs
   'linking_test_SF4.pdb' : [0,4],
+  'linking_test_SF4_FE.pdb' : [0,5],
   }
 
 def run_and_test(cmd, pdb, i):
   result = easy_run.fully_buffered(cmd).raise_if_errors()
   assert (result.return_code == 0)
   for line in result.stdout_lines :
-    if ("Write PDB file" in line) :
+    if ("Write PDB file" in line):
       break
   else :
     raise RuntimeError("Missing expected log output")
-  print "OK"
+  print("OK")
   # test .geo
-  f=file(pdb.replace(".pdb", "_minimized.geo"), "rb")
+  f=open(pdb.replace(".pdb", "_minimized.geo"), "r")
   lines = f.readlines()
   f.close()
   for line in lines:
-    if line.find("Metal coordination restraints:")>-1:
+    if line.find("Bond | Metal coordination | restraints")>-1:
       bonds = int(line.split()[-1])
       break
+  else:
+    bonds = 0
   assert bonds == links[pdb][i], "found %d bonds but expected %s!" % (
     bonds,
     links[pdb][i],
     )
   new_geo = pdb.replace(".pdb", "_minimized_%d.geo" % i)
-  if (os.path.isfile(new_geo)) :
+  if (os.path.isfile(new_geo)):
     os.remove(new_geo)
   os.rename(pdb.replace(".pdb", "_minimized.geo"), new_geo)
-  print "OK"
+  print("OK")
   # test links
   if pdb in ["linking_test_LEU-CSY-VAL.pdb",
              ]:
     return
   number_of_links=0
-  f=file(pdb.replace(".pdb", "_minimized.pdb"), "rb")
+  f=open(pdb.replace(".pdb", "_minimized.pdb"), "r")
   lines = f.readlines()
   f.close()
   for line in lines:
@@ -152,17 +190,17 @@ def ideal_and_test(cmd, pdb, i):
   result = easy_run.fully_buffered(cmd).raise_if_errors()
   assert (result.return_code == 0)
   for line in result.stdout_lines :
-    if ("Write PDB file" in line) :
+    if ("Write PDB file" in line):
       break
   else :
     raise RuntimeError("Missing expected log output")
-  print "OK"
+  print("OK")
   for line in result.stdout_lines :
     if line.find('SF4 Regularisation')>-1: break
     if line.find('F3S Regularisation')>-1: break
   else:
     assert 0
-  print 'OK'
+  print('OK')
 
 def run(only_i=None):
   try: only_i=int(only_i)
@@ -170,7 +208,7 @@ def run(only_i=None):
   except TypeError: only_i=None
   cifs = ""
   for pdb in pdbs:
-    f=file(pdb, "wb")
+    f=open(pdb, "w")
     f.write(pdbs[pdb])
     f.close()
     if pdb.endswith(".cif"): cifs += " %s" % pdb
@@ -180,7 +218,7 @@ def run(only_i=None):
     if pdb.endswith(".cif"): continue
     if pdb.endswith(".params"): continue
     #if pdb.find('F3S')==-1: continue
-    print 'pdb',pdb
+    print('pdb',pdb)
     j+=1
     if only_i is not None and only_i!=j: continue
     for i in range(2):
@@ -190,9 +228,9 @@ def run(only_i=None):
       cmd += " link_metal=%d" % i
       if pdb.replace(".pdb", ".params") in pdbs:
         cmd += " %s" % pdb.replace(".pdb", ".params")
-      print "test number:",j
-      print cmd
-      run_and_test(cmd, pdb,i)
+      print("test number:", j)
+      print(cmd)
+      run_and_test(cmd, pdb, i)
 
       cmd = "phenix.geometry_minimization %s write_geo_file=True" % pdb
       cmd += ' superpose_ideal_ligand=all'

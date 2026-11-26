@@ -1,12 +1,18 @@
-from __future__ import division
+"""
+Tools for reading, writing, and manipulating PDB-formatted files and
+for managing their data as a PDB hierarchy.
+"""
+from __future__ import absolute_import, division, print_function
 from cctbx.array_family import flex
 
-import boost.python
-ext = boost.python.import_ext("iotbx_pdb_ext")
+import boost_adaptbx.boost.python as bp
+from six.moves import zip
+ext = bp.import_ext("iotbx_pdb_ext")
 from iotbx_pdb_ext import *
 
 import iotbx.pdb.records
 import iotbx.pdb.hierarchy
+from iotbx.pdb.experiment_type import experiment_type
 from scitbx import matrix
 
 from iotbx.pdb.atom_name_interpretation import \
@@ -15,11 +21,12 @@ import scitbx.array_family.shared # import dependency
 import scitbx.stl.set
 from libtbx import smart_open
 from libtbx.str_utils import show_string
-from libtbx.utils import plural_s, hashlib_md5, date_and_time, Sorry
+from libtbx.utils import plural_s, hashlib_md5, date_and_time, to_bytes, Sorry
 from libtbx import Auto
-from cStringIO import StringIO
+from six.moves import cStringIO as StringIO
 import sys
 import calendar
+import six
 import os
 op = os.path
 
@@ -29,6 +36,7 @@ def construct_special_position_settings(
       weak_symmetry=False,
       min_distance_sym_equiv=0.5,
       u_star_tolerance=0):
+  """Construct the special-position settings for a crystal symmetry"""
   #crystal_symmetry = crystal_symmetry(
   #  crystal_symmetry=special_position_settings,
   #  weak_symmetry=weak_symmetry)
@@ -41,8 +49,12 @@ def construct_special_position_settings(
     u_star_tolerance=u_star_tolerance)
 
 def is_pdb_file(file_name):
-  pdb_raw_records = smart_open.for_reading(
-    file_name = file_name).read().splitlines()
+  """Return True if this is a PDB file"""
+  for known_binary_extension in ['mtz', 'ccp4', 'mrc', 'pickle', 'pkl']:
+    if file_name.endswith(known_binary_extension):
+      return False
+  with smart_open.for_reading(file_name=file_name) as f:
+    pdb_raw_records = f.read().splitlines()
   for pdb_str in pdb_raw_records:
     if (pdb_str.startswith("CRYST1")):
       try: cryst1 = iotbx.pdb.records.cryst1(pdb_str=pdb_str)
@@ -50,7 +62,7 @@ def is_pdb_file(file_name):
       if (cryst1.ucparams is not None and cryst1.sgroup is not None):
         return True
     elif (   pdb_str.startswith("ATOM  ")
-          or pdb_str.startswith("HETATM")):
+          or pdb_str.startswith("HETATM")): # PDB OK
       try: pdb_inp = ext.input(
         source_info=None, lines=flex.std_string([pdb_str]))
       except KeyboardInterrupt: raise
@@ -61,26 +73,8 @@ def is_pdb_file(file_name):
           return True
   return False
 
-def is_pdb_mmcif_file(file_name):
-  try:
-    cif_model = iotbx.cif.reader(file_path=file_name).model()
-    cif_block = cif_model.values()[0]
-    if "_atom_site" in cif_block:
-      return True
-  except Exception, e:
-    return False
-
-def ent_path_local_mirror(pdb_id, environ_key="PDB_MIRROR_PDB"):
-  if (len(pdb_id) != 4):
-    raise RuntimeError("Invalid PDB ID: %s (must be four characters)" % pdb_id)
-  pdb_id = pdb_id.lower()
-  pdb_mirror = os.environ[environ_key]
-  result = op.join(pdb_mirror, pdb_id[1:3], "pdb%s.ent.gz" % pdb_id)
-  if (not op.isfile(result)):
-    raise RuntimeError("No file with PDB ID %s (%s)" % (pdb_id, result))
-  return result
-
 def systematic_chain_ids():
+  """Return a list of possible 2-character chain IDS"""
   import string
   u, l, d = string.ascii_uppercase, string.ascii_lowercase, string.digits
   _ = result = list(u)
@@ -126,10 +120,10 @@ rna_dna_reference_residue_names = {
   "GUA": "?G",
   "URI": "U",
   "THY": "DT",
-  "AR": "A",
-  "CR": "C",
-  "GR": "G",
-  "UR": "U",
+  # "AR": "A",
+  # "CR": "C",
+  # "GR": "G",
+  # "UR": "U",
   "AD": "DA",
   "CD": "DC",
   "GD": "DG",
@@ -152,6 +146,7 @@ def get_one_letter_rna_dna_name(resname):
     return result
 
 def rna_dna_reference_residue_name(common_name):
+  """Return the standard RNA or DNA reference name for this common name"""
   return rna_dna_reference_residue_names.get(common_name.strip().upper())
 
 rna_dna_atom_names_reference_to_mon_lib_translation_dict = {
@@ -485,12 +480,13 @@ class rna_dna_atom_names_interpretation(object):
           else:
             result.append("H2*")
         else:
-          assert rn == "HOP3" # only atom not covered by monomer library
+          assert rn == "HOP3", '%s!="HOP3"' % rn # only atom not covered by monomer library
           result.append(None)
     return result
 
 class residue_name_plus_atom_names_interpreter(object):
-
+  """Create an object that has standard values of work_residue_name and
+     atom_name_interpretation"""
   def __init__(self,
         residue_name,
         atom_names,
@@ -562,16 +558,17 @@ class combine_unique_pdb_files(object):
     self.md5_registry = {}
     self.unique_file_names = []
     self.raw_records = []
+    self.raw_text_block_list = []
     for file_name in file_names:
       if (file_name in self.file_name_registry):
         self.file_name_registry[file_name] += 1
       else:
         self.file_name_registry[file_name] = 1
-        r = [s.expandtabs().rstrip()
-          for s in smart_open.for_reading(
-            file_name=file_name).read().splitlines()]
+        with smart_open.for_reading(file_name=file_name) as f:
+          text = f.read()
+          r = [s.expandtabs().rstrip() for s in text.splitlines()]
         m = hashlib_md5()
-        m.update("\n".join(r))
+        m.update(to_bytes("\n".join(r), codec='utf8'))
         m = m.hexdigest()
         l = self.md5_registry.get(m)
         if (l is not None):
@@ -580,6 +577,7 @@ class combine_unique_pdb_files(object):
           self.md5_registry[m] = [file_name]
           self.unique_file_names.append(file_name)
           self.raw_records.extend(r)
+          self.raw_text_block_list.append(text)
 
   def report_non_unique(self, out=None, prefix=""):
     if (out is None): out = sys.stdout
@@ -587,24 +585,24 @@ class combine_unique_pdb_files(object):
     for file_name in sorted(self.file_name_registry.keys()):
       n = self.file_name_registry[file_name]
       if (n != 1):
-        print >> out, prefix+"INFO: PDB file name appears %d times: %s" % (
-          n, show_string(file_name))
+        print(prefix+"INFO: PDB file name appears %d times: %s" % (
+          n, show_string(file_name)), file=out)
         n_ignored += (n-1)
     if (n_ignored != 0):
-      print >> out, prefix+"  %d repeated file name%s ignored." % \
-        plural_s(n=n_ignored)
+      print(prefix+"  %d repeated file name%s ignored." % \
+        plural_s(n=n_ignored), file=out)
     n_identical = 0
-    for file_names in self.md5_registry.values():
+    for file_names in sorted(self.md5_registry.values()):
       if (len(file_names) != 1):
-        print >> out, prefix+"INFO: PDB files with identical content:"
+        print(prefix+"INFO: PDB files with identical content:", file=out)
         for file_name in file_names:
-          print >> out, prefix+"  %s" % show_string(file_name)
+          print(prefix+"  %s" % show_string(file_name), file=out)
         n_identical += len(file_names)-1
     if (n_identical != 0):
-      print >> out, prefix+"%d file%s with repeated content ignored." % \
-        plural_s(n=n_identical)
+      print(prefix+"%d file%s with repeated content ignored." % \
+        plural_s(n=n_identical), file=out)
     if (n_ignored != 0 or n_identical != 0):
-      print >> out, prefix.rstrip()
+      print(prefix.rstrip(), file=out)
 
 class header_date(object):
 
@@ -643,6 +641,7 @@ class header_date(object):
        and self.yyyy is not None
 
 def header_year(record):
+  """Return year from header record"""
   if (record.startswith("HEADER")):
     date = header_date(field=record[50:59])
     if (date.is_fully_defined()): return date.yyyy
@@ -661,7 +660,6 @@ class pdb_input_from_any(object):
                file_name=None,
                source_info=Please_pass_string_or_None,
                lines=None,
-               pdb_id=None,
                raise_sorry_if_format_error=False):
     self.file_format = None
     content = None
@@ -678,9 +676,8 @@ class pdb_input_from_any(object):
           file_name=file_name,
           source_info=source_info,
           lines=lines,
-          pdb_id=pdb_id,
           raise_sorry_if_format_error=raise_sorry_if_format_error)
-      except Exception, e:
+      except Exception as e:
         # store the first error encountered and re-raise later if can't
         # interpret as any file type
         if exc_info is None: exc_info = sys.exc_info()
@@ -705,12 +702,22 @@ class pdb_input_from_any(object):
                   and n_unknown_records > 0))
             and n_records>0):
           continue
+        # Additional check that solves 2of6:
+        # if the first non-comment non-empty line contains data_ this is mmCIF
+        if lines is not None and len(lines)>0:
+          len_lines = len(lines)
+          i = 0
+          while i < len_lines and (
+            lines[i].strip().startswith('#') or len(lines[i].strip()) == 0):
+            i += 1
+          if i < len_lines and lines[i][:5].strip() == 'data_':
+            continue
         self.file_format = "pdb"
       else :
         self.file_format = "cif"
       break
     if exc_info is not None:
-      raise exc_info[0], exc_info[1], exc_info[2]
+      six.reraise(exc_info[0], exc_info[1], exc_info[2])
     if content is None:
       raise Sorry("Could not interpret input as any file type.")
     self._file_content = content
@@ -722,18 +729,17 @@ def pdb_input(
     file_name=None,
     source_info=Please_pass_string_or_None,
     lines=None,
-    pdb_id=None,
     raise_sorry_if_format_error=False):
-  if (pdb_id is not None):
-    assert file_name is None
-    file_name = ent_path_local_mirror(pdb_id=pdb_id)
+  """Read in a model file and return a pdb_input object. Normally use input() instead"""
   if (file_name is not None):
     try :
+      with smart_open.for_reading(file_name, gzip_mode='rt') as f:
+        lines = f.read()
       return ext.input(
         source_info="file " + str(file_name), # XXX unicode hack - dangerous
-        lines=flex.split_lines(smart_open.for_reading(file_name).read()))
-    except ValueError, e :
-      if (raise_sorry_if_format_error) :
+        lines=flex.split_lines(lines))
+    except ValueError as e :
+      if (raise_sorry_if_format_error):
         raise Sorry("Format error in %s:\n%s" % (str(file_name), str(e)))
       else :
         raise
@@ -744,8 +750,8 @@ def pdb_input(
     lines = flex.std_string(lines)
   try :
     return ext.input(source_info=source_info, lines=lines)
-  except ValueError, e :
-    if (raise_sorry_if_format_error) :
+  except ValueError as e :
+    if (raise_sorry_if_format_error):
       raise Sorry("Format error:\n%s" % str(e))
     else :
       raise
@@ -754,7 +760,6 @@ def input(
     file_name=None,
     source_info=Please_pass_string_or_None,
     lines=None,
-    pdb_id=None,
     raise_sorry_if_format_error=False):
   """
   Main input method for both PDB and mmCIF files; will automatically determine
@@ -765,7 +770,6 @@ def input(
   file_name: path to PDB or mmCIF file
   source_info: string describing source of input (e.g. file name)
   lines: flex.std_string array of input lines
-  pdb_id: PDB ID to automatically retrieve from local mirror
   raise_sorry_if_format_error: re-raise any low-level parser errors as a
     libtbx.utils.Sorry exception instance for clean user feedback
 
@@ -779,7 +783,6 @@ def input(
     file_name=file_name,
     source_info=source_info,
     lines=lines,
-    pdb_id=pdb_id,
     raise_sorry_if_format_error=raise_sorry_if_format_error).file_content()
 
 default_atom_names_scattering_type_const = ["PEAK", "SITE"]
@@ -800,6 +803,11 @@ input_sections = (
 
 class pdb_input_mixin(object):
 
+  def label_to_auth_asym_id_dictionary(self):
+    """ Only avaliable for cif_input
+    """
+    return None
+
   def deposition_date(self, us_style=True):
     """
     Placeholder to match mmCIF functionality. Probably could parse
@@ -819,36 +827,6 @@ class pdb_input_mixin(object):
             if(len(m)==1): m = "0"+m
             result = "%s-%s-%s"%(str(date.yyyy), m, dd)
     return result
-
-  # MARKED_FOR_DELETION_OLEG
-  # REASON: moved to mmtbx.model.manager. Only used in
-  # mmtbx/regression/ncs/tst_minimization_ncs_constraints.py
-  def _expand_hierarchy_helper(self,
-      mtrix_biomt_container,
-      h=None,
-      sort_atoms=True):
-    present = mtrix_biomt_container.validate()
-    if(h is None):
-      h = self.construct_hierarchy(sort_atoms=sort_atoms)
-    if(len(mtrix_biomt_container.r)==0 or present): return h
-    if(len(mtrix_biomt_container.r)==1):
-      r,t = mtrix_biomt_container.r[0], mtrix_biomt_container.t[0]
-      if(r.is_r3_identity_matrix() and t.is_col_zero()): return h
-    return h.apply_rotation_translation(
-      rot_matrices = mtrix_biomt_container.r,
-      trans_vectors = mtrix_biomt_container.t)
-
-  def construct_hierarchy_MTRIX_expanded(self, sort_atoms=True):
-    return self._expand_hierarchy_helper(
-      mtrix_biomt_container = self.process_MTRIX_records(),
-      sort_atoms = sort_atoms)
-
-  def construct_hierarchy_BIOMT_expanded(self, sort_atoms=True):
-    return self._expand_hierarchy_helper(
-      mtrix_biomt_container = self.process_BIOMT_records(),
-      sort_atoms = sort_atoms)
-  # END_MARKED_FOR_DELETION_OLEG
-
 
   def special_position_settings(self,
         special_position_settings=None,
@@ -889,25 +867,28 @@ class pdb_input_mixin(object):
       return_cstringio = True
     if 0:
       if (link_records is Auto):
-        print >> cstringio, format_link_records(self.get_link_records())
+        print(format_link_records(self.get_link_records()), file=cstringio)
       elif (link_records is not None):
-        print >> cstringio, format_link_records(link_records)
+        print(format_link_records(link_records), file=cstringio)
     if (crystal_symmetry is Auto):
       crystal_symmetry = self.crystal_symmetry()
     if (cryst1_z is Auto):
       cryst1_z = self.extract_cryst1_z_columns()
     if (crystal_symmetry is not None or cryst1_z is not None):
-      print >> cstringio, format_cryst1_and_scale_records(
+      print(format_cryst1_and_scale_records(
         crystal_symmetry=crystal_symmetry,
         cryst1_z=cryst1_z,
-        write_scale_records=write_scale_records)
-    self._as_pdb_string_cstringio(
+        write_scale_records=write_scale_records), file=cstringio)
+
+    py3out = self._as_pdb_string_cstringio(
       cstringio=cstringio,
       append_end=append_end,
       atom_hetatm=atom_hetatm,
       sigatm=sigatm,
       anisou=anisou,
       siguij=siguij)
+    if six.PY3:
+      cstringio.write( py3out)
     if (return_cstringio):
       return cstringio
     return cstringio.getvalue()
@@ -928,12 +909,13 @@ class pdb_input_mixin(object):
     if (cryst1_z is Auto):
       cryst1_z = self.extract_cryst1_z_columns()
     if (crystal_symmetry is not None or cryst1_z is not None):
-      if (open_append): mode = "ab"
-      else:             mode = "wb"
-      print >> open(file_name, mode), format_cryst1_and_scale_records(
-        crystal_symmetry=crystal_symmetry,
-        cryst1_z=cryst1_z,
-        write_scale_records=write_scale_records)
+      if (open_append): mode = "a"
+      else:             mode = "w"
+      with open(file_name, mode) as f:
+        print(format_cryst1_and_scale_records(
+          crystal_symmetry=crystal_symmetry,
+          cryst1_z=cryst1_z,
+          write_scale_records=write_scale_records), file=f)
       open_append = True
     self._write_pdb_file(
       file_name=file_name,
@@ -1056,17 +1038,20 @@ class pdb_input_mixin(object):
     special_position_settings = crystal_symmetry.special_position_settings(
       min_distance_sym_equiv=min_distance_sym_equiv)
     try :
-      while (loop.next()):
+      while (next(loop)):
         result.append(xray.structure(
           special_position_settings=special_position_settings,
           scatterers=loop.scatterers,
           non_unit_occupancy_implies_min_distance_sym_equiv_zero=
             non_unit_occupancy_implies_min_distance_sym_equiv_zero))
-    except ValueError, e :
+    except ValueError as e :
       raise Sorry(str(e))
     return result
 
-class _(boost.python.injector, ext.input, pdb_input_mixin):
+bp.inject(ext.input, pdb_input_mixin)
+@bp.inject_into(ext.input)
+class _():
+
   """
   This class parses PDB format, including non-ATOM records.  Atom objects will
   be created as part of the parsing, but the full PDB hierarchy object requires
@@ -1078,19 +1063,43 @@ class _(boost.python.injector, ext.input, pdb_input_mixin):
     for section in input_sections[:-2]:
       lines.extend(getattr(self, section)())
     pdb_string = StringIO()
-    self._as_pdb_string_cstringio(
+
+    py3out = self._as_pdb_string_cstringio(  # NOTE py3out is None in python 2
       cstringio=pdb_string,
       append_end=False,
       atom_hetatm=True,
       sigatm=True,
       anisou=True,
       siguij=True)
+    if six.PY3:
+      pdb_string.write(py3out)
     lines.extend(flex.split_lines(pdb_string.getvalue()))
     for section in input_sections[-2:]:
       lines.extend(getattr(self, section)())
     return ("pickle", lines)
 
-  def file_type (self) :
+  # The C++ input value is fully reconstructed from __getinitargs__ (the source
+  # lines above).  Boost.Python's enable_pickling() additionally refuses to
+  # pickle or deepcopy an instance whose __dict__ is non-empty unless the class
+  # declares that it manages its own dict -- methods such as scale_matrix()
+  # cache values (e.g. _scale_matrix) on the instance, so without these hooks
+  # any pickle/deepcopy after such a call raises "Incomplete pickle support
+  # (__getstate_manages_dict__ not set)".  Round-trip the __dict__ explicitly
+  # rather than dropping it: scale_matrix()'s cache can be a deliberate None
+  # (xray_structure_simple(crystal_symmetry=...) sets _scale_matrix = None to
+  # ignore the file's SCALE records), a decision NOT recoverable from the
+  # source lines -- dropping it would let a clone silently recompute a
+  # different matrix (and turn a suppressed-on-the-original malformed SCALE set
+  # into a ValueError on the clone).
+  __getstate_manages_dict__ = True
+
+  def __getstate__(self):
+    return dict(self.__dict__)
+
+  def __setstate__(self, state):
+    self.__dict__.update(state)
+
+  def file_type(self):
     return "pdb"
 
   def sequence_from_SEQRES(self):
@@ -1105,7 +1114,7 @@ class _(boost.python.injector, ext.input, pdb_input_mixin):
         d.setdefault(chid, []).extend(rns)
     result = []
     ott = amino_acid_codes.one_letter_given_three_letter
-    for k, vs in zip(d.keys(), d.values()):
+    for k, vs in zip(d.keys(), d.values()): # FIXME use iteritems?
       result.append(">chain %s"%k)
       result.append("".join([ott.get(v,"?") for v in vs]))
     return "\n".join(result)
@@ -1164,7 +1173,7 @@ class _(boost.python.injector, ext.input, pdb_input_mixin):
         result.append(line)
     return result
 
-  def extract_secondary_structure (self, log=None) :
+  def extract_secondary_structure(self, log=None):
     from iotbx.pdb import secondary_structure
     records = self.secondary_structure_section()
     return secondary_structure.annotation.from_records(records, log)
@@ -1240,17 +1249,15 @@ class _(boost.python.injector, ext.input, pdb_input_mixin):
           "Improper set of PDB SCALE records%s" % source_info)
     return self._scale_matrix
 
-  def process_BIOMT_records(self,error_handle=True,eps=1e-4):
+  def process_BIOMT_records(self):
     import iotbx.mtrix_biomt
-    return iotbx.mtrix_biomt.process_BIOMT_records(
-      lines = self.extract_remark_iii_records(350),
-      eps=eps)
+    return iotbx.mtrix_biomt.process_BIOMT_records_pdb(
+      lines = self.extract_remark_iii_records(350))
 
-  def process_MTRIX_records(self, eps=1e-4):
+  def process_MTRIX_records(self):
     import iotbx.mtrix_biomt
-    return iotbx.mtrix_biomt.process_MTRIX_records(
-      lines=self.crystallographic_section(),
-      eps=eps)
+    return iotbx.mtrix_biomt.process_MTRIX_records_pdb(
+      lines=self.crystallographic_section())
 
   def get_r_rfree_sigma(self, file_name=None):
     from iotbx.pdb import extract_rfactors_resolutions_sigma
@@ -1261,10 +1268,6 @@ class _(boost.python.injector, ext.input, pdb_input_mixin):
 
   def resolution(self):
     return self.get_r_rfree_sigma().resolution
-
-  def experiment_type_electron_microscopy(self):
-    et = self.get_experiment_type().strip().upper()
-    return et == "ELECTRON MICROSCOPY"
 
   def get_program_name(self):
     remark_3_lines = self.extract_remark_iii_records(3)
@@ -1319,55 +1322,55 @@ class _(boost.python.injector, ext.input, pdb_input_mixin):
       except ValueError: pass
     return result
 
-  def extract_tls_params(self, pdb_hierarchy):
+  def extract_tls_params(self, hierarchy):
     import iotbx.pdb.remark_3_interpretation
     remark_3_records = self.extract_remark_iii_records(3)
     chain_ids = []
-    for model in pdb_hierarchy.models():
+    for model in hierarchy.models():
       for chain in model.chains():
         chain_ids.append(chain.id)
     return iotbx.pdb.remark_3_interpretation.extract_tls_parameters(
       remark_3_records = remark_3_records,
-      pdb_hierarchy    = pdb_hierarchy,
+      pdb_hierarchy    = hierarchy,
       chain_ids        = chain_ids)
 
   def extract_f_model_core_constants(self):
-    import iotbx.pdb.remark_3_interpretation
+
     remark_3_records = self.extract_remark_iii_records(3)
     return remark_3_interpretation.extract_f_model_core_constants(remark_3_records)
 
-  def extract_wavelength (self, first_only=True) :
-    for line in self.remark_section() :
+  def extract_wavelength(self, first_only=True):
+    for line in self.remark_section():
       # XXX this will miss multi-line records!
-      if (line.startswith("REMARK 200  WAVELENGTH OR RANGE")) :
+      if (line.startswith("REMARK 200  WAVELENGTH OR RANGE")):
         fields = line.split(":")
         assert (len(fields) == 2)
         subfields = fields[1].replace(";", ",").strip().split(",")
         wavelengths = []
         for field in subfields :
-          if (field.strip() == "") :
+          if (field.strip() == ""):
             continue
-          elif (field.strip() == "NULL") :
+          elif (field.strip() == "NULL"):
             wavelengths.append(None)
           else :
             try :
               wavelengths.append(float(field.strip()))
             except ValueError :
               wavelengths.append(None)
-        if (first_only) :
-          if (len(wavelengths) > 0) :
+        if (first_only):
+          if (len(wavelengths) > 0):
             return wavelengths[0]
           return None
         return wavelengths
     return None
 
-  def get_experiment_type (self) :
-    for line in self.title_section() :
-      if (line.startswith("EXPDTA")) :
-        return records.expdta(line).technique.strip()
-    return None
+  def get_experiment_type(self):
+    for line in self.title_section():
+      if (line.startswith("EXPDTA")):
+        return experiment_type(iotbx.pdb.records.expdta(line).keywords)
+    return experiment_type([])
 
-  def extract_connectivity (self) :
+  def extract_connectivity(self):
     """
     Parse CONECT records and extract the indices of bonded atoms.  Returns
     a scitbx.array_family.shared.stl_set_unsigned object corresponding to the
@@ -1378,12 +1381,12 @@ class _(boost.python.injector, ext.input, pdb_input_mixin):
     this method should probably be called after the hierarchy is made.
     """
     lines = self.connectivity_section()
-    if (len(lines) == 0) :
+    if (len(lines) == 0):
       return None
     from scitbx.array_family import shared
     bonds = shared.stl_set_unsigned(len(self.atoms()), [])
     serial_ref_hash = {}
-    for i_seq, atom in enumerate(self.atoms()) :
+    for i_seq, atom in enumerate(self.atoms()):
       serial = atom.serial.strip()
       serial_ref_hash[serial] = i_seq
     for line in lines :
@@ -1392,7 +1395,7 @@ class _(boost.python.injector, ext.input, pdb_input_mixin):
       i_seq = serial_ref_hash[record.serial.strip()]
       assert (record.serial_numbers_bonded_atoms.count('') != 4)
       for j_seq_str in record.serial_numbers_bonded_atoms :
-        if (j_seq_str != '') :
+        if (j_seq_str != ''):
           bonds[i_seq].append(serial_ref_hash[j_seq_str.strip()])
     return bonds
 
@@ -1406,31 +1409,28 @@ class _(boost.python.injector, ext.input, pdb_input_mixin):
         break
       break
 
-class rewrite_normalized(object):
+  def get_restraints_used(self):
+    return {'CDL' : self.used_cdl_restraints(),
+            'omega' : self.used_omega_restraints(),
+            'Amber' : self.used_amber_restraints(),
+           }
 
-  def __init__(self,
-        input_file_name,
-        output_file_name,
-        keep_original_crystallographic_section=False,
-        keep_original_atom_serial=False):
-    self.input = input(file_name=input_file_name)
-    if (keep_original_crystallographic_section):
-      print >> open(output_file_name, "wb"), \
-        "\n".join(self.input.crystallographic_section())
-      crystal_symmetry = None
-    else:
-      crystal_symmetry = self.input.crystal_symmetry()
-    self.hierarchy = self.input.construct_hierarchy()
-    if (keep_original_atom_serial):
-      atoms_reset_serial_first_value = None
-    else:
-      atoms_reset_serial_first_value = 1
-    self.hierarchy.write_pdb_file(
-      file_name=output_file_name,
-      open_append=keep_original_crystallographic_section,
-      crystal_symmetry=crystal_symmetry,
-      append_end=True,
-      atoms_reset_serial_first_value=atoms_reset_serial_first_value)
+  def _used_what_restraints(self, what):
+    rc = False
+    for line in self.remark_section():
+      if line.startswith("REMARK   3") and (what in line):
+        rc = True
+        break
+    return rc
+
+  def used_cdl_restraints(self):
+    return self._used_what_restraints('CDL')
+
+  def used_omega_cdl_restraints(self):
+    return self._used_what_restraints('omega-cdl')
+
+  def used_amber_restraints(self):
+    return self._used_what_restraints('Amber')
 
 # Table of structures split into multiple PDB files.
 # Assembled manually.
@@ -1506,7 +1506,7 @@ class join_fragment_files(object):
     for file_name in file_names:
       pdb_inp = iotbx.pdb.input(file_name=file_name)
       z_ = pdb_inp.extract_cryst1_z_columns()
-      if (z_ is not None) :
+      if (z_ is not None):
         z_ = z_.strip()
         if (z_ != "") : z_ = int(z_)
         else : z_ = None
@@ -1530,8 +1530,9 @@ class join_fragment_files(object):
     result.reset_i_seq_if_necessary()
     self.joined = result
 
-def merge_files_and_check_for_overlap (file_names, output_file,
-    site_clash_cutoff=0.5, log=sys.stdout) :
+def merge_files_and_check_for_overlap(file_names, output_file,
+    site_clash_cutoff=0.5, log=sys.stdout):
+  """ Merge models and write composite model"""
   assert len(file_names) > 0
   merged_records = combine_unique_pdb_files(file_names)
   warnings = StringIO()
@@ -1545,8 +1546,9 @@ def merge_files_and_check_for_overlap (file_names, output_file,
     out=log)
   return n_clashes
 
-def quick_clash_check (file_name, site_clash_cutoff=0.5, out=sys.stdout,
-    show_outliers=5) :
+def quick_clash_check(file_name, site_clash_cutoff=0.5, out=sys.stdout,
+    show_outliers=5):
+  """Carry out clash check on a model file"""
   pdb_inp = input(file_name=file_name)
   pdb_atoms = pdb_inp.atoms_with_labels()
   xray_structure = pdb_inp.xray_structure_simple(
@@ -1580,6 +1582,7 @@ if ("set" in __builtins__):
     standard_rhombohedral_space_group_symbols)
 
 def format_cryst1_sgroup(space_group_info):
+  """Format space_group for CRYST1 record"""
   result = space_group_info.type().lookup_symbol()
   if (result in standard_rhombohedral_space_group_symbols):
     result = result[-1] + result[1:-3]
@@ -1598,6 +1601,7 @@ def format_cryst1_sgroup(space_group_info):
   return result
 
 def format_cryst1_record(crystal_symmetry, z=None):
+  """Format CRYST1 record from crystal_symmetry"""
   # CRYST1
   #  7 - 15       Real(9.3)      a             a (Angstroms).
   # 16 - 24       Real(9.3)      b             b (Angstroms).
@@ -1618,6 +1622,7 @@ def format_cryst1_record(crystal_symmetry, z=None):
 def format_scale_records(unit_cell=None,
                          fractionalization_matrix=None,
                          u=[0,0,0]):
+  """Format SCALE records from unit_cell"""
   #  1 -  6       Record name    "SCALEn"       n=1, 2, or 3
   # 11 - 20       Real(10.6)     s[n][1]        Sn1
   # 21 - 30       Real(10.6)     s[n][2]        Sn2
@@ -1643,10 +1648,10 @@ def format_cryst1_and_scale_records(
       write_scale_records=True,
       scale_fractionalization_matrix=None,
       scale_u=[0,0,0]):
+  """Format CRYST1 and SCALE records from crystal_symmetry"""
   from cctbx import crystal
   from cctbx import sgtbx
   from cctbx import uctbx
-  from scitbx import matrix
   if (crystal_symmetry is None):
     unit_cell = None
     space_group_info = None
@@ -1684,6 +1689,8 @@ def format_cryst1_and_scale_records(
   return result
 
 def format_link_records(link_list):
+  """Format LINK records"""
+
   """
 COLUMNS         DATA TYPE      FIELD           DEFINITION
 -----------------------------------------------------------------------------
@@ -1757,14 +1764,18 @@ class read_scale_record(object):
     O.r, O.t = values[:3], values[3]
 
 def resseq_decode(s):
+  """Convert from hybrid-36 to integer number """
   try: return hy36decode(width=4, s="%4s" % s)
   except ValueError:
     raise ValueError('invalid residue sequence number: "%4s"' % s)
 
 def resseq_encode(value):
+  """Convert from integer number to hybrid-36"""
   return hy36encode(width=4, value=value)
 
 def encode_serial_number(width, value):
+  """Convert from serial number to hybrid-36"""
+
   if (isinstance(value, str)):
     assert len(value) <= width
     return value
@@ -1794,7 +1805,8 @@ def make_atom_with_labels(
       icode=None,
       altloc=None,
       resname=None):
-  if (result is None) :
+  """Make an atom_with_labels-like object """
+  if (result is None):
     result = hierarchy.atom_with_labels()
   else :
     assert type(result).__name__ == 'atom_with_labels'
@@ -1820,13 +1832,14 @@ def make_atom_with_labels(
   if (resname is not None): result.resname = resname
   return result
 
-def get_file_summary (pdb_in, hierarchy=None) :
-  if (hierarchy is None) :
+def get_file_summary(pdb_in, hierarchy=None):
+  """Summarize model file"""
+  if (hierarchy is None):
     hierarchy = pdb_in.construct_hierarchy()
   counts = hierarchy.overall_counts()
   chain_ids = []
-  for id in sorted(counts.chain_ids.keys()) :
-    if (id == " ") :
+  for id in sorted(counts.chain_ids.keys()):
+    if (id == " "):
       chain_ids.append("' '")
     else :
       chain_ids.append(id)
@@ -1834,31 +1847,31 @@ def get_file_summary (pdb_in, hierarchy=None) :
     ("Number of atoms", counts.n_atoms),
     ("Number of chains", counts.n_chains),
     ("Chain IDs", ", ".join(chain_ids)),
-    ("Alternate conformations", counts.n_alt_conf_pure),
+    ("Alternate conformations", counts.n_alt_conf),
   ]
-  if (counts.n_models > 1) :
+  if (counts.n_models > 1):
     info_list.insert(0, ("Number of models", counts.n_models))
   cl = counts.resname_classes
-  if ("common_amino_acid" in cl) :
+  if ("common_amino_acid" in cl):
     info_list.append(("Amino acid residues", cl['common_amino_acid']))
-  if ("common_nucleic_acid" in cl) or ("ccp4_mon_lib_rna_dna" in cl) :
+  if ("common_nucleic_acid" in cl) or ("ccp4_mon_lib_rna_dna" in cl):
     n_atoms = cl.get("common_nucleic_acid", 0) + \
               cl.get("ccp4_mon_lib_rna_dna", 0)
     info_list.append(("Nucleic acid residues", n_atoms))
-  if ("common_water" in cl) :
+  if ("common_water" in cl):
     info_list.append(("Water molecules", cl['common_water']))
-  if ("common_element" in cl) :
+  if ("common_element" in cl):
     names = []
     for name in counts.resnames :
-      if (iotbx.pdb.common_residue_names_get_class(name)=="common_element") :
+      if (iotbx.pdb.common_residue_names_get_class(name)=="common_element"):
         names.append(name)
     value = "%d (%s)" % (cl['common_element'], ", ".join(names))
     info_list.append(("Elemental ions", value))
-  if ("common_small_molecule" in cl) or ("other" in cl) :
+  if ("common_small_molecule" in cl) or ("other" in cl):
     names = []
     for name in counts.resnames :
       res_class = iotbx.pdb.common_residue_names_get_class(name)
-      if (res_class in ["common_small_molecule", "other"]) :
+      if (res_class in ["common_small_molecule", "other"]):
         names.append(name)
     n_atoms = cl.get("common_small_molecule", 0) + cl.get("other", 0)
     value = "%d (%s)" % (n_atoms, ", ".join(names))
@@ -1870,29 +1883,30 @@ def get_file_summary (pdb_in, hierarchy=None) :
   max_b = flex.max(b_factors)
   info_list.append(("Mean isotropic B-factor", "%.2f (range: %.2f - %.2f)" %
     (mean_b, min_b, max_b)))
-  if (min_b <= 0) :
+  if (min_b <= 0):
     n_bad_adp = (b_factors <= 0).count(True)
     info_list.append(("Atoms with iso. B <= 0", "%d ***" % n_bad_adp))
   occ = atoms.extract_occ()
-  if (flex.min(occ) <= 0) :
+  if (flex.min(occ) <= 0):
     n_zero_occ = (occ <= 0).count(True)
     info_list.append(("Atoms with zero ocupancy", "%d ***" % n_zero_occ))
   symm = pdb_in.crystal_symmetry()
-  if (symm is not None) :
+  if (symm is not None):
     space_group = symm.space_group_info()
     info_list.append(("Space group", str(space_group)))
     unit_cell = symm.unit_cell()
-    if (unit_cell is not None) :
+    if (unit_cell is not None):
       uc_str = " ".join([ "%g" % x for x in unit_cell.parameters() ])
       info_list.append(("Unit cell", uc_str))
   return info_list
 
-def show_file_summary (pdb_in, hierarchy=None, out=None) :
-  if (out is None) :
+def show_file_summary(pdb_in, hierarchy=None, out=None):
+  """Display summary of model file"""
+  if (out is None):
     out = sys.stdout
   info = get_file_summary(pdb_in, hierarchy)
   label_width = max([ len(l) for l,v in info ]) + 2
   format = "%%-%ds %%s" % label_width
   for label, value in info :
-    print >> out, format % (label + ":", str(value))
+    print(format % (label + ":", str(value)), file=out)
   return info

@@ -1,7 +1,8 @@
-from __future__ import division
+from __future__ import absolute_import, division, print_function
 import libtbx.phil
 from libtbx.utils import Sorry, format_exception
 import os
+from six.moves import zip
 op = os.path
 
 class argument_interpreter(object):
@@ -10,7 +11,8 @@ class argument_interpreter(object):
         master_phil=None,
         home_scope=None,
         argument_description=None,
-        master_params=None):
+        master_params=None,
+        assume_when_ambiguous=True):
     if (argument_description is None):
       argument_description = "command line "
     assert [master_params, master_phil].count(None) == 1
@@ -26,6 +28,7 @@ class argument_interpreter(object):
     self.home_scope = home_scope
     self.argument_description = argument_description
     self.target_paths = None
+    self.assume_when_ambiguous = assume_when_ambiguous
 
   def get_path_score(self, source_path, target_path):
     i = target_path.find(source_path)
@@ -89,14 +92,16 @@ class argument_interpreter(object):
           if (score == max_score):
             error.append("  " + target_path)
 
-        # Calculate and apply tie-breaker value depending on expert level.
-        # Arguments with lower expert level are preferentially
-        # chosen if otherwise they would be ambiguous.
-        scores = [ score - (exp_lvl / 100) for score, exp_lvl in zip(scores, expert_level) ]
-        max_score = max(scores)
-        if (scores.count(max_score) > 1):
+        if self.assume_when_ambiguous:
+          # Calculate and apply tie-breaker value depending on expert level.
+          # Arguments with lower expert level are preferentially
+          # chosen if otherwise they would be ambiguous.
+          scores = [ score - (exp_lvl / 100) for score, exp_lvl in zip(scores, expert_level) ]
+          max_score = max(scores)
+        if (scores.count(max_score) > 1):  # if there is still a tie, a Sorry is still raised
           raise Sorry("\n".join(error))
-        print "Warning: " + "\n".join(error) + "\nAssuming %s was intended." % self.target_paths[scores.index(max_score)]
+        if self.assume_when_ambiguous:
+          print("Warning: " + "\n".join(error) + "\nAssuming %s was intended." % self.target_paths[scores.index(max_score)])
 
       complete_definitions += object.customized_copy(
         name=self.target_paths[scores.index(max_score)]).as_str()
@@ -125,12 +130,12 @@ class argument_interpreter(object):
         try: user_phils.append(self.process_arg(arg=arg))
         except Exception: pass
         else: continue
-      if (custom_processor is not None) :
+      if (custom_processor is not None):
         result = custom_processor(arg=arg)
-        if (isinstance(result, libtbx.phil.scope)) :
+        if (isinstance(result, libtbx.phil.scope)):
           user_phils.append(result)
           continue
-        elif (result is not None) and (result != False) :
+        elif (result is not None) and (result != False):
           continue
       if (op.isfile(arg)):
         libtbx.phil.parse(file_name=arg) # exception expected
@@ -169,6 +174,13 @@ class argument_interpreter(object):
     return result, remaining_args
 
 class process(object):
+  """Parse PHIL arguments and keep the others in remaining_args.
+
+  Legacy: do not use in new code. New programs subclass
+  libtbx.program_template.ProgramTemplate and run through
+  iotbx.cli_parser.run_program. argument_interpreter above is not
+  legacy: iotbx.cli_parser uses it.
+  """
 
   def __init__(self, args, master_string, parse=None, extra_sources=()):
     if (parse is None): parse = libtbx.phil.parse

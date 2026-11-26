@@ -1,7 +1,7 @@
-from __future__ import division
+from __future__ import absolute_import, division, print_function
 from mmtbx.monomer_library import server
 from libtbx.test_utils import show_diff
-from cStringIO import StringIO
+from six.moves import cStringIO as StringIO
 import sys
 
 tmp_cif = """\
@@ -453,7 +453,8 @@ def exercise():
   verbose = "--verbose" in sys.argv[1:]
   list_cif = server.mon_lib_list_cif()
   srv = server.server(list_cif=list_cif)
-  open("tmp.cif", "w").write(tmp_cif)
+  with open("tmp.cif", "w") as f:
+    f.write(tmp_cif)
   srv.process_cif(file_name="tmp.cif")
   comp_comp_id = srv.get_comp_comp_id_direct(comp_id="tst")
   motif = comp_comp_id.as_geometry_restraints_motif()
@@ -473,7 +474,7 @@ def exercise():
     if (verbose): sys.stdout.write(out.getvalue())
     if (mod_mod_id.chem_mod.id == "tst_mod"):
       assert not show_diff(out.getvalue(), expected_out_tst_mod)
-  print "OK"
+  print("OK")
 
 if (__name__ == "__main__"):
   exercise()

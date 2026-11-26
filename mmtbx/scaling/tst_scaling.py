@@ -1,5 +1,7 @@
-from __future__ import division
+from __future__ import absolute_import, division, print_function
 ## Peter Zwart July 5, 2005
+from libtbx.test_utils import raises
+
 from cctbx.array_family import flex
 from cctbx import crystal
 from cctbx import miller
@@ -18,6 +20,8 @@ import math
 import time
 from libtbx.str_utils import StringIO
 from libtbx.utils import format_cpu_times
+from six.moves import zip
+from six.moves import range
 
 random.seed(0)
 flex.set_random_seed(0)
@@ -29,7 +33,7 @@ import scitbx.math as sm
 def test_luts():
   qerf = mmtbx.scaling.very_quick_erf(0.001)
   qeio = mmtbx.scaling.quick_ei0(5000)
-  for i in xrange(-1000,1000):
+  for i in range(-1000,1000):
     x=i/100.0
     assert approx_equal( qerf.erf(x), sm.erf(x), eps=1e-5 )
     if (x>=0):
@@ -38,15 +42,15 @@ def test_luts():
   for optimized in [False, True]:
     t0 = time.time()
     zero = qerf.loop_for_timings(number_of_iterations, optimized=optimized)
-    print "very_quick_erf*%d optimized=%s: %.2f s" % (
-      number_of_iterations, str(optimized), time.time()-t0)
+    print("very_quick_erf*%d optimized=%s: %.2f s" % (
+      number_of_iterations, str(optimized), time.time()-t0))
     assert approx_equal(zero, 0)
   number_of_iterations = 5000000
   for optimized in [False, True]:
     t0 = time.time()
     zero = qeio.loop_for_timings(number_of_iterations, optimized=optimized)
-    print "quick_ei0*%d optimized=%s: %.2f s" % (
-      number_of_iterations, str(optimized), time.time()-t0)
+    print("quick_ei0*%d optimized=%s: %.2f s" % (
+      number_of_iterations, str(optimized), time.time()-t0))
     assert approx_equal(zero, 0)
 
 ## Testing Wilson parameters
@@ -1003,6 +1007,11 @@ def test_kernel_based_normalisation():
              normalizer.normalised_miller.epsilons().data().as_double()
   z_values = flex.mean(z_values)
   assert approx_equal(1.0,z_values,eps=0.05)
+  # This should raise an error rather than enter an infinite loop
+  with raises(AssertionError) as e:
+    absolute_scaling.kernel_normalisation(
+      miller_array[:1].set_observation_type_xray_amplitude(), auto_kernel=True)
+
 
 def test_ml_murray_rust():
   miller_array = random_data(35.0, d_min=4.5 )
@@ -1015,8 +1024,8 @@ def test_ml_murray_rust():
     (1,0,0,0,1,0,0,0,1),
     6 )
 
-  for ii in xrange(5,30):
-    for jj in xrange(5,30):
+  for ii in range(5,30):
+    for jj in range(5,30):
        p1 = ml_mr_object.p_raw(ii/3.0, jj/3.0, 0.25)
        p2 = ml_mr_object.num_int(ii/3.0, 1e-13, jj/3.0, 1e-13, -5, 5,0.25, 20)
        assert approx_equal( p1, p2, eps=0.01)
@@ -1049,7 +1058,7 @@ def test_all():
 def run(args):
   assert len(args) == 0
   test_all()
-  print format_cpu_times()
+  print(format_cpu_times())
 
 if (__name__ == "__main__"):
   import sys

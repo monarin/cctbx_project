@@ -1,9 +1,9 @@
 
-from __future__ import division
+from __future__ import absolute_import, division, print_function
 from cctbx import crystal
 from cctbx import miller
 
-def exercise_sort() :
+def exercise_sort():
   expected_unsorted_data="""    4 I 4
   1  0  0  0  1  0  0  0  1
   0  0  0
@@ -68,14 +68,16 @@ def exercise_sort() :
   i_obs=i_obs.sort(by_value="asu_indices")
   i_obs.export_as_scalepack_unmerged(file_name='sorted.sca',
      scale_intensities_for_scalepack_merge=True)
-  unsorted=open('unsorted.sca').read()
-  sorted=open('sorted.sca').read()
+  with open('unsorted.sca') as f:
+    unsorted = f.read()
+  with open('sorted.sca') as f:
+    sorted = f.read()
   assert unsorted==expected_unsorted_data
   assert sorted==expected_sorted_data
 
-def exercise () :
+def exercise():
   exercise_sort()
-  print "OK"
+  print("OK")
 
 if __name__ == "__main__" :
   exercise()

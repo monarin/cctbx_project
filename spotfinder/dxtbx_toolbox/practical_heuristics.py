@@ -1,4 +1,4 @@
-from __future__ import division
+from __future__ import absolute_import, division, print_function
 from spotfinder.array_family import flex
 from spotfinder.core_toolbox import Distl
 
@@ -26,9 +26,9 @@ class heuristics_base(object):
   def oneImage(self,framenumber):
     self.reporters[framenumber] = []
 
-    from dxtbx.format.Registry import Registry
+    import dxtbx.format.Registry
     filename = self.phil_params.distl.image[framenumber]
-    reader = Registry.find(filename)
+    reader = dxtbx.format.Registry.get_format_class_for_file(filename)
     img = reader(filename)
 
     detector = img.get_detector()
@@ -36,12 +36,12 @@ class heuristics_base(object):
     S0 = beam.get_s0()
     data = img.get_raw_data()
     scan = img.get_scan()
-    print scan
+    print(scan)
     if scan is None:
-      print "No scan"
+      print("No scan")
       RR = (0,1)
     else:
-      print scan.get_oscillation()
+      print(scan.get_oscillation())
       RR = scan.get_oscillation_range()
 
     from spotfinder.dxtbx_toolbox import Distl

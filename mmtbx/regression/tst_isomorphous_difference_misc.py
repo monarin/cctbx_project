@@ -1,12 +1,14 @@
 
-from __future__ import division
+from __future__ import absolute_import, division, print_function
+from iotbx.pdb import hierarchy
 from libtbx import easy_run
+import iotbx.pdb
+from iotbx.file_reader import any_file
+from mmtbx.regression.make_fake_anomalous_data import generate_calcium_inputs
 import time
 import os
 
-def exercise_calcium_substitution () :
-  from mmtbx.regression.make_fake_anomalous_data import generate_calcium_inputs
-  from iotbx.file_reader import any_file
+def exercise_calcium_substitution():
   anom_mtz_file, pdb_file = generate_calcium_inputs(
     file_base = "tst_isomorphous_difference_misc_anom", anonymize = False)
   hoh_file = generate_calcium_inputs(
@@ -40,16 +42,16 @@ def exercise_calcium_substitution () :
   coeffs = f.file_server.miller_arrays[0]
   fft_map = coeffs.fft_map(resolution_factor=0.25)
   minus_map = fft_map.apply_sigma_scaling().real_map_unpadded()
-  pdb_in = any_file(pdb_file)
-  hierarchy = pdb_in.file_object.hierarchy
-  xrs = pdb_in.file_object.xray_structure_simple()
-  for i_seq, atom in enumerate(hierarchy.atoms()) :
-    if (atom.element == "CA") :
+  pdb_in = iotbx.pdb.input(pdb_file)
+  hierarchy = pdb_in.construct_hierarchy()
+  xrs = pdb_in.xray_structure_simple()
+  for i_seq, atom in enumerate(hierarchy.atoms()):
+    if (atom.element == "CA"):
       site_frac = xrs.sites_frac()[i_seq]
       val = minus_map.eight_point_interpolation(site_frac)
       assert (val > 40)
 
-def exercise_anomalous_isomorphous_difference_map () :
+def exercise_anomalous_isomorphous_difference_map():
   pdb_1 = """\
 CRYST1   32.247   37.398   33.613  90.00  90.00  90.00 P 1
 HETATM 1983  PG  AGS A 340       5.029   2.780   3.852  1.00 60.68           P
@@ -124,8 +126,10 @@ HETATM   61  O   ACT     1       3.812   8.507   7.193  1.00 19.26           O
 HETATM   62  OXT ACT     1       2.218   9.388   8.383  1.00 18.36           O
 HETATM   63  CH3 ACT     1       2.127   7.078   8.030  1.00 18.08           C
 """
-  open("tst_anom_iso_diff_1.pdb", "w").write(pdb_1)
-  open("tst_anom_iso_diff_2.pdb", "w").write(pdb_2)
+  with open("tst_anom_iso_diff_1.pdb", "w") as f:
+    f.write(pdb_1)
+  with open("tst_anom_iso_diff_2.pdb", "w") as f:
+    f.write(pdb_2)
   base_args = [
     "phenix.fmodel",
     "high_resolution=1.5",
@@ -139,10 +143,10 @@ HETATM   63  CH3 ACT     1       2.127   7.078   8.030  1.00 18.08           C
     "output.file_name=tst_anom_iso_diff_1.mtz" ]
   args_2 = base_args + [ "tst_anom_iso_diff_2.pdb",
     "output.file_name=tst_anom_iso_diff_2.mtz" ]
-  print " ".join(args_1)
+  print(" ".join(args_1))
   rc = easy_run.fully_buffered(" ".join(args_1)).raise_if_errors().return_code
   assert (rc == 0)
-  print " ".join(args_2)
+  print(" ".join(args_2))
   rc = easy_run.fully_buffered(" ".join(args_2)).raise_if_errors().return_code
   assert (rc == 0)
   base_args = [
@@ -155,10 +159,10 @@ HETATM   63  CH3 ACT     1       2.127   7.078   8.030  1.00 18.08           C
   args_1 = base_args + ["output_file=tst_anom_iso_diff_map_coeffs.mtz",
     "anomalous=True",]
   args_2 = base_args + ["output_file=tst_anom_iso_diff_map_coeffs_control.mtz"]
-  print " " .join(args_1)
+  print(" " .join(args_1))
   rc = easy_run.fully_buffered(" " .join(args_1)).raise_if_errors().return_code
   assert (rc == 0)
-  print " " .join(args_2)
+  print(" " .join(args_2))
   rc = easy_run.fully_buffered(" " .join(args_2)).raise_if_errors().return_code
   assert (rc == 0)
   # The input structures differ in the position of the MN ion and in the
@@ -167,33 +171,32 @@ HETATM   63  CH3 ACT     1       2.127   7.078   8.030  1.00 18.08           C
   # dataset, and a control using the merged amplitudes. The MN should be
   # prominent in both, and by far the strongest feature in the anomalous map,
   # but the ACT should only have density in the control map.
-  from iotbx import file_reader
-  import iotbx.pdb.hierarchy
-  pdb_in = iotbx.pdb.hierarchy.input(pdb_string=pdb_2)
-  xrs = pdb_in.input.xray_structure_simple()
-  mtz_1 = file_reader.any_file("tst_anom_iso_diff_map_coeffs.mtz")
+  pdb_in = iotbx.pdb.input(source_info=None, lines=pdb_2)
+  xrs = pdb_in.xray_structure_simple()
+  mtz_1 = any_file("tst_anom_iso_diff_map_coeffs.mtz")
   map_1 = mtz_1.file_server.miller_arrays[0].fft_map(
     resolution_factor=0.25).apply_sigma_scaling().real_map_unpadded()
-  mtz_2 = file_reader.any_file("tst_anom_iso_diff_map_coeffs_control.mtz")
+  mtz_2 = any_file("tst_anom_iso_diff_map_coeffs_control.mtz")
   map_2 = mtz_2.file_server.miller_arrays[0].fft_map(
     resolution_factor=0.25).apply_sigma_scaling().real_map_unpadded()
   sites_frac = xrs.sites_frac()
   anom_max = mn_anom = 0
-  for i_seq, atom in enumerate(pdb_in.hierarchy.atoms()) :
+  hierarchy = pdb_in.construct_hierarchy()
+  for i_seq, atom in enumerate(hierarchy.atoms()):
     site_frac = sites_frac[i_seq]
     anom_diff = map_1.eight_point_interpolation(site_frac)
     fobs_diff = map_2.eight_point_interpolation(site_frac)
     labels = atom.fetch_labels()
-    if (labels.resname.strip() == "MN") :
+    if (labels.resname.strip() == "MN"):
       assert (anom_diff > 10) and (fobs_diff > 5)
       mn_anom = anom_diff
-    elif (labels.resname.strip() == "ACT") :
+    elif (labels.resname.strip() == "ACT"):
       assert (anom_diff < 3) and (fobs_diff > 5)
-    if (anom_diff > anom_max) :
+    if (anom_diff > anom_max):
       anom_max = anom_diff
   assert (anom_max == mn_anom)
 
-if (__name__ == "__main__") :
+if (__name__ == "__main__"):
   exercise_anomalous_isomorphous_difference_map()
   exercise_calcium_substitution()
-  print "OK"
+  print("OK")

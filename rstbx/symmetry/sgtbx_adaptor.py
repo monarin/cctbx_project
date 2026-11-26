@@ -1,4 +1,4 @@
-from __future__ import division
+from __future__ import absolute_import, division, print_function
 from cctbx.sgtbx import space_group_info
 
 #take care of R vs. H nomenclature, as well as ambiguous I-centered groups
@@ -48,7 +48,7 @@ patterson_lookup = {}
 def get_patterson_group(conventional_symbol):
   global patterson_lookup
   SGI = space_group_info(sgtbx_redefine[conventional_symbol])
-  if patterson_lookup.has_key(SGI):
+  if SGI in patterson_lookup:
     PG = patterson_lookup[SGI]
   else:
     SG = SGI.group()

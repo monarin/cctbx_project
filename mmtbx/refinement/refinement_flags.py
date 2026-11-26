@@ -1,4 +1,4 @@
-from __future__ import division
+from __future__ import absolute_import, division, print_function
 from cctbx.array_family import flex
 import sys
 from libtbx import adopt_init_args
@@ -178,25 +178,25 @@ class manager(object):
 
   def show(self, log = None):
     if(log is None): log = sys.stdout
-    print >> log, "Refinement flags and selection counts:"
-    print >> log, "  individual_sites       = %5s (%s atoms)"%(
-      str(self.individual_sites), self.ca(self.sites_individual))
-    print >> log, "  torsion_angles         = %5s (%s atoms)"%(
-      str(self.torsion_angles), self.ca(self.sites_torsion_angles))
-    print >> log, "  rigid_body             = %5s (%s atoms in %s groups)"%(
+    print("Refinement flags and selection counts:", file=log)
+    print("  individual_sites       = %5s (%s atoms)"%(
+      str(self.individual_sites), self.ca(self.sites_individual)), file=log)
+    print("  torsion_angles         = %5s (%s atoms)"%(
+      str(self.torsion_angles), self.ca(self.sites_torsion_angles)), file=log)
+    print("  rigid_body             = %5s (%s atoms in %s groups)"%(
       str(self.rigid_body), self.ca(self.sites_rigid_body),
-      self.szs(self.sites_rigid_body))
-    print >> log, "  individual_adp         = %5s (iso = %s aniso = %s)"%(
+      self.szs(self.sites_rigid_body)), file=log)
+    print("  individual_adp         = %5s (iso = %s aniso = %s)"%(
       str(self.individual_adp), self.ca(self.adp_individual_iso),
-      self.ca(self.adp_individual_aniso))
-    print >> log, "  group_adp              = %5s (%s atoms in %s groups)"%(
-      str(self.group_adp), self.ca(self.adp_group), self.szs(self.adp_group))
-    print >> log, "  tls                    = %5s (%s atoms in %s groups)" % (
-      str(self.tls), self.ca(self.adp_tls), self.szs(self.adp_tls))
+      self.ca(self.adp_individual_aniso)), file=log)
+    print("  group_adp              = %5s (%s atoms in %s groups)"%(
+      str(self.group_adp), self.ca(self.adp_group), self.szs(self.adp_group)), file=log)
+    print("  tls                    = %5s (%s atoms in %s groups)" % (
+      str(self.tls), self.ca(self.adp_tls), self.szs(self.adp_tls)), file=log)
     co_res = self.count_occupancies(self.s_occupancies)
-    print >> log, "  occupancies            = %5s (%s atoms)"%(
-      str(self.occupancies), co_res)
-    print >> log, "  group_anomalous        = %5s"%self.group_anomalous # XXX selections not available
+    print("  occupancies            = %5s (%s atoms)"%(
+      str(self.occupancies), co_res), file=log)
+    print("  group_anomalous        = %5s"%self.group_anomalous, file=log) # XXX selections not available
     log.flush()
 
   def _select(self, x, selection):
@@ -224,6 +224,55 @@ class manager(object):
       x = x_new
     else: raise RuntimeError("Bad selection array type.")
     return x
+
+  def select_detached(self, selection):
+    new_sites_individual     = None
+    new_sites_torsion_angles = None
+    new_sites_rigid_body     = None
+    new_adp_individual_iso   = None
+    new_adp_individual_aniso = None
+    new_adp_group            = None
+    new_group_h              = None
+    new_adp_tls              = None
+    new_s_occupancies        = None
+    if(self.sites_individual is not None):
+      new_sites_individual = self._select(self.sites_individual, selection)
+    if(self.sites_torsion_angles is not None):
+      new_sites_torsion_angles = self._select(
+        self.sites_torsion_angles, selection)
+    if(self.adp_individual_iso is not None):
+      new_adp_individual_iso= self._select(self.adp_individual_iso, selection)
+    if(self.adp_individual_aniso is not None):
+      new_adp_individual_aniso= self._select(self.adp_individual_aniso,
+        selection)
+    if(self.sites_rigid_body is not None):
+      new_sites_rigid_body = self._select(self.sites_rigid_body, selection)
+    if(self.adp_group is not None):
+      new_adp_group = self._select(self.adp_group, selection)
+    if(self.group_h is not None):
+      new_group_h = self._select(self.group_h, selection)
+    if(self.adp_tls is not None):
+      new_adp_tls = self._select(self.adp_tls, selection)
+    if(self.s_occupancies is not None):
+      new_s_occupancies = self._select(self.s_occupancies, selection)
+    return manager(
+      individual_sites       = self.individual_sites,
+      torsion_angles         = self.torsion_angles  ,
+      rigid_body             = self.rigid_body      ,
+      individual_adp         = self.individual_adp  ,
+      group_adp              = self.group_adp       ,
+      tls                    = self.tls             ,
+      occupancies            = self.occupancies     ,
+      group_anomalous        = self.group_anomalous ,
+      sites_individual       = new_sites_individual    ,
+      sites_torsion_angles   = new_sites_torsion_angles,
+      sites_rigid_body       = new_sites_rigid_body    ,
+      adp_individual_iso     = new_adp_individual_iso  ,
+      adp_individual_aniso   = new_adp_individual_aniso,
+      adp_group              = new_adp_group           ,
+      group_h                = new_group_h             ,
+      adp_tls                = new_adp_tls             ,
+      s_occupancies          = new_s_occupancies       )
 
   def select(self, selection):
     assert self.is_bool(selection)
@@ -274,7 +323,7 @@ class manager(object):
         assert size_all is not None
         self.adp_individual_iso = flex.bool(size_all, False)
       # inflate existing iso flags if present
-      elif (self.adp_individual_iso.size() < size_all) :
+      elif (size_all and self.adp_individual_iso.size() < size_all):
         n_new = size_all - self.adp_individual_iso.size()
         self.adp_individual_iso.extend(flex.bool(n_new, False))
       self.adp_individual_iso.extend(adp_individual_iso)
@@ -284,7 +333,7 @@ class manager(object):
         assert size_all is not None
         self.adp_individual_aniso = flex.bool(size_all, False)
       # inflate existing aniso flags if present
-      elif (self.adp_individual_aniso.size() < size_all) :
+      elif (size_all and self.adp_individual_aniso.size() < size_all):
         n_new = size_all - self.adp_individual_aniso.size()
         self.adp_individual_aniso.extend(flex.bool(n_new, False))
       self.adp_individual_aniso.extend(adp_individual_aniso)

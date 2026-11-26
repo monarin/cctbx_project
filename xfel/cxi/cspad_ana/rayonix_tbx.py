@@ -1,50 +1,17 @@
-from __future__ import division
+from __future__ import absolute_import, division, print_function
 # Utility functions for the Rayonix Detector.
+from dxtbx.format.cbf_writer import add_frame_specific_cbf_tables
 from scitbx.array_family import flex
 
-# given value of rayonix detector saturation xppi6115
-rayonix_saturated_value = 2**16 -1
+from serialtbx.detector.rayonix import rayonix_min_trusted_value, rayonix_max_trusted_value, get_rayonix_pixel_size
+from serialtbx.detector.rayonix import get_data_from_psana_event, rayonix_saturated_value, get_rayonix_detector_dimensions # import dependency
 
-# minimum value for rayonix data (actually this number is not trusted, numbers above it are)
-rayonix_min_trusted_value = -1
-
-def get_rayonix_pixel_size(bin_size):
-  ''' Given a bin size determine a pixel size.
-
-Michael Blum from Rayonix said The pixel size is recorded in the header,
-but can be derived trivially from the overall dimension of the corrected imaging
-area (170mm) and the number of pixels. (3840 unbinned). The corrected image is
-forced to this size.
-
-unbinned 170/3840  = 0.04427
-
-I believe the accuracy of the MEAN pixel size to be at least as good as 0.1%
-which is the limit to which I can measure our calibration plate and exceeds the
- parallax error in our calibration station.
-
-  @param bin_size rayonix bin size as an integer
-  '''
-  pixel_size=bin_size*170/3840
-  return pixel_size
-
-
-def get_rayonix_detector_dimensions(bin_size):
-  ''' Given the bin size determine the detector dimensions.
-      Based on the number of pixels (unbinned) and the bin size calculate
-      integer detector dimensions.
-
-      @param bin_size rayonix bin size as an integer
-  '''
-  assert 3840%bin_size==0
-  return 3840//bin_size,3840//bin_size
-
-def get_rayonix_cbf_handle(tiles, metro, timestamp, cbf_root, wavelength, distance, bin_size, verbose = True, header_only = False):
+def get_rayonix_cbf_handle(tiles, metro, timestamp, cbf_root, wavelength, distance, bin_size, detector_size, verbose = True, header_only = False):
   # set up the metrology dictionary to include axis names, pixel sizes, and so forth
   dserial = None
   dname = None
   detector_axes_names = [] # save these for later
   pixel_size = get_rayonix_pixel_size(bin_size)
-  detector_size = get_rayonix_detector_dimensions(bin_size)
   for key in sorted(metro):
     basis = metro[key]
     if len(key) == 1:
@@ -59,17 +26,16 @@ def get_rayonix_cbf_handle(tiles, metro, timestamp, cbf_root, wavelength, distan
                                         # included in the axis_settings table below
       basis.pixel_size = (pixel_size,pixel_size)
       basis.dimension = detector_size
-      from xfel.cxi.cspad_ana.rayonix_tbx import rayonix_saturated_value
-      basis.trusted_range = (rayonix_min_trusted_value, rayonix_saturated_value)
+      basis.trusted_range = (rayonix_min_trusted_value, rayonix_max_trusted_value)
     else:
       assert False # shouldn't be reached as it would indicate a hierarchy for this detector
     basis.axis_name = detector_axes_names[-1]
 
   # the data block is the root cbf node
-  from xfel.cftbx.detector.cspad_cbf_tbx import cbf_wrapper
+  from dxtbx.format.FormatCBFMultiTile import cbf_wrapper
   import os
   cbf=cbf_wrapper()
-  cbf.new_datablock(os.path.splitext(os.path.basename(cbf_root))[0])
+  cbf.new_datablock(os.path.splitext(os.path.basename(cbf_root))[0].encode())
 
   # Each category listed here is preceded by the imageCIF description taken from here:
   # http://www.iucr.org/__data/iucr/cifdic_html/2/cif_img.dic/index.html
@@ -227,9 +193,9 @@ from dxtbx.format.FormatCBFCspad import FormatCBFFullStillInMemory
 class FormatCBFRayonixInMemory(FormatCBFFullStillInMemory):
   """Mixin class for Rayonix in memory"""
 
-def get_dxtbx_from_params(params):
+def get_dxtbx_from_params(params, detector_size):
   """ Build a dxtbx format object for the Rayonix based on input paramters (beam center and binning) """
-  from xfel.cftbx.detector.cspad_cbf_tbx import basis
+  from serialtbx.detector import basis
   from scitbx.matrix import col
   fake_distance = 100
   null_ori = col((0,0,1)).axis_and_angle_as_unit_quaternion(0, deg=True)
@@ -238,31 +204,15 @@ def get_dxtbx_from_params(params):
   elif params.override_beam_x is not None and params.override_beam_y is not None:
     # compute the offset from the origin given the provided beam center override
     pixel_size = get_rayonix_pixel_size(params.bin_size)
-    detector_size = get_rayonix_detector_dimensions(params.bin_size)
     image_center = col(detector_size)/2
     override_center = col((params.override_beam_x, params.override_beam_y))
     delta = (image_center-override_center)*pixel_size
     metro = {(0,): basis(null_ori, col((delta[0], -delta[1], 0)))} # note the -Y
   else:
     assert False, "Please provide both override_beam_x and override_beam_y or provide neither"
-  cbf = get_rayonix_cbf_handle(None, metro, None, "test", None, fake_distance, params.bin_size, verbose = True, header_only = True)
+  cbf = get_rayonix_cbf_handle(None, metro, None, "test", None, fake_distance, params.bin_size, detector_size, verbose = True, header_only = True)
   base_dxtbx = FormatCBFRayonixInMemory(cbf)
   return base_dxtbx
-
-def get_data_from_psana_event(evt, address):
-  """ Read the pixel data for a Rayonix image from an event
-  @param psana event object
-  @param address old style psana detector address
-  @return numpy array with raw data"""
-  from psana import Source, Camera
-  from xfel.cxi.cspad_ana import cspad_tbx
-  import numpy as np
-  address = cspad_tbx.old_address_to_new_address(address)
-  src=Source('DetInfo(%s)'%address)
-  data = evt.get(Camera.FrameV1,src)
-  if data is not None:
-    data = data.data16().astype(np.float64)
-  return data
 
 def format_object_from_data(base_dxtbx, data, distance, wavelength, timestamp, address, round_to_int=True):
   """
@@ -279,7 +229,7 @@ def format_object_from_data(base_dxtbx, data, distance, wavelength, timestamp, a
   from xfel.cftbx.detector import cspad_cbf_tbx
   cbf = cspad_cbf_tbx.copy_cbf_header(base_dxtbx._cbf_handle, skip_sections=True)
   rayonix_img = FormatCBFRayonixInMemory(cbf)
-  cbf.set_datablockname(address + "_" + timestamp)
+  cbf.set_datablockname((address + "_" + timestamp).encode())
 
   if round_to_int:
     data = flex.double(data.astype(np.float64)).iround()
@@ -287,15 +237,15 @@ def format_object_from_data(base_dxtbx, data, distance, wavelength, timestamp, a
     data = flex.double(data.astype(np.float64))
 
   n_asics = data.focus()[0] * data.focus()[1]
-  cspad_cbf_tbx.add_frame_specific_cbf_tables(cbf, wavelength,timestamp,
-    [(rayonix_min_trusted_value, rayonix_saturated_value)]*n_asics)
+  add_frame_specific_cbf_tables(cbf, wavelength,timestamp,
+    [(rayonix_min_trusted_value, rayonix_max_trusted_value)]*n_asics)
 
   # Set the distance, I.E., the length translated along the Z axis
-  cbf.find_category("diffrn_scan_frame_axis")
-  cbf.find_column("axis_id")
-  cbf.find_row("AXIS_D0_Z") # XXX discover the Z axis somehow, don't use D0 here
-  cbf.find_column("displacement")
-  cbf.set_value(str(-distance))
+  cbf.find_category(b"diffrn_scan_frame_axis")
+  cbf.find_column(b"axis_id")
+  cbf.find_row(b"AXIS_D0_Z") # XXX discover the Z axis somehow, don't use D0 here
+  cbf.find_column(b"displacement")
+  cbf.set_value(b"%f"%(-distance))
 
   # Explicitly reset the detector object now that the distance is set correctly
   rayonix_img._detector_instance = rayonix_img._detector()
@@ -314,14 +264,14 @@ def add_data_to_cbf(cbf, data, verbose = False):
   """
   import pycbf
 
-  cbf.find_category("diffrn_data_frame")
+  cbf.find_category(b"diffrn_data_frame")
   while True:
     try:
-      cbf.find_column("array_id")
-      array_name = cbf.get_value()
+      cbf.find_column(b"array_id")
+      array_name = cbf.get_value().decode()
       cbf.next_row()
-    except Exception, e:
-      assert "CBF_NOTFOUND" in e.message
+    except Exception as e:
+      assert "CBF_NOTFOUND" in str(e)
       break
 
   assert len(data.focus()) == 2
@@ -345,7 +295,7 @@ def add_data_to_cbf(cbf, data, verbose = False):
   cbf.add_category("array_data",["array_id","binary_id","data"])
 
   if verbose:
-    print "Compressing tiles...",
+    print("Compressing tiles...", end=' ')
 
   focus = data.focus()
 
@@ -354,7 +304,7 @@ def add_data_to_cbf(cbf, data, verbose = False):
   binary_id = 1
   elements = len(data)
   data = data.copy_to_byte_str()
-  byteorder = "little_endian"
+  byteorder = b"little_endian"
   dimfast = focus[1]
   dimmid = focus[0]
   dimslow = 1

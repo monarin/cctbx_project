@@ -139,10 +139,14 @@ namespace {
 "                This crash may be due to a problem in any imported\n"
 "                Python module, including modules which are not part\n"
 "                of the cctbx project. To disable the traps leading\n"
-"                to this message, define these environment variables\n"
-"                (e.g. assign the value 1):\n"
-"                    BOOST_ADAPTBX_FPE_DEFAULT\n"
-"                    BOOST_ADAPTBX_SIGNALS_DEFAULT\n"
+"                to this message, undefine these environment variables\n"
+"                (or assign the value ""):\n"
+"                    BOOST_ADAPTBX_TRAP_FPE\n"
+"                    BOOST_ADAPTBX_TRAP_INVALID\n"
+"                    BOOST_ADAPTBX_TRAP_OVERFLOW\n"
+"                To disable the full trace but keep the exception you\n"
+"                can undefine:\n"
+"                    BOOST_ADAPTBX_ENABLE_TRACE\n"
 "                This will NOT solve the problem, just mask it, but\n"
 "                may allow you to proceed in case it is not critical.\n");
     fflush(stderr);
@@ -295,6 +299,7 @@ namespace {
     result += "__llvm__\n";
 #endif
 #if defined(BOOST_PYTHON_HAVE_CXXABI_CXA_DEMANGLE_IS_BROKEN) \
+    && !defined(USE_CONDA) \
     && !defined(__MINGW32__) // workaround for MinGW linking problem
     result += "boost::python::cxxabi_cxa_demangle_is_broken(): "
             + to_str(boost::python::cxxabi_cxa_demangle_is_broken()) + nl;
@@ -432,8 +437,15 @@ namespace {
 #endif
     }
     else if (PyUnicode_Check(obj)) {
+#ifdef IS_PY3K
+      const Py_UCS1* c2;
+      n = PyUnicode_GET_LENGTH(obj);
+      c2 = PyUnicode_1BYTE_DATA(obj);
+      c = reinterpret_cast<const char*>(c2);
+#else
       n = PyUnicode_GET_DATA_SIZE(obj);
       c = PyUnicode_AS_DATA(obj);
+#endif
     }
     else {
 #ifdef IS_PY3K
@@ -544,7 +556,10 @@ namespace {
     char alternative_quote)
   {
 #ifdef IS_PY3K
-    PyBytesObject* op = (PyBytesObject*) string.ptr();
+    PyObject * tmp_op = PyUnicode_AsEncodedString(string.ptr(),
+                                                  "raw_unicode_escape",
+                                                  "strict");
+    PyBytesObject* op = (PyBytesObject*) tmp_op;
 #else
     PyStringObject* op = (PyStringObject*) string.ptr();
 #endif
@@ -598,7 +613,7 @@ namespace {
           /* For performance, we don't want to call
              PyOS_snprintf here (extra layers of
              function call). */
-          sprintf(p, "\\x%02x", c & 0xff);
+          snprintf(p, sizeof(p), "\\x%02x", c & 0xff);
           p += 4;
         }
         else

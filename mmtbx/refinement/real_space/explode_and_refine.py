@@ -1,4 +1,4 @@
-from __future__ import division
+from __future__ import absolute_import, division, print_function
 from  mmtbx.refinement import geometry_minimization
 import mmtbx.refinement.real_space.individual_sites
 from cctbx import maptbx
@@ -10,10 +10,60 @@ from cctbx import geometry_restraints
 import scitbx.lbfgs
 from mmtbx.building.merge_models import run as merge_models
 import sys
+from six.moves import range
+from libtbx.test_utils import approx_equal
 
 if (0): # fixed random seed to avoid rare failures
   random.seed(1)
   flex.set_random_seed(1)
+
+def sa_simple(rm, xrs, ph, map_data, log):
+  tmp_xrs = xrs.deep_copy_scatterers()
+  ro = mmtbx.refinement.real_space.individual_sites.easy(
+    map_data                    = map_data,
+    xray_structure              = tmp_xrs,
+    pdb_hierarchy               = ph.deep_copy(),
+    geometry_restraints_manager = rm,
+    rms_bonds_limit             = 0.01,
+    rms_angles_limit            = 1.0,
+    selection                   = None, #TODO
+    log                         = log)
+  weight = ro.w
+  #
+  from mmtbx.dynamics import simulated_annealing as sa
+  tmp = xrs.deep_copy_scatterers()
+  params = sa.master_params().extract()
+  params.start_temperature=5000
+  params.cool_rate=500
+  sa.run(
+    params             = params,
+    xray_structure     = tmp,
+    real_space         = True,
+    target_map         = map_data,
+    restraints_manager = rm,
+    wx                 = weight,
+    wc                 = 1.,
+    verbose            = False,
+    log                = log)
+  return tmp.sites_cart()
+
+class scorer(object):
+  def __init__(self, pdb_hierarchy, unit_cell, map_data):
+    adopt_init_args(self, locals())
+    self.sites_cart = self.pdb_hierarchy.atoms().extract_xyz()
+    self.target = maptbx.real_space_target_simple(
+      unit_cell   = self.unit_cell,
+      density_map = self.map_data,
+      sites_cart  = self.sites_cart)
+
+  def update(self, sites_cart):
+    target = maptbx.real_space_target_simple(
+      unit_cell   = self.unit_cell,
+      density_map = self.map_data,
+      sites_cart  = sites_cart)
+    if(target > self.target):
+      self.target = target
+      self.sites_cart = sites_cart
 
 class run_sa(object):
   def __init__(
@@ -28,8 +78,7 @@ class run_sa(object):
     adopt_init_args(self, locals())
     # Initialize states collector
     self.states = mmtbx.utils.states(
-      xray_structure = self.xray_structure.deep_copy_scatterers(),
-      pdb_hierarchy  = self.pdb_hierarchy.deep_copy())
+      pdb_hierarchy = self.pdb_hierarchy.deep_copy())
     # SA params
     self.params = sa.master_params().extract()
     self.params.start_temperature=50000
@@ -45,7 +94,7 @@ class run_sa(object):
         ignore_line_search_failed_maxfev              = True)
     # pre-compute random seeds
     random_seeds = []
-    for it in xrange(self.number_of_trials):
+    for it in range(self.number_of_trials):
       random_seeds.append(random.randint(0,10000000))
     # run SA
     self.results = []
@@ -162,16 +211,20 @@ class run(object):
         pdb_hierarchy,
         map_data,
         restraints_manager,
+        score_method=["merge_models",],
         resolution=None,
         mode="quick",
         target_bond_rmsd=0.02,
         target_angle_rmsd=2.0,
         number_of_trials=20,
-        xyz_shake=5.0,
         nproc=1,
         states=None,
+        map_data_ref=None,
+        fragments=None,
         show=True,
         log=None):
+    if not map_data_ref:
+      map_data_ref = map_data # XXX in case map_data_ref is not supplied
     adopt_init_args(self, locals())
     assert self.mode in ["quick", "thorough"]
     if(self.log is None): self.log = sys.stdout
@@ -221,6 +274,12 @@ class run(object):
         target_bond_rmsd  = self.target_bond_rmsd,
         target_angle_rmsd = self.target_angle_rmsd,
         weight            = None)
+    #
+    assert approx_equal(self.xray_structure.sites_cart(),
+                        self.pdb_hierarchy.atoms().extract_xyz())
+    self.final_cc = None
+    if(self.resolution is not None):
+      self.final_cc = self.get_cc(xrs=self.xray_structure)
     self.show_target(prefix="Target(final minimization):")
 
   def ensemble_pdb_hierarchy_refined(self):
@@ -229,24 +288,115 @@ class run(object):
   def pdb_hierarchy_overall_best(self):
     return self.pdb_hierarchy
 
-  def merge_models(self, pdb_hierarchy):
-    t0=time.time()
-    assert pdb_hierarchy.models_size() == self.number_of_trials, \
-      pdb_hierarchy.models_size()
-    from mmtbx.building.merge_models import run as merge_models
-    pdb_hierarchy_merged = merge_models(
-      map_data         = self.map_data,
-      resolution       = self.resolution,
-      pdb_hierarchy    = pdb_hierarchy,
-      crystal_symmetry = self.xray_structure.crystal_symmetry(),
-      out              = self.log)
-    if(self.show):
-      pdb_hierarchy_merged.write_pdb_file(
-        file_name="SA_ensemble_refined_merged.pdb")
-    self.xray_structure = self.xray_structure.replace_sites_cart(
-      new_sites=pdb_hierarchy_merged.atoms().extract_xyz())
+  def get_cc(self, xrs=None, sites_cart=None):
+    if(sites_cart is not None):
+      xrs = self.xray_structure.deep_copy_scatterers()
+      xrs.set_sites_cart(sites_cart)
+    fc = xrs.structure_factors(d_min=self.resolution).f_calc()
+    fo = fc.structure_factors_from_map(map=self.map_data_ref, use_sg=False)
+    return fc.map_correlation(other=fo)
+
+  def _score_by_geometry(self, pdb_hierarchy):
+    uc = self.xray_structure.unit_cell()
+    sites_cart = flex.vec3_double(self.xray_structure.scatterers().size())
+    # Planes
+    sel = flex.size_t(self.fragments.planes_all)
+    SC = scorer(
+      pdb_hierarchy = self.pdb_hierarchy.select(sel),
+      unit_cell     = uc,
+      map_data      = self.map_data_ref)
+    for model in pdb_hierarchy.models():
+      SC.update(sites_cart = model.atoms().extract_xyz().select(sel))
+    sites_cart = sites_cart.set_selected(sel, SC.sites_cart)
+    # Chirals
+    sel = flex.size_t(self.fragments.chirals_all)
+    SC = scorer(
+      pdb_hierarchy = self.pdb_hierarchy.select(sel),
+      unit_cell     = uc,
+      map_data      = self.map_data)
+    for model in pdb_hierarchy.models():
+      SC.update(sites_cart = model.atoms().extract_xyz().select(sel))
+    sel = flex.size_t(self.fragments.chirals_unique)
+    tmp = SC.sites_cart.select(self.fragments.chirals_mapping)
+    sites_cart = sites_cart.set_selected(sel, tmp)
+    # Dihedrals
+    sel = flex.size_t(self.fragments.dihedrals_all)
+    SC = scorer(
+      pdb_hierarchy = self.pdb_hierarchy.select(sel),
+      unit_cell     = uc,
+      map_data      = self.map_data)
+    for model in pdb_hierarchy.models():
+      SC.update(sites_cart = model.atoms().extract_xyz().select(sel))
+    sel = flex.size_t(self.fragments.dihedrals_unique)
+    tmp = SC.sites_cart.select(self.fragments.dihedrals_mapping)
+    sites_cart = sites_cart.set_selected(sel, tmp)
+    #
+    self.xray_structure.set_sites_cart(sites_cart = sites_cart)
     self.pdb_hierarchy.adopt_xray_structure(self.xray_structure)
-    print >> self.log, "Time (merge): %10.3f"%(time.time()-t0)
+    #
+    sites_cart = sa_simple(
+      rm       = self.restraints_manager, xrs=self.xray_structure,
+      ph       = self.pdb_hierarchy,
+      map_data = self.map_data,
+      log      = None)
+    self.xray_structure.set_sites_cart(sites_cart = sites_cart)
+    self.pdb_hierarchy.adopt_xray_structure(self.xray_structure)
+    sites_cart = sa_simple(
+        rm=self.restraints_manager, xrs=self.xray_structure,
+        ph=self.pdb_hierarchy,
+        map_data=self.map_data,
+        log=None)
+    return sites_cart
+
+  def _score_by_cc(self, pdb_hierarchy):
+    t0 = time.time()
+    xrs = self.xray_structure.deep_copy_scatterers()
+    cc=-1
+    sites_cart = None
+    for model in pdb_hierarchy.models():
+      sites_cart_ = model.atoms().extract_xyz()
+      xrs.set_sites_cart(sites_cart = sites_cart_)
+      cc_ = self.get_cc(xrs=xrs)
+      if(cc_>cc):
+        cc = cc_
+        sites_cart = sites_cart_.deep_copy()
+    return sites_cart
+
+  def merge_models(self, pdb_hierarchy):
+    #
+    t0=time.time()
+    sites_cart = []
+    if("geometry" in self.score_method or "cc" in self.score_method):
+      if("geometry" in self.score_method):
+        sites_cart.append(self._score_by_geometry(pdb_hierarchy = pdb_hierarchy))
+      if("cc" in self.score_method):
+        sites_cart.append(self._score_by_cc(pdb_hierarchy = pdb_hierarchy))
+      sites_cart_best = None
+      cc_best = -1
+      for sc in sites_cart:
+        cc = self.get_cc(sites_cart=sc)
+        if(cc>cc_best):
+          cc_best = cc
+          sites_cart_best = sc.deep_copy()
+      self.xray_structure.set_sites_cart(sites_cart = sites_cart_best)
+      self.pdb_hierarchy.adopt_xray_structure(self.xray_structure)
+      self.pdb_hierarchy.write_pdb_file(file_name="merged.pdb")
+    #
+    if("merge_models" in self.score_method):
+      from mmtbx.building.merge_models import run as merge_models
+      pdb_hierarchy_merged, pdb_out = merge_models(
+        map_data         = self.map_data,
+        resolution       = self.resolution,
+        pdb_hierarchy    = pdb_hierarchy,
+        crystal_symmetry = self.xray_structure.crystal_symmetry(),
+        out              = self.log)
+      if(self.show):
+        pdb_hierarchy_merged.write_pdb_file(
+          file_name="SA_ensemble_refined_merged.pdb")
+      self.xray_structure = self.xray_structure.replace_sites_cart(
+        new_sites=pdb_hierarchy_merged.atoms().extract_xyz())
+      self.pdb_hierarchy.adopt_xray_structure(self.xray_structure)
+    print("Time (merge): %10.3f"%(time.time()-t0), file=self.log)
 
   def minimization(self, target_bond_rmsd, target_angle_rmsd, weight):
     ro = mmtbx.refinement.real_space.individual_sites.easy(
@@ -279,13 +429,13 @@ class run(object):
         target_angle_rmsd = pair[1],
         weight            = w)
       result.append(w_opt)
-    print >> self.log, "Time (run_refine_flexible_rmsd_targets): %10.3f"%(
-      time.time()-t0)
+    print("Time (run_refine_flexible_rmsd_targets): %10.3f"%(
+      time.time()-t0), file=self.log)
     return result
 
   def show_target(self, prefix):
     if(self.show):
-      print >> self.log, prefix, maptbx.real_space_target_simple(
+      print(prefix, maptbx.real_space_target_simple(
           unit_cell   = self.xray_structure.unit_cell(),
           density_map = self.map_data,
-          sites_cart  = self.xray_structure.sites_cart())
+          sites_cart  = self.xray_structure.sites_cart()), file=self.log)

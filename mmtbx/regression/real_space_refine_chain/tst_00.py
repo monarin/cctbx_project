@@ -1,4 +1,4 @@
-from __future__ import division
+from __future__ import absolute_import, division, print_function
 import time
 import iotbx.pdb
 import mmtbx.utils
@@ -181,8 +181,8 @@ TER
 """
 
 def ccp4_map(crystal_symmetry, file_name, map_data):
-  from iotbx import ccp4_map
-  ccp4_map.write_ccp4_map(
+  from iotbx import mrcfile
+  mrcfile.write_ccp4_map(
       file_name=file_name,
       unit_cell=crystal_symmetry.unit_cell(),
       space_group=crystal_symmetry.space_group(),
@@ -208,7 +208,7 @@ class scorer(object):
     if(target > self.target):
       self.target = target
       self.sites_cart = sites_cart
-    print self.target, target # XXX for debugging
+    print(self.target, target) # XXX for debugging
 
 def run(prefix="tst_00"):
   # Good answer model
@@ -226,7 +226,7 @@ def run(prefix="tst_00"):
   ph_poor.atoms().reset_i_seq()
   xrs_poor = pdb_inp.xray_structure_simple()
   # Initialize states accumulator
-  states = mmtbx.utils.states(pdb_hierarchy=ph_answer, xray_structure=xrs_poor)
+  states = mmtbx.utils.states(pdb_hierarchy=ph_answer)
   states.add(sites_cart = xrs_poor.sites_cart())
   # Compute target map
   fc = xrs_answer.structure_factors(d_min=3.5).f_calc()
@@ -269,10 +269,10 @@ def run(prefix="tst_00"):
     restraints_manager      = restraints_manager,
     states                  = states,
     nproc=1)
-  print "Time: %6.4f"%(time.time()-t0)
+  print("Time: %6.4f"%(time.time()-t0))
   ear.pdb_hierarchy.write_pdb_file(file_name="%s_refined.pdb"%prefix)
   states.write(file_name="%s_refined_all_states.pdb"%prefix)
 
 if (__name__ == "__main__"):
   run()
-  print "OK"
+  print("OK")

@@ -2,7 +2,8 @@
 #
 # $Id$
 
-from __future__ import division
+from __future__ import absolute_import, division, print_function
+from six.moves import range
 
 import wx
 
@@ -13,7 +14,7 @@ _scores = OrderedDict()
 class ScoreSettingsFrame(wx.MiniFrame):
   # XXX Is this scoring or rating?
 
-  def __init__ (self, *args, **kwds) :
+  def __init__(self, *args, **kwds):
     super(ScoreSettingsFrame, self).__init__(*args, **kwds)
     szr = wx.BoxSizer(wx.VERTICAL)
     panel = ScoreSettingsPanel(self)
@@ -27,7 +28,7 @@ class ScoreSettingsFrame(wx.MiniFrame):
 
 
 class ScoreSettingsPanel(wx.Panel):
-  def __init__ (self, *args, **kwds) :
+  def __init__(self, *args, **kwds):
     from wxtbx import bitmaps
 
     super(ScoreSettingsPanel, self).__init__(*args, **kwds)
@@ -87,7 +88,7 @@ class ScoreSettingsPanel(wx.Panel):
     self.Bind(wx.EVT_UPDATE_UI, self.OnUpdatePrevious, id=self._id_previous)
     self.Bind(wx.EVT_UPDATE_UI, self.OnUpdateText, id=self._id_text)
 
-    for i in xrange(self._root_frame.image_chooser.GetCount()):
+    for i in range(self._root_frame.image_chooser.GetCount()):
       _scores[self._root_frame.get_key(self._root_frame.image_chooser.GetClientData(i))] = None
 
   def OnNext(self, event):
@@ -114,15 +115,15 @@ class ScoreSettingsPanel(wx.Panel):
       wildcard="Text files (*.txt)|*.txt")
     if dialog.ShowModal() == wx.ID_OK:
       path = dialog.GetPath()
-      if (path != '') :
+      if (path != ''):
         stream = open(path, "w")
         for (key, score) in _scores.iteritems():
           if score is None:
-            print >> stream, "%s None" % (key)
+            print("%s None" % (key), file=stream)
           else:
-            print >> stream, "%s %d" % (key, score)
+            print("%s %d" % (key, score), file=stream)
         stream.close()
-        print "Dumped scores to", path
+        print("Dumped scores to", path)
 
 
   def OnUpdateNext(self, event):

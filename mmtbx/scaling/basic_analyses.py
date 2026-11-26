@@ -1,4 +1,4 @@
-from __future__ import division
+from __future__ import absolute_import, division, print_function
 from cctbx import adptbx
 from cctbx.array_family import flex
 from libtbx.utils import Sorry, show_exception_info_if_full_testing
@@ -22,23 +22,23 @@ class basic_analyses(object):  # XXX is this ever used?
     if out is None:
       out=sys.stdout
     if verbose>0:
-      print >> out
-      print >> out
-      print >> out, "Matthews coefficient and Solvent content statistics"
+      print(file=out)
+      print(file=out)
+      print("Matthews coefficient and Solvent content statistics", file=out)
     n_copies_solc = 1.0
     self.nres_known = False
     if (phil_object.scaling.input.asu_contents.n_residues is not None or
-        phil_object.scaling.input.asu_contents.n_bases is not None) :
+        phil_object.scaling.input.asu_contents.n_bases is not None):
       self.nres_known = True
-      if (phil_object.scaling.input.asu_contents.sequence_file is not None) :
-        print >> out, "  warning: ignoring sequence file"
-    elif (phil_object.scaling.input.asu_contents.sequence_file is not None) :
-      print >> out, "  determining composition from sequence file %s" % \
-        phil_object.scaling.input.asu_contents.sequence_file
+      if (phil_object.scaling.input.asu_contents.sequence_file is not None):
+        print("  warning: ignoring sequence file", file=out)
+    elif (phil_object.scaling.input.asu_contents.sequence_file is not None):
+      print("  determining composition from sequence file %s" % \
+        phil_object.scaling.input.asu_contents.sequence_file, file=out)
       seq_comp = iotbx.bioinformatics.composition_from_sequence_file(
         file_name=phil_object.scaling.input.asu_contents.sequence_file,
         log=out)
-      if (seq_comp is not None) :
+      if (seq_comp is not None):
         phil_object.scaling.input.asu_contents.n_residues = seq_comp.n_residues
         phil_object.scaling.input.asu_contents.n_bases = seq_comp.n_bases
         self.nres_known = True
@@ -56,8 +56,8 @@ class basic_analyses(object):  # XXX is this ever used?
       n_copies_solc = phil_object.scaling.input.asu_contents.n_copies_per_asu
       self.defined_copies = n_copies_solc
       if verbose>0:
-        print >> out,"Number of copies per asymmetric unit provided"
-        print >> out," Will use user specified value of ", n_copies_solc
+        print("Number of copies per asymmetric unit provided", file=out)
+        print(" Will use user specified value of ", n_copies_solc, file=out)
     else:
       phil_object.scaling.input.asu_contents.n_copies_per_asu = n_copies_solc
       self.guessed_copies = n_copies_solc
@@ -66,7 +66,7 @@ class basic_analyses(object):  # XXX is this ever used?
     miller_array_new = miller_array
     self.data_strength = None
     miller_array_intensities = miller_array
-    if (original_intensities is not None) :
+    if (original_intensities is not None):
       assert original_intensities.is_xray_intensity_array()
       miller_array_intensities = original_intensities
     if miller_array_intensities.sigmas() is not None:
@@ -85,9 +85,9 @@ class basic_analyses(object):  # XXX is this ever used?
 
     ## Isotropic wilson scaling
     if verbose>0:
-      print >> out
-      print >> out
-      print >> out, "Maximum likelihood isotropic Wilson scaling "
+      print(file=out)
+      print(file=out)
+      print("Maximum likelihood isotropic Wilson scaling ", file=out)
 
     n_residues =  phil_object.scaling.input.asu_contents.n_residues
     n_bases = phil_object.scaling.input.asu_contents.n_bases
@@ -112,9 +112,9 @@ class basic_analyses(object):  # XXX is this ever used?
 
     ## Anisotropic ml wilson scaling
     if verbose>0:
-      print >> out
-      print >> out
-      print >> out, "Maximum likelihood anisotropic Wilson scaling "
+      print(file=out)
+      print(file=out)
+      print("Maximum likelihood anisotropic Wilson scaling ", file=out)
     aniso_scale_and_b = absolute_scaling.ml_aniso_absolute_scaling(
       miller_array = miller_array_new,
       n_residues = n_residues*miller_array.space_group().order_z()*n_copies_solc,
@@ -124,9 +124,9 @@ class basic_analyses(object):  # XXX is this ever used?
     self.aniso_scale_and_b = aniso_scale_and_b
 
     try: b_cart = aniso_scale_and_b.b_cart
-    except AttributeError, e:
-      print >> out, "*** ERROR ***"
-      print >> out, str(e)
+    except AttributeError as e:
+      print("*** ERROR ***", file=out)
+      print(str(e), file=out)
       show_exception_info_if_full_testing()
       return
 
@@ -138,8 +138,8 @@ class basic_analyses(object):  # XXX is this ever used?
 
     ## Correcting for anisotropy
     if verbose>0:
-      print >> out,"Correcting for anisotropy in the data"
-      print >> out
+      print("Correcting for anisotropy in the data", file=out)
+      print(file=out)
 
     b_cart_observed = aniso_scale_and_b.b_cart
 
@@ -196,8 +196,8 @@ class basic_analyses(object):  # XXX is this ever used?
 
     ## Some basic statistics and sanity checks follow
     if verbose>0:
-      print >> out,"Some basic intensity statistics follow."
-      print >> out
+      print("Some basic intensity statistics follow.", file=out)
+      print(file=out)
 
     basic_data_stats = data_statistics.basic_intensity_statistics(
       miller_array,
@@ -211,14 +211,14 @@ class basic_analyses(object):  # XXX is this ever used?
 
     #relative wilson plot
     self.rel_wilson = None
-    if (miller_calc is not None) and (miller_calc.d_min() < 4.0) :
+    if (miller_calc is not None) and (miller_calc.d_min() < 4.0):
       try :
         self.rel_wilson = relative_wilson.relative_wilson(
           miller_obs=miller_array,
           miller_calc=miller_calc)
-      except RuntimeError, e :
-        print >> out, "*** Error calculating relative Wilson plot - skipping."
-        print >> out, ""
+      except RuntimeError as e :
+        print("*** Error calculating relative Wilson plot - skipping.", file=out)
+        print("", file=out)
 
     if verbose>0:
-      print >> out, "Basic analyses completed"
+      print("Basic analyses completed", file=out)

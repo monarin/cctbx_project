@@ -1,15 +1,15 @@
 
-from __future__ import division
+from __future__ import absolute_import, division, print_function
 from mmtbx.secondary_structure import sec_str_master_phil_str, manager
 from cctbx import geometry_restraints
-from iotbx import file_reader
-import iotbx.pdb.hierarchy
+import iotbx.pdb
 import libtbx.load_env
 import iotbx.pdb.secondary_structure as ioss
 from libtbx.utils import null_out
+from libtbx.test_utils import approx_equal
 import os
 
-def exercise_protein () :
+def exercise_protein():
   pdb_file = libtbx.env.find_in_repositories(
     relative_path="phenix_regression/pdb/1ywf.pdb",
     test=os.path.isfile)
@@ -17,35 +17,35 @@ def exercise_protein () :
     relative_path="phenix_regression/pdb/1ywf_h.pdb",
     test=os.path.isfile)
   if pdb_file is None :
-    print "Skipping exercise(): input file not available."
+    print("Skipping exercise(): input file not available.")
     return False
   if pdb_file_h is None :
-    print "Skipping exercise(): input file not available."
+    print("Skipping exercise(): input file not available.")
     return False
   run_ksdssp = True
   if (not libtbx.env.has_module(name="ksdssp")):
-    print "Skipping KSDSSP tests: ksdssp module not available."
+    print("Skipping KSDSSP tests: ksdssp module not available.")
     run_ksdssp = False
   log = null_out()
   import sys
   log = sys.stdout
   expected_distances = [2.9, 1.975]
-  for k, file_name in enumerate([pdb_file, pdb_file_h]) :
-    pdb_in = file_reader.any_file(file_name, force_type="pdb").file_object
-    pdb_hierarchy = pdb_in.hierarchy
-    sec_str_from_pdb_file = pdb_in.input.extract_secondary_structure()
+  for k, file_name in enumerate([pdb_file, pdb_file_h]):
+    pdb_in = iotbx.pdb.input(file_name)
+    pdb_hierarchy = pdb_in.construct_hierarchy()
+    sec_str_from_pdb_file = pdb_in.extract_secondary_structure()
     m = manager(pdb_hierarchy=pdb_hierarchy,
         sec_str_from_pdb_file=sec_str_from_pdb_file)
     m.params.secondary_structure.protein.remove_outliers = False
     proxies, hb_angles = m.create_protein_hbond_proxies(
         annotation=None, log=log)
-    print proxies.size(), hb_angles.size()
+    print(proxies.size(), hb_angles.size())
     assert proxies.size() == 109
     assert hb_angles.size() == 294+27, hb_angles.size() # helix+sheet angles
     assert isinstance(proxies, geometry_restraints.shared_bond_simple_proxy)
     (frac_alpha, frac_beta) = m.calculate_structure_content()
-    assert ("%.3f" % frac_alpha == "0.643")
-    assert ("%.3f" % frac_beta == "0.075")
+    assert approx_equal(frac_alpha, 0.643, eps=1e-3)
+    assert approx_equal(frac_beta, 0.0539, eps=1e-3)
 
     # Make sure the hydrogen auto-detection override is working
     # Functionality is disabled
@@ -61,7 +61,7 @@ def exercise_protein () :
     # print atom_ids
     # assert (atom_ids == ['pdb=" N   ARG A  41 "', 'pdb=" O   ASP A  37 "'])
     # assert (proxies[0].distance_ideal == 2.9)
-    if (run_ksdssp) :
+    if (run_ksdssp):
       m = manager(pdb_hierarchy=pdb_hierarchy,
           sec_str_from_pdb_file=None)
       m.params.secondary_structure.protein.remove_outliers = False
@@ -70,7 +70,7 @@ def exercise_protein () :
       assert proxies.size() == 90
       assert angle_p.size() == 243+18, angle_p.size()
 
-def exercise_sheet_ends () :
+def exercise_sheet_ends():
   pdb_in = iotbx.pdb.input(source_info=None, lines="""\
 SHEET    1   A 3 ALA A  38  ALA A  44  0
 SHEET    2   A 3 ALA A  76  ALA A  83 -1  N  ALA A  83   O  ALA A  38
@@ -205,7 +205,7 @@ END
   pdb_hierarchy.atoms().reset_i_seq()
   ss_from_file = pdb_in.extract_secondary_structure()
   if not libtbx.env.has_module(name="ksdssp"):
-    print "Skipping KSDSSP tests: ksdssp module not available."
+    print("Skipping KSDSSP tests: ksdssp module not available.")
     return
   m = manager(pdb_hierarchy=pdb_hierarchy,
     sec_str_from_pdb_file=None)
@@ -220,7 +220,7 @@ END
 
 
 def exercise_helix_bonding_pattern():
-  alpha_h1_simple = iotbx.pdb.hierarchy.input(pdb_string="""\
+  alpha_h1_simple = iotbx.pdb.input(source_info=None, lines="""\
 ATOM      1  N   ALA     1       1.643  -2.366  -1.408  1.00  0.00           N
 ATOM      2  CA  ALA     1       1.280  -3.608  -2.069  1.00  0.00           C
 ATOM      3  C   ALA     1      -0.114  -3.466  -2.684  1.00  0.00           C
@@ -272,8 +272,8 @@ ATOM     48  C   ALA    10      -5.242  -1.695 -15.130  1.00  0.00           C
 ATOM     49  O   ALA    10      -5.880  -1.605 -16.177  1.00  0.00           O
 ATOM     50  CB  ALA    10      -5.358   0.040 -13.274  1.00  0.00           C
 TER
-""")
-  alpha_h1_1ac = iotbx.pdb.hierarchy.input(pdb_string="""\
+""").construct_hierarchy()
+  alpha_h1_1ac = iotbx.pdb.input(source_info=None, lines="""\
 ATOM      1  N  AALA     1       1.643  -2.366  -1.408  0.50  0.00           N
 ATOM      2  CA AALA     1       1.280  -3.608  -2.069  0.50  0.00           C
 ATOM      3  C  AALA     1      -0.114  -3.466  -2.684  0.50  0.00           C
@@ -331,9 +331,9 @@ ATOM     54  O   ALA    10      -5.880  -1.605 -16.177  1.00  0.00           O
 ATOM     55  CB  ALA    10      -5.358   0.040 -13.274  1.00  0.00           C
 TER      56      ALA    10
 END
-""")
+""").construct_hierarchy()
 
-  alpha_h1_1_10ac = iotbx.pdb.hierarchy.input(pdb_string="""\
+  alpha_h1_1_10ac = iotbx.pdb.input(source_info=None, lines="""\
 ATOM      1  N  AALA     1       1.643  -2.366  -1.408  0.50  0.00           N
 ATOM      2  CA AALA     1       1.280  -3.608  -2.069  0.50  0.00           C
 ATOM      3  C  AALA     1      -0.114  -3.466  -2.684  0.50  0.00           C
@@ -395,9 +395,9 @@ ATOM     59  C  BALA    10      -5.142  -1.695 -15.130  0.50  0.00           C
 ATOM     60  O  BALA    10      -5.780  -1.605 -16.177  0.50  0.00           O
 ATOM     61  CB BALA    10      -5.258   0.040 -13.274  0.50  0.00           C
 END
-""")
+""").construct_hierarchy()
 
-  alpha_h1_1_5_10ac = iotbx.pdb.hierarchy.input(pdb_string="""\
+  alpha_h1_1_5_10ac = iotbx.pdb.input(source_info=None, lines="""\
 ATOM      1  N  AALA     1       1.643  -2.366  -1.408  0.50  0.00           N
 ATOM      2  CA AALA     1       1.280  -3.608  -2.069  0.50  0.00           C
 ATOM      3  C  AALA     1      -0.114  -3.466  -2.684  0.50  0.00           C
@@ -464,9 +464,9 @@ ATOM     64  C  BALA    10      -5.142  -1.695 -15.130  0.50  0.00           C
 ATOM     65  O  BALA    10      -5.780  -1.605 -16.177  0.50  0.00           O
 ATOM     66  CB BALA    10      -5.258   0.040 -13.274  0.50  0.00           C
 END
-""")
+""").construct_hierarchy()
 
-  alpha_h1_1_5_10ac_insertions = iotbx.pdb.hierarchy.input(pdb_string="""\
+  alpha_h1_1_5_10ac_insertions = iotbx.pdb.input(source_info=None, lines="""\
 ATOM      1  N  AALA     1       1.643  -2.366  -1.408  0.50  0.00           N
 ATOM      2  CA AALA     1       1.280  -3.608  -2.069  0.50  0.00           C
 ATOM      3  C  AALA     1      -0.114  -3.466  -2.684  0.50  0.00           C
@@ -533,7 +533,7 @@ ATOM     64  C  BALA     6      -5.142  -1.695 -15.130  0.50  0.00           C
 ATOM     65  O  BALA     6      -5.780  -1.605 -16.177  0.50  0.00           O
 ATOM     66  CB BALA     6      -5.258   0.040 -13.274  0.50  0.00           C
 END
-""")
+""").construct_hierarchy()
 
   alpha_annot_1 = """\
 HELIX    1   1 ALA      1  ALA     10  1                                  10
@@ -546,7 +546,7 @@ HELIX    1   1 ALA      2  ALA      5  1                                  10
   log = null_out()
   n_hbonds = []
   n_hangles = []
-  for pdb_inp, recs in [
+  for pdb_h, recs in [
                         (alpha_h1_simple, alpha_annot_1),
                         (alpha_h1_1ac, alpha_annot_1),
                         (alpha_h1_1_10ac, alpha_annot_1),
@@ -560,26 +560,26 @@ HELIX    1   1 ALA      2  ALA      5  1                                  10
     custom_pars = defpars.fetch(iotbx.phil.parse(ann))
     custom_pars_ex = custom_pars.extract()
     ss_manager = manager(
-                pdb_inp.hierarchy,
+                pdb_h,
                 sec_str_from_pdb_file=None,
                 params=custom_pars_ex.secondary_structure,
                 verbose=-1)
     proxies_for_grm, angle_p = ss_manager.create_protein_hbond_proxies(
       annotation= None,
       log          = log)
-    pdb_inp.hierarchy.write_pdb_file(file_name="alpha_h1_1_5_10ac.pdb")
+    # pdb_h.write_pdb_file(file_name="alpha_h1_1_5_10ac.pdb")
     # print proxies_for_grm.as_pymol_dashes(pdb_inp.hierarchy)
     # print angle_p.as_pymol_dashes(pdb_hierarchy=pdb_inp.hierarchy)
     # print "hbonds, hangles:", proxies_for_grm.size(), angle_p.size()
     # STOP()
     n_hbonds.append(proxies_for_grm.size())
     n_hangles.append(angle_p.size())
-  print n_hbonds, n_hangles
+  print(n_hbonds, n_hangles)
   assert n_hbonds ==  [ 6,  7,  8,  9,  9,  5]
   assert n_hangles == [18, 21, 24, 28, 28, 16]
 
 def exercise_sheets_bonding_pattern():
-  pdb_apar_input = iotbx.pdb.hierarchy.input(pdb_string = """\
+  pdb_apar_h = iotbx.pdb.input(source_info=None, lines = """\
 SCRYST1   46.460   46.460  193.210  90.00  90.00 120.00 P 31 2 1
 SCALE1      0.021524  0.012427  0.000000        0.00000
 SCALE2      0.000000  0.024854  0.000000        0.00000
@@ -671,9 +671,9 @@ ATOM    236  C   SER A  36      24.387 -22.368  -1.553  1.00  5.05           C
 ATOM    237  O   SER A  36      24.929 -22.095  -0.497  1.00  6.22           O
 ATOM    238  CB  SER A  36      23.881 -21.071  -3.639  1.00  5.69           C
 ATOM    239  OG  SER A  36      25.213 -20.561  -3.633  1.00  7.12           O
-""")
+""").construct_hierarchy()
 
-  pdb_par_input = iotbx.pdb.hierarchy.input(pdb_string = """\
+  pdb_par_h = iotbx.pdb.input(source_info=None, lines = """\
 CRYST1   46.460   46.460  193.210  90.00  90.00 120.00 P 31 2 1
 SCALE1      0.021524  0.012427  0.000000        0.00000
 SCALE2      0.000000  0.024854  0.000000        0.00000
@@ -749,9 +749,9 @@ ATOM    222  O   ALA A  46       8.479 -27.750  -7.000  1.00  4.79           O
 ATOM    223  CB  ALA A  46       6.607 -27.026  -9.678  1.00  4.52           C
 TER
 END
-""")
+""").construct_hierarchy()
 
-  pdb_par_ac_input = iotbx.pdb.hierarchy.input(pdb_string = """\
+  pdb_par_ac_h = iotbx.pdb.input(source_info=None, lines = """\
 CRYST1   46.460   46.460  193.210  90.00  90.00 120.00 P 31 2 1
 SCALE1      0.021524  0.012427  0.000000        0.00000
 SCALE2      0.000000  0.024854  0.000000        0.00000
@@ -837,10 +837,10 @@ ATOM     78  O   ALA A  46       8.479 -27.750  -7.000  1.00  4.79           O
 ATOM     79  CB  ALA A  46       6.607 -27.026  -9.678  1.00  4.52           C
 TER      80      ALA A  46
 END
-""")
+""").construct_hierarchy()
 
 
-  pdb_apar2_input = iotbx.pdb.hierarchy.input(pdb_string = """\
+  pdb_apar2_h = iotbx.pdb.input(source_info=None, lines = """\
 CRYST1  172.640  172.640  172.640  90.00  90.00  90.00 P 1
 ATOM   2094  C   ASP N 271     109.854 129.638  88.152  1.00  0.00           C
 ATOM   2095  CA  ASP N 271     108.849 130.718  87.818  1.00  0.00           C
@@ -957,7 +957,7 @@ ATOM   2635  CG  LEU N 343     111.736 123.787  83.591  1.00  0.00           C
 ATOM   2636  N   LEU N 343     110.810 126.539  82.484  1.00  0.00           N
 ATOM   2637  O   LEU N 343     107.761 124.516  82.764  1.00  0.00           O
 END
-""")
+""").construct_hierarchy()
 
   s_apar_records1 = """\
 SHEET    1   A 2 TYR A   2  VAL A   7  0
@@ -1031,23 +1031,23 @@ SHEET    2   B 2 THR A  20  THR A  21  1  O  THR A  20   N  ALA A  46
   # defpars = sec_str_master_phil
   n_hbonds = []
   n_hangles = []
-  for pdb_inp, recs in [
-                        (pdb_apar_input, s_apar_records1),
-                        (pdb_apar_input, s_apar_records2),
-                        (pdb_par_input,  s_par_records1),
-                        (pdb_par_input,  s_par_records2),
-                        (pdb_par_input,  s_par_records3),
-                        (pdb_par_input,  s_par_records4),
-                        (pdb_par_input,  s_par_records5),
-                        (pdb_par_input,  s_par_records6),
-                        (pdb_par_input,  s_par_records7),
-                        (pdb_par_input,  s_par_records8),
-                        (pdb_apar2_input, s_apar_records3),
-                        (pdb_par_input, s_par_records9),
-                        (pdb_par_input, s_par_records10),
-                        (pdb_par_input, s_par_records11),
-                        (pdb_par_input, s_par_records12),
-                        (pdb_par_ac_input,  s_par_records1), # 8 hbonds
+  for pdb_h, recs in [
+                        (pdb_apar_h, s_apar_records1),
+                        (pdb_apar_h, s_apar_records2),
+                        (pdb_par_h,  s_par_records1),
+                        (pdb_par_h,  s_par_records2),
+                        (pdb_par_h,  s_par_records3),
+                        (pdb_par_h,  s_par_records4),
+                        (pdb_par_h,  s_par_records5),
+                        (pdb_par_h,  s_par_records6),
+                        (pdb_par_h,  s_par_records7),
+                        (pdb_par_h,  s_par_records8),
+                        (pdb_apar2_h, s_apar_records3),
+                        (pdb_par_h, s_par_records9),
+                        (pdb_par_h, s_par_records10),
+                        (pdb_par_h, s_par_records11),
+                        (pdb_par_h, s_par_records12),
+                        (pdb_par_ac_h,  s_par_records1), # 8 hbonds
                         ]:
     ioss_annotation = ioss.annotation.from_records(records = recs.split('\n'))
     ann = ioss_annotation.as_restraint_groups(prefix_scope="secondary_structure")
@@ -1055,7 +1055,7 @@ SHEET    2   B 2 THR A  20  THR A  21  1  O  THR A  20   N  ALA A  46
     custom_pars = defpars.fetch(iotbx.phil.parse(ann))
     custom_pars_ex = custom_pars.extract()
     ss_manager = manager(
-                pdb_inp.hierarchy,
+                pdb_h,
                 sec_str_from_pdb_file=None,
                 params=custom_pars_ex.secondary_structure,
                 verbose=-1)
@@ -1065,15 +1065,15 @@ SHEET    2   B 2 THR A  20  THR A  21  1  O  THR A  20   N  ALA A  46
     # print proxies_for_grm.size()
     n_hbonds.append(proxies_for_grm.size())
     n_hangles.append(h_angles.size())
-  print n_hbonds, n_hangles
+  print(n_hbonds, n_hangles)
   assert n_hbonds == [6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 2, 3, 4, 2, 2, 8]
   assert n_hangles ==[15, 15, 18, 18, 18, 18, 18, 18, 18, 18, 6, 6, 9, 6, 3, 24]
 
 def exercise_segid():
   if (not libtbx.env.has_module(name="ksdssp")):
-    print "KSDSSP not available, skipping exercise_segid()"
+    print("KSDSSP not available, skipping exercise_segid()")
     return
-  pdb_par_segid_input = iotbx.pdb.hierarchy.input(pdb_string = """\
+  pdb_par_segid_h = iotbx.pdb.input(source_info=None, lines =  """\
 CRYST1   46.460   46.460  193.210  90.00  90.00 120.00 P 31 2 1
 SCALE1      0.021524  0.012427  0.000000        0.00000
 SCALE2      0.000000  0.024854  0.000000        0.00000
@@ -1149,7 +1149,7 @@ ATOM    222  O   ALA A  46       8.479 -27.750  -7.000  1.00  4.79       seg O
 ATOM    223  CB  ALA A  46       6.607 -27.026  -9.678  1.00  4.52       seg C
 TER
 END
-""")
+""").construct_hierarchy()
   log = null_out()
   defpars = iotbx.phil.parse(sec_str_master_phil_str)
   custom_pars = defpars.extract()
@@ -1157,7 +1157,7 @@ END
   # custom_pars = defpars.fetch(iotbx.phil.parse("secondary_structure_restraints=True"))
 
   ss_manager = manager(
-              pdb_par_segid_input.hierarchy,
+              pdb_par_segid_h,
               sec_str_from_pdb_file=None,
               params=custom_pars.secondary_structure,
               verbose=-1)
@@ -1181,4 +1181,4 @@ if __name__ == "__main__" :
 
   # exercise_segid() # appeared to be nonvalid test... now when we don't ignore
   # segid in SS, we cannot construct SHEET situated in two different segids...
-  print "OK"
+  print("OK")

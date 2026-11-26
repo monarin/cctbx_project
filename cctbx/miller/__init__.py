@@ -1,10 +1,12 @@
 # -*- coding: utf-8 -*-
-from __future__ import division
+from __future__ import absolute_import, division, print_function
 import cctbx.sgtbx
 
-import boost.python
-ext = boost.python.import_ext("cctbx_miller_ext")
-asu_map_ext = boost.python.import_ext("cctbx_asymmetric_map_ext")
+import boost_adaptbx.boost.python as bp
+from six.moves import range
+from six.moves import zip
+ext = bp.import_ext("cctbx_miller_ext")
+asu_map_ext = bp.import_ext("cctbx_asymmetric_map_ext")
 from cctbx_miller_ext import *
 
 from cctbx import crystal
@@ -15,6 +17,7 @@ from cctbx import uctbx
 from cctbx import r_free_utils
 from cctbx.array_family import flex
 from scitbx import fftpack
+from scitbx.math import distributions
 import scitbx.math
 from libtbx.math_utils import iround
 from libtbx import complex_math
@@ -24,13 +27,13 @@ from libtbx.str_utils import show_string
 from libtbx.utils import Sorry, Keep, plural_s
 from libtbx import group_args, Auto
 import libtbx.table_utils
-from itertools import count, izip
+from itertools import count
 import warnings
 import random
 import math
-import types
 import time
 import sys
+from collections import namedtuple
 from scitbx import matrix
 
 fp_eps_double = scitbx.math.floating_point_epsilon_double_get()
@@ -38,7 +41,7 @@ fp_eps_double = scitbx.math.floating_point_epsilon_double_get()
 generate_r_free_params_str = r_free_utils.generate_r_free_params_str
 
 def _slice_or_none(array, slice_object):
-  assert type(slice_object) == types.SliceType
+  assert type(slice_object) == slice
   if (array is None): return None
   return array.__getitem__(slice_object)
 
@@ -46,6 +49,7 @@ class binner(ext.binner):
 
   def __init__(self, binning, miller_set):
     ext.binner.__init__(self, binning, miller_set.indices())
+    self.__getstate_manages_dict__ = True
     self.space_group_info = miller_set.space_group_info()
     self.anomalous_flag = miller_set.anomalous_flag()
     if (miller_set.indices().size() == 0):
@@ -73,7 +77,7 @@ class binner(ext.binner):
     for i_bin in self.range_used():
       if self.count(i_bin)<min_counts:
         for j_bin in self.range_used():
-          print "BIN: %s  COUNTS: %s " %(j_bin,self.count(j_bin))
+          print("BIN: %s  COUNTS: %s " %(j_bin,self.count(j_bin)))
         raise Sorry(
          "Bin %s required to have %s or more counts has %s\n%s" %(
             i_bin,min_counts,self.count(i_bin),error_string))
@@ -180,7 +184,7 @@ class binner(ext.binner):
     if (show_counts):
       result.append(self.fmt_both_counts % (
         self._counts_given[i_bin], self._counts_complete[i_bin]))
-    if (join_string) :
+    if (join_string):
       return " ".join(result)
     else :
       return result
@@ -196,14 +200,14 @@ class binner(ext.binner):
         prefix=""):
     if (f is None): f = sys.stdout
     for i_bin in self.range_all():
-      print >> f, prefix + self.bin_legend(
+      print(prefix + self.bin_legend(
         i_bin=i_bin,
         show_bin_number=show_bin_number,
         show_bin_range=show_bin_range,
         show_d_range=show_d_range,
         show_counts=show_counts,
         bin_range_as=bin_range_as,
-        wavelength=wavelength)
+        wavelength=wavelength), file=f)
 
   def show_data(self,
         data,
@@ -233,26 +237,26 @@ class binner(ext.binner):
         show_counts=show_counts,
         bin_range_as=bin_range_as,
         wavelength=wavelength)
-      print >> f, prefix + legend,
+      parts = [prefix + legend]
       if (data[i_bin] is not None):
         if (isinstance(data[i_bin], str) or data_fmt is None):
-          print >> f, data[i_bin],
+          parts.append(str(data[i_bin]))
         elif (isinstance(data_fmt, str)):
-          print >> f, data_fmt % data[i_bin],
+          parts.append(data_fmt % data[i_bin])
         else:
           s = data_fmt(binner=self, i_bin=i_bin, data=data)
-          if (s is not None and len(s) > 0): print >> f, s,
-      print >> f
+          if (s is not None and len(s) > 0): parts.append(str(s))
+      print(" ".join(parts), file=f)
     if (legend is not None): return len(legend)
     return None
 
-  def as_simple_table (self,
+  def as_simple_table(self,
       data,
       data_label,
       data_fmt=None,
       replace_none_with="---",
       show_bin_number=False,
-      show_unused=False) :
+      show_unused=False):
     """
     Export table rows for display elsewhere.
     """
@@ -289,6 +293,42 @@ class binner(ext.binner):
       column_headers=labels,
       table_rows=table_rows)
 
+
+AnomalousProbabilityPlotResult = namedtuple("AnomalousProbabilityPlotResult", [
+  "slope", "intercept", "n_pairs", "expected_delta"])
+
+def bins_mixed(d_spacings_sorted, bin_width_max=0.005):
+  """
+  d_spacings_sorted: d spacings data sorted from lowest to hightest resolution (
+  from largest to smallerst d).
+  Return bins as list of pairs, each pair is start:end indices to access data.
+  """
+  size=d_spacings_sorted.size()
+  cntr=0
+  i_seqs = flex.int()
+  n_left = size
+  reached_end = False
+  bins = []
+  for i, d in enumerate(d_spacings_sorted):
+    i_seqs.append(i)
+    cntr+=1
+    n_left-=1
+    if cntr==1:           dl    = d
+    if   dl > 10:         n_min = 100
+    elif dl<=10 and dl>5: n_min = 250
+    else:                 n_min = 500
+    if cntr<n_min and not (n_left<n_min): continue
+    if cntr>n_min or abs(dl-d)>0.005:
+      if n_left<n_min:
+        i_seqs.append(size-1)
+        cntr+=n_left
+        reached_end=True
+      bins.append([flex.min(i_seqs), 1+flex.max(i_seqs)])
+      i_seqs = flex.int()
+      cntr=0
+    if reached_end: break
+  return bins
+
 class binned_data(object):
 
   def __init__(self, binner, data, data_fmt=None):
@@ -321,9 +361,9 @@ class binned_data(object):
       f=f,
       prefix=prefix)
 
-  def as_simple_table (self,
+  def as_simple_table(self,
         data_label,
-        data_fmt=None) :
+        data_fmt=None):
     """
     Export table rows for display elsewhere.  (Used in Xtriage)
     """
@@ -335,9 +375,39 @@ class binned_data(object):
 
 def make_lookup_dict(indices): # XXX push to C++
   result = {}
-  for i in xrange(len(indices)):
+  for i in range(len(indices)):
     result[indices[i]] = i
   return result
+
+def get_offset_list(layers=1, include_origin=False):
+  # Ready to run
+  if layers==-1:
+    return [ [0,0,0] ]
+
+  elif layers==0:
+    offset_list=[
+     [-1,0,0],[1,0,0],
+     [0,-1,0],[0,1,0],
+     [0,0,-1],[0,0,1],
+      ]
+    if include_origin: offset_list.append([0,0,0])
+    return offset_list
+
+  offset_list=[]
+  for ix in range(-layers,layers+1):
+    for iy in range(-layers,layers+1):
+      for iz in range(-layers,layers+1):
+        if include_origin or ix!=0 or iy!=0 or iz!=0:
+          offset_list.append((ix,iy,iz))
+  return offset_list
+
+def offset_indices(array,offset=None):
+  from scitbx.matrix import col
+  offset=col(offset)
+  indices=flex.miller_index(
+      list(flex.vec3_int((
+         array.indices().as_vec3_double()+offset).iround().as_int())))
+  return array.customized_copy(indices=indices,data=array.data())
 
 class set(crystal.symmetry):
   """
@@ -442,7 +512,7 @@ class set(crystal.symmetry):
     return array(miller_set=self, data=data, sigmas=sigmas)
 
   def __getitem__(self, slice_object):
-    assert type(slice_object) == types.SliceType
+    assert type(slice_object) == slice
     assert self.indices() is not None
     return set(
       crystal_symmetry=self,
@@ -452,8 +522,8 @@ class set(crystal.symmetry):
   def show_summary(self, f=None, prefix=""):
     """Minimal Miller set summary"""
     if (f is None): f = sys.stdout
-    print >> f, prefix + "Number of Miller indices:", len(self.indices())
-    print >> f, prefix + "Anomalous flag:", self.anomalous_flag()
+    print(prefix + "Number of Miller indices:", len(self.indices()), file=f)
+    print(prefix + "Anomalous flag:", self.anomalous_flag(), file=f)
     crystal.symmetry.show_summary(self, f=f, prefix=prefix)
     return self
 
@@ -484,10 +554,10 @@ class set(crystal.symmetry):
     rp = self.unit_cell().reciprocal_parameters()
     c1fmt = "CRYST1%9.3f%9.3f%9.3f%7.2f%7.2f%7.2f P1        "
     fmt = "HETATM%5d  O   HOH %5d    %8.3f%8.3f%8.3f  1.00  1.00           O  "
-    of = open(file_name, "w")
-    for i_mi, mi in enumerate(indices):
-      rsv = uc.reciprocal_space_vector(mi)
-      print >> of, fmt%(i_mi, i_mi, rsv[0]*scale, rsv[1]*scale, rsv[2]*scale)
+    with open(file_name, "w") as of:
+      for i_mi, mi in enumerate(indices):
+        rsv = uc.reciprocal_space_vector(mi)
+        print(fmt%(i_mi, i_mi, rsv[0]*scale, rsv[1]*scale, rsv[2]*scale), file=of)
 
   def show_comprehensive_summary(self, f=None, prefix=""):
     """Display comprehensive Miller set or array summary"""
@@ -498,15 +568,15 @@ class set(crystal.symmetry):
       is_unique_set_under_symmetry = no_sys_abs.is_unique_set_under_symmetry()
       sys_absent_flags = self.sys_absent_flags().data()
       n_sys_abs = sys_absent_flags.count(True)
-      print >> f, prefix + "Systematic absences:", n_sys_abs
+      print(prefix + "Systematic absences:", n_sys_abs, file=f)
       if (n_sys_abs != 0):
         no_sys_abs = self.select(selection=~sys_absent_flags)
-        print >> f, prefix + "Systematic absences not included in following:"
+        print(prefix + "Systematic absences not included in following:", file=f)
       n_centric = no_sys_abs.centric_flags().data().count(True)
-      print >> f, prefix + "Centric reflections:", n_centric
+      print(prefix + "Centric reflections:", n_centric, file=f)
     if (self.unit_cell() is not None):
       d_max_min = no_sys_abs.resolution_range()
-      print >> f, prefix + "Resolution range: %.6g %.6g" % d_max_min
+      print(prefix + "Resolution range: %.6g %.6g" % d_max_min, file=f)
       if (self.space_group_info() is not None
           and self.indices().size() > 0
           and is_unique_set_under_symmetry):
@@ -518,27 +588,27 @@ class set(crystal.symmetry):
         n_obs = binner.counts_given()[1]
         n_complete = binner.counts_complete()[1]
         if (n_complete != 0 and d_max_min[0] != d_max_min[1]):
-          print >> f, prefix + "Completeness in resolution range: %.6g" % (
-            n_obs / n_complete)
+          print(prefix + "Completeness in resolution range: %.6g" % (
+            n_obs / n_complete), file=f)
         n_complete += binner.counts_complete()[0]
         if (n_complete != 0):
-          print >> f, prefix + "Completeness with d_max=infinity: %.6g" % (
-            n_obs / n_complete)
+          print(prefix + "Completeness with d_max=infinity: %.6g" % (
+            n_obs / n_complete), file=f)
         if (self.anomalous_flag()) and (self.is_xray_intensity_array() or
-            self.is_xray_amplitude_array()) :
-          print >> f, prefix + \
+            self.is_xray_amplitude_array()):
+          print(prefix + \
             "Anomalous completeness in resolution range: %.6g" % \
-            self.anomalous_completeness()
+            self.anomalous_completeness(), file=f)
     if (self.space_group_info() is not None
         and no_sys_abs.anomalous_flag()
         and is_unique_set_under_symmetry):
       asu, matches = no_sys_abs.match_bijvoet_mates()
-      print >> f, prefix + "Bijvoet pairs:", matches.pairs().size()
-      print >> f, prefix + "Lone Bijvoet mates:", \
-        matches.n_singles() - n_centric
+      print(prefix + "Bijvoet pairs:", matches.pairs().size(), file=f)
+      print(prefix + "Lone Bijvoet mates:", \
+        matches.n_singles() - n_centric, file=f)
       if (isinstance(self, array) and self.is_real_array()):
-        print >> f, prefix + "Mean anomalous difference: %.4f" % (
-          no_sys_abs.anomalous_signal())
+        print(prefix + "Mean anomalous difference: %.4f" % (
+          no_sys_abs.anomalous_signal()), file=f)
     return self
 
   def show_completeness(self, reflections_per_bin = 500, out = None):
@@ -556,7 +626,7 @@ class set(crystal.symmetry):
       d_range     = self.binner().bin_legend(
                  i_bin = i_bin, show_bin_number = False, show_counts = False)
       fmt = "%3d: %-17s %4.2f %6d"
-      print >> out, fmt % (i_bin,d_range,compl,n_ref)
+      print(fmt % (i_bin,d_range,compl,n_ref), file=out)
       out.flush()
 
   def reflection_intensity_symmetry(self):
@@ -614,6 +684,8 @@ class set(crystal.symmetry):
     """
     Generate a double Miller array containing the resolution d of each
     index.
+    Note: if f000 term is present, the resolution of that term will be -1
+     and not infinity.
     """
     return array(
       self, self.unit_cell().d(self.indices()))
@@ -640,13 +712,30 @@ class set(crystal.symmetry):
   def min_max_d_star_sq(self):
     return self.unit_cell().min_max_d_star_sq(self.indices())
 
-  def d_max_min(self):
+  def d_max_min(self, d_max_is_highest_defined_if_infinite = False):
     """
     Low- and high-resolution limits.
     :returns: Python tuple of floats
+    Modified 2020-10-02 to allow return of maximum defined instead of -1
+        if F000 present
     """
-    return tuple([uctbx.d_star_sq_as_d(d_star_sq)
-      for d_star_sq in self.min_max_d_star_sq()])
+    if d_max_is_highest_defined_if_infinite:
+      (d_max,d_min) = tuple([uctbx.d_star_sq_as_d(d_star_sq)
+        for d_star_sq in self.min_max_d_star_sq()])
+      if d_max < 0:  # (0,0,0) is present
+        indices_copy = list(self.indices())
+        index = indices_copy.index((0,0,0))
+        new_indices = flex.miller_index(
+          indices_copy[:index] + indices_copy[index+1:])
+        d_max_d_star_sq,d_min_d_star_sq= self.unit_cell(
+             ).min_max_d_star_sq(new_indices)
+        (d_max, d_min )= (
+          uctbx.d_star_sq_as_d(d_max_d_star_sq),
+          uctbx.d_star_sq_as_d(d_min_d_star_sq))
+      return (d_max, d_min)
+    else: # usual
+      return tuple([uctbx.d_star_sq_as_d(d_star_sq)
+        for d_star_sq in self.min_max_d_star_sq()])
 
   def index_span(self):
     return index_span(self.indices())
@@ -963,6 +1052,7 @@ class set(crystal.symmetry):
   def resolution_filter(self, d_max=0, d_min=0, negate=0):
     """
     Select a subset within the indicated resolution range.
+    Returns a new miller array (does not change existing array)
 
     :param d_max: Low-resolution cutoff
     :param d_min: High-resolution cutoff
@@ -1090,14 +1180,14 @@ class set(crystal.symmetry):
     return self.select(
       self.sort_permutation(by_value=by_value, reverse=reverse))
 
-  def generate_r_free_flags (self,
+  def generate_r_free_flags(self,
         fraction=0.1,
         max_free=2000,
         lattice_symmetry_max_delta=5.0,
         use_lattice_symmetry=True,
         use_dataman_shells=False,
         n_shells=20,
-        format="cns") :
+        format="cns"):
     """
     Create an array of R-free flags for the current set, keeping anomalous
     pairs together.  Requires that the set already be unique under symmetry,
@@ -1177,7 +1267,7 @@ class set(crystal.symmetry):
       n_non_ano = matches.pairs().size() + matches.n_singles()
     assert self.is_unique_set_under_symmetry()
     if fraction is not None:
-      if not (fraction > 0 and fraction < 0.5) :
+      if not (fraction > 0 and fraction < 0.5):
         raise Sorry("R-free flags fraction must be greater than 0 and less "+
           "than 0.5.")
       assert n_partitions is None
@@ -1216,7 +1306,7 @@ class set(crystal.symmetry):
     result = None
     if not return_integer_array:
       if use_dataman_shells :
-        if (format == "ccp4") :
+        if (format == "ccp4"):
           raise Sorry("CCP4 convention not available when generating R-free "+
             "flags in resolution shells.")
         result = r_free_utils.assign_r_free_flags_by_shells(
@@ -1229,7 +1319,7 @@ class set(crystal.symmetry):
     else:
       result = flex.size_t()
       n_times = int(n/n_partitions)+1
-      for ii in xrange(n_times):
+      for ii in range(n_times):
         tmp = flex.random_double( n_partitions )
         tmp = flex.sort_permutation( tmp )
         result.extend( tmp )
@@ -1263,24 +1353,24 @@ class set(crystal.symmetry):
     assert tmp_flags.indices().all_eq( self.indices() )
     return tmp_flags
 
-  def generate_r_free_flags_basic (self,
+  def generate_r_free_flags_basic(self,
         fraction=0.1,
         max_free=2000,
         use_dataman_shells=False,
         n_shells=20,
-        format="cns") :
+        format="cns"):
     """
     Generate R-free flags, without taking lattice symmetry into account (not
     recommended).  Should not normally be called directly - use
     generate_r_free_flags(...) instead.
     """
-    if not (fraction > 0 and fraction < 0.5) :
+    if not (fraction > 0 and fraction < 0.5):
       raise Sorry("R-free flags fraction must be greater than 0 and less "+
           "than 0.5.")
-    if (use_dataman_shells and n_shells < 5) :
+    if (use_dataman_shells and n_shells < 5):
       raise Sorry("You must use at least 5 resolution shells when assigning "+
         "R-free flags this way.")
-    if (max_free is not None) and (max_free <= 0) :
+    if (max_free is not None) and (max_free <= 0):
       raise Sorry("The maximum number of free reflections must either be "+
         "None, or a positive number.")
     if (self.anomalous_flag()):
@@ -1297,7 +1387,7 @@ class set(crystal.symmetry):
     if (max_free is not None):
       fraction = min(fraction, max_free/max(1,n))
     if use_dataman_shells :
-      if (format == "ccp4") :
+      if (format == "ccp4"):
         raise Sorry("CCP4 convention not available when generating R-free "+
           "flags in resolution shells.")
       result = r_free_utils.assign_r_free_flags_by_shells(
@@ -1323,11 +1413,11 @@ class set(crystal.symmetry):
     if (not self.anomalous_flag()):
       return self.array(data=result)
     del indices
-    if (format == "ccp4") :
+    if (format == "ccp4"):
       test_flag_value = 0
       # XXX are we sure this is the right thing to do?
       result_full = flex.int(self.indices().size(), 1)
-    elif (format == "shelx") :
+    elif (format == "shelx"):
       test_flag_value = -1
       result_full = flex.int(self.indices().size(), 1)
     else :
@@ -1495,7 +1585,8 @@ class set(crystal.symmetry):
                                         u_base=None,
                                         b_base=None,
                                         wing_cutoff=None,
-                                        exp_table_one_over_step_size=None):
+                                        exp_table_one_over_step_size=None,
+                                        extra_params=None):
     """
     Calculate structure factors for an :py:class:`cctbx.xray.structure` object
     corresponding to the current set of Miller indices.  Can use either FFT
@@ -1523,7 +1614,8 @@ class set(crystal.symmetry):
       exp_table_one_over_step_size=exp_table_one_over_step_size)(
         xray_structure=xray_structure,
         miller_set=self,
-        algorithm=algorithm)
+        algorithm=algorithm,
+        extra_params=extra_params)
 
   def amplitude_normalisations(self, asu_contents, wilson_plot):
     """ A miller.array whose data N(h) are the normalisations to convert
@@ -1558,7 +1650,8 @@ class set(crystal.symmetry):
         u_base=None,
         b_base=None,
         wing_cutoff=None,
-        exp_table_one_over_step_size=None):
+        exp_table_one_over_step_size=None,
+        extra_params=None):
     return self.f_obs_minus_f_calc(
       f_obs_factor=f_obs_factor,
       f_calc=self.structure_factors_from_scatterers(
@@ -1569,7 +1662,8 @@ class set(crystal.symmetry):
         u_base=u_base,
         b_base=b_base,
         wing_cutoff=wing_cutoff,
-        exp_table_one_over_step_size=exp_table_one_over_step_size).f_calc())
+        exp_table_one_over_step_size=exp_table_one_over_step_size,
+        extra_params=extra_params).f_calc())
 
   def setup_binner(self, d_max=0, d_min=0,
                    auto_binning=False,
@@ -1595,6 +1689,25 @@ class set(crystal.symmetry):
     self.use_binning(
       binning=binning(self.unit_cell(), n_bins, self.indices(), d_max, d_min))
     return self.binner()
+
+  def safe_setup_binner(self, n_bins = None, d_max = None, d_min = None,
+     min_in_bin = 10):
+    # purpose: make sure there are data in all bins
+    # Returns: actual n_bins created
+
+    while n_bins >= 1:
+      self.setup_binner(n_bins = n_bins, d_max = d_max, d_min = d_min)
+      ok = True
+      for i_bin in self.binner().range_used():
+        sel = self.binner().selection(i_bin)
+        if sel.count(True)<min_in_bin:
+          n_bins = min(n_bins-1, max(1, int(0.5+n_bins*0.8)))
+          ok = False
+          break
+      if ok: break  # found it
+    if n_bins < 1:
+      raise Sorry("Unable to set up bins...perhaps no data?")
+    return n_bins  # binner is also set up in self.
 
   def log_binning(self, n_reflections_in_lowest_resolution_bin=100, eps=1.e-4,
                   max_number_of_bins = 30, min_reflections_in_bin=50):
@@ -1674,20 +1787,63 @@ class set(crystal.symmetry):
                                   d_star_sq_step=None):
     assert auto_binning or ( d_min is not None )
     assert auto_binning or ( d_max is not None )
-    assert d_star_sq_step > 0 or (d_star_sq_step is None)
+    if d_star_sq_step:
+      assert d_star_sq_step > 0 or (d_star_sq_step is None)
     if auto_binning:
       d_spacings = self.d_spacings().data()
-      d_max=flex.min(d_spacings)
-      d_min=flex.max(d_spacings)
+      d_max=flex.max(d_spacings)
+      d_min=flex.min(d_spacings)
       del d_spacings
       if d_star_sq_step is None:
         d_star_sq_step = 0.004
     assert (d_star_sq_step>0.0)
+    d_min, d_max = sorted((d_min, d_max))
     return self.use_binning(binning=binning(self.unit_cell(),
       self.indices(),
-      d_min,
       d_max,
+      d_min,
       d_star_sq_step))
+
+  def setup_binner_d_star_sq_bin_size(self,
+        reflections_per_bin=1000,
+        min_bins=6,
+        max_bins=50,
+        d_max=None,
+        d_min=None,
+        d_tolerance=1.e-5):
+    """
+    Set up bins of equal width in d_star_sq by target for mean number per bin.
+    """
+    (d_max_data, d_min_data) = self.d_max_min(
+        d_max_is_highest_defined_if_infinite=True)
+    if d_max is not None:
+      d_max_work = min(d_max,d_max_data)
+    else:
+      d_max_work = d_max_data
+    if d_min is not None:
+      d_min_work = max(d_min,d_min_data)
+    else:
+      d_min_work = d_min_data
+    if (d_max_work < d_max_data or d_min_work > d_min_data):
+      working_data = self.d_spacings().resolution_filter(
+          d_max=d_max_work,d_min=d_min_work)
+      n_ref_work = working_data.size()
+      this_d_tol = 0. # No boundary tolerance if explicit resolution limits
+    else:
+      n_ref_work = self.size()
+      this_d_tol = d_tolerance # Avoid losing reflections with rounding errors
+    n_bins = iround(max(min(n_ref_work/reflections_per_bin, max_bins), min_bins))
+    limits = flex.double()
+    d_star_sq_min = 1. / (d_max_work*d_max_work)
+    d_star_sq_max = 1. / (d_min_work*d_min_work)
+    d_star_sq_step = (d_star_sq_max - d_star_sq_min) / n_bins
+    # Avoid losing reflections to rounding error on bin boundaries
+    limits.append(d_star_sq_min - this_d_tol*d_star_sq_step)
+    for i_bin in range(1,n_bins):
+      this_limit = d_star_sq_min + i_bin*d_star_sq_step
+      limits.append(this_limit)
+    limits.append(d_star_sq_max + this_d_tol*d_star_sq_step)
+    return self.use_binning(binning=binning(self.unit_cell(), limits))
 
   def setup_binner_counting_sorted(self,
         d_max=0,
@@ -1698,20 +1854,35 @@ class set(crystal.symmetry):
     assert d_max >= 0
     assert d_min >= 0
     assert isinstance(reflections_per_bin, int) or isinstance(n_bins, int)
-    assert reflections_per_bin > 0 or n_bins > 0
+    if reflections_per_bin is not None:
+      assert reflections_per_bin > 0
+    if n_bins is not None:
+      assert n_bins > 0
     assert d_tolerance > 0
     assert d_tolerance < 0.5
     d_star_sq = self.d_star_sq().data()
+    d_star_sq = d_star_sq.select(flex.sort_permutation(d_star_sq))
+
+    # Select unique values of d_star_sq (within tolerance)
+    delta = d_star_sq[1:] - d_star_sq[:-1]
+    isel = (delta > d_tolerance).iselection()
+    isel += 1
+    isel.insert(0, 0)
+    d_star_sq = d_star_sq.select(isel)
+
     if (d_max > 0):
       d_star_sq = d_star_sq.select(d_star_sq >= 1./d_max**2)
     if (d_min > 0):
       d_star_sq = d_star_sq.select(d_star_sq < 1./d_min**2)
     assert d_star_sq.size() > 0
-    if n_bins is None:
-      n_bins = max(1, iround(d_star_sq.size() / float(reflections_per_bin)))
-    assert n_bins <= self.size(), "n_bins (%i) must be <= number of reflections (%i)" %(n_bins, self.size())
+    if reflections_per_bin:
+      n_bins_calc = max(1, iround(d_star_sq.size() / float(reflections_per_bin)))
+      n_bins = min(n_bins, n_bins_calc) if n_bins else n_bins_calc
+    assert n_bins <= d_star_sq.size(), (
+      "n_bins (%i) must be <= number of unique d-spacings (%i)" %(
+        n_bins, d_star_sq.size())
+      )
     reflections_per_bin = d_star_sq.size() / float(n_bins)
-    d_star_sq = d_star_sq.select(flex.sort_permutation(d_star_sq))
     limits = flex.double()
     limits.reserve(n_bins+1)
     if (d_max > 0):
@@ -1719,7 +1890,7 @@ class set(crystal.symmetry):
     else:
       limits.append(max(0, d_star_sq[0] * (1-d_tolerance)))
     m = d_star_sq.size()-1
-    for i_bin in xrange(1, n_bins):
+    for i_bin in range(1, n_bins):
       i = iround(i_bin * reflections_per_bin)
       limits.append(d_star_sq[i] * (1-d_tolerance))
       if (i == m): break
@@ -1774,16 +1945,16 @@ class set(crystal.symmetry):
       indices          = self._indices.concatenate(other.indices()),
       anomalous_flag   = self.anomalous_flag())
 
-  def slice (self,
+  def slice(self,
       axis=None,
       axis_index=None,
       slice_index=None,
       slice_start=None,
-      slice_end=None) :
-    if (axis is not None) :
+      slice_end=None):
+    if (axis is not None):
       assert (axis_index is None)
       axis_index = ["h","k","l"].index(axis)
-    if (slice_index is not None) :
+    if (slice_index is not None):
       assert (slice_start is None) and (slice_end is None)
       selection = simple_slice(
         indices=self.indices(),
@@ -1798,7 +1969,7 @@ class set(crystal.symmetry):
         slice_end=slice_end)
     return self.select(selection)
 
-  def delete_index (self, hkl) :
+  def delete_index(self, hkl):
     """
     Remove all reflections with the specified Miller index.
     """
@@ -1806,7 +1977,7 @@ class set(crystal.symmetry):
     sele = (self.indices() != hkl)
     return self.select(sele)
 
-  def delete_indices (self, other) :
+  def delete_indices(self, other):
     """
     Delete multiple reflections, as specified by the Miller indices of
     another set.
@@ -1814,9 +1985,25 @@ class set(crystal.symmetry):
     # XXX inefficient - should probably use match_indices but it seems
     # to not like unmerged data
     sele = flex.bool(self.indices().size(), True)
-    for hkl in other.indices() :
+    for hkl in other.indices():
       sele &= (self.indices() != hkl)
     return self.select(sele)
+
+  def generate_bivoet_mates(self):
+    """
+    If the array is not already anomalous, expand the miller indices to generate
+    anomalous pairs.
+    """
+    if (self.anomalous_flag()): return self
+    sel = ~self.centric_flags().data()
+    indices = self.indices().deep_copy()
+    indices.extend(-indices.select(sel))
+    return set(
+        crystal_symmetry=self,
+        indices=indices,
+        anomalous_flag=True,
+    )
+
 
 def build_set(crystal_symmetry, anomalous_flag, d_min=None, d_max=None,
               max_index=None):
@@ -1907,7 +2094,7 @@ class array_info(object):
       crystal_symmetry_from_file = self.crystal_symmetry_from_file
     if (type_hints_from_file is Keep):
       type_hints_from_file = self.type_hints_from_file
-    if (wavelength is Keep) :
+    if (wavelength is Keep):
       wavelength = self.wavelength
     return array_info(
       source=source,
@@ -2021,10 +2208,10 @@ class array(set):
 
   def __iter__(self):
     if self.sigmas() is not None:
-      for item in izip(self.indices(), self.data(), self.sigmas()):
+      for item in zip(self.indices(), self.data(), self.sigmas()):
         yield item
     else:
-      for item in izip(self.indices(), self.data()):
+      for item in zip(self.indices(), self.data()):
         yield item
 
   def info(self):
@@ -2035,10 +2222,10 @@ class array(set):
 
   def show_comprehensive_summary(self, f=None, prefix=""):
     set.show_comprehensive_summary(self, f=f, prefix=prefix)
-    if (self.info() is not None) and isinstance(self.info(), array_info) :
+    if (self.info() is not None) and isinstance(self.info(), array_info):
       wavelength = self.info().wavelength
-      if (wavelength is not None) :
-        print >> f, prefix + "Wavelength: %.4f" % wavelength
+      if (wavelength is not None):
+        print(prefix + "Wavelength: %.4f" % wavelength, file=f)
     return self
 
   def observation_type(self):
@@ -2092,7 +2279,7 @@ class array(set):
     from cctbx.xray import observation_types
     return isinstance(self.observation_type(), observation_types.intensity)
 
-  def is_xray_data_array (self) :
+  def is_xray_data_array(self):
     return (self.is_xray_amplitude_array() or self.is_xray_intensity_array())
 
   def copy(self):
@@ -2185,6 +2372,45 @@ class array(set):
     assert self.is_complex_array()
     return array.customized_copy(self, data=flex.conj(self.data()))
 
+  def regularize(self):
+    """
+    A series of conversions that are required for many downstream tests, such as
+    refinement, map calculation, etc.
+    """
+    result = self.deep_copy()
+    info = result.info()
+    result = result.eliminate_sys_absent()
+    if info is not None:
+      info = info.customized_copy(systematic_absences_eliminated = True)
+    if(not result.is_unique_set_under_symmetry()):
+      merged = result.merge_equivalents()
+      result = merged.array()
+      if info is not None:
+        info = info.customized_copy(merged=True)
+    result = result.map_to_asu()
+    if(not result.sigmas_are_sensible()):
+      result = result.customized_copy(
+        indices=result.indices(),
+        data=result.data(),
+        sigmas=None).set_observation_type(result)
+    sel = result.indices()==(0,0,0)
+    if(not sel.all_eq(False)):
+      result = result.select(~sel)
+    sigmas = result.sigmas()
+    if(sigmas is not None):
+      selection  = result.sigmas() != 0
+      selection &= result.data() != 0
+      result = result.select(selection)
+    if(result.is_xray_amplitude_array()):
+      selection_positive = result.data() >= 0
+      result = result.select(selection_positive)
+    return result.set_info(info)
+
+  def g_function(self, R, s=None, volume_scale=False):
+    if s is None:
+      s = 1./self.d_spacings().data() # Note f000 term will get s = -1
+    return scitbx.math.g_function(s, R, volume_scale)
+
   def as_double(self):
     """
     Create a copy of the array with the data converted to a flex.double type.
@@ -2200,13 +2426,23 @@ class array(set):
 
   def show_summary(self, f=None, prefix=""):
     if (f is None): f = sys.stdout
-    print >> f, prefix + "Miller %s info:" % (
-      self.__class__.__name__), self.info()
-    print >> f, prefix + "Observation type:", self.observation_type()
-    print >> f, prefix + "Type of data:", raw_array_summary(self.data())
-    print >> f, prefix + "Type of sigmas:", raw_array_summary(self.sigmas())
+    print(prefix + "Miller %s info:" % (
+      self.__class__.__name__), self.info(), file=f)
+    print(prefix + "Observation type:", self.observation_type(), file=f)
+    print(prefix + "Type of data:", raw_array_summary(self.data()), file=f)
+    print(prefix + "Type of sigmas:", raw_array_summary(self.sigmas()), file=f)
     set.show_summary(self, f=f, prefix=prefix)
     return self
+
+  def make_up_hl_coeffs(self, k_blur, b_blur):
+    assert isinstance(self.data(), flex.complex_double)
+    phases = self.phases().data()
+    sin_phases = flex.sin(phases)
+    cos_phases = flex.cos(phases)
+    ss = 1./flex.pow2(self.d_spacings().data()) / 4.
+    t = 2*k_blur * flex.exp(-b_blur*ss)
+    return self.customized_copy(
+      data = flex.hendrickson_lattman(a = t * cos_phases, b = t * sin_phases))
 
   def disagreeable_reflections(self, f_calc_sq, n_reflections=20):
     assert f_calc_sq.is_xray_intensity_array()
@@ -2236,13 +2472,13 @@ class array(set):
   def show_disagreeable_reflections(self, f_calc_sq, n_reflections=20, out=None):
     if out is None: out = sys.stdout
     result = self.disagreeable_reflections(f_calc_sq, n_reflections=n_reflections)
-    print >> out, "  h   k   l       Fo^2      Fc^2   |Fo^2-Fc^2|/sig(F^2)   Fc/max(Fc)  d spacing(A)"
+    print("  h   k   l       Fo^2      Fc^2   |Fo^2-Fc^2|/sig(F^2)   Fc/max(Fc)  d spacing(A)", file=out)
     for i in range(result.fo_sq.size()):
-      print >> out, "%3i %3i %3i" %result.indices[i],
-      print >> out, " %9.2f %9.2f        %9.2f         %9.2f     %9.2f" %(
+      print("%3i %3i %3i" %result.indices[i], end=' ', file=out)
+      print(" %9.2f %9.2f        %9.2f         %9.2f     %9.2f" %(
         result.fo_sq.data()[i], result.fc_sq.data()[i],
         result.delta_f_sq_over_sigma[i],
-        result.fc_over_fc_max[i], result.d_spacings[i])
+        result.fc_over_fc_max[i], result.d_spacings[i]), file=out)
     return result
 
   def crystal_symmetry_is_compatible_with_symmetry_from_file(self,
@@ -2266,8 +2502,8 @@ class array(set):
         result = False
     return result
 
-  def enforce_positive_sigmas (self) :
-    if (self.sigmas() is None) :
+  def enforce_positive_sigmas(self):
+    if (self.sigmas() is None):
       return self
     else :
       return self.select(self.sigmas() > 0)
@@ -2276,10 +2512,10 @@ class array(set):
     """
     Takes in an intensity array (including negatives) and spits out amplitudes.
     The basic assumption is that
-    P(Itrue) \propto exp(-(Itrue-Iobs)**2/(2*s))
+    P(Itrue) \\propto exp(-(Itrue-Iobs)**2/(2*s))
     where Itrue>=0 (positivity constraint on error free amplitudes).
     For amplitudes, this results in
-    P(Ftrue) \propto 2 Ftrue exp( -(Ftrue**2-Iobs)**2/(2s) )
+    P(Ftrue) \\propto 2 Ftrue exp( -(Ftrue**2-Iobs)**2/(2s) )
     A Gaussian approximation is fitted to the Mode of this distribution.
     An analytical solution exists and is implemented below.
     This method does not require any Wilson statistics assumptions.
@@ -2528,12 +2764,13 @@ class array(set):
       sigmas_new = s.sigmas().concatenate(ol.sigmas())
     return self.customized_copy(data = d_new, indices = i_new, sigmas = sigmas_new)
 
-  def combine(self, other, scale = True, scale_for_lones = 1):
+  def combine(self, other, scale = True, scale_for_lones = 1,
+        scale_for_matches=1):
     assert self.anomalous_flag() == other.anomalous_flag()
     assert self.sigmas() is None # not implemented
     f1_c, f2_c = self.common_sets(other = other)
     f1_l, f2_l = self.lone_sets(other = other)
-    scale_k1 = 1
+    scale_k1 = scale_for_matches
     if(scale):
       den = flex.sum(flex.abs(f2_c.data())*flex.abs(f2_c.data()))
       if(den != 0):
@@ -2874,7 +3111,7 @@ class array(set):
     """
     assert self.data() is not None
     tmp_array = self
-    if (enforce_positive_sigmas) :
+    if (enforce_positive_sigmas):
       tmp_array = tmp_array.enforce_positive_sigmas()
     asu, matches = tmp_array.match_bijvoet_mates()
     i = matches.miller_indices_in_hemisphere("+")
@@ -2902,8 +3139,8 @@ class array(set):
         anomalous_flag=False)
        for i_column in (0,1)])
 
-  def anomalous_completeness (self, use_binning=False, d_min_tolerance=1.e-6,
-      d_max=None, d_min=None, relative_to_complete_set=True) :
+  def anomalous_completeness(self, use_binning=False, d_min_tolerance=1.e-6,
+      d_max=None, d_min=None, relative_to_complete_set=True):
     """
     Return the percent of acentric reflections with both h,k,l and -h,-k,-l
     observed (only meaningful for amplitude and intensity arrays).  By default
@@ -2912,11 +3149,11 @@ class array(set):
     assert self.anomalous_flag() and self.is_real_array()
     if (not use_binning):
       merged = self.average_bijvoet_mates()
-      if (relative_to_complete_set) :
+      if (relative_to_complete_set):
         merged = merged.complete_set(d_max=d_max, d_min=d_min,
           d_min_tolerance=d_min_tolerance)
       centric_flags = merged.centric_flags().data()
-      if (centric_flags.count(False) == 0) :
+      if (centric_flags.count(False) == 0):
         return 0
       merged_acentric = merged.select(~centric_flags)
       n_acentric = merged_acentric.size()
@@ -2990,6 +3227,30 @@ class array(set):
       results.append(self.select(sel).anomalous_signal())
     return binned_data(binner=self.binner(), data=results, data_fmt="%7.4f")
 
+  def anomalous_probability_plot(self, expected_delta=None):
+    assert self.is_unique_set_under_symmetry()
+    assert self.anomalous_flag()
+
+    dI = self.anomalous_differences()
+    if not dI.size():
+      return AnomalousProbabilityPlotResult(None, None, None, expected_delta)
+
+    y = dI.data() / dI.sigmas()
+    perm = flex.sort_permutation(y)
+    y = y.select(perm)
+    distribution = distributions.normal_distribution()
+
+    x = distribution.quantiles(y.size())
+    if expected_delta is not None:
+      sel = flex.abs(x) < expected_delta
+      x = x.select(sel)
+      y = y.select(sel)
+
+    fit = flex.linear_regression(x, y)
+    if fit.is_well_defined():
+      return AnomalousProbabilityPlotResult(fit.slope(), fit.y_intercept(), x.size(), expected_delta)
+    return AnomalousProbabilityPlotResult(None, None, None, expected_delta)
+
   def phase_entropy(self, exponentiate=False, return_binned_data=False,
                           return_mean=False):
     """Get phase entropy as measured in terms of an base-360 entropy
@@ -3036,7 +3297,7 @@ class array(set):
           binned_results.append( mean )
         return binned_data(binner=self.binner(), data=binned_results, data_fmt="%7.4f")
     else:
-     return None
+      return None
 
 
   def measurability(self, use_binning=False, cutoff=3.0, return_fail=None):
@@ -3079,13 +3340,13 @@ class array(set):
                                                     return_fail=return_fail))
     return binned_data(binner=self.binner(), data=results, data_fmt="%7.4f")
 
-  def bijvoet_ratios (self, obs_type="intensity", measurable_only=True,
-      cutoff=3.0) :
+  def bijvoet_ratios(self, obs_type="intensity", measurable_only=True,
+      cutoff=3.0):
     assert self.anomalous_flag()
     obs = self.select(self.data() > 0 )
-    if (obs_type == "amplitude") and (self.is_xray_intensity_array()) :
+    if (obs_type == "amplitude") and (self.is_xray_intensity_array()):
       obs = obs.f_sq_as_f()
-    elif (obs_type == "intensity") and (self.is_xray_amplitude_array()) :
+    elif (obs_type == "intensity") and (self.is_xray_amplitude_array()):
       obs = obs.f_as_f_sq()
     i_plus, i_minus = obs.hemispheres_acentrics()
     assert i_plus.data().size() == i_minus.data().size()
@@ -3261,7 +3522,7 @@ class array(set):
         prefix=""):
     assert self.is_bool_array()
     assert binner_range in ["used", "all"]
-    print >> out, prefix + "Number of work/free reflections by resolution:"
+    print(prefix + "Number of work/free reflections by resolution:", file=out)
     if (n_bins is not None):
       self.setup_binner(n_bins=n_bins)
     else:
@@ -3280,16 +3541,16 @@ class array(set):
       if (fmt is None):
         width = max(4, len(str(self.indices().size())))
         fmt = "%%%ds" % width
-        print >> out, prefix + " ", " "*len(legend), \
-          fmt%"work", fmt%"free", " %free"
+        print(prefix + " ", " "*len(legend), \
+          fmt%"work", fmt%"free", " %free", file=out)
         fmt = "%%%dd" % width
-      print >> out, prefix + " ", legend, fmt%n_work, fmt%n_free, \
-        "%5.1f%%" % (100.*n_free/max(1,n_work+n_free))
+      print(prefix + " ", legend, fmt%n_work, fmt%n_free, \
+        "%5.1f%%" % (100.*n_free/max(1,n_work+n_free)), file=out)
     n_free = self.data().count(True)
     n_work = self.data().size() - n_free
-    print >> out, prefix + " ", (
+    print(prefix + " ", (
       "%%%ds"%len(legend))%"overall", fmt%n_work, fmt%n_free, \
-      "%5.1f%%" % (100.*n_free/max(1,n_work+n_free))
+      "%5.1f%%" % (100.*n_free/max(1,n_work+n_free)), file=out)
     return n_works, n_frees
 
   def r_free_flags_accumulation(self):
@@ -3311,7 +3572,7 @@ class array(set):
     """Get the R1 factor according to this formula
 
     .. math::
-       R1 = \dfrac{\sum{||F| - k|F'||}}{\sum{|F|}}
+       R1 = \\dfrac{\\sum{||F| - k|F'||}}{\\sum{|F|}}
 
     where F is self.data() and F' is other.data() and
     k is the factor to put F' on the same scale as F
@@ -3346,7 +3607,7 @@ class array(set):
           c *= (flex.sum(o * c) / den)
       elif (scale_factor is not None):
         c *= scale_factor
-      if (emulate_sftools) :
+      if (emulate_sftools):
         return 2 * flex.sum(flex.abs(o - c)) / flex.sum(o+c)
       else :
         return flex.sum(flex.abs(o - c)) / flex.sum(o)
@@ -3386,22 +3647,23 @@ class array(set):
       matched_indices = match_indices(self.indices(), indices)
     try:
       return self.select(matched_indices.pair_selection(0), negate=negate)
-    except RuntimeError, e:
+    except RuntimeError as e:
       if ('CCTBX_ASSERT(miller_indices_[1].size() == size_processed(1))'
           in str(e)):
         raise RuntimeError(
           "cctbx.miller.array.select_indices(): "
           "This method can only be used reliably on a merged array")
       else:
-        raise RuntimeError, e
+        raise RuntimeError(e)
 
-  def sigma_filter(self, cutoff_factor, negate=False):
+  def sigma_filter(self, cutoff_factor=None, negate=False):
     """
     Return a copy of the array filtered to remove reflections whose value is
     less than cutoff_factor*sigma (or the reverse, if negate=True).
     """
-    assert self.data() is not None
-    assert self.sigmas() is not None
+    if(cutoff_factor is None): return self
+    if(self.data() is None): return self
+    if(self.sigmas() is None): return self
     flags = flex.abs(self.data()) >= self.sigmas() * cutoff_factor
     return self.select(flags, negate)
 
@@ -3441,25 +3703,46 @@ class array(set):
       .set_info(self.info()) \
       .set_observation_type(self)
 
-  def multiscale(self, other, reflections_per_bin = None):
+  def multiscale(self, other, use_exp_scale=False, reflections_per_bin=None):
+    if use_exp_scale:
+      import libtbx.load_env
+      if (not libtbx.env.has_module("mmtbx")):
+        raise ImportError("mmtbx is required for this functionality.")
+      from mmtbx import bulk_solvent
+      ss = 1./flex.pow2(self.d_spacings().data()) / 4.
+      b_range = flex.double(range(-1000,1000,1))
+      if isinstance(self.data(), flex.complex_double):
+        scaler_func = bulk_solvent.complex_f_kb_scaled
+      else:
+        scaler_func = bulk_solvent.f_kb_scaled
     if(reflections_per_bin is None):
       reflections_per_bin = other.indices().size()
     assert self.indices().all_eq(other.indices())
     assert self.is_similar_symmetry(other)
+    assert type(self.data()) == type(other.data())
+
     self.setup_binner(reflections_per_bin = reflections_per_bin)
     other.use_binning_of(self)
-    scale = flex.double(self.indices().size(),-1)
+    other_data = other.data()*0
     for i_bin in self.binner().range_used():
       sel = self.binner().selection(i_bin)
       f1  = self.select(sel)
       f2  = other.select(sel)
-      scale_ = 1.0
-      den = flex.sum(flex.abs(f2.data())*flex.abs(f2.data()))
-      if(den != 0):
-        scale_ = flex.sum(flex.abs(f1.data())*flex.abs(f2.data())) / den
-      scale.set_selected(sel, scale_)
-    assert (scale > 0).count(True) == scale.size()
-    return other.array(data = other.data()*scale)
+      if not use_exp_scale: # use scalar scale
+        scale_ = 1.0
+        den = flex.sum(flex.abs(f2.data())*flex.abs(f2.data()))
+        if(den != 0):
+          scale_ = flex.sum(flex.abs(f1.data())*flex.abs(f2.data())) / den
+        other_data.set_selected(sel, f2.data()*scale_)
+      else:
+        ss_ = ss.select(sel)
+        o = scaler_func(
+          f1      = f1.data(),
+          f2      = f2.data(),
+          b_range = b_range,
+          ss      = ss_)
+        other_data.set_selected(sel, f2.data()*o.k()*flex.exp(-o.b()*ss_))
+    return other.array(data = other_data)
 
   def apply_debye_waller_factors(self,
         u_iso=None,
@@ -3760,6 +4043,20 @@ class array(set):
     assert den != 0
     return self.array(data = coeff/den)
 
+  def __repr__(self):
+    """
+    Emit a string for debugging of the labels, type of data
+    and sigmas array present within this miller_array.
+    """
+    mstr = self.crystal_symmetry().__repr__()
+    if self._info:
+      mstr = mstr + "\n" + str(self._info.label_string())
+    mstr = mstr + "\n" + self._data.__repr__()
+    if self._sigmas:
+      mstr = mstr + "\n" + self._sigmas.__repr__()
+    mstr = mstr + "\nsize: %d"  %self._data.size()
+    return mstr + "\n"
+
   def __abs__(self):
     """
     Return a copy of the array with data replaced by absolute values, i.e.
@@ -3866,21 +4163,21 @@ class array(set):
       else:
         data_abs = None
         c = "."
-      print >> log, prefix + "Removing %d %ssystematic absence%s%s" % (
-        n, q, plural_s(n)[1], c)
+      print(prefix + "Removing %d %ssystematic absence%s%s" % (
+        n, q, plural_s(n)[1], c), file=log)
     result = self.select(selection=~sys_absent_flags)
     if (log is not None):
       if (data_abs is not None):
-        print >> log, prefix + "  Average absolute value of:"
+        print(prefix + "  Average absolute value of:", file=log)
         mean_absences = flex.mean(data_abs.select(sys_absent_flags))
-        print >> log, prefix + "    Absences: %.6g" % mean_absences
+        print(prefix + "    Absences: %.6g" % mean_absences, file=log)
         if (n != data_abs.size()):
           mean_others = flex.mean(data_abs.select(~sys_absent_flags))
-          print >> log, prefix + "      Others: %.6g" % mean_others
+          print(prefix + "      Others: %.6g" % mean_others, file=log)
           if (mean_others != 0 and mean_others > mean_absences * 1.e-20):
-            print >> log, prefix + "       Ratio: %.6g" % (
-              mean_absences / mean_others)
-      print >> log
+            print(prefix + "       Ratio: %.6g" % (
+              mean_absences / mean_others), file=log)
+      print(file=log)
     return result
 
   def select_sys_absent(self, integral_only=False):
@@ -3915,7 +4212,7 @@ class array(set):
     return self
 
   def __mul__(self, other):
-    if isinstance(other, array) :
+    if isinstance(other, array):
       assert self.indices().all_eq(other.indices())
       return self.customized_copy(data=self.data() * other.data())
     result = self.deep_copy()
@@ -3937,7 +4234,7 @@ class array(set):
     result /= other
     return result
 
-  def value_at_index (self, hkl) :
+  def value_at_index(self, hkl):
     """Extract the value of the array for the specified reflection h,k,l"""
     hkl_array = self.select_indices([hkl])
     assert (len(hkl_array.data()) == 1)
@@ -4044,17 +4341,165 @@ class array(set):
     assert self.data().size() == self.indices().size()
     if (self.is_complex_array() and deg is not None):
       for h,d in zip(self.indices(), self.data()):
-        print >> f, prefix + str(h), d, complex_math.abs_arg(d, deg=deg)
+        print(prefix + str(h), d, complex_math.abs_arg(d, deg=deg), file=f)
     elif (self.sigmas() is None):
       for h,d in zip(self.indices(), self.data()):
-        print >> f, prefix + str(h), d
+        print(prefix + str(h), d, file=f)
     else:
       assert self.sigmas().size() == self.indices().size()
       for h,d,s in zip(self.indices(), self.data(), self.sigmas()):
-        print >> f, prefix + str(h), d, s
+        print(prefix + str(h), d, s, file=f)
     return self
 
-  def fsc(self, other, bin_width=1000):
+  def setup_binner_d_cube_equal_spacing(miller_array, n_bins=10, min_per_bin=1):
+    """
+    Sets up resolution bins with equal spacing in 1/d^3 (reciprocal volume)
+    on a Miller array, reducing n_bins iteratively if any empty bin is found.
+
+    Parameters:
+      miller_array : cctbx.miller.array
+      n_bins       : int, initial target number of bins
+      min_per_bin  : int, minimum number of reflections required per bin (default: 1)
+
+    Returns:
+      binner       : cctbx.miller.binner object attached to the miller_array
+    """
+    # 1. Obtain overall d_max and d_min limits
+    d_max, d_min = miller_array.d_max_min(
+      d_max_is_highest_defined_if_infinite=True)
+    # 2. Iteratively set up bins, reducing n_bins if an empty bin occurs
+    while n_bins >= 1:
+      s3_min = 1.0 / (d_max ** 3)
+      s3_max = 1.0 / (d_min ** 3)
+      s3_step = (s3_max - s3_min) / n_bins
+      # Construct limits array in d*^2 = 1/d^2 space (expected by cctbx.miller.binning)
+      limits = flex.double()
+      tol = 1.e-5 # Small boundary tolerance to prevent edge reflection loss
+      # Add bounds in 1/d^3 space and convert each to 1/d^2 = (1/d^3)^(2/3)
+      s3_bounds = (
+        [s3_min - tol * s3_step] +
+        [s3_min + i * s3_step for i in range(1, n_bins)] +
+        [s3_max + tol * s3_step]
+      )
+      for s3 in s3_bounds:
+        d_star_sq = math.pow(max(1.e-10, s3), 2.0 / 3.0)
+        limits.append(d_star_sq)
+      # Create binner using custom d*^2 limits
+      binning_obj = miller.binning(miller_array.unit_cell(), limits)
+      binner = miller_array.use_binning(binning=binning_obj)
+      # 3. Check if all used bins meet the minimum reflection threshold
+      all_bins_valid = True
+      for i_bin in binner.range_used():
+        if binner.count(i_bin) < min_per_bin:
+          all_bins_valid = False
+          break
+      if all_bins_valid: return binner
+      # Reduce bin count and retry if an empty/underpopulated bin was found
+      n_bins -= 1
+    raise ValueError(
+      "Could not construct non-empty resolution bins for the provided array.")
+
+  @staticmethod
+  def adaptive_value_bins(
+        values,
+        thresholds=(2.0, 4.0, 10.0, 25.0, 50.0),
+        widths=(0.001, 0.005, 0.01, 0.1, 1.0, 1.0),
+        target_counts=(1000, 1000, 500, 250, 100, 50)):
+    """
+    Partition a sorted CCTBX flex.double into adaptive bins.
+
+    Parameters
+    ----------
+    values : cctbx.array_family.flex.double
+        Values sorted in nondecreasing order.
+
+    thresholds : sequence of float
+        Boundaries separating the value regimes.
+
+    widths : sequence of float
+        Nominal bin width for each regime. Must contain one more entry
+        than thresholds.
+
+    target_counts : sequence of int
+        Minimum point count for each regime. Must contain one more entry
+        than thresholds.
+
+    Returns
+    -------
+    list of tuple
+        Contiguous ``(start, end)`` index pairs, where ``start`` is
+        inclusive and ``end`` is exclusive.
+
+    Raises
+    ------
+    ValueError
+        If a nonempty input is too small to form even one valid bin.
+
+    Notes
+    -----
+    The input is assumed to be valid and sorted; no validation is done.
+
+    Width has priority over the target count. If the nominal-width bin
+    contains fewer than the target count, it is extended. Equal values
+    are never split. An underfilled final tail is merged into the
+    preceding bin.
+    """
+    import bisect
+    n = len(values)
+    if n == 0: return []
+    result = []
+    start = 0
+    while start < n:
+      first_value = values[start]
+      # bisect_right implements these regimes:
+      #
+      # value < thresholds[0]
+      # thresholds[0] <= value < thresholds[1]
+      # ...
+      # thresholds[-1] <= value
+      regime = bisect.bisect_right(thresholds, first_value)
+      width = widths[regime]
+      target_count = target_counts[regime]
+      remaining = n - start
+      # The remaining tail cannot form a valid independent bin.
+      if remaining < target_count:
+        if not result:
+          raise ValueError(
+              "Cannot form a valid bin: input contains %d points, "
+              "but the first bin requires at least %d."
+              % (n, target_count)
+          )
+        # Absorb the entire underfilled tail into the preceding bin.
+        previous_start, _ = result[-1]
+        result[-1] = (previous_start, n)
+        break
+      nominal_upper_bound = first_value + width
+      # Find the first value >= nominal_upper_bound. Therefore, the
+      # nominal value interval is half-open:
+      #
+      #     first_value <= value < nominal_upper_bound
+      width_end = bisect.bisect_left(
+        values,
+        nominal_upper_bound,
+        start + 1,
+        n)
+      target_end = start + target_count
+      # Width has priority: keep all points within the nominal width,
+      # even if that produces more than target_count points.
+      end = max(width_end, target_end)
+      # Do not split identical values at a count-based boundary.
+      if end < n and values[end - 1] == values[end]:
+          boundary_value = values[end]
+          end = bisect.bisect_right(
+            values,
+            boundary_value,
+            end,
+            n)
+      result.append((start, end))
+      start = end
+    return result
+
+  def fsc(self, other):
     """
     Compute Fourier Shell Correlation (FSC)
     """
@@ -4062,82 +4507,255 @@ class array(set):
     assert f1.indices().all_eq(f2.indices())
     # Get data and order
     ds = f1.d_spacings().data()
-    d1 = f1.data()
-    d2 = f2.data()
+    s = ds > 0
+    ds = ds.select(s)
+    f1 = f1.select(s)
+    f2 = f2.select(s)
     s = flex.sort_permutation(ds)
     ds = ds.select(s)
-    d1 = d1.select(s)
-    d2 = d2.select(s)
-    r = maptbx.fsc(f1=d1, f2=d2, d_spacings=ds, step=bin_width)
-    fsc = r.fsc()
-    d = r.d()
-    d_inv = r.d_inv()
+    f1 = f1.select(s)
+    f2 = f2.select(s)
+    d1 = f1.data()
+    d2 = f2.data()
+    del s
+    # Compute FSC
+    fsc = flex.double()
+    d   = flex.double()
+    raw = []
+    #
+    # PVA: switch to adaptive_value_bins ; 16-SEP-2026
+    #
+    #bins = bins_mixed(d_spacings_sorted=ds)
+    #
+    # This is to pass iotbx/regression/tst_map_model_manager_3.py
+    #
+    try:
+      bins = self.adaptive_value_bins(values = ds)
+    except ValueError as e:
+      if "Cannot form a valid bin" in str(e):
+        bins = bins_mixed(d_spacings_sorted=ds)
+      else:
+        raise
+    #
+    for bin in bins:
+      l, r = bin[0], bin[1]
+      x = d1[l:r]
+      y = d2[l:r]
+      z = ds[l:r]
+      value = maptbx.cc_complex_complex(f_1 = x, f_2 = y)
+      fsc.append(value)
+      d.append(flex.mean(z))
+      raw.append( (z[0], z[-1], 2./(z[0]+z[-1]), value) )
+    #
+    d_inv = 1/d
     # Smooth FSC curve
-    half_window=50
-    ratio=d_inv.size()/half_window
-    if(ratio<10):
-      half_window = int(half_window/10)
-    from scitbx import smoothing
-    d_inv, fsc = smoothing.savitzky_golay_filter(
-      x=d_inv,  y=fsc,  half_window=half_window, degree=2)
+    # Smoothing can change the input array size causing an assertion crash!
+    sel = d>15.
+    d_const = None
+    if d.size() > 10:
+      if sel.count(True)>0:
+        d_const   = d    .select(sel)
+        fsc_const = fsc  .select(sel)
+        d         = d    .select(~sel)
+        fsc       = fsc  .select(~sel)
+      half_window=10
+      from scitbx import smoothing
+      d, fsc = smoothing.savitzky_golay_filter(
+        x=d,  y=fsc, half_window=half_window, degree=2)
+      if d_const is not None:
+        d  .extend(d_const)
+        fsc.extend(fsc_const)
+      d_inv = 1./d
     s = flex.sort_permutation(d_inv)
-    return group_args(d=d.select(s), d_inv=d_inv.select(s), fsc=fsc.select(s))
+    return group_args(
+      raw=raw, d=d.select(s), d_inv=d_inv.select(s), fsc=fsc.select(s))
 
-  def d_min_from_fsc(self, other=None, fsc_curve=None, bin_width=1000,
-                           fsc_cutoff=0.143):
+  @staticmethod
+  def _d_min_from_fsc_helper(
+        fsc, d, d_inv, cutoff, half_window=5, max_resolution_shift=0.25,
+        fallback=None):
+      """
+      Find the resolution at the first downward FSC cutoff crossing.
+
+      Parameters
+      ----------
+      fsc : flex.double
+          FSC values.
+      d : flex.double
+          Resolution values.
+      d_inv : flex.double
+          Reciprocal-resolution values corresponding to `d`.
+      cutoff : float
+          FSC cutoff.
+      half_window : int
+          Number of neighboring points used on either side of the crossing.
+      max_resolution_shift : float or None
+          Maximum allowed difference between the quadratic result and the
+          linearly interpolated result. Set to None to disable this check.
+      fallback
+          Returned when no point below the cutoff exists.
+
+      Returns
+      -------
+      float or fallback
+          Estimated resolution at the first downward crossing.
+      """
+      try:
+        n = min(len(fsc), len(d), len(d_inv))
+        cutoff = float(cutoff)
+        if n == 0 or not math.isfinite(cutoff): return fallback
+        # Find the first value below the cutoff. This explicitly selects
+        # the first downward-crossing branch of an oscillating curve.
+        i_mid = None
+        for i in range(n):
+          try:
+            if float(fsc[i]) < cutoff:
+              i_mid = i
+              break
+          except (TypeError, ValueError, OverflowError):
+            continue
+        if i_mid is None: return fallback
+        try:
+          d_mid = float(d[i_mid])
+        except (TypeError, ValueError, OverflowError):
+          return fallback
+        if not math.isfinite(d_mid): return fallback
+        # If the curve starts below the cutoff, there is no preceding
+        # sample from which to estimate the crossing.
+        if i_mid == 0: return d_mid
+        # Fallback: linear interpolation across the actual
+        # crossing pair.
+        d_result = d_mid
+        x_cross = None
+        try:
+          y0 = float(fsc[i_mid - 1])
+          y1 = float(fsc[i_mid])
+          x0 = float(d_inv[i_mid - 1])
+          x1 = float(d_inv[i_mid])
+          if all(math.isfinite(v) for v in (y0, y1, x0, x1)):
+            if y1 != y0:
+              fraction = (cutoff - y0) / (y1 - y0)
+              # The pair should bracket the cutoff, but clamp against
+              # small numerical or malformed-data excursions.
+              fraction = max(0.0, min(1.0, fraction))
+              x_cross = x0 + fraction * (x1 - x0)
+            else:
+              x_cross = 0.5 * (x0 + x1)
+            if x_cross != 0.0 and math.isfinite(x_cross):
+              candidate = 1.0 / x_cross
+              if math.isfinite(candidate):
+                d_result = candidate
+            else:
+              x_cross = None
+        except (TypeError, ValueError, OverflowError, ZeroDivisionError):
+          x_cross = None
+        # Improve the result using local quadratic fit.
+        # Any problem simply leaves the linear result unchanged.
+        try:
+          i_min = max(0, i_mid - int(half_window))
+          # Python's upper slice bound is exclusive.
+          i_stop = min(n, i_mid + int(half_window) + 1)
+          if i_stop - i_min < 3: return d_result
+          # For a positive cutoff, require the whole local window to
+          # support a downward trend through the cutoff. Around zero,
+          # retain less restrictive behavior.
+          on_slope = (
+            cutoff <= 0.0 or
+            (
+              float(fsc[i_min]) > cutoff and
+              float(fsc[i_stop - 1]) < cutoff
+            )
+          )
+          if not on_slope: return d_result
+          x = d_inv[i_min:i_stop]
+          y = fsc[i_min:i_stop]
+          from scitbx.math import curve_fitting
+          c, b, a = curve_fitting.univariate_polynomial_fit(
+            x_obs=x,
+            y_obs=y,
+            degree=2,
+            number_of_cycles=5
+          ).params
+          a = float(a)
+          b = float(b)
+          c = float(c) - cutoff
+          if not all(math.isfinite(v) for v in (a, b, c)): return d_result
+          roots = []
+          if a != 0.0:
+            determinant = b * b - 4.0 * a * c
+            if math.isfinite(determinant) and determinant >= 0.0:
+              sqrt_det = math.sqrt(determinant)
+              roots.append((-b + sqrt_det) / (2.0 * a))
+              roots.append((-b - sqrt_det) / (2.0 * a))
+          elif b != 0.0:
+            # A nominal quadratic fit can effectively be linear.
+            roots.append(-c / b)
+          x_values = [
+            float(d_inv[i])
+            for i in range(i_min, i_stop)
+            if math.isfinite(float(d_inv[i]))
+          ]
+          if not x_values: return d_result
+          x_low = min(x_values)
+          x_high = max(x_values)
+          # Reject roots outside the fitted data range. Such roots are
+          # polynomial extrapolations and are generally unreliable.
+          roots = [
+            root for root in roots
+            if (
+              math.isfinite(root) and
+              root > 0.0 and
+              x_low <= root <= x_high
+            )
+          ]
+          if not roots: return d_result
+          # Select the root nearest the actual crossing pair rather than
+          # selecting solely in resolution space.
+          if x_cross is not None:
+            root = min(roots, key=lambda value: abs(value - x_cross))
+          else:
+            x_mid = float(d_inv[i_mid])
+            root = min(roots, key=lambda value: abs(value - x_mid))
+          d_quadratic = 1.0 / root
+          if not math.isfinite(d_quadratic): return d_result
+          # Preserve protection against implausibly large movement,
+          # but compare against the interpolated crossing rather than the
+          # lower sampled point.
+          if (
+            max_resolution_shift is not None and
+            abs(d_quadratic - d_result) >
+                abs(float(max_resolution_shift))
+          ):
+              return d_result
+          return d_quadratic
+        except Exception:
+          # Local fitting is optional; the interpolated crossing remains
+          # a valid and safe result.
+          return d_result
+      except Exception:
+        return fallback
+
+  def d_min_from_fsc(self, other=None, fsc_curve=None, fsc_cutoff=0.143):
     """
     Compute Fourier Shell Correlation (FSC) and derive resolution based on
     specified cutoff.
     """
     if(fsc_curve is None):
       assert other is not None
-      fsc_curve = self.fsc(other=other, bin_width=bin_width)
+      fsc_curve = self.fsc(other=other)
+      if not fsc_curve: return group_args(fsc=None, d_min=None)
     else:
       assert other is None
-    i_mid = None
-    for i in xrange(fsc_curve.fsc.size()):
-      if(fsc_curve.fsc[i]<fsc_cutoff):
-        i_mid = i
-        break
-    #print "i_mid, cc:", fsc_curve.d[i_mid], fsc_curve.d_inv[i_mid]
-    d_min = None
-    d_mid = None
-    if(i_mid is not None):
-      d_mid = fsc_curve.d[i_mid]
-      if(i_mid is not None):
-        i_min = i_mid-5
-        i_max = i_mid+6
-        on_slope=True
-        if(fsc_cutoff>0.): # does not have to be on slope around fsc_cutoff=0
-          on_slope = [
-            fsc_curve.fsc[i_min]>fsc_cutoff,
-            fsc_curve.fsc[i_max]<fsc_cutoff].count(True)==2
-        if(on_slope or fsc_cutoff):
-          x = fsc_curve.d_inv[i_min:i_max]
-          y = fsc_curve.fsc[i_min:i_max]
-          from scitbx.math import curve_fitting
-          c,b,a = curve_fitting.univariate_polynomial_fit(x_obs=x, y_obs=y,
-            degree=2, number_of_cycles=5).params
-          c = c-fsc_cutoff
-          det = b**2-4*a*c
-          well_defined = [det >= 0., a != 0.]
-          if(well_defined.count(True)==2):
-            x1 = (-b+math.sqrt(det))/(2*a)
-            x2 = (-b-math.sqrt(det))/(2*a)
-            #print "x1,x2", 1./x1,1/x2
-            if(x1*x2<0.):
-              d_min = 1./max(x1,x2)
-            elif(x1>0 and x2>0):
-              d1,d2 = 1./x1, 1./x2
-              diff1 = abs(d1-d_mid)
-              diff2 = abs(d2-d_mid)
-              if(diff1<diff2): d_min = d1
-              else:            d_min = d2
-              if(abs(d_mid-d_min)>0.25): d_min = None
-    if(d_min is None): d_min = d_mid
+    d_min = self._d_min_from_fsc_helper(
+      fsc    = fsc_curve.fsc,
+      d      = fsc_curve.d,
+      d_inv  = fsc_curve.d_inv,
+      cutoff = fsc_cutoff)
     return group_args(fsc=fsc_curve, d_min=d_min)
 
   def map_correlation(self, other):
+    # Can be replace with a faster version:
+    #   return maptbx.cc_complex_complex(f_1 = x, f_2 = y)
     d1 = flex.abs(self.data())
     d2 = flex.abs(other.data())
     p1 = self.phases().data()
@@ -4146,6 +4764,29 @@ class array(set):
     if (factor > 0):
       return flex.sum( d1 * d2 * flex.cos(p2 - p1) ) / factor
     return None
+
+  def as_map_manager(self,
+                     resolution_factor=1/4.,
+                     crystal_gridding=None,
+                     grid_step=None,
+                     d_min=None,
+                     d_max=None,
+                     apply_sigma_scaling=True,
+                     apply_volume_scaling=False,
+                     wrapping=True):
+    assert isinstance(self.data(), flex.complex_double)
+    assert [apply_sigma_scaling, apply_volume_scaling].count(True) in [0,1]
+    mc = self
+    if([d_max, d_min].count(None)>0):
+      mc = self.resolution_filter(d_min=d_min, d_max=d_max)
+    fft_map_ = mc.fft_map(
+      resolution_factor = resolution_factor,
+      crystal_gridding  = crystal_gridding,
+      symmetry_flags = maptbx.use_space_group_symmetry,
+      grid_step         = grid_step)
+    if(apply_sigma_scaling):  fft_map_.apply_sigma_scaling()
+    if(apply_volume_scaling): fft_map_.apply_volume_scaling()
+    return fft_map_.as_map_manager(wrapping=wrapping)
 
   def fft_map(self, resolution_factor=1/3,
                     d_min=None,
@@ -4187,7 +4828,7 @@ class array(set):
         fourier_coefficients=self,
         f_000=f_000)
 
-  def direct_summation_at_point (self, site_frac, sigma=None) :
+  def direct_summation_at_point(self, site_frac, sigma=None):
     """
     Calculates the exact map value at the specified fractional coordinate
     using direct Fourier summation.  Relatively slow but avoids interpolation
@@ -4195,15 +4836,15 @@ class array(set):
     """
     assert (self.is_complex_array())
     map_coeffs = self
-    if (self.space_group_info().type().number() != 1) :
+    if (self.space_group_info().type().number() != 1):
       map_coeffs = map_coeffs.expand_to_p1()
-    if (not map_coeffs.anomalous_flag()) :
+    if (not map_coeffs.anomalous_flag()):
       map_coeffs = map_coeffs.generate_bijvoet_mates()
     sum = maptbx.direct_summation_at_point(
       miller_indices=map_coeffs.indices(),
       data=map_coeffs.data(),
       site_frac=site_frac)
-    if (sigma is not None) :
+    if (sigma is not None):
       return sum / sigma
     else :
       return sum / self.unit_cell().volume()
@@ -4265,7 +4906,7 @@ class array(set):
     del fft_map
     value_min = flex.min(map_data.as_1d())
     value_max = flex.max(map_data.as_1d())
-    if (value_min == value_max) :
+    if (value_min == value_max):
       cutoffp = cutoffm = value_max
     else :
       # XXX this avoids the huge memory overhead of sorting the entire map to
@@ -4326,9 +4967,8 @@ class array(set):
                                          assert_shannon_sampling=True,
                                          f_000=None):
     # J. P. Abrahams and A. G. W. Leslie, Acta Cryst. (1996). D52, 30-42
-    complete_set = self.complete_set()
-    sphere_reciprocal=get_sphere_reciprocal(
-       complete_set=complete_set,radius=radius)
+    # This should really have been called "local_variance_map" because the
+    # square root is not taken after local averaging of density-squared
     fft = self.fft_map(
       resolution_factor=resolution_factor,
       d_min=d_min,
@@ -4339,9 +4979,15 @@ class array(set):
       assert_shannon_sampling=assert_shannon_sampling,
       f_000=f_000)
     fft.apply_volume_scaling()
-    temp = complete_set.structure_factors_from_map(
-      flex.pow2(fft.real_map_unpadded()-mean_solvent_density))
-    fourier_coeff = complete_set.array(data=temp.data()*sphere_reciprocal)
+    from cctbx import miller
+    temp = miller.structure_factor_box_from_map(
+       map           = flex.pow2(fft.real_map_unpadded()-mean_solvent_density),
+       crystal_symmetry = self.crystal_symmetry(),
+       d_min = self.d_min(),
+       include_000      = True)
+
+    sphere_reciprocal = self.g_function(R=radius, s=1./temp.d_spacings().data())
+    fourier_coeff = temp.array(data=temp.data()*sphere_reciprocal)
     fft = fft_map(
       crystal_gridding=self.crystal_gridding(
         d_min=d_min,
@@ -4362,17 +5008,19 @@ class array(set):
                                          mandatory_factors=None,
                                          max_prime=5,
                                          assert_shannon_sampling=True,
-                                         f_000=None):
+                                         f_000=None,
+                                         include_000=False):
     # Based on local_standard_deviation_map above
     assert self.crystal_symmetry().unit_cell().is_similar_to(
         other.crystal_symmetry().unit_cell())
-
     complete_set = self.complete_set()
-    sphere_reciprocal=get_sphere_reciprocal(
-       complete_set=complete_set,radius=radius)
+    if(include_000 or f_000 is not None):
+      indices = complete_set.indices()
+      indices.append((0,0,0))
+      complete_set = complete_set.customized_copy(indices = indices)
+    sphere_reciprocal = self.g_function(R=radius, s=1./complete_set.d_spacings().data())
     if d_min is None:
       d_min=self.d_min()
-
     fft = self.fft_map(
       resolution_factor=resolution_factor,
       d_min=d_min,
@@ -4383,7 +5031,6 @@ class array(set):
       assert_shannon_sampling=assert_shannon_sampling,
       f_000=f_000)
     fft.apply_sigma_scaling()
-
     other_fft = other.fft_map(
       resolution_factor=resolution_factor,
       d_min=d_min,
@@ -4452,7 +5099,9 @@ class array(set):
 
   def export_as_shelx_hklf(self,
         file_object=None,
-        normalise_if_format_overflow=False):
+        normalise_if_format_overflow=False,
+        full_dynamic_range=False,
+        scale_range=None):
     """
     Write reflections to a SHELX-format .hkl file.
     """
@@ -4460,7 +5109,9 @@ class array(set):
     hklf.miller_array_export_as_shelx_hklf(
       miller_array=self,
       file_object=file_object,
-      normalise_if_format_overflow=normalise_if_format_overflow)
+      normalise_if_format_overflow=normalise_if_format_overflow,
+      full_dynamic_range=full_dynamic_range,
+      scale_range=scale_range)
 
   def export_as_cns_hkl(self,
         file_object,
@@ -4479,12 +5130,12 @@ class array(set):
       array_names=array_names,
       r_free_flags=r_free_flags)
 
-  def export_as_scalepack_unmerged (self,
+  def export_as_scalepack_unmerged(self,
       file_object=None,
       file_name=None,
       batch_numbers=None,
       spindle_flags=None,
-      scale_intensities_for_scalepack_merge=False) :
+      scale_intensities_for_scalepack_merge=False):
     """
     Write data in unmerged scalepack format.
 
@@ -4504,6 +5155,40 @@ class array(set):
       scale_intensities_for_scalepack_merge=
         scale_intensities_for_scalepack_merge)
 
+  def write_mtz(self,
+        file_name=None,
+        column_root_label=None,
+        column_types=None,
+        label_decorator=None,
+        title=None,
+        crystal_name="crystal",
+        project_name="project",
+        dataset_name="dataset",
+        wavelength=None):
+
+    """
+     Simple version of write_mtz for a single array, typically map coefficients
+    """
+
+    if column_root_label is None:
+      if self.info() and self.info().labels:
+        column_root_label=self.info().labels[0]
+      else:
+        column_root_label="F"
+
+    mtz_dataset = self.as_mtz_dataset(
+        column_root_label=column_root_label,
+        column_types=column_types,
+        label_decorator=label_decorator,
+        title=title,
+        crystal_name=crystal_name,
+        project_name=project_name,
+        dataset_name=dataset_name,
+        wavelength=wavelength)
+
+    mtz_object = mtz_dataset.mtz_object()
+    mtz_object.write(file_name = file_name)
+
   def as_mtz_dataset(self,
         column_root_label,
         column_types=None,
@@ -4518,11 +5203,11 @@ class array(set):
     with additional arrays and eventually written to an MTZ file.
     """
     import iotbx.mtz
-    if (wavelength is None) :
+    if (wavelength is None):
       info = self.info()
-      if (info is not None) :
+      if (info is not None):
         wavelength = info.wavelength
-    if (wavelength is None) :
+    if (wavelength is None):
       wavelength = 1.0
     return iotbx.mtz.miller_array_as_mtz_dataset(self,
       column_root_label=column_root_label,
@@ -4545,7 +5230,7 @@ class array(set):
     import iotbx.cif
     cif = iotbx.cif.model.cif()
     cif[data_name] = self.as_cif_block(array_type=array_type)
-    print >> out, cif
+    print(cif, file=out)
 
   def as_phases_phs(self,
         out,
@@ -4720,9 +5405,10 @@ class array(set):
     if scale_indices is not None: # HKLF 5
       assert scale_indices.size() == self.indices().size()
       assert not (twin_fractions is None or len(twin_fractions) == 0)
+      assert not twin_components
       result = observations.observations(
         self.indices(), self.data(), self.sigmas(),
-        scale_indices, twin_fractions, tw_cmps)
+        scale_indices, twin_fractions)
       result.fo_sq = array(
         miller_set=set(
           crystal_symmetry=self,
@@ -4739,7 +5425,7 @@ class array(set):
     result.ref_twin_components = twin_components
     return result
 
-  def french_wilson (self, **kwds) :
+  def french_wilson(self, **kwds):
     """
     Perform French-Wilson treatment of X-ray intensities to estimate the "true"
     intensities, replacing very weak and/or negative values, and takes the
@@ -4834,9 +5520,9 @@ class array(set):
       if(mi[1]==0 and mi[2]==0): h.append((d, mi[0], data_over_sigma))
       if(mi[0]==0 and mi[2]==0): k.append((d, mi[1], data_over_sigma))
       if(mi[0]==0 and mi[1]==0): l.append((d, mi[2], data_over_sigma))
-    print "a*                      b*                    c*"
-    print "d         h   F/sigma   d        k  F/sigma   d        l  F/sigma"
-    for i in xrange( max(len(h),max(len(k),len(l))) ):
+    print("a*                      b*                    c*")
+    print("d         h   F/sigma   d        k  F/sigma   d        l  F/sigma")
+    for i in range( max(len(h),max(len(k),len(l))) ):
       blanc = " "*21
       try: ast = "%7.3f %4d %8.3f"%h[i]
       except Exception: ast = blanc
@@ -4846,7 +5532,7 @@ class array(set):
         else: bst = blanc
       try: cst = "%7.3f %4d %8.3f"%l[i]
       except Exception: cst = ""
-      print ast,bst,cst
+      print(ast,bst,cst)
 
   def ellipsoidal_truncation_by_sigma(self, sigma_cutoff=3):
     h_cut,k_cut,l_cut = self.ellipsoidal_resolutions_and_indices_by_sigma(
@@ -4867,7 +5553,7 @@ class array(set):
       #if(r>1 and data[i_mi]/sigmas[i_mi]<sigma_cutoff): selection[i_mi] = False
     return self.select(selection=selection)
 
-  def permute_d_range (self, d_max, d_min) :
+  def permute_d_range(self, d_max, d_min):
     """
     Randomly shuffle reflections within a given resolution range.  Used for
     control refinements to validate the information content of a dataset.
@@ -4881,11 +5567,11 @@ class array(set):
     all_isel.set_selected(range_selection, range_isel_permuted)
     data = self.data().select(all_isel)
     sigmas = None
-    if (self.sigmas() is not None) :
+    if (self.sigmas() is not None):
       sigmas = self.sigmas().select(all_isel)
     return self.customized_copy(data=data, sigmas=sigmas)
 
-  def is_unmerged_intensity_array (self) :
+  def is_unmerged_intensity_array(self):
     """
     Determine whether the array contains unmerged experimental observations
     or not.  In some files only the centric reflections will appear to be
@@ -4895,15 +5581,15 @@ class array(set):
     centric_flags = self.centric_flags().data()
     centrics = self.select(centric_flags)
     acentric_flags = ~centric_flags
-    if (acentric_flags.count(True) == 0) :
+    if (acentric_flags.count(True) == 0):
       return (not centrics.is_unique_set_under_symmetry())
     acentrics = self.select(acentric_flags)
     return (not acentrics.is_unique_set_under_symmetry())
 
   # this is tested as part of phenix.merging_statistics (note that the exact
   # values are not reproducible)
-  def cc_one_half (self, use_binning=False, n_trials=1, anomalous_flag=False,
-                   return_n_refl=False) :
+  def cc_one_half(self, use_binning=False, n_trials=1, anomalous_flag=False,
+                   return_n_refl=False):
     """
     Calculate the correlation between two randomly assigned pools of unmerged
     data ("CC 1/2").  If desired the mean over multiple trials can be taken.
@@ -4913,7 +5599,7 @@ class array(set):
     function skips this method.
     """
     assert self.is_xray_intensity_array()
-    if (not use_binning) :
+    if (not use_binning):
       tmp_array = self.customized_copy(
         anomalous_flag=anomalous_flag).map_to_asu()
       tmp_array = tmp_array.sort("packed_indices")
@@ -4924,7 +5610,7 @@ class array(set):
     for i_bin in self.binner().range_all():
       sel = self.binner().selection(i_bin)
       bin_array = self.select(sel)
-      if (bin_array.size() == 0) :
+      if (bin_array.size() == 0):
         data.append(None)
       else :
         data.append(bin_array.cc_one_half(
@@ -4949,12 +5635,13 @@ class array(set):
         sigmas=flex.double(self.size(), 1))
       merging_internal = intensities_copy.merge_equivalents(
         use_internal_variance=True)
-      merged = merging_internal.array()
-      if merged.size() == 1:
+      merged = merging_internal.array().select(
+        merging_internal.redundancies().data() > 1
+      )
+      if merged.size() <= 1:
         cc_one_half = 0
       else:
-        internal_sigmas = merging_internal.array().sigmas()
-        internal_variances = flex.pow2(internal_sigmas)
+        internal_variances = flex.pow2(merged.sigmas())
         mav = flex.mean_and_variance(merged.data())
         var_y = mav.unweighted_sample_variance()
         var_e = 2 * flex.mean(internal_variances)
@@ -4967,13 +5654,13 @@ class array(set):
     for i_bin in self.binner().range_all():
       sel = self.binner().selection(i_bin)
       bin_array = self.select(sel)
-      if (bin_array.size() == 0) :
+      if (bin_array.size() == 0):
         data.append(None)
       else :
         data.append(bin_array.cc_one_half_sigma_tau(return_n_refl=return_n_refl))
     return binned_data(binner=self.binner(), data=data, data_fmt="%6.3f")
 
-  def half_dataset_anomalous_correlation (self, use_binning=False, return_n_pairs=False, return_split_datasets=False) :
+  def half_dataset_anomalous_correlation(self, use_binning=False, return_n_pairs=False, return_split_datasets=False):
     """
     Calculate the correlation of the anomalous differences of two randomly
     assigned half-datasets (starting from unmerged data).
@@ -4981,7 +5668,7 @@ class array(set):
     assert self.is_xray_intensity_array()
     tmp_array = self.customized_copy(anomalous_flag=True).map_to_asu()
     tmp_array = tmp_array.sort("packed_indices")
-    if (not use_binning) :
+    if (not use_binning):
       split_datasets = split_unmerged(
         unmerged_indices=tmp_array.indices(),
         unmerged_data=tmp_array.data(),
@@ -5012,19 +5699,19 @@ class array(set):
     for i_bin in tmp_array.binner().range_all():
       sel = tmp_array.binner().selection(i_bin)
       bin_array = tmp_array.select(sel)
-      if (bin_array.size() == 0) :
+      if (bin_array.size() == 0):
         data.append(None)
       else :
         data.append(bin_array.half_dataset_anomalous_correlation())
     return binned_data(binner=tmp_array.binner(), data=data, data_fmt="%6.3f")
 
-  def cc_anom (self, *args, **kwds) :
+  def cc_anom(self, *args, **kwds):
     """
     Alias for array.half_dataset_anomalous_correlation()
     """
     return self.half_dataset_anomalous_correlation(*args, **kwds)
 
-  def r_anom (self) :
+  def r_anom(self):
     """Calculate R_anom, which measures the agreement between Friedel mates.
     Unlike CC_anom and various other R-factors (such as R_pim, which it is
     usually compared to), this requires merged data.
@@ -5035,7 +5722,7 @@ class array(set):
     assert self.is_xray_intensity_array()
     tmp_array = self.customized_copy(
       anomalous_flag=True).map_to_asu()
-    if (not tmp_array.is_unique_set_under_symmetry()) :
+    if (not tmp_array.is_unique_set_under_symmetry()):
       tmp_array = tmp_array.merge_equivalents().array()
     d_ano = tmp_array.anomalous_differences()
     # XXX this appears to be consistent with the published descriptions, but
@@ -5046,7 +5733,7 @@ class array(set):
     assert (denominator > 0)
     return numerator / denominator
 
-  def twin_data (self, twin_law, alpha) :
+  def twin_data(self, twin_law, alpha):
     """
     Apply a twin law to the data, returning an array of the same original type.
 
@@ -5057,7 +5744,7 @@ class array(set):
     assert (alpha is not None) and (0.0 <= alpha <= 0.5)
     assert (twin_law is not None)
     tmp_array = self.map_to_asu()
-    if (tmp_array.is_xray_amplitude_array()) :
+    if (tmp_array.is_xray_amplitude_array()):
       tmp_array = tmp_array.f_as_f_sq()
     assert tmp_array.is_xray_intensity_array()
     twin_law = sgtbx.rt_mx(twin_law, r_den=24, t_den=288)
@@ -5072,11 +5759,11 @@ class array(set):
     new_sigmas = new_data / 100.0 # FIXME this seems wrong...
     twinned = xa.customized_copy(data=new_data,
       sigmas=new_sigmas).set_observation_type_xray_intensity()
-    if (self.is_xray_amplitude_array()) :
+    if (self.is_xray_amplitude_array()):
       return twinned.f_sq_as_f()
     return twinned
 
-  def detwin_data (self, twin_law, alpha) :
+  def detwin_data(self, twin_law, alpha):
     """
     Detwin data using a known twin fraction, returning an array with the same
     original data type.
@@ -5088,7 +5775,7 @@ class array(set):
     assert (alpha is not None) and (0.0 <= alpha <= 0.5)
     assert (twin_law is not None)
     tmp_array = self.map_to_asu()
-    if (tmp_array.is_xray_amplitude_array()) :
+    if (tmp_array.is_xray_amplitude_array()):
       tmp_array = tmp_array.f_as_f_sq()
     assert tmp_array.is_xray_intensity_array()
     twin_law = sgtbx.rt_mx(twin_law, r_den=24, t_den=288)
@@ -5111,20 +5798,20 @@ class array(set):
     new_data = ((1.0 - alpha)*i_old1 - alpha*i_old2) / (1 - 2.0*alpha)
     new_sigmas = None
     tmp_mult = math.sqrt( 1-2*alpha +2*alpha*alpha)/(1-2.0*alpha)
-    if (s_old1 is not None) :
+    if (s_old1 is not None):
       new_sigmas = tmp_mult * flex.sqrt((flex.pow(s_old1,2) + s_old1*s_old2)/2)
     detwinned = tmp_array.customized_copy(
       data=new_data,
       sigmas=new_sigmas).common_set(other=self)
-    if (self.is_xray_amplitude_array()) :
+    if (self.is_xray_amplitude_array()):
       return detwinned.f_sq_as_f()
     return detwinned
 
   # TODO separate test - currently tested implicitly as part of change_symmetry
-  def apply_change_of_basis (self,
+  def apply_change_of_basis(self,
         change_of_basis,
         eliminate_invalid_indices=True,
-        out=None) :
+        out=None):
     """
     Encapsulates a variety of reindexing operations, including handling for a
     variety of corner cases.
@@ -5134,10 +5821,10 @@ class array(set):
       indices
     :returns: new Miller array
     """
-    if (out is None) :
+    if (out is None):
       out = sys.stdout
     miller_array = self
-    print >> out, "Change of basis:"
+    print("Change of basis:", file=out)
     if   (change_of_basis == "to_reference_setting"):
       cb_op = miller_array.change_of_basis_op_to_reference_setting()
     elif (change_of_basis == "to_primitive_setting"):
@@ -5149,25 +5836,22 @@ class array(set):
     else:
       try :
         cb_op = sgtbx.change_of_basis_op(change_of_basis)
-      except ValueError, e :
+      except ValueError as e :
         raise Sorry(("The change-of-basis operator '%s' is invalid "+
           "(original error: %s)") % (change_of_basis, str(e)))
     if (cb_op.c_inv().t().is_zero()):
-      print >> out, "  Change of basis operator in both h,k,l and x,y,z notation:"
-      print >> out, "   ", cb_op.as_hkl()
+      print("  Change of basis operator in both h,k,l and x,y,z notation:", file=out)
+      print("   ", cb_op.as_hkl(), file=out)
     else:
-      print >> out, "  Change of basis operator in x,y,z notation:"
-    print >> out, "    %s [Inverse: %s]" % (cb_op.as_xyz(),
-      cb_op.inverse().as_xyz())
+      print("  Change of basis operator in x,y,z notation:", file=out)
+    print("    %s [Inverse: %s]" % (cb_op.as_xyz(),
+      cb_op.inverse().as_xyz()), file=out)
     d = cb_op.c().r().determinant()
-    print >> out, "  Determinant:", d
+    print("  Determinant:", d, file=out)
     if (d < 0 and change_of_basis != "to_inverse_hand"):
-      print >> out, \
-        "  **************************************************************"
-      print >> out, \
-        "  W A R N I N G: This change of basis operator changes the hand!"
-      print >> out, \
-        "  **************************************************************"
+      print("  **************************************************************", file=out)
+      print("  W A R N I N G: This change of basis operator changes the hand!", file=out)
+      print("  **************************************************************", file=out)
     if(eliminate_invalid_indices):
       sel = cb_op.apply_results_in_non_integral_indices(
         miller_indices=miller_array.indices())
@@ -5175,25 +5859,25 @@ class array(set):
       keep = ~toss
       keep_array = miller_array.select(keep)
       toss_array = miller_array.select(toss)
-      print >> out, "  Mean value for kept reflections:", \
-        flex.mean(keep_array.data())
-      if (len(toss_array.data()) > 0) :
-        print >> out, "  Mean value for invalid reflections:", \
-          flex.mean(toss_array.data())
+      print("  Mean value for kept reflections:", \
+        flex.mean(keep_array.data()), file=out)
+      if (len(toss_array.data()) > 0):
+        print("  Mean value for invalid reflections:", \
+          flex.mean(toss_array.data()), file=out)
       miller_array=keep_array
     processed_array = miller_array.change_basis(cb_op=cb_op)
-    print >> out, "  Crystal symmetry after change of basis:"
+    print("  Crystal symmetry after change of basis:", file=out)
     crystal.symmetry.show_summary(processed_array, prefix="    ", f=out)
     return processed_array, cb_op
 
-  def change_symmetry (self,
+  def change_symmetry(self,
       space_group_symbol=None,
       space_group_info=None,
       volume_warning_threshold=0.001,
       expand_to_p1_if_necessary=True,
       remove_systematic_absences=True,
       merge_non_unique=True,
-      log=None) :
+      log=None):
     """
     Encapsulates all operations required to convert the original data to a
     different symmetry (e.g. as suggested by Xtriage).  This includes
@@ -5213,25 +5897,25 @@ class array(set):
     :param log: filehandle-like object
     :returns: Miller array in the new symmetry
     """
-    if (log is None) :
+    if (log is None):
       log = sys.stdout
     assert [space_group_symbol,space_group_info].count(None) == 1
     miller_array = self
     symm = miller_array.crystal_symmetry()
     space_group_old = symm.space_group()
-    print >> log, "Current symmetry:"
+    print("Current symmetry:", file=log)
     symm.show_summary(f=log, prefix="  ")
     # change to Niggli cell
     miller_array = miller_array.niggli_cell()
     symm = miller_array.crystal_symmetry()
-    print >> log, "Niggli cell symmetry:"
+    print("Niggli cell symmetry:", file=log)
     symm.show_summary(f=log, prefix="  ")
-    if (space_group_info is None) :
+    if (space_group_info is None):
       space_group_info = sgtbx.space_group_info(space_group_symbol)
     space_group_new = space_group_info.group()
-    if (space_group_new.n_smx() < space_group_old.n_smx()) :
+    if (space_group_new.n_smx() < space_group_old.n_smx()):
       if expand_to_p1_if_necessary :
-        print >> log, "Changing to lower symmetry, expanding to P1 first"
+        print("Changing to lower symmetry, expanding to P1 first", file=log)
         miller_array = miller_array.expand_to_p1()
       else :
         warnings.warn("This operation will result in incomplete data without "+
@@ -5240,25 +5924,25 @@ class array(set):
     number = space_group_info.type().number()
     # reindex automatically if new lattice is P3 or P6 and angles are ~90,90,60
     # but only if the reference setting is requested!
-    if (143 <= number < 195) and space_group_info.is_reference_setting() :
+    if (143 <= number < 195) and space_group_info.is_reference_setting():
       cb_op = sgtbx.change_of_basis_op("a,-b,-c")
       unit_cell_new = unit_cell.change_basis(cb_op)
-      if (unit_cell_new.parameters()[-1] > unit_cell.parameters()[-1]) :
-        print >> log, "Reindexing with a,-b,-c"
+      if (unit_cell_new.parameters()[-1] > unit_cell.parameters()[-1]):
+        print("Reindexing with a,-b,-c", file=log)
         miller_array = miller_array.change_basis(cb_op)
         symm = miller_array.crystal_symmetry()
         unit_cell = symm.unit_cell()
-    if (not space_group_info.group().is_compatible_unit_cell(unit_cell)) :
+    if (not space_group_info.group().is_compatible_unit_cell(unit_cell)):
       unit_cell_old = unit_cell
       unit_cell = space_group_info.group().average_unit_cell(unit_cell_old)
-      print >> log, "Coercing unit cell into parameters compatible with %s" % \
-        space_group_info
-      print >> log, "  Old cell: %s" % str(unit_cell_old.parameters())
-      print >> log, "  New cell: %s" % str(unit_cell.parameters())
+      print("Coercing unit cell into parameters compatible with %s" % \
+        space_group_info, file=log)
+      print("  Old cell: %s" % str(unit_cell_old.parameters()), file=log)
+      print("  New cell: %s" % str(unit_cell.parameters()), file=log)
       volume_start = unit_cell_old.volume()
       volume_new = unit_cell.volume()
       volume_change_fraction = abs(volume_new - volume_start) / volume_new
-      if (volume_change_fraction > volume_warning_threshold) :
+      if (volume_change_fraction > volume_warning_threshold):
         warnings.warn("This operation will change the unit cell volume by "+
           "more than %.1f%%." % (volume_change_fraction*100), UserWarning)
     symm_new = crystal.symmetry(
@@ -5269,17 +5953,17 @@ class array(set):
       change_of_basis="to_reference_setting",
       eliminate_invalid_indices=True,
       out=log)
-    if merge_non_unique and (not miller_array.is_unique_set_under_symmetry()) :
+    if merge_non_unique and (not miller_array.is_unique_set_under_symmetry()):
       miller_array = miller_array.merge_equivalents().array()
     if remove_systematic_absences :
       ma_old = miller_array.deep_copy()
       miller_array = miller_array.remove_systematic_absences()
       ls = ma_old.lone_set(other=miller_array)
-    print >> log, "New Miller array:"
+    print("New Miller array:", file=log)
     miller_array.show_summary(f=log, prefix="  ")
     return miller_array
 
-  def show_all_possible_systematic_absences (self, out=sys.stdout, prefix="") :
+  def show_all_possible_systematic_absences(self, out=sys.stdout, prefix=""):
     """
     For each possible space group sharing the same basic intensity symmetry,
     show a list of possible systematically absent reflections and corresponding
@@ -5294,15 +5978,15 @@ class array(set):
 
   #---------------------------------------------------------------------
   # Xtriage extensions - tested in mmtbx/scaling/tst_xtriage_twin_analyses.py
-  def analyze_intensity_statistics (self, d_min=2.5,
-    completeness_as_non_anomalous=None,  log=None) :
+  def analyze_intensity_statistics(self, d_min=2.5,
+    completeness_as_non_anomalous=None,  log=None):
     """
     Detect translational pseudosymmetry and twinning, using methods in
     Xtriage.  Returns a mmtbx.scaling.twin_analyses.twin_law_interpretation
     object.  (Requires mmtbx to be configured to be functional.)
     """
     import libtbx.load_env
-    if (not libtbx.env.has_module("mmtbx")) :
+    if (not libtbx.env.has_module("mmtbx")):
       raise ImportError("mmtbx is required for this functionality.")
     from mmtbx.scaling import twin_analyses as twin_analyses
     return twin_analyses.analyze_intensity_statistics(
@@ -5311,13 +5995,63 @@ class array(set):
       completeness_as_non_anomalous=completeness_as_non_anomalous,
       log=log)
 
-  def has_twinning (self, d_min=2.5) :
+  def has_twinning(self, d_min=2.5):
     """
     Convenience method for identifying twinned data.  Note that this is
     hugely inefficient if any other Xtriage analyses are planned, since it
     discards the other results.  Requires mmtbx.
     """
     return self.analyze_intensity_statistics(d_min=d_min).has_twinning()
+
+  def average_neighbors(self, layers=1, include_origin=False,
+      offset_list=None, average_with_cc=None):
+    # Return array with values equal to average of values at neighboring indices
+    # layers=1 means 26 or 27 neighboring points.
+    # layers=0 means 6 or 7 closest points
+    if average_with_cc:
+      assert type(self.data()[0])==type((1+1j))  # must be complex
+
+    sum_array=None
+    sum_n_array=None
+    if not offset_list:
+      offset_list=get_offset_list(layers=layers,include_origin=include_origin)
+
+    for offset in offset_list:
+      offset_array=offset_indices(self,offset=offset)
+      if average_with_cc:
+        offset_array_matching, self_matching = offset_array.common_sets(self)
+        offset_array=self.customized_copy(
+           indices=offset_array_matching.indices(),
+           data=offset_array_matching.data())
+        self_array=self.customized_copy(
+           indices=self_matching.indices(),
+           data=self_matching.data())
+        weight=self_array.map_correlation(offset_array)
+      else:
+        weight=1
+      if sum_array is None:
+        sum_array=offset_array*weight
+      else:
+        sum_array=sum_array.combine(offset_array,scale=False,
+          scale_for_matches=weight)
+
+      count_array=offset_array.customized_copy(
+                      data=flex.double(offset_array.size(),abs(weight)))
+      if sum_n_array is None:
+        sum_n_array=count_array
+      else:
+        sum_n_array=sum_n_array.combine(count_array,scale=False)
+    s=(sum_n_array.data() < 1.e-6)
+    sum_n_array.data().set_selected(s,1)
+    sum_array=sum_array.customized_copy(
+      data=sum_array.data()*(1/sum_n_array.data()))
+
+    # and extract values corresponding to original data
+    sum_array_matching, self_matching = sum_array.common_sets(self)
+    new_array=self.customized_copy(indices=sum_array_matching.indices(),
+       data=sum_array_matching.data())
+    return new_array
+
 
 ########################################################################
 # END array class
@@ -5421,6 +6155,7 @@ class merge_equivalents(object):
     assert algorithm in ["gaussian", "shelx"]
     self._r_linear = None
     self._r_square = None
+    sigmas = None
     self._r_int = self._r_merge = self._r_meas = self._r_pim = None
     self._inconsistent_equivalents = None
     self.n_incompatible_flags = None
@@ -5444,15 +6179,15 @@ class merge_equivalents(object):
           merge_ext = merge_type(
             asu_array.indices().select(perm),
             asu_array.data().select(perm))
-      except RuntimeError, e :
-        if ("merge_equivalents_exact: incompatible" in str(e)) :
+      except RuntimeError as e :
+        if ("merge_equivalents_exact: incompatible" in str(e)):
           raise Sorry(str(e) + " (mismatch between Friedel mates)")
         raise
       sigmas = None
       del asu_array
       if hasattr(merge_ext, "n_incompatible_flags"):
         self.n_incompatible_flags = merge_ext.n_incompatible_flags
-    elif (isinstance(miller_array.data(), flex.double)):
+    elif (isinstance(miller_array.data(), flex.double) ):
       asu_set = set.map_to_asu(miller_array)
       perm = asu_set.sort_permutation(by_value="packed_indices")
       if (miller_array.sigmas() is not None):
@@ -5483,6 +6218,13 @@ class merge_equivalents(object):
       self._r_merge = merge_ext.r_merge
       self._r_meas = merge_ext.r_meas
       self._r_pim = merge_ext.r_pim
+    elif (isinstance(miller_array.data(), flex.std_string) ):
+      asu_array = miller_array.map_to_asu()
+      perm = asu_array.sort_permutation(by_value="packed_indices")
+      merge_ext = ext.merge_equivalents_string(
+        asu_array.indices().select(perm),
+        miller_array.data().select(perm))
+      del asu_array
     else:
       raise RuntimeError(
         "cctbx.miller.merge_equivalents: unsupported array type:\n"
@@ -5524,16 +6266,16 @@ class merge_equivalents(object):
   def r_int(self):
     return self._r_int
 
-  def r_merge (self) :
+  def r_merge(self):
     """
     Standard (but flawed) metric of dataset internal consistency.
 
     .. math::
-       R_{merge} = \dfrac{\sum_{hkl}{\sum_{i}{|I_{i}(hkl) - \left \langle I_{i}(hkl) \\right \\rangle|}}}{\sum_{hkl}{\sum_{i}{I_{i}(hkl)}}}
+       R_{merge} = \\dfrac{\\sum_{hkl}{\\sum_{i}{|I_{i}(hkl) - \\left \\langle I_{i}(hkl) \\right \\rangle|}}}{\\sum_{hkl}{\\sum_{i}{I_{i}(hkl)}}}
     """
     return self._r_merge
 
-  def r_meas (self) :
+  def r_meas(self):
     """
     Alternate metric of dataset internal consistency.  Explained in detail in
     Diederichs K & Karplus PA (1997) Nature Structural Biology 4:269-275.
@@ -5543,7 +6285,7 @@ class merge_equivalents(object):
     """
     return self._r_meas
 
-  def r_pim (self) :
+  def r_pim(self):
     """
     Alternate metric of dataset internal consistency or quality.  Explained in
     detail in Weiss MS (2001) J Appl Cryst 34:130-135.
@@ -5609,11 +6351,11 @@ class merge_equivalents(object):
       max_lengths = [max(max_len,len(field))
         for max_len,field in zip(max_lengths, fields)]
     if (r_linear is not None):
-      print >> out, prefix+self.r_linear.__doc__
+      print(prefix+self.r_linear.__doc__, file=out)
     if (r_square is not None):
-      print >> out, prefix+self.r_square.__doc__
+      print(prefix+self.r_square.__doc__, file=out)
     if (r_linear is not None or r_square is not None):
-      print >> out, prefix+"In these sums single measurements are excluded."
+      print(prefix+"In these sums single measurements are excluded.", file=out)
     n = flex.sum(flex.int(max_lengths[1:4]))+4
     fmt = "%%%ds  %%%ds  %%%ds  %%%ds" % tuple(
       [max_lengths[0], n] + max_lengths[4:])
@@ -5621,10 +6363,10 @@ class merge_equivalents(object):
     for r in [r_linear, r_square]:
       if (r is None): fields.append("")
       else: fields.append("Mean  ")
-    print >> out, prefix + (fmt % tuple(fields)).rstrip()
+    print(prefix + (fmt % tuple(fields)).rstrip(), file=out)
     fmt = "%%%ds  %%%ds  %%%ds  %%%ds  %%%ds  %%%ds" % tuple(max_lengths)
     for fields in lines:
-      print >> out, prefix + (fmt % tuple(fields)).rstrip()
+      print(prefix + (fmt % tuple(fields)).rstrip(), file=out)
 
 class fft_map(maptbx.crystal_gridding):
   """
@@ -5675,11 +6417,22 @@ class fft_map(maptbx.crystal_gridding):
     """
     if (not self.anomalous_flag()):
       assert ((self._real_map.is_padded()) or (not direct_access))
-      if (direct_access) :
+      if (direct_access):
         self._real_map_accessed = True
       return self._real_map
     else:
       return flex.real(self._complex_map)
+
+  def as_map_manager(self, in_place=True, wrapping=True):
+    '''
+     Create a map_manager object from real_map_unpadded version of this map
+    '''
+    map_data=self.real_map_unpadded(in_place=in_place)
+    from iotbx.map_manager import map_manager
+    return map_manager(map_data=map_data,
+      unit_cell_crystal_symmetry=self.crystal_symmetry(),
+      unit_cell_grid=map_data.all(),
+      wrapping=wrapping)
 
   def real_map_unpadded(self, in_place=True):
     """
@@ -5688,11 +6441,11 @@ class fft_map(maptbx.crystal_gridding):
 
     :returns: a flex.double object with grid accessor.
     """
-    if (in_place) :
+    if (in_place):
       assert (not self._real_map_accessed)
     result = self.real_map(direct_access=False)
     if (not result.is_padded()): return result
-    elif (in_place) :
+    elif (in_place):
       maptbx.unpad_in_place(map=result)
       return result
     else :
@@ -5739,25 +6492,28 @@ class fft_map(maptbx.crystal_gridding):
       map=self.real_map(direct_access=False),
       verify_symmetry=verify_symmetry)
 
-  def as_ccp4_map (self,
+  def as_ccp4_map(self,
                    file_name,
                    gridding_first=None,
                    gridding_last=None,
-                   labels=["cctbx.miller.fft_map"]) :
+                   labels=["Values outside boundaries are wrapped inside",
+                           "fft_map from Phenix"]):
     """
     Write the real component of the map to a CCP4-format file.
     """
-    from iotbx import ccp4_map
+    from iotbx import mrcfile
     map_data = self.real_map(direct_access=False)
+    if (gridding_first is None) and (gridding_last is None):
+      labels.append("wrapping_outside_cell")
     if gridding_first is None :
       gridding_first = (0,0,0)
     if gridding_last is None :
       gridding_last = tuple(self.n_real())
       # only write out the exact unit cell, without padding
-      if (gridding_first == (0,0,0)) :
+      if (gridding_first == (0,0,0)):
         gridding_last = tuple([ (n-1) for n in gridding_last ])
     assert (len(labels) <= 10)
-    ccp4_map.write_ccp4_map(file_name=file_name,
+    mrcfile.write_ccp4_map(file_name=file_name,
       unit_cell=self.unit_cell(),
       space_group=self.space_group(),
       gridding_first=gridding_first,
@@ -5765,10 +6521,10 @@ class fft_map(maptbx.crystal_gridding):
       map_data=map_data,
       labels=flex.std_string(labels))
 
-  def as_dsn6_map (self,
+  def as_dsn6_map(self,
       file_name,
       gridding_first=None,
-      gridding_last=None) :
+      gridding_last=None):
     """
     Write the real component of the map to a DSN6-format file.
     """
@@ -5779,20 +6535,13 @@ class fft_map(maptbx.crystal_gridding):
     if gridding_last is None :
       gridding_last = tuple(self.n_real())
       # only write out the exact unit cell, without padding
-      if (gridding_first == (0,0,0)) :
+      if (gridding_first == (0,0,0)):
         gridding_last = tuple([ (n-1) for n in gridding_last ])
     dsn6.write_dsn6_map(file_name=file_name,
       unit_cell=self.unit_cell(),
       gridding_first=gridding_first,
       gridding_last=gridding_last,
       map_data=map_data)
-
-def get_sphere_reciprocal(complete_set=None,radius=None):
-  stol = flex.sqrt(complete_set.sin_theta_over_lambda_sq().data())
-  w = 4 * stol * math.pi * radius
-  sphere_reciprocal = 3 * (flex.sin(w) - w * flex.cos(w))/flex.pow(w, 3)
-  return sphere_reciprocal
-
 
 def patterson_map(crystal_gridding, f_patt, f_000=None,
                   sharpening=False,
@@ -5840,7 +6589,7 @@ def structure_factor_box_from_map(crystal_symmetry, map=None, n_real=None,
 
 # this is tested as part of phenix.merging_statistics (note that the exact
 # values are not reproducible)
-def compute_cc_one_half (unmerged, n_trials=1, return_n_refl=False) :
+def compute_cc_one_half(unmerged, n_trials=1, return_n_refl=False):
   """
   Implementation of array.cc_one_half, assuming that the reflections are
   already in the ASU.  Because the implementation uses random numbers, the
@@ -5848,11 +6597,11 @@ def compute_cc_one_half (unmerged, n_trials=1, return_n_refl=False) :
   """
   cc_all = []
   unmerged = unmerged.select(unmerged.sigmas() > 0)
-  for x in range(n_trials) :
+  for x in range(n_trials):
     # this will obviously not be very random, but it's close enough for
     # the purpose of sampling different outcomes
     seed = 0
-    if (n_trials > 1) :
+    if (n_trials > 1):
       seed = int(random.random()*10000)
     data_1 = data_2 = None
     split_datasets = split_unmerged(
@@ -5869,7 +6618,7 @@ def compute_cc_one_half (unmerged, n_trials=1, return_n_refl=False) :
     return cc_one_half, data_1.size()
   return cc_one_half
 
-class systematic_absences_info (object) :
+class systematic_absences_info(object):
   """
   Container for information about possible systematically absent reflections in
   the array, trying both the current space group and all intensity-equivalent
@@ -5879,18 +6628,18 @@ class systematic_absences_info (object) :
 
   :param obs: X-ray intensity (preferred) or amplitude array
   """
-  def __init__ (self, obs, was_filtered=None) :
+  def __init__(self, obs, was_filtered=None):
     self.was_filtered = was_filtered
     self.input_amplitudes = False
     assert (obs.sigmas() is not None)
     obs = obs.sort("packed_indices")
-    if obs.is_xray_amplitude_array() :
+    if obs.is_xray_amplitude_array():
       obs = obs.f_as_f_sq()
       self.input_amplitudes = True
     assert obs.is_xray_intensity_array()
-    if (not obs.is_unique_set_under_symmetry()) :
+    if (not obs.is_unique_set_under_symmetry()):
       obs = obs.merge_equivalents().array()
-    if obs.anomalous_flag() :
+    if obs.anomalous_flag():
       obs = obs.average_bijvoet_mates()
     self.space_group_info = obs.space_group_info()
     assert (self.space_group_info is not None)
@@ -5905,10 +6654,10 @@ class systematic_absences_info (object) :
       absent_sel = group.is_sys_absent(obs.indices()).iselection()
       all_possible = group.is_sys_absent(complete_sel.indices()).iselection()
       n_possible = len(all_possible)
-      if (n_possible > self.n_possible_max) :
+      if (n_possible > self.n_possible_max):
         self.n_possible_max = n_possible
       if (len(absent_sel) > 0) : # systematic absences found
-        if (len(absent_sel) > self.n_found_max) :
+        if (len(absent_sel) > self.n_found_max):
           self.n_found_max = len(absent_sel)
         absences = obs.select(absent_sel)
         self.space_group_symbols_and_selections.append((group.info(), absences))
@@ -5918,41 +6667,40 @@ class systematic_absences_info (object) :
         self.space_group_symbols_and_selections.append((group.info(), None))
 
   # FIXME there must be a cleaner way to display this...
-  def show (self, out=sys.stdout, prefix="") :
+  def show(self, out=sys.stdout, prefix=""):
     """
     For each possible space group, show a list of possible systematically
     absent reflections and corresponding I/sigmaI.
     """
-    if (self.n_possible_max == 0) :
-      print >> out, \
-        "No systematic absences possible in any intensity-equivalent groups."
+    if (self.n_possible_max == 0):
+      print("No systematic absences possible in any intensity-equivalent groups.", file=out)
       return self
-    if (self.input_amplitudes) :
-      print >> out, """\
+    if (self.input_amplitudes):
+      print("""\
 Please note that the input data were amplitudes, which means that weaker
 reflections may have been modified by French-Wilson treatment or discarded
 altogether, and the original intensities will not be recovered.  For best
 results, use intensities as input.
-"""
+""", file=out)
     for group_info, absences in self.space_group_symbols_and_selections :
       group_note = ""
-      if (str(group_info) == str(self.space_group_info)) :
+      if (str(group_info) == str(self.space_group_info)):
         group_note = " (input space group)"
-      if (absences == False) :
-        print >> out, prefix+"%s%s: no systematic absences possible" % \
-          (group_info, group_note)
-      elif (absences is None) :
-        print >> out, prefix+"%s%s: no absences found" % \
-          (group_info, group_note)
+      if (absences == False):
+        print(prefix+"%s%s: no systematic absences possible" % \
+          (group_info, group_note), file=out)
+      elif (absences is None):
+        print(prefix+"%s%s: no absences found" % \
+          (group_info, group_note), file=out)
       else :
-        print >> out, prefix+"%s%s:" % (group_info, group_note)
-        for i_hkl, hkl in enumerate(absences.indices()) :
+        print(prefix+"%s%s:" % (group_info, group_note), file=out)
+        for i_hkl, hkl in enumerate(absences.indices()):
           intensity = absences.data()[i_hkl]
           sigma = absences.sigmas()[i_hkl]
           indices_fmt = "(%4d, %4d, %4d)" % hkl
-          if (sigma == 0) :
-            print >> out, prefix+"  %s: i/sigi = undefined" % indices_fmt
+          if (sigma == 0):
+            print(prefix+"  %s: i/sigi = undefined" % indices_fmt, file=out)
           else :
-            print >> out, prefix+"  %s: i/sigi = %6.1f" % (indices_fmt,
-              intensity/sigma)
+            print(prefix+"  %s: i/sigi = %6.1f" % (indices_fmt,
+              intensity/sigma), file=out)
     return self

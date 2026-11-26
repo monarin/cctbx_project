@@ -1,4 +1,4 @@
-from __future__ import division
+from __future__ import absolute_import, division, print_function
 import os
 from rstbx.phil import phil_preferences
 from rstbx.phil.scope import scope
@@ -60,7 +60,7 @@ class RunTimePreferences(object):
         self.phil_scope = self.phil_scope.fetch(sources=[command_line_params,])
         consume.append(arg)
 
-      except Sorry,e:
+      except Sorry as e:
         pass
 
     for item in consume:

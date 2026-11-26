@@ -1,17 +1,32 @@
-from __future__ import division
+from __future__ import absolute_import, division, print_function
 import cctbx.array_family.flex # import dependency
 from cctbx import uctbx # import dependency
-import boost.python
-ext = boost.python.import_ext("cctbx_orientation_ext")
+import boost_adaptbx.boost.python as bp
+ext = bp.import_ext("cctbx_orientation_ext")
 from cctbx_orientation_ext import *
 
 class basis_type:
   direct = False
   reciprocal = True
 
-class _(boost.python.injector,ext.crystal_orientation):
+@bp.inject_into(ext.crystal_orientation)
+class _():
 
   def __getattr__(self,tag):
+    from scitbx.matrix import col
+    if tag in ['astar','bstar','cstar']:
+      F = self.reciprocal_matrix()
+      if tag == 'astar': return col((F[0],F[3],F[6]))
+      if tag == 'bstar': return col((F[1],F[4],F[7]))
+      if tag == 'cstar': return col((F[2],F[5],F[8]))
+    if tag in 'abc':
+      direct = self.direct_matrix()
+      if tag=='a':
+        return col((direct[0],direct[1],direct[2]))
+      elif tag=='b':
+        return col((direct[3],direct[4],direct[5]))
+      elif tag=='c':
+        return col((direct[6],direct[7],direct[8]))
     mm = self.unit_cell().metrical_matrix()
     if tag=='A':
       return mm[0]
@@ -75,13 +90,44 @@ class _(boost.python.injector,ext.crystal_orientation):
        and S[3]==O[3] and S[4]==O[4] and S[5]==O[5] \
        and S[6]==O[6] and S[7]==O[7] and S[8]==O[8]
 
+  # The "U" matrix such that A(reciprocal) = U * B, where B is orthogonalization.transpose()
   def crystal_rotation_matrix(self):
     from scitbx import matrix
     return matrix.sqr(self.reciprocal_matrix()) \
          * matrix.sqr(self.unit_cell().orthogonalization_matrix()).transpose()
+
+  def get_U_as_sqr(self):
+    U = self.crystal_rotation_matrix()
+    assert U.is_r3_rotation_matrix()
+    return U
 
   def set_new_crystal_rotation_matrix(self,mat3):
     from scitbx import matrix
     return crystal_orientation( mat3 \
          * matrix.sqr(self.unit_cell().fractionalization_matrix()).transpose(),\
          basis_type.reciprocal)
+
+  def show(self,legend=None,basis=basis_type.direct):
+    from scitbx import matrix
+    uc = self.unit_cell()
+    U  = self.crystal_rotation_matrix()
+    A  = self.direct_matrix()
+    B = matrix.sqr(self.unit_cell().fractionalization_matrix()).transpose()
+    if legend is not None: print ("%s:"%legend)
+    print ("""    Unit cell:  %9.4f,%9.4f,%9.4f,%7.2f,%7.2f,%7.2f"""%(uc.parameters()))
+    print ("""    U matrix:   %9.4f,%9.4f,%9.4f,
+                %9.4f,%9.4f,%9.4f,
+                %9.4f,%9.4f,%9.4f"""%(U.elems)
+    )
+    print ("""    B matrix:   %9.4f,%9.4f,%9.4f,
+                %9.4f,%9.4f,%9.4f,
+                %9.4f,%9.4f,%9.4f"""%(B.elems)
+    )
+    print ("""    A recipr:   %9.4f,%9.4f,%9.4f,
+                %9.4f,%9.4f,%9.4f,
+                %9.4f,%9.4f,%9.4f"""%(self.reciprocal_matrix())
+    )
+    print ("""    A direct:   %9.4f,%9.4f,%9.4f,
+                %9.4f,%9.4f,%9.4f,
+                %9.4f,%9.4f,%9.4f"""%(A)
+    )

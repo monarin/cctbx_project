@@ -1,6 +1,7 @@
+"""Regularize model geometry against existing restraints"""
 # LIBTBX_SET_DISPATCHER_NAME phenix.geometry_minimization
 
-from __future__ import division
+from __future__ import absolute_import, division, print_function
 import mmtbx.refinement.geometry_minimization
 import mmtbx.utils
 from iotbx.pdb import combine_unique_pdb_files
@@ -10,10 +11,11 @@ from libtbx.utils import user_plus_sys_time, Sorry
 from libtbx import runtime_utils
 import os
 import sys
-from cStringIO import StringIO
+from six.moves import cStringIO as StringIO
 from mmtbx.monomer_library import pdb_interpretation
 from mmtbx.hydrogens import riding
 import mmtbx.model
+from cctbx import uctbx
 
 base_params_str = """\
 silent = False
@@ -131,12 +133,12 @@ def master_params():
   return iotbx.phil.parse(master_params_str, process_includes=True)
 
 def broadcast(m, log):
-  print >> log, "-"*79
-  print >> log, m
-  print >> log, "*"*len(m)
+  print("-"*79, file=log)
+  print(m, file=log)
+  print("*"*len(m), file=log)
 
 def format_usage_message(log):
-  print >> log, "-"*79
+  print("-"*79, file=log)
   msg = """\
 phenix.geometry_minimization: regularize model geometry
 
@@ -144,8 +146,8 @@ Usage examples:
   phenix.geometry_minimization model.pdb
   phenix.geometry_minimization model.pdb ligands.cif
 """
-  print >> log, msg
-  print >> log, "-"*79
+  print(msg, file=log)
+  print("-"*79, file=log)
 
 def run_minimization(
       selection,
@@ -190,7 +192,7 @@ def run_minimization(
     log                            = log,
     mon_lib_srv                    = mon_lib_srv)
 
-def run_minimization_amber (
+def run_minimization_amber(
       selection,
       restraints_manager,
       pdb_hierarchy,
@@ -275,11 +277,11 @@ class run(object):
     for ts in self.time_strings:
       sts = ts.split()
       l = " ".join(sts[:len(sts)-1])
-      print >> self.log, fmt%l, sts[len(sts)-1]
-    print >> self.log, "  Sum of individual times: %s"%\
-      str("%8.3f"%self.total_time).strip()
+      print(fmt%l, sts[len(sts)-1], file=self.log)
+    print("  Sum of individual times: %s"%\
+      str("%8.3f"%self.total_time).strip(), file=self.log)
 
-  def format_usage_message (self) :
+  def format_usage_message(self):
     format_usage_message(log=self.log)
 
   def setup_output_file_names(self):
@@ -328,33 +330,36 @@ class run(object):
     pdb_combined = combine_unique_pdb_files(file_names = self.pdb_file_names)
     pdb_inp = iotbx.pdb.input(lines=pdb_combined.raw_records, source_info=None)
     if(cs is None):
+      cs=pdb_inp.crystal_symmetry()
+    if(cs is None):
       is_non_crystallographic_unit_cell = True
-      cs = pdb_inp.xray_structure_simple().\
-          cubic_unit_cell_around_centered_scatterers(
-          buffer_size = 10).crystal_symmetry()
+      box = uctbx.non_crystallographic_unit_cell_with_the_sites_in_its_center(
+        sites_cart   = pdb_inp.atoms().extract_xyz(),
+        buffer_layer = 10)
+      cs = box.crystal_symmetry()
     cif_objects = list(self.inputs.cif_objects)
-    if (len(self.params.restraints) > 0) :
+    if (len(self.params.restraints) > 0):
       import iotbx.cif
       for file_name in self.params.restraints :
         cif_object = iotbx.cif.reader(file_path=file_name, strict=False).model()
         cif_objects.append((file_name, cif_object))
-    if (self.params.restraints_directory is not None) :
+    if (self.params.restraints_directory is not None):
       restraint_files = os.listdir(self.params.restraints_directory)
       for file_name in restraint_files :
-        if (file_name.endswith(".cif")) :
+        if (file_name.endswith(".cif")):
           full_path = os.path.join(self.params.restraints_directory, file_name)
           cif_object = iotbx.cif.reader(file_path=full_path,
             strict=False).model()
           cif_objects.append((full_path, cif_object))
-
     self.model = mmtbx.model.manager(
         model_input = pdb_inp,
+        crystal_symmetry = cs,
         restraint_objects = cif_objects,
-        pdb_interpretation_params = self.params,
         stop_for_unknowns = self.params.stop_for_unknowns,
-        build_grm = True,
         log = self.log)
-
+    self.model.process(
+      pdb_interpretation_params = self.params,
+      make_restraints           = True)
     self.ncs_obj = self.model.get_ncs_obj()
     self.output_crystal_symmetry = not is_non_crystallographic_unit_cell
     self.sites_cart_start = self.model.get_xray_structure().sites_cart().deep_copy()
@@ -366,9 +371,9 @@ class run(object):
 
   def atom_selection(self, prefix):
     broadcast(m=prefix, log = self.log)
-    self.selection = self.model.selection(selstr = self.params.selection)
-    print >> self.log, "  selected %s atoms out of total %s"%(
-      str(self.selection.count(True)),str(self.selection.size()))
+    self.selection = self.model.selection(string = self.params.selection)
+    print("  selected %s atoms out of total %s"%(
+      str(self.selection.count(True)),str(self.selection.size())), file=self.log)
 
   def get_restraints(self, prefix):
     broadcast(m=prefix, log = self.log)
@@ -377,62 +382,57 @@ class run(object):
   def setup_riding_h(self, prefix):
     if not self.params.minimization.riding_h: return
     broadcast(m=prefix, log = self.log)
+    if((self.selection & ~self.model.get_hd_selection()).count(True) == 0):
+      raise Sorry(
+        "Riding H model (riding_h=True) cannot be used with a selection that "
+        "contains no non-hydrogen atoms. Set riding_h=False to minimize "
+        "hydrogen atoms alone.")
     self.model.setup_riding_h_manager(idealize=True)
 
   def minimization(self, prefix): # XXX USE alternate_nonbonded_off_on etc
     broadcast(m=prefix, log = self.log)
     use_amber = False
     if self.ncs_obj is not None:
-      print >> self.log, "Using NCS constraints:"
+      print("Using NCS constraints:", file=self.log)
       self.ncs_obj.show(format='phil', log=self.log)
-    if hasattr(self.params, "amber"):
-      use_amber = self.params.amber.use_amber
-    if(use_amber):
-      if not self.params.amber.topology_file_name:
-        raise Sorry("Need to supply topology file using amber.topology_file_name=<filename>")
-      if not self.params.amber.coordinate_file_name:
-        raise Sorry("Need to supply topology file using amber.coordinate_file_name=<filename>")
-      run_minimization_amber(
-        selection = self.selection,
-        restraints_manager = self.model.get_restraints_manager(),
-        params = self.params.minimization,
-        pdb_hierarchy = self.model.get_hierarchy(),
-        log = self.log,
-        prmtop = self.params.amber.topology_file_name,
-        ambcrd = self.params.amber.coordinate_file_name,
-      )
-    else:
-      ncs_restraints_group_list = []
-      if self.ncs_obj is not None:
-        ncs_restraints_group_list = self.ncs_obj.get_ncs_restraints_group_list()
-      run_minimization(
-        selection              = self.selection,
-        restraints_manager     = self.model.get_restraints_manager(),
-        riding_h_manager       = self.model.get_riding_h_manager(),
-        params                 = self.params.minimization,
-        pdb_hierarchy          = self.model.get_hierarchy(),
-        cdl                    = self.params.pdb_interpretation.restraints_library.cdl,
-        rdl                    = self.params.pdb_interpretation.restraints_library.rdl,
-        correct_hydrogens      = self.params.pdb_interpretation.correct_hydrogens,
-        fix_rotamer_outliers   = self.params.fix_rotamer_outliers,
-        allow_allowed_rotamers = self.params.allow_allowed_rotamers,
-        states_collector       = self.states_collector,
-        log                    = self.log,
-        ncs_restraints_group_list = ncs_restraints_group_list,
-        mon_lib_srv            = self.model.get_mon_lib_srv())
+    ncs_restraints_group_list = []
+    if self.ncs_obj is not None:
+      ncs_restraints_group_list = self.ncs_obj.get_ncs_restraints_group_list()
+    run_minimization(
+      selection              = self.selection,
+      restraints_manager     = self.model.get_restraints_manager(),
+      riding_h_manager       = self.model.get_riding_h_manager(),
+      params                 = self.params.minimization,
+      pdb_hierarchy          = self.model.get_hierarchy(),
+      cdl                    = self.params.pdb_interpretation.restraints_library.cdl,
+      rdl                    = self.params.pdb_interpretation.restraints_library.rdl,
+      correct_hydrogens      = self.params.pdb_interpretation.correct_hydrogens,
+      fix_rotamer_outliers   = self.params.fix_rotamer_outliers,
+      allow_allowed_rotamers = self.params.allow_allowed_rotamers,
+      states_collector       = self.states_collector,
+      log                    = self.log,
+      ncs_restraints_group_list = ncs_restraints_group_list,
+      mon_lib_srv            = self.model.get_mon_lib_srv())
     self.model.set_sites_cart_from_hierarchy()
 
   def write_pdb_file(self, prefix):
     broadcast(m=prefix, log = self.log)
     # self.pdb_hierarchy.adopt_xray_structure(self.xray_structure)
-    print >> self.log, "  output file name:", self.result_model_fname
-    print >> self.log, self.min_max_mean_shift()
+    print(self.min_max_mean_shift(), file=self.log)
 
-    print >> self.log, self.min_max_mean_shift()
-    r = self.model.model_as_pdb(output_cs=self.output_crystal_symmetry)
-    f = open(self.result_model_fname, 'w')
-    f.write(r)
-    f.close()
+    if self.model.can_be_output_as_pdb():
+      print("  output file name:", self.result_model_fname, file=self.log)
+      r = self.model.model_as_pdb(output_cs=self.output_crystal_symmetry)
+      f = open(self.result_model_fname, 'w')
+      f.write(r)
+      f.close()
+
+    cif_fname = self.result_model_fname.replace('.pdb', '.cif')
+    if not os.path.isfile(cif_fname):
+      print("  output file name:", cif_fname, file=self.log)
+      r = self.model.model_as_mmcif(output_cs=self.output_crystal_symmetry)
+      with open(cif_fname, 'w') as f:
+        f.write(r)
 
     if(self.states_collector):
       self.states_collector.write(
@@ -457,28 +457,28 @@ class run(object):
     if self.params.write_geo_file:
       broadcast(m=prefix, log = self.log)
       s = self.model.geometry_statistics()
-      s.show(log = self.log)
+      s.show(log = self.log, uppercase=False)
 
-class launcher (runtime_utils.target_with_save_result) :
-  def run (self) :
+class launcher(runtime_utils.target_with_save_result):
+  def run(self):
     os.mkdir(self.output_dir)
     os.chdir(self.output_dir)
     filename = run(args=self.args, log=sys.stdout,
                    use_directory_prefix=False).result_model_fname
     return os.path.join(self.output_dir, filename)
 
-def validate_params (params) :
-  if (params.file_name is None) :
+def validate_params(params):
+  if (params.file_name is None):
     raise Sorry("Please specify a model file to minimize.")
-  if (params.restraints_directory is not None) :
-    if (not os.path.isdir(params.restraints_directory)) :
+  if (params.restraints_directory is not None):
+    if (not os.path.isdir(params.restraints_directory)):
       raise Sorry("The path '%s' does not exist or is not a directory." %
         params.restraints_directory)
   return True
 
-def finish_job (result) :
+def finish_job(result):
   output_files = []
-  if (result is not None) :
+  if (result is not None):
     output_files.append((result, "Minimized model"))
   return output_files, []
 
@@ -487,5 +487,6 @@ if(__name__ == "__main__"):
   log = sys.stdout
   o = run(sys.argv[1:], log=log)
   tt = timer.elapsed()
-  print >> o.log, "Overall runtime: %-8.3f" % tt
+  print("Overall runtime: %-8.3f" % tt, file=o.log)
   assert abs(tt-o.total_time) < 0.1 # guard against unaccounted times
+

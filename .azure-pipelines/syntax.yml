@@ -1,0 +1,49 @@
+# Script for building CCTBX
+
+jobs:
+- job: syntax
+  pool:
+    vmImage: ubuntu-latest
+  timeoutInMinutes: 120
+  strategy:
+    maxParallel: 10
+    matrix:
+      python3.11:
+        PYTHON_VERSION: 3.11
+
+  steps:
+
+  - checkout: self
+    path: ./modules/cctbx_project
+
+  - script: echo "##vso[task.prependpath]$CONDA/bin"
+    displayName: Add conda to PATH
+
+  # accept conda tos
+  - script: conda config --set plugins.auto_accept_tos yes
+    displayName: Accept conda TOS
+
+  - script: |
+      conda create -y -c conda-forge -n py$(PYTHON_VERSION) python=$(PYTHON_VERSION) six future scons setuptools
+    displayName: Create conda environment
+
+  - script: |
+      source activate py$(PYTHON_VERSION)
+      cd $(Pipeline.Workspace)
+      mkdir build
+      cd build
+      python ../modules/cctbx_project/libtbx/configure.py libtbx
+      make
+    displayName: Configure libtbx
+
+  - script: |
+      source activate py$(PYTHON_VERSION)
+      source $(Pipeline.Workspace)/build/setpaths.sh
+      libtbx.py_compile_all -v .
+    displayName: Check syntax
+
+  - script: |
+      source activate py$(PYTHON_VERSION)
+      source $(Pipeline.Workspace)/build/setpaths.sh
+      libtbx.find_clutter --verbose
+    displayName: Check for clutter

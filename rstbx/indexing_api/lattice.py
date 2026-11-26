@@ -1,4 +1,5 @@
-from __future__ import division
+from __future__ import absolute_import, division, print_function
+from six.moves import range
 from rstbx.array_family import flex
 from rstbx.indexing_api import dps_extended
 from rstbx.indexing_api.sampling import hemisphere_shortcut
@@ -6,9 +7,10 @@ from rstbx.dps_core import Directional_FFT
 import math,cmath
 from scitbx import matrix
 from libtbx.test_utils import approx_equal
-import boost.python
+import boost_adaptbx.boost.python as bp
 
-class _(boost.python.injector, dps_extended):
+@bp.inject_into(dps_extended)
+class _():
 
   def index(self, raw_spot_input=None, reciprocal_space_vectors=None,
             panel_addresses=None):
@@ -37,7 +39,7 @@ class _(boost.python.injector, dps_extended):
       self.max_cell = NN.max_cell
 
     if self.recommended_grid_sampling_rad is None:
-      rossmann_suggestion = 0.029 # radians; value used in Stellar (1997)
+      rossmann_suggestion = 0.029 # radians; value used in Steller (1997)
       norms = reciprocal_space_vectors.norms()
       naive_obs_highest_resolution = 1./flex.max(norms)
       characteristic_grid = naive_obs_highest_resolution / self.max_cell
@@ -64,7 +66,7 @@ class _(boost.python.injector, dps_extended):
     nh = min ( self.getSolutions().size(), 20) # extended API
     solutions = self.getSolutions() #extended API
     sum_score = 0.0
-    for t in xrange(nh):
+    for t in range(nh):
       #if t!=unique:continue
       dfft = Directional_FFT(angle = solutions[t], xyzdata = reciprocal_space_vectors,
                             granularity = self.granularity, amax = self.amax, # extended API
@@ -133,18 +135,18 @@ class _(boost.python.injector, dps_extended):
 
       MIN = test_simplex_method()
       #MIN = test_cma_es()
-      print "MINIMUM=",list(MIN.x)
+      print("MINIMUM=",list(MIN.x))
       newvec = matrix.col(self.S0_vector) + MIN.x[0]*0.0002*beamr1 + MIN.x[1]*0.0002*beamr2
       new_S0_vector = newvec.normalize() * self.inv_wave
 
-      print "old S0:",list(self.S0_vector.elems)
-      print "new S0",list(new_S0_vector.elems)
+      print("old S0:",list(self.S0_vector.elems))
+      print("new S0",list(new_S0_vector.elems))
 
       plot = False
       if plot:
         scores = flex.double()
-        for x in xrange(-grid,grid+1):
-         for y in xrange(-grid,grid+1):
+        for x in range(-grid,grid+1):
+         for y in range(-grid,grid+1):
           ref = matrix.col(self.S0_vector)
           newvec = ref + x*0.0002*beamr1 + y*0.0002*beamr2
           normal = newvec.normalize() * self.inv_wave
@@ -155,7 +157,7 @@ class _(boost.python.injector, dps_extended):
 
           from matplotlib import pyplot as plt
           plt.figure()
-          CS = plt.contour([i*0.2 for i in xrange(grid)],[i*0.2 for i in xrange(grid)], excursi.as_numpy_array())
+          CS = plt.contour([i*0.2 for i in range(grid)],[i*0.2 for i in range(grid)], excursi.as_numpy_array())
           plt.clabel(CS, inline=1, fontsize=10, fmt="%6.3f")
           plt.title("Score as to beam likelihood")
           plt.scatter([0.1*(grid-1)],[0.1*(grid-1)],color='g',marker='o')
@@ -172,16 +174,10 @@ class _(boost.python.injector, dps_extended):
     import copy
     new_detector = copy.deepcopy(old_detector)
 
-    if len(new_detector) > 1 and len(new_detector.hierarchy()) > 1:
-      h = new_detector.hierarchy()
-      h.set_local_frame(fast_axis=h.get_fast_axis(),
-                        slow_axis=h.get_slow_axis(),
-                        origin=matrix.col(h.get_origin()) + origin_offset)
-    else:
-      for panel in new_detector:
-        panel.set_local_frame(fast_axis=panel.get_fast_axis(),
-                              slow_axis=panel.get_slow_axis(),
-                              origin=matrix.col(panel.get_origin()) + origin_offset)
+    h = new_detector.hierarchy()
+    h.set_frame(fast_axis=h.get_fast_axis(),
+                slow_axis=h.get_slow_axis(),
+                origin=matrix.col(h.get_origin()) + origin_offset)
 
     return new_detector
 
@@ -237,8 +233,8 @@ class _(boost.python.injector, dps_extended):
         plot_px_sz = self.detector[0].get_pixel_size()[0]
         grid = max(1,int(scope/plot_px_sz))
         scores = flex.double()
-        for y in xrange(-grid,grid+1):
-         for x in xrange(-grid,grid+1):
+        for y in range(-grid,grid+1):
+         for x in range(-grid,grid+1):
           new_origin_offset = x*plot_px_sz*beamr1 + y*plot_px_sz*beamr2
           scores.append( self.get_origin_offset_score(new_origin_offset) )
 
@@ -248,8 +244,8 @@ class _(boost.python.injector, dps_extended):
           def igrid(x): return x - (widegrid//2)
           from matplotlib import pyplot as plt
           plt.figure()
-          CS = plt.contour([igrid(i)*plot_px_sz for i in xrange(widegrid)],
-                           [igrid(i)*plot_px_sz for i in xrange(widegrid)], excursi.as_numpy_array())
+          CS = plt.contour([igrid(i)*plot_px_sz for i in range(widegrid)],
+                           [igrid(i)*plot_px_sz for i in range(widegrid)], excursi.as_numpy_array())
           plt.clabel(CS, inline=1, fontsize=10, fmt="%6.3f")
           plt.title("Wide scope search for detector origin offset")
           plt.scatter([0.0],[0.0],color='g',marker='o')
@@ -285,7 +281,7 @@ class _(boost.python.injector, dps_extended):
     pd = {}
     M = SBM(input_index_engine = self,input_dictionary = pd, horizon_phil = self.horizon_phil) # extended API
 
-    print "Finished SELECT BASIS with solution M",M
+    print("Finished SELECT BASIS with solution M",M)
 
     from rstbx.dps_core.lepage import iotbx_converter
     L = iotbx_converter(self.getOrientation().unit_cell().minimum_cell(),5.0) # extended API
@@ -302,9 +298,9 @@ class _(boost.python.injector, dps_extended):
 
     if True:
       for subgroup in L:
-        print subgroup.short_digest()
-      print "\ntriclinic cell=%s volume(A^3)=%.3f"%(triclinic,triclinic.volume())
-      print "\nafter symmetrizing to %s:"%supergroup.reference_lookup_symbol()
+        print(subgroup.short_digest())
+      print("\ntriclinic cell=%s volume(A^3)=%.3f"%(triclinic,triclinic.volume()))
+      print("\nafter symmetrizing to %s:"%supergroup.reference_lookup_symbol())
       #M.show_rms()
     return L
 

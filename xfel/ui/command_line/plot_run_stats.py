@@ -1,4 +1,4 @@
-from __future__ import division
+from __future__ import absolute_import, division, print_function
 
 '''
 Author      : Young, I.D.
@@ -9,7 +9,7 @@ Description : XFEL UI plot real-time run stats
 
 from libtbx.phil import parse
 from libtbx.utils import Sorry
-from xfel.ui import db_phil_str
+from xfel.ui import master_phil_str, db_phil_str
 from xfel.ui.db.xfel_db import xfel_db_application
 from xfel.ui.db.stats import HitrateStats
 from xfel.ui.components.run_stats_plotter import plot_multirun_stats
@@ -17,7 +17,7 @@ import sys
 
 phil_str = """
   run = None
-    .type = int
+    .type = str
     .multiple = True
   trial = None
     .type = int
@@ -26,7 +26,7 @@ phil_str = """
   d_min = 2.0
     .type = float
     .help = High resolution bin for the I/sig(I) plot and per-run statistics.
-  n_strong_cutoff = 40
+  n_strong_cutoff = 16
     .type = int
     .help = Number of strong spots to consider an image a hit.
   i_sigi_cutoff = 1
@@ -47,14 +47,14 @@ phil_str = """
     .type = str
     .help = Plot title.
 """
-phil_scope = parse(phil_str + db_phil_str)
+phil_scope = parse(phil_str + master_phil_str + db_phil_str)
 
 def run(args):
   user_phil = []
   for arg in args:
     try:
       user_phil.append(parse(arg))
-    except Exception, e:
+    except Exception as e:
       raise Sorry("Unrecognized argument %s"%arg)
   params = phil_scope.fetch(sources=user_phil).extract()
 

@@ -1,4 +1,4 @@
-from __future__ import division
+from __future__ import absolute_import, division, print_function
 from labelit.command_line.stats_index import best_character_to_IndexPrinter
 from labelit.command_line.default_param import establish_dict_for_refinement
 from labelit.dptbx.autoindex import index_and_refine
@@ -8,10 +8,10 @@ class new_horizons_state:
     self.last_saved_best = None
     self.horizons_phil = horizons_phil
     if self.horizons_phil.spotfinder=="distl":
-      print "Importing DISTL"
+      print("Importing DISTL")
       from labelit.command_line.stats_index import AutoIndexOrganizer
     elif self.horizons_phil.spotfinder=="speck":
-      print "Importing SPECK"
+      print("Importing SPECK")
       from rstbx.new_horizons.stats_index import AutoIndexOrganizer
 
     self.organizer = AutoIndexOrganizer(
@@ -43,7 +43,7 @@ class new_horizons_state:
       M = best_compatibility_to_IndexPrinter(ai,P,self.pd,files,
           spotfinder_results)
     #------------------------------------------------------------
-    if self.horizons_phil.__dict__.has_key("writer"):
+    if "writer" in self.horizons_phil.__dict__:
       self.horizons_phil.writer.make_image_plots_detail(
         ai=ai,pd=self.pd,inframes=files,spotfinder_results=spotfinder_results)
 

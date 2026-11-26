@@ -3,7 +3,7 @@
 This module contains tools for simulating partial integration data. In
 particular, it is intended to help test XFEL data merging tools.
 """
-from __future__ import division
+from __future__ import absolute_import, division, print_function
 
 from iotbx import mtz
 import cctbx.miller
@@ -15,8 +15,9 @@ from dials.array_family import flex
 from dxtbx.model import DetectorFactory
 
 import random
-import cPickle
+from six.moves import cPickle as pickle
 import logging
+from six.moves import range
 
 eps = 0.001  # Tolerance for assertions
 p_threshold = 0.1  # Partiality threshold for inclusion
@@ -121,7 +122,7 @@ def run(args):
 
         pkl_name = "simulated_data_{0:04d}.pickle".format(im)
         with(open(pkl_name, 'wb')) as pkl:
-          cPickle.dump(temp_dict, pkl)
+          pickle.dump(temp_dict, pkl)
 
         ''' Only works with no noise:
         if logging.Logger.root.level <= logging.DEBUG:  # debug!

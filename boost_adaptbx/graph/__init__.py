@@ -1,7 +1,7 @@
-from __future__ import division
+from __future__ import absolute_import, division, print_function
 
-import boost.python
-ext = boost.python.import_ext( "boost_adaptbx_graph_ext" )
+import boost_adaptbx.boost.python as bp
+ext = bp.import_ext( "boost_adaptbx_graph_ext" )
 from boost_adaptbx_graph_ext import *
 
 _abbreviation_for_component = {
@@ -23,13 +23,13 @@ def adjacency_list(
   ):
 
   if graph_type not in _abbreviation_for_type:
-    raise ValueError, "Unknown graph_type: '%s'" % graph_type
+    raise ValueError("Unknown graph_type: '%s'" % graph_type)
 
   if vertex_type not in _abbreviation_for_component:
-    raise ValueError, "Unknown vertex_type: '%s'" % vertex_type
+    raise ValueError("Unknown vertex_type: '%s'" % vertex_type)
 
   if edge_type not in _abbreviation_for_component:
-    raise ValueError, "Unknown edge_type: '%s'" % edge_type
+    raise ValueError("Unknown edge_type: '%s'" % edge_type)
 
   typename = "graph_adjlist_%s_%s_%s" % (
     _abbreviation_for_type[ graph_type ],
@@ -42,4 +42,3 @@ def adjacency_list(
 
   except AttributeError:
     raise NotImplementedError
-

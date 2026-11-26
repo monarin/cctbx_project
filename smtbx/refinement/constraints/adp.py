@@ -1,7 +1,8 @@
-from __future__ import division
+from __future__ import absolute_import, division, print_function
 import smtbx.refinement.constraints as _
 from smtbx.refinement.constraints import InvalidConstraint
 from math import pi
+from six.moves import range
 
 class u_iso_proportional_to_pivot_u_eq(object):
   """ u_iso of some scatterer constrained to be proportional to
@@ -64,14 +65,14 @@ class shared_u(object):
   def add_to(self, reparametrisation):
     scatterers = reparametrisation.structure.scatterers()
     src_uses_u = scatterers[self.indices[0]].flags.use_u_aniso()
-    for i in xrange(1, len(self.indices)):
+    for i in range(1, len(self.indices)):
       if scatterers[self.indices[i]].flags.use_u_aniso() != src_uses_u:
         raise InvalidConstraint(
           "mixing isotropic and anisotropic atoms is not allowed for shared ADP")
 
     u_c = reparametrisation.add_new_thermal_displacement_parameter(
       self.indices[0])
-    for i in xrange(1, len(self.indices)):
+    for i in range(1, len(self.indices)):
       if src_uses_u:
         param = reparametrisation.add(
           _.shared_u_star,
@@ -124,3 +125,40 @@ class shared_rotated_u(object):
     reparametrisation.asu_scatterer_parameters[self.ind_atom].u = param
     self.value = u_c
     self.angle = angle
+
+class scalar_scaled_u(object):
+  """ u_iso or u_star of a group of atoms all equal to their starting values
+      times a scalar constant
+  """
+
+  def __init__(self, ind_sequence):
+    self.indices = ind_sequence
+
+  @property
+  def constrained_parameters(self):
+    return tuple((idx, "U") for idx in self.indices)
+
+  def add_to(self, reparametrisation):
+    scatterers = reparametrisation.structure.scatterers()
+    scalar = reparametrisation.add(_.independent_scalar_parameter,
+      value=1., variable=True)
+    for idx in self.indices:
+      use_u_aniso = scatterers[idx].flags.use_u_aniso()
+      if use_u_aniso:
+        param = reparametrisation.add(
+          _.scalar_scaled_u_star,
+          scalar=scalar,
+          scatterer=scatterers[idx])
+      else:
+        param = reparametrisation.add(
+          _.scalar_scaled_u_iso,
+          scalar=scalar,
+          scatterer=scatterers[idx])
+      # reparametrisation.shared_Us[idx] = param # not sure what to do with this
+      reparametrisation.asu_scatterer_parameters[idx].u = param
+    self.scalar = scalar
+
+  def esd(self, ls):
+    from math import sqrt
+    cov_diag = ls.covariance_matrix().matrix_packed_u_diagonal()
+    return sqrt(cov_diag[self.scalar.index])

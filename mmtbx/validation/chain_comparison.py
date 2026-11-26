@@ -1,4 +1,4 @@
-from __future__ import division
+from __future__ import absolute_import, division, print_function
 
 # chain_comparison.py
 # a tool to compare main-chain from two structures with or without crystal
@@ -8,19 +8,25 @@ from __future__ import division
 
 import iotbx.phil
 import sys,os
+from operator import itemgetter
 from libtbx.utils import Sorry,null_out
+from libtbx import group_args
 from scitbx.array_family import flex
 from copy import deepcopy
+from six.moves import zip
+from six.moves import range
 
-master_phil = iotbx.phil.parse("""
+
+master_params = """
 
   input_files {
     pdb_in = None
       .type = path
       .multiple = True
-      .help = Input PDB file (enter once for target and once for query unless \
+      .help = Input PDB file (enter target first and then query)\
               query_dir is set)
-      .short_caption = Input PDB file
+      .short_caption = Target/query model
+      .style = file_type:pdb input_file
 
     unique_query_only = False
       .type = bool
@@ -33,6 +39,7 @@ master_phil = iotbx.phil.parse("""
       .help = Target model identifying which element is selected with \
            unique_query_only. NOTE: must be specified by keyword.
       .short_caption = Target model
+      .style = file_type:pdb input_file
 
     unique_part_of_target_only = None
       .type = bool
@@ -55,7 +62,7 @@ master_phil = iotbx.phil.parse("""
 
     ncs_file = None
       .type = path
-      .short_caption = NCS file
+      .short_caption = NCS file (optional)
       .help = NCS file. \
                If unique_query_only is False (typically) \
                apply NCS to it to generate full query.  Normally used with \
@@ -69,7 +76,8 @@ master_phil = iotbx.phil.parse("""
     query_dir = None
       .type = path
       .help = directory containing query PDB files (any number)
-      .short_caption = Query directory
+      .short_caption = Query directory (optional)
+      .style = directory
   }
   output_files {
 
@@ -115,20 +123,42 @@ master_phil = iotbx.phil.parse("""
                 define full target length (as opposed to all unique \
                 chains in target).
 
-    minimum_percent_match_to_select = None
+    minimum_percent_match_to_select = 1
       .type = float
       .help = You can specify minimum_percent_match_to_select and \
               maximum_percent_match_to_select and match_pdb_file \
               in which case all segments in the query model that have \
               a percentage match (within max_dist of atom in target) \
               in this range will be written out to match_pdb_file.
-    maximum_percent_match_to_select = None
+    maximum_percent_match_to_select = 100
       .type = float
       .help = You can specify minimum_percent_match_to_select and \
               maximum_percent_match_to_select and match_pdb_file \
               in which case all segments in the query model that have \
               a percentage match (within max_dist of atom in target) \
               in this range will be written out to match_pdb_file.
+    remove_alt_conf = True
+      .type = bool
+      .help = Remove alternate conformers before analysis. This is normally \
+               required to align correctly.
+
+    residue_groups = "VGASCTI P LDNEQM KR FHY W"
+      .type = str
+      .help = Optional groups of residues to score together
+      .short_caption = Residue groups
+      .expert_level = 3
+
+    score_by_residue_groups = False
+      .type = bool
+      .help = Use residue groups in sequence alignment
+      .short_caption = Score by residue groups
+      .expert_level = 3
+
+    only_keep_best_chain = False
+      .type = bool
+      .help = Use keep the best-matching chain in match_pdb
+      .short_caption = Best chain only in match_pdb
+
   }
   control {
       verbose = False
@@ -140,13 +170,21 @@ master_phil = iotbx.phil.parse("""
         .type = bool
         .help = No printed output
         .short_caption = No printed output
-
   }
-""", process_includes=True)
-master_params = master_phil
+
+  include scope libtbx.phil.interface.tracking_params
+  gui
+    .help = "GUI-specific parameter required for output directory"
+  {
+    output_dir = None
+    .type = path
+    .style = output_dir
+  }
+"""
+master_phil = iotbx.phil.parse(master_params, process_includes=True)
 
 class rmsd_values:
-  def __init__(self):
+  def __init__(self,params=None):
     self.id_list=[]
     self.rmsd_list=[]
     self.n_list=[]
@@ -159,6 +197,16 @@ class rmsd_values:
     self.used_target=None
     self.used_query=None
     self.n_fragments_list=[]
+    self.incorrect_connections = None
+    self.input_fragments = None
+    self.file_info=""
+    self.params=params
+
+  def add_incorrect_connections(self,incorrect_connections):
+    self.incorrect_connections = incorrect_connections
+
+  def add_input_fragments(self,input_fragments):
+    self.input_fragments = input_fragments
 
   def add_match_percent(self,id=None,match_percent=None):
     ipoint=self.id_list.index(id)
@@ -181,6 +229,9 @@ class rmsd_values:
     self.n_fragments_list.append(n_fragments)
 
   def get_n_fragments(self,id=None):
+    for x in ['id_list','n_fragments_list']:
+      if not getattr(self,x,None):
+        return 0
     for local_id,local_n_fragments in zip(
        self.id_list,self.n_fragments_list):
       if id==local_id:
@@ -188,6 +239,9 @@ class rmsd_values:
     return 0
 
   def get_match_percent(self,id=None):
+    for x in ['id_list','match_percent_list']:
+      if not getattr(self,x,None):
+        return 0
     for local_id,local_match_percent in zip(
        self.id_list,self.match_percent_list):
       if id==local_id:
@@ -205,7 +259,7 @@ class rmsd_values:
     target_length=self.get_target_length(id=id)
     rmsd,n=self.get_values(id=id)
     if target_length is not None and n is not None:
-      value=100.*n/max(1.,target_length)
+      value=100.*n/max(1.,target_length if target_length is not None else 0)
       # ZZZ may need to scale by self.used_target/self.total_target
       return value
 
@@ -214,12 +268,19 @@ class rmsd_values:
       return 0.
 
   def get_values(self,id=None):
+    for x in ['id_list','rmsd_list','n_list']:
+      if not getattr(self,x,None):
+        return 0,0
     for local_id,local_rmsd,local_n in zip(
        self.id_list,self.rmsd_list,self.n_list):
       if id==local_id:
         return local_rmsd,local_n
     return 0,0
 
+  def show_summary(self,full_rows=None,out=sys.stdout):
+    from mmtbx.validation.chain_comparison import write_summary
+    write_summary(params=self.params,file_list=[self.file_info],
+      rv_list=[self], full_rows=full_rows, out=out)
 
 def get_params(args,out=sys.stdout):
     command_line = iotbx.phil.process_command_line_with_files(
@@ -228,7 +289,7 @@ def get_params(args,out=sys.stdout):
       pdb_file_def="input_files.pdb_in")
 
     params = command_line.work.extract()
-    print >>out,"\nFind similarity between two main-chains"
+    print("\nFind similarity between two main-chains", file=out)
     master_phil.format(python_object=params).show(out=out)
     return params
 
@@ -240,7 +301,6 @@ def best_match(sites1,sites2,crystal_symmetry=None,
 
   unit_cell=crystal_symmetry.unit_cell()
   sps=crystal_symmetry.special_position_settings(min_distance_sym_equiv=0.5)
-  from scitbx.array_family import flex
 
   # Match coordinates
   from cctbx import sgtbx
@@ -283,8 +343,8 @@ def best_match(sites1,sites2,crystal_symmetry=None,
 
 def select_atom_lines(hierarchy):
   lines=[]
-  for line in hierarchy.as_pdb_string().splitlines():
-    if line.startswith("ATOM "): # XXX NOTE USING PDB FORMAT HERE
+  for line in hierarchy.as_pdb_string().splitlines(): # PDB OK converted above
+    if line.startswith("ATOM "):
       line=line.strip()
       lines.append(line)
   return lines
@@ -299,7 +359,6 @@ def get_best_match(xyz1,xyz2,crystal_symmetry=None,
       distance_per_site=distance_per_site)
   else: # do it without symmetry
     (distance,i,j)=xyz1.min_distance_between_any_pair_with_id(xyz2)
-    from libtbx import group_args
     info=group_args(i=i,j=j,distance=distance)
 
   if used_j_list and info.j in used_j_list: # used an atom twice
@@ -350,20 +409,40 @@ def get_seq_from_lines(lines):
       seq.append(res.resname)
   return seq
 
-def get_match_percent(seq1,seq2):
+def get_match_percent(seq1,seq2,params=None):
   assert len(seq1)==len(seq2)
   assert len(seq1)>0
+  if params and params.comparison.score_by_residue_groups and \
+       params.crystal_info.chain_type=="PROTEIN":
+     seq1=convert_to_reduced_set(seq1,params=params)
+     seq2=convert_to_reduced_set(seq2,params=params)
   match_n=0
   for a,b in zip(seq1,seq2):
     if a.replace(" ","")==b.replace(" ",""): match_n+=1
   match_percent=100.*match_n/len(seq1)
   return match_n,match_percent
 
-def apply_atom_selection(atom_selection,hierarchy=None):
-  asc=hierarchy.atom_selection_cache()
-  sel = asc.selection(string = atom_selection)
-  return hierarchy.deep_copy().select(sel)  # deep copy is required
-  #return hierarchy.select(sel)
+def get_one_letter_seq(sequence):
+   # only applies to protein
+   from iotbx.pdb import amino_acid_codes
+   seq_one_letter=""
+   for resn in sequence:
+     seq_one_letter+= amino_acid_codes.one_letter_given_three_letter[resn]
+   return seq_one_letter
+
+def convert_to_reduced_set(sequence,params=None):
+    sequence=get_one_letter_seq(sequence)
+
+    residue_groups = params.comparison.residue_groups.upper().split()
+    residue_dict={}
+    for g in residue_groups:
+        for x in g:
+          residue_dict[x]=g[0]
+    text=""
+    for x in sequence.upper():
+      text+=residue_dict.get(x,'V')
+    return text
+
 
 def extract_representative_chains_from_hierarchy(ph,
     min_similarity=0.90,
@@ -375,7 +454,7 @@ def extract_representative_chains_from_hierarchy(ph,
     allow_mismatch_in_number_of_copies=allow_mismatch_in_number_of_copies,
     out=out)
   if ph==unique_ph:  # nothing is unique...
-    print >>out,"No representative unique chains available"
+    print("No representative unique chains available", file=out)
     return None
 
   biggest_chain=None
@@ -386,13 +465,13 @@ def extract_representative_chains_from_hierarchy(ph,
         target_seq=chain.as_padded_sequence()  # has XXX for missing residues
         target_seq.replace("X","")
         chain_length=len(target_seq)
-      except Exception, e:
+      except Exception as e:
         chain_length=0
       if chain_length and (longest_chain is None or chain_length>longest_chain):
         longest_chain=chain_length
         biggest_chain=chain
   if biggest_chain is None:
-    print >>out,"Unable to extract unique part of hierarchy"
+    print("Unable to extract unique part of hierarchy", file=out)
     return None
 
   biggest_chain_hierarchy=iotbx.pdb.input(
@@ -424,7 +503,7 @@ def extract_copies_identical_to_target_from_hierarchy(ph,
         target_seq=chain.as_padded_sequence()  # has XXX for missing residues
         target_seq.replace("X","")
         break
-      except Exception, e:
+      except Exception as e:
         pass
   if not target_seq:
      raise Sorry("No sequence found in target sequence for "+
@@ -436,7 +515,7 @@ def extract_copies_identical_to_target_from_hierarchy(ph,
       try:
         seq=chain.as_padded_sequence()  # has XXX for missing residues
         seq=seq.replace("X","")
-      except Exception, e:
+      except Exception as e:
         seq=""
       similar_seq=seq_it_is_similar_to(
          seq=seq,unique_sequences=[target_seq],
@@ -449,7 +528,7 @@ def extract_copies_identical_to_target_from_hierarchy(ph,
   for chain in matching_chain_list:
     mm.append_chain(chain.detached_copy())
     total_chains+=1
-  print >>out,"Total chains extracted: %s" %(total_chains)
+  print("Total chains extracted: %s" %(total_chains), file=out)
   return new_hierarchy
 
 def seq_it_is_similar_to(seq=None,unique_sequences=None,min_similarity=1.0,
@@ -458,7 +537,8 @@ def seq_it_is_similar_to(seq=None,unique_sequences=None,min_similarity=1.0,
   for s in unique_sequences:
     sim=sequence_similarity().run(seq,s,use_fasta=True,verbose=False)
     if not allow_extensions and len(seq)!=len(s):
-      fract_same=min(len(seq),len(s))/max(len(seq),len(s))
+      fract_same=min(len(seq),len(s))/max(len(seq) if seq is not None else 1,
+        len(s) if s is not None else 1)
       sim=sim*fract_same
     if sim >= min_similarity:
       return s # return the one it is similar to
@@ -496,16 +576,16 @@ def extract_unique_part_of_sequences(sequence_list=None,
     copies_found=best_chain_copies_dict[seq]
     if not copies_found in copies_list: copies_list.append(copies_found)
   copies_list.sort()
-  print >>out,"Numbers of copies of sequences: %s" %(str(copies_list))
+  print("Numbers of copies of sequences: %s" %(str(copies_list)), file=out)
   copies_in_unique={}
   if not copies_list:
-    print >>out,"\nNothing to compare..."
+    print("\nNothing to compare...", file=out)
     copies_base=0
     return copies_in_unique,copies_base,unique_sequence_dict
   copies_base=copies_list[0]
   all_ok=True
   if len(copies_list)==1:
-    print >>out,"Number of copies of all sequences is: %s" %(copies_base)
+    print("Number of copies of all sequences is: %s" %(copies_base), file=out)
     for seq in unique_sequences:
       copies_in_unique[seq]=1 # unique set has 1 of this one sequence
     return copies_in_unique,copies_base,unique_sequence_dict
@@ -515,15 +595,15 @@ def extract_unique_part_of_sequences(sequence_list=None,
         all_ok=False
         break
     if all_ok:
-      print >>out,"Copies are all multiples of %s...taking " %(
-          copies_base)
+      print("Copies are all multiples of %s...taking " %(
+          copies_base), file=out)
       for seq in unique_sequences:
         copies_found=best_chain_copies_dict[seq]
         copies_in_unique[seq]=copies_found//copies_base
       return copies_in_unique,copies_base,unique_sequence_dict
     else:
-      print >>out,"Copies are not all multiples of %s...taking all" %(
-          copies_base)
+      print("Copies are not all multiples of %s...taking all" %(
+          copies_base), file=out)
       for seq in unique_sequences:
         copies_in_unique[seq]=best_chain_copies_dict[seq]
       return copies_in_unique,copies_base,unique_sequence_dict
@@ -542,6 +622,8 @@ def get_matching_ids(unique_seq=None,sequences=None,
 def get_sorted_matching_chains(
    chains=None,
    target_centroid_list=None):
+  if not target_centroid_list:
+    return chains, len(chains)*[0]
   sort_list=[]
   for chain in chains:
     if target_centroid_list:
@@ -551,7 +633,7 @@ def get_sorted_matching_chains(
     else:
         dist=0.
     sort_list.append([dist,chain])
-  sort_list.sort()
+  sort_list.sort(key=itemgetter(0))
   sorted_chains=[]
   sorted_distances=[]
   for dist,chain in sort_list:
@@ -559,10 +641,35 @@ def get_sorted_matching_chains(
     sorted_distances.append(dist)
   return sorted_chains,sorted_distances
 
+def split_chains_with_unique_four_char_id(ph):
+  from mmtbx.secondary_structure.find_ss_from_ca import split_model,model_info,\
+    make_four_char_unique_chain_id
+  chain_model=model_info(hierarchy=ph)
+  distance_cutoff=15. # basically use sequence jumps to ID breaks
+  chain_models=split_model(model=chain_model,distance_cutoff=distance_cutoff)
+  new_hierarchy=iotbx.pdb.input(
+         source_info="Model", lines=flex.split_lines("")).construct_hierarchy()
+  new_model=iotbx.pdb.hierarchy.model()
+  new_hierarchy.append_model(new_model)
+  used_chain_ids=[]
+  for mi in chain_models:
+    for mm in mi.hierarchy.models()[:1]:
+      for cc in mm.chains():
+        cc1=cc.detached_copy()
+        cc1.id,used_chain_ids=make_four_char_unique_chain_id(cc1.id,
+              used_chain_ids=used_chain_ids)
+        new_model.append_chain(cc1)
+  return model_info(new_hierarchy)
+
 def extract_unique_part_of_hierarchy(ph,target_ph=None,
     allow_mismatch_in_number_of_copies=True,
     allow_extensions=False,
+    keep_chain_as_unit=True,
     min_similarity=1.0,out=sys.stdout):
+
+  starting_chain_id_list=ph.chain_ids()
+  if (not keep_chain_as_unit):
+    ph=split_chains_with_unique_four_char_id(ph).hierarchy
 
   # Container for unique chains:
 
@@ -592,7 +699,7 @@ def extract_unique_part_of_hierarchy(ph,target_ph=None,
         seq=seq.replace("X","")
         sequences.append(seq)
         chains.append(chain)
-      except Exception, e:
+      except Exception as e:
         pass
   copies_in_unique,base_copies,unique_sequence_dict=\
         extract_unique_part_of_sequences(
@@ -602,12 +709,12 @@ def extract_unique_part_of_hierarchy(ph,target_ph=None,
     min_similarity=min_similarity,out=out)
 
   if not base_copies:
-    print >>out,"Nothing to compare...quitting"
+    print("Nothing to compare...quitting", file=out)
     return new_hierarchy
   sequences_matching_unique_dict={}
   for seq in sequences:
     unique_seq=unique_sequence_dict[seq]
-    if not unique_seq in sequences_matching_unique_dict.keys():
+    if not unique_seq in sequences_matching_unique_dict:
       sequences_matching_unique_dict[unique_seq]=[]
     sequences_matching_unique_dict[unique_seq].append(seq)
 
@@ -615,27 +722,82 @@ def extract_unique_part_of_hierarchy(ph,target_ph=None,
   #  take those closest to the target (in that order)
 
   unique_chains=[]
-
-  print >>out,"Unique set of sequences. Copies of the unique set: %s" %(
-      base_copies)
-  print >>out,"Copies in unique set ID  sequence"
-  for unique_seq in copies_in_unique.keys():
+  print("Unique set of sequences. Copies of the unique set: %s" %(
+      base_copies), file=out)
+  print("Copies in unique set ID  sequence", file=out)
+  chains_unique=[]
+  keys = sorted(list(copies_in_unique.keys()))
+  for unique_seq in keys:
     matching_ids,matching_chains=get_matching_ids(
       unique_seq=unique_seq,sequences=sequences,chains=chains,
       unique_sequence_dict=unique_sequence_dict)
-    print >>out," %s    %s    %s " %(
-      copies_in_unique[unique_seq]," ".join(matching_ids),unique_seq)
+    print(" %s    %s    %s " %(
+      copies_in_unique[unique_seq]," ".join(matching_ids),unique_seq), file=out)
     sorted_matching_chains,sorted_matching_distances=get_sorted_matching_chains(
       chains=matching_chains,
       target_centroid_list=target_centroid_list)
     for chain,dist in zip(
         sorted_matching_chains[:copies_in_unique[unique_seq]],
         sorted_matching_distances[:copies_in_unique[unique_seq]]):
-      mm.append_chain(chain.detached_copy())
-      print >>out, "Adding chain %s: %s (%s): %7.2f" %(
+      print("Adding chain %s: %s (%s): %7.2f" %(
          chain.id,unique_seq,str(chain.atoms().extract_xyz()[0]),
-         dist)
+         dist), file=out)
+      cc=chain.detached_copy()
+      if (not keep_chain_as_unit):
+        # Remove X and 3rd/4th characters from chain ID
+        cc.id=get_two_char_id_from_four(cc.id,
+           starting_chain_id_list=starting_chain_id_list)
+      chains_unique.append(cc)
+
+  # Sort the chains on chain id and then on starting residue number
+  chains_unique=sort_chains(chains_unique)
+
+  # Put them in the new_hierarchy now
+  for chain in chains_unique:
+    mm.append_chain(chain.detached_copy())
   return new_hierarchy
+
+def get_chains_with_id(chains,id=None):
+  new_chains=[]
+  for chain in chains:
+    if chain.id==id:
+      new_chains.append(chain)
+  return new_chains
+
+
+def get_first_resno_of_chain(chain):
+  for rg in chain.residue_groups():
+     return rg.resseq_as_int()
+
+def get_ids_from_chain_list(chains_unique):
+  id_list=[]
+  for chain in chains_unique:
+    if not chain.id in id_list:
+      id_list.append(chain.id)
+  return id_list
+
+def sort_chains(chains_unique):
+  unique_id_list=get_ids_from_chain_list(chains_unique)
+  new_chains=[]
+  for chain_id in unique_id_list:
+    chains=get_chains_with_id(chains_unique,id=chain_id)
+    chains = sorted(chains, key = lambda c: get_first_resno_of_chain(c))
+    new_chains+=chains
+  return new_chains
+
+def get_two_char_id_from_four(id,starting_chain_id_list=None):
+  two_char_id=id[:2]
+  if (not two_char_id in starting_chain_id_list): # not ok
+    one_char_id=two_char_id.replace("X","")
+    if one_char_id in starting_chain_id_list:
+      new_id=one_char_id
+    else:
+      raise Sorry(
+       "Unable to find the chain ID %s in starting list of %s"%(
+         one_char_id,str(starting_chain_id_list)))
+  else: # ok
+    new_id=two_char_id
+  return new_id
 
 def run_test_unique_part_of_target_only(params=None,
        out=sys.stdout,
@@ -664,14 +826,14 @@ def run_test_unique_part_of_target_only(params=None,
   best_percent_close=None
   if params.input_files.unique_part_of_target_only==True:
     to_test=[True]
-    print>>out,"\nTesting unique_part_of_target_only as True"
+    print("\nTesting unique_part_of_target_only as True", file=out)
   elif params.input_files.unique_part_of_target_only==False:
     to_test=[False]
-    print>>out,"\nTesting unique_part_of_target_only as False "
+    print("\nTesting unique_part_of_target_only as False ", file=out)
   else:
     to_test=[True,False]
-    print>>out,"\nTesting unique_part_of_target_only as True and False and "
-    print >>out,"reporting results for whichever gives higher fraction matched."
+    print("\nTesting unique_part_of_target_only as True and False and ", file=out)
+    print("reporting results for whichever gives higher fraction matched.", file=out)
   for t in to_test:
       local_params=deepcopy(params)
       local_params.input_files.test_unique_part_of_target_only=False
@@ -692,22 +854,23 @@ def run_test_unique_part_of_target_only(params=None,
           min_similarity=min_similarity,
           )
       percent_close=rv.get_close_to_target_percent('close')
-      print >>out,"Percent close with unique_part_of_target_only=%s: %7.1f" %(
-          t,percent_close)
+      print("Percent close with unique_part_of_target_only=%s: %7.1f" %(
+          t,percent_close), file=out)
       if best_percent_close is None or percent_close>best_percent_close:
           best_percent_close=percent_close
           best_rv=rv
           best_t=t
-  print >>out,"\nOriginal residues in target: %s  In query: %s" %(
-    best_rv.total_target,best_rv.total_chain)
-  print >>out,"Used residues in target:  %s  In query: %s" %(
-    best_rv.used_target,best_rv.used_chain)
+  print("\nOriginal residues in target: %s  In query: %s" %(
+    best_rv.total_target,best_rv.total_chain), file=out)
+  print("Used residues in target:  %s  In query: %s" %(
+    best_rv.used_target,best_rv.used_chain), file=out)
   rv_list=[best_rv]
   if best_t:
     file_list=['Unique_target']
   else:
     file_list=['Entire_target']
   write_summary(params=params,file_list=file_list,rv_list=rv_list, out=out)
+  best_rv.file_info=file_list[0]
   return best_rv
 
 def run_all(params=None,
@@ -755,42 +918,42 @@ def run_all(params=None,
         min_similarity=min_similarity,
       )
 
-    except Exception,e:
+    except Exception as e:
       if str(e).find("CifParserError"):
-        print >>out,"NOTE: skipping %s as it is not a valid model file" %(
-           file_name)
+        print("NOTE: skipping %s as it is not a valid model file" %(
+           file_name), file=out)
         continue # it was not a valid PDB file...just skip it
       else:
         raise Sorry(str(e))
     rv_list.append(rv)
+    rv.file_info=file_name
     file_list.append(file_name)
 
   write_summary(params=params,file_list=file_list,rv_list=rv_list, out=out)
+  return rv_list
 
 def write_summary(params=None,file_list=None,rv_list=None,
-    max_dist=None,write_header=True,out=sys.stdout):
+    max_dist=None,write_header=True,full_rows=True,out=sys.stdout):
 
-  if params and max_dist is None:
+  if params and max_dist is None and hasattr(params.comparison,'max_dist'):
      max_dist=params.comparison.max_dist
-  if max_dist is None: max_dist=0.
+  if max_dist is None: max_dist=3.
 
   if write_header:
-    print >>out,"\nCLOSE is within %4.1f A. FAR is greater than this." %(
-      max_dist)
-    print >>out,"\nCA SCORE is fraction in close CA / rmsd of these CA."
-    print >>out,"\nSEQ SCORE is fraction (close and matching target sequence).\n"
-    print >>out,\
-        "\nMEAN LENGTH is the mean length of contiguous "+\
+    print("CLOSE is within %4.1f A." %( max_dist), file=out)
+    print("CA SCORE is (fraction close)/(rmsd of close residues)", file=out)
+    print("SEQ SCORE is fraction (close and matching target sequence).", file=out)
+    print("MEAN LENGTH is the mean length of contiguous "+\
         "segments in the match with "+\
-       "target sequence. (Each gap/reverse of direction starts new segment).\n"
-
-    print >>out,"\n"
-    print >>out,"               ----ALL RESIDUES---  CLOSE RESIDUES ONLY    %"
-    print >>out,\
-              "     MODEL     --CLOSE-    --FAR-- FORWARD REVERSE MIXED"+\
-              " FOUND  CA                  SEQ"
-    print >>out,"               RMSD   N      N       N       N      N  "+\
-              "        SCORE  SEQ MATCH(%)  SCORE  MEAN LENGTH"+"\n"
+       "target sequence. (Each gap/reverse of direction starts new segment).\n", file=out)
+    if full_rows:
+      print("\n", file=out)
+      print("               ----ALL RESIDUES---  CLOSE RESIDUES ONLY    %", file=out)
+      print("     MODEL     --CLOSE-    --FAR-- FORWARD REVERSE MIXED"+\
+              " FOUND  CA                  SEQ", file=out)
+      print("               RMSD   N      N       N       N      N "+\
+     "        SCORE  SEQ MATCH(%)  SCORE  MEAN LENGTH  FRAGMENTS BAD CONNECTIONS"+"\n",
+        file=out)
 
   results_dict={}
   score_list=[]
@@ -798,9 +961,10 @@ def write_summary(params=None,file_list=None,rv_list=None,
     results_dict[full_f]=rv
     (rmsd,n)=rv.get_values('close')
     target_length=rv.get_target_length('close')
-    score=n/(max(1,target_length)*max(0.1,rmsd))
+    score=n/(max(1,target_length if target_length is not None else 0)*max(0.1,rmsd
+       if rmsd is not None else 0))
     score_list.append([score,full_f])
-  score_list.sort()
+  score_list.sort(key=itemgetter(0))
   score_list.reverse()
   for score,full_f in score_list:
     rv=results_dict[full_f]
@@ -816,10 +980,28 @@ def write_summary(params=None,file_list=None,rv_list=None,
     unaligned_rmsd,unaligned_n=rv.get_values('unaligned')
     match_percent=rv.get_match_percent('close')
     fragments=rv.get_n_fragments('forward')+rv.get_n_fragments('reverse')
-    mean_length=close_n/max(1,fragments)
-    print >>out,"%14s %4.2f %4d   %4d   %4d    %4d    %4d  %5.1f %6.2f   %5.1f      %6.2f  %5.1f" %(file_name,close_rmsd,close_n,far_away_n,forward_n,
+    incorrect_connections = getattr(rv,'incorrect_connections',None)
+    input_fragments = getattr(rv,'input_fragments',None)
+    mean_length=close_n/max(1,fragments if fragments is not None else 0)
+    if full_rows:
+      print("%14s %4.2f %4d   %4d   %4d    %4d    %4d  %5.1f %6.2f   %5.1f      %6.2f  %5.1f %10s %15s" %(file_name,close_rmsd,close_n,far_away_n,forward_n,
          reverse_n,unaligned_n,percent_close,score,match_percent,seq_score,
-         mean_length)
+         mean_length, input_fragments, incorrect_connections), file=out)
+    else:
+      print("ID: %14s \nClose rmsd: %4.2f A  (N=%4d)  (Far N=%4d) \n" %(
+            file_name,close_rmsd,close_n,far_away_n)+\
+         "Close residues in forward direction:"+\
+            " %d  Reverse: %d  Unaligned: %d" %(
+             forward_n, reverse_n,unaligned_n,) +\
+         "\nPercent close: %.1f %%   Score: %.2f \n" %(
+             percent_close,score)+\
+         "Percent matching sequence: %.1f \n" %(
+             match_percent)+\
+         "Sequence score:  %.2f  Mean match length: %.1f" %(
+               seq_score, mean_length) +\
+         "Fragments: %s  Incorrect connections:  %s" %(
+           input_fragments, incorrect_connections),
+           file=out)
 
 def get_target_length(target_chain_ids=None,hierarchy=None,
      target_length_from_matching_chains=None):
@@ -859,12 +1041,12 @@ def select_segments_that_match(params=None,
   else:
     distance_cutoff=15.
   chain_models=split_model(model=chain_model,distance_cutoff=distance_cutoff)
-  print >>out,"Analyzing %s segments and identifying " %(len(chain_models)) +\
+  print("Analyzing %s segments and identifying " %(len(chain_models)) +\
       " those with "+\
      "chain_type=%s and match percentage between %.1f %% and %.1f %% " %(
     params.crystal_info.chain_type,
     params.comparison.minimum_percent_match_to_select,
-    params.comparison.maximum_percent_match_to_select)
+    params.comparison.maximum_percent_match_to_select), file=out)
   local_params=deepcopy(params)
   local_params.output_files.match_pdb_file=None # required
   models_to_keep=[]
@@ -887,14 +1069,14 @@ def select_segments_that_match(params=None,
         distance_per_site=distance_per_site,
         min_similarity=min_similarity,
       )
-
     rv_list.append(rv)
     file_list.append(params.crystal_info.chain_type)
     close_rmsd,close_n=rv.get_values('close')
     far_away_rmsd,far_away_n=rv.get_values('far_away')
     if close_n+far_away_n<1: continue # wrong chain type or other failure
 
-    percent_matched=100.*close_n/max(1,close_n+far_away_n)
+    percent_matched=100.*close_n/max(1,close_n+far_away_n if
+        close_n is not None and far_away_n is not None else 0)
     if percent_matched < params.comparison.minimum_percent_match_to_select:
       continue
     if percent_matched > params.comparison.maximum_percent_match_to_select:
@@ -903,16 +1085,32 @@ def select_segments_that_match(params=None,
     write_summary(params=params,file_list=file_list,rv_list=rv_list,
       write_header=write_header,out=out)
     write_header=False
-    models_to_keep.append(cm)
+    models_to_keep.append(group_args(
+      group_args_type = 'model to keep',
+      model = cm,
+      percent_matched = percent_matched,
+      close_n = close_n))
 
-  new_model=merge_hierarchies_from_models(models=models_to_keep,resid_offset=5)
+  if not models_to_keep:
+    print("No matching chains...", file = out)
+    return None
+
+  if params.comparison.only_keep_best_chain:
+    print("Keeping only best chain", file = out)
+    models_to_keep = sorted(models_to_keep, key = lambda m: m.close_n,
+      reverse=True)
+    models_to_keep = models_to_keep[:1]
+  model_list = []
+  for ga in models_to_keep:
+    model_list.append(ga.model)
+  new_model=merge_hierarchies_from_models(models=model_list,resid_offset=5)
   ff=open(params.output_files.match_pdb_file,'w')
-  print >>ff,new_model.hierarchy.as_pdb_string()
+  print(new_model.hierarchy.as_pdb_string(), file=ff) # PDB OK (converted above)
   ff.close()
-  print >>out,"Wrote %s %s chains with %s residues to %s" %(
+  print("Wrote %s %s chains with %s residues to %s" %(
     len(models_to_keep),params.crystal_info.chain_type,
     new_model.hierarchy.overall_counts().n_residues,
-    params.output_files.match_pdb_file)
+    params.output_files.match_pdb_file), file=out)
   return new_model
 
 def get_ncs_obj(file_name,out=sys.stdout):
@@ -927,11 +1125,11 @@ def apply_ncs_to_hierarchy(ncs_obj=None,
     return hierarchy
   try:
     from phenix.command_line.apply_ncs import apply_ncs as apply_ncs_to_atoms
-  except exception, e:
-    print "Need phenix for applying NCS"
+  except Exception as e:
+    print("Need phenix for applying NCS")
     return hierarchy
 
-  print >>out, "Applying NCS now..."
+  print("Applying NCS now...", file=out)
   from phenix.autosol.get_pdb_inp import get_pdb_hierarchy
   identity_copy=ncs_obj.identity_op_id_in_first_group()+1
 
@@ -953,6 +1151,69 @@ def get_fragment_count(forward_match_list):
       n+=1
     i_last=i
   return n
+
+
+def get_working_fragment():
+  return group_args(
+    group_args_type = 'working fragment',
+    start_i = None,
+    start_j = None,
+    end_i = None,
+    end_j = None,
+    forward = None,
+    )
+
+def get_incorrect_connections(close_match_list):
+  fragments = []
+  wf = get_working_fragment()
+  fragments.append(wf)
+  for i,j in close_match_list:
+    if wf.start_j is None:
+      wf.start_i = i
+      wf.start_j = j
+      wf.end_i = i
+      wf.end_j = j
+    elif wf.forward in [True, None] and wf.end_j + 1 == j: # forward
+      wf.end_i = i
+      wf.end_j = j
+      wf.forward = True
+    elif wf.forward in [False, None] and wf.end_j - 1 == j: # reverse
+      wf.end_i = i
+      wf.end_j = j
+      wf.forward = False
+    else: # new one
+      wf = get_working_fragment()
+      fragments.append(wf)
+      wf.start_i = i
+      wf.start_j = j
+      wf.end_i = i
+      wf.end_j = j
+  # Remove all fragments of length 1
+  new_fragments = []
+  for wf in fragments:
+    if wf.forward is not None:
+      new_fragments.append(wf)
+  fragments = new_fragments
+  # Incorrect connections are:
+  #    True->False or False-> True
+  #    True->True and end_j does not increase
+  #    False->False and end_j does not decrease
+  incorrect_connections = 0
+  for wf,wf1 in zip(fragments[:-1],fragments[1:]):
+    ok = True
+    if wf.forward != wf1.forward:
+      ok = False
+    if wf.forward and wf1.end_j <= wf.end_j:
+      ok = False
+    if (not wf.forward) and wf1.end_j > wf.end_j:
+      ok = False
+    if not ok:
+      incorrect_connections += 1
+  return incorrect_connections
+
+def get_input_fragments(chain_xyz_cart, distance_per_site = 3.8):
+  gaps = ( (chain_xyz_cart[:-1] - chain_xyz_cart[1:]).norms() > 2 * distance_per_site).count(True)
+  return gaps + 1
 
 def run(args=None,
    ncs_obj=None,
@@ -976,39 +1237,41 @@ def run(args=None,
   if not params:
     params=get_params(args,out=out)
   if params.input_files.pdb_in:
-    print >>out,"Using %s as target" %(params.input_files.pdb_in[0])
+    print("Using %s as target" %(params.input_files.pdb_in[0]), file=out)
   elif chain_file or chain_hierarchy:
     pass # it is fine
   else:
     raise Sorry("Need target model (pdb_in)")
   if params.input_files.test_unique_part_of_target_only and  \
     params.output_files.match_pdb_file:
-    print >>out,"Note: Cannot use test_unique_part_of_target_only "+\
-      "with match_pdb_file...\nturning off test_unique_part_of_target_only"
+    print("Note: Cannot use test_unique_part_of_target_only "+\
+      "with match_pdb_file...\nturning "+
+      "off test_unique_part_of_target_only", file=out)
     params.input_files.test_unique_part_of_target_only=False
 
   if params.input_files.unique_query_only and \
      params.input_files.unique_part_of_target_only:
-    print >>out,"Warning: You have specified unique_query_only and" +\
-       " unique_part_of_target_only. \nThis is not normally appropriate "
+    print("Warning: You have specified unique_query_only and" +\
+       " unique_part_of_target_only. "+
+      "\nThis is not normally appropriate ", file=out)
   if params.input_files.unique_target_pdb_in and \
          params.input_files.unique_query_only:
-    print >>out,"Using %s as target for unique chains" %(
-       params.input_files.unique_target_pdb_in)
+    print("Using %s as target for unique chains" %(
+       params.input_files.unique_target_pdb_in), file=out)
   if params.input_files.query_dir and \
       os.path.isdir(params.input_files.query_dir) and \
       not params.output_files.match_pdb_file:
-    print >>out,"\nUsing all files in %s as queries\n" %(
-       params.input_files.query_dir)
+    print("\nUsing all files in %s as queries\n" %(
+       params.input_files.query_dir), file=out)
     return run_all(params=params,out=out)
 
 
   if not ncs_obj and params.input_files.ncs_file:
     ncs_obj=get_ncs_obj(params.input_files.ncs_file,out=out)
-    print >>out,"NCS with %s operators read from %s" %(ncs_obj.max_operators(),
-       params.input_files.ncs_file)
+    print("NCS with %s operators read from %s" %(ncs_obj.max_operators(),
+       params.input_files.ncs_file), file=out)
     if ncs_obj.max_operators()<2:
-      print >>out,"Skipping NCS (no operators)"
+      print("Skipping NCS (no operators)", file=out)
       ncs_obj=ncs_obj.set_unit_ncs()
 
   if verbose is None:
@@ -1042,6 +1305,8 @@ def run(args=None,
 
   # get the hierarchies
   if not chain_hierarchy or not target_hierarchy:
+    if not chain_file or not target_file:
+      raise Sorry("Need at least 2 models (target and query)" )
     assert chain_file and target_file
     pdb_inp=get_pdb_inp(file_name=chain_file)
     if params.input_files.unique_target_pdb_in:
@@ -1055,8 +1320,8 @@ def run(args=None,
       crystal_symmetry=target_pdb_inp.crystal_symmetry_from_cryst1()
     target_hierarchy=target_pdb_inp.construct_hierarchy()
     # remove hetero atoms as they are not relevant
-    chain_hierarchy=apply_atom_selection('not hetero',chain_hierarchy)
-    target_hierarchy=apply_atom_selection('not hetero',target_hierarchy)
+    chain_hierarchy=chain_hierarchy.apply_atom_selection('not hetero')
+    target_hierarchy=target_hierarchy.apply_atom_selection('not hetero')
 
   # get the CA residues
   if chain_type in ["RNA","DNA"]:
@@ -1064,9 +1329,24 @@ def run(args=None,
   else:
     atom_selection="name ca and (not element Ca)"
 
-  chain_hierarchy=apply_atom_selection(atom_selection,chain_hierarchy)
-  target_hierarchy=apply_atom_selection(atom_selection,target_hierarchy)
+  chain_hierarchy=chain_hierarchy.apply_atom_selection(atom_selection)
+  target_hierarchy=target_hierarchy.apply_atom_selection(atom_selection)
 
+  # remove alt conformations if necessary
+  if params.comparison.remove_alt_conf:
+    chain_hierarchy.remove_alt_confs(always_keep_one_conformer=True)
+    target_hierarchy.remove_alt_confs(always_keep_one_conformer=True)
+
+  # Convert to forward_compatible_pdb if necessary
+  conversion_info_dict = {}
+  for ph in (chain_hierarchy, target_hierarchy):
+    if not ph.fits_in_pdb_format():
+      from iotbx.pdb.forward_compatible_pdb_cif_conversion \
+         import forward_compatible_pdb_cif_conversion
+      conversion_info = forward_compatible_pdb_cif_conversion(hierarchy = ph)
+      conversion_info.\
+        convert_hierarchy_to_forward_compatible_pdb_representation(ph)
+      conversion_info_dict[ph] = conversion_info
 
   total_target=target_hierarchy.overall_counts().n_residues
   total_chain=chain_hierarchy.overall_counts().n_residues
@@ -1096,31 +1376,31 @@ def run(args=None,
     target_ph=chain_hierarchy
 
   if params.input_files.unique_query_only or ncs_obj:
-    print >>out,"\nExtracting unique part of query\n"
+    print("\nExtracting unique part of query\n", file=out)
     chain_hierarchy=extract_unique_part_of_hierarchy(
       chain_hierarchy,target_ph=target_ph,
       allow_extensions=params.input_files.allow_extensions,
       min_similarity=min_similarity,out=local_out)
-    print >>out,"Residues in unique part of query hierarchy: %s" %(
-     chain_hierarchy.overall_counts().n_residues)
+    print("Residues in unique part of query hierarchy: %s" %(
+     chain_hierarchy.overall_counts().n_residues), file=out)
     if ncs_obj and not params.input_files.unique_query_only:
       # apply NCS to unique part of query
-      print >>out,"Applying NCS to unique part of query"
+      print("Applying NCS to unique part of query", file=out)
       chain_hierarchy=apply_ncs_to_hierarchy(ncs_obj=ncs_obj,
         hierarchy=chain_hierarchy,out=out)
-      print >>out,"Residues in full query hierarchy: %s" %(
-        chain_hierarchy.overall_counts().n_residues)
+      print("Residues in full query hierarchy: %s" %(
+        chain_hierarchy.overall_counts().n_residues), file=out)
 
   if params.input_files.unique_part_of_target_only:
-    print >>out,"\nUsing only unique part of target \n"
-    print >>out,"Residues in input target hierarchy: %s" %(
-     target_hierarchy.overall_counts().n_residues)
+    print("\nUsing only unique part of target \n", file=out)
+    print("Residues in input target hierarchy: %s" %(
+     target_hierarchy.overall_counts().n_residues), file=out)
     target_hierarchy=extract_unique_part_of_hierarchy(
       target_hierarchy,target_ph=target_ph,
       allow_extensions=params.input_files.allow_extensions,
       min_similarity=min_similarity,out=local_out)
-    print >>out,"Residues in unique part of target hierarchy: %s" %(
-     target_hierarchy.overall_counts().n_residues)
+    print("Residues in unique part of target hierarchy: %s" %(
+     target_hierarchy.overall_counts().n_residues), file=out)
 
 
   if params.output_files.match_pdb_file and \
@@ -1147,23 +1427,23 @@ def run(args=None,
     crystal_symmetry=get_pdb_inp(
         text="CRYST1 1000.000 1000.000 1000.000  90.00  90.00  90.00 P 1"
         ).crystal_symmetry_from_cryst1()
-    print >>out,"\nCrystal symmetry will not be used in comparison.\n"
+    print("\nCrystal symmetry will not be used in comparison.\n", file=out)
     if use_crystal_symmetry:
         raise Sorry("Please set use_crystal_symmetry"+
            "=False (no crystal symmetry supplied)")
   else:
-    print >>out,"\nCrystal symmetry will be used in comparison.\n"
-    print>>out, "Space group: %s" %(crystal_symmetry.space_group().info()), \
+    print("\nCrystal symmetry will be used in comparison.\n", file=out)
+    print("Space group: %s" %(crystal_symmetry.space_group().info()), \
          "Unit cell: %7.2f %7.2f %7.2f  %7.2f %7.2f %7.2f \n" %(
-        crystal_symmetry.unit_cell().parameters())
+        crystal_symmetry.unit_cell().parameters()), file=out)
     use_crystal_symmetry=True
   if not quiet:
-    print >>out,"Looking for chain similarity for "+\
+    print("Looking for chain similarity for "+\
       "%s (%d residues) in the model %s (%d residues)" %(
      chain_file,chain_hierarchy.overall_counts().n_residues,
-     target_file,target_hierarchy.overall_counts().n_residues)
+     target_file,target_hierarchy.overall_counts().n_residues), file=out)
     if verbose:
-      print >>out,"Chain type is: %s" %(chain_type)
+      print("Chain type is: %s" %(chain_type), file=out)
   if crystal_symmetry is None or crystal_symmetry.unit_cell() is None:
     raise Sorry("Need crystal symmetry in at least one input file")
   # get the CA residues
@@ -1180,12 +1460,12 @@ def run(args=None,
   chain_xyz_cart=chain_ca.atoms().extract_xyz()
   target_xyz_cart=target_ca.atoms().extract_xyz()
 
-  if target_xyz_cart.size()<1:
-    print "No suitable atoms in target"
-    return rmsd_values()
-  if chain_xyz_cart.size()<1:
-    print "No suitable atoms in query"
-    return rmsd_values()
+  if target_xyz_cart.size()<1 or chain_xyz_cart.size()<1:
+    print("No suitable atoms in target", file = out)
+    value = rmsd_values()
+    value.n_forward = 0
+    value.n_reverse= 0
+    return value
 
   # for each xyz in chain, figure out closest atom in target and dist
   best_i=None
@@ -1193,6 +1473,7 @@ def run(args=None,
   best_pair=None
   pair_list=[]
   from scitbx.array_family import flex
+  input_fragments = get_input_fragments(chain_xyz_cart, distance_per_site = distance_per_site)
   chain_xyz_fract=crystal_symmetry.unit_cell().fractionalize(chain_xyz_cart)
   target_xyz_fract=crystal_symmetry.unit_cell().fractionalize(target_xyz_cart)
   far_away_match_list=[]
@@ -1201,7 +1482,7 @@ def run(args=None,
   else:
     working_crystal_symmetry=None
   used_j_list=[]
-  for i in xrange(chain_xyz_fract.size()):
+  for i in range(chain_xyz_fract.size()):
     best_j=None
     best_dd=None
     distance=None
@@ -1224,7 +1505,7 @@ def run(args=None,
     if info is None or best_dd > max_dist:
       far_away_match_list.append(i)
       if (not quiet) and verbose:
-        print >>out,"%s" %(chain_ca_lines[i])
+        print("%s" %(chain_ca_lines[i]), file=out)
       continue
     if best_i is None or best_dd<best_i_dd:
       best_i=i
@@ -1291,6 +1572,8 @@ def run(args=None,
       last_i=i
       last_j=j
 
+  incorrect_connections = get_incorrect_connections(close_match_list)
+
   if n_forward==n_reverse==0:
     direction='none'
   elif n_forward>= n_reverse:
@@ -1298,10 +1581,13 @@ def run(args=None,
   else:
     direction='reverse'
   if (not quiet) and verbose:
-    print >>out,"%s %d  %d  N: %d" %(
-     direction,n_forward,n_reverse,chain_xyz_fract.size())
+    print("%s %d  %d  N: %d" %(
+     direction,n_forward,n_reverse,chain_xyz_fract.size()), file=out)
 
-  rv=rmsd_values()
+  rv=rmsd_values(params=params)
+  rv.add_incorrect_connections(incorrect_connections)
+  rv.add_input_fragments(input_fragments)
+
 
   id='forward'
   if forward_match_rmsd_list.size():
@@ -1341,83 +1627,79 @@ def run(args=None,
   n=len(far_away_match_list)
   rv.add_rmsd(id=id,rmsd=rmsd,n=n)
 
-  if not quiet:
+  if verbose and not quiet:
+    print("Total CA: %d  Too far to match: %d " %(
+      chain_xyz_fract.size(),len(far_away_match_list)), file=out)
+
+  rmsd,n=rv.get_values(id='forward')
+  if n and not quiet:
+    print("\nResidues matching in forward direction:   %4d  RMSD: %6.2f" %(
+       n,rmsd), file=out)
     if verbose:
-      print >>out,"Total CA: %d  Too far to match: %d " %(
-        chain_xyz_fract.size(),len(far_away_match_list))
+      for i,j in forward_match_list:
+        print("ID:%d:%d  RESIDUES:  \n%s\n%s" %( i,j, chain_ca_lines[i],
+         target_xyz_lines[j]), file=out)
 
-    rmsd,n=rv.get_values(id='forward')
-    if n:
-      print >>out,\
-          "\nResidues matching in forward direction:   %4d  RMSD: %6.2f" %(
-         n,rmsd)
-      if verbose:
-        for i,j in forward_match_list:
-          print >>out,"ID:%d:%d  RESIDUES:  \n%s\n%s" %( i,j, chain_ca_lines[i],
-           target_xyz_lines[j])
+  rmsd,n=rv.get_values(id='reverse')
+  if n and not quiet:
+    print("Residues matching in reverse direction:   %4d  RMSD: %6.2f" %(
+       n,rmsd), file=out)
+    if verbose:
+      for i,j in reverse_match_list:
+        print("ID:%d:%d  RESIDUES:  \n%s\n%s" %(
+         i,j, chain_ca_lines[i],
+         target_xyz_lines[j]), file=out)
 
-    rmsd,n=rv.get_values(id='reverse')
-    if n:
-      print >>out,\
-         "Residues matching in reverse direction:   %4d  RMSD: %6.2f" %(
-         n,rmsd)
-      if verbose:
-        for i,j in reverse_match_list:
-          print >>out,"ID:%d:%d  RESIDUES:  \n%s\n%s" %(
-           i,j, chain_ca_lines[i],
-           target_xyz_lines[j])
+  rmsd,n=rv.get_values(id='unaligned')
+  if n and not quiet:
+    print("Residues near but not matching one-to-one:%4d  RMSD: %6.2f" %(
+       n,rmsd), file=out)
+    if verbose:
+      for i,j in unaligned_match_list:
+        print("ID:%d:%d  RESIDUES:  \n%s\n%s" %(i,j, chain_ca_lines[i],
+          target_xyz_lines[j]), file=out)
 
-    rmsd,n=rv.get_values(id='unaligned')
-    if n:
-      print >>out,\
-        "Residues near but not matching one-to-one:%4d  RMSD: %6.2f" %(
-         n,rmsd)
-      if verbose:
-        for i,j in unaligned_match_list:
-          print >>out,"ID:%d:%d  RESIDUES:  \n%s\n%s" %(i,j, chain_ca_lines[i],
-            target_xyz_lines[j])
+  rmsd,n=rv.get_values(id='close')
+  if n:
+    lines_chain_ca=[]
+    lines_target_xyz=[]
+    for i,j in close_match_list:
+      lines_chain_ca.append(chain_ca_lines[i])
+      lines_target_xyz.append(target_xyz_lines[j])
+    seq_chain_ca=get_seq_from_lines(lines_chain_ca)
+    seq_target_xyz=get_seq_from_lines(lines_target_xyz)
+    target_chain_ids=get_chains_from_lines(lines_target_xyz)
+    target_length=get_target_length(target_chain_ids=target_chain_ids,
+      hierarchy=target_ca,
+      target_length_from_matching_chains=target_length_from_matching_chains)
+    rv.add_target_length(id='close',target_length=target_length)
 
-    rmsd,n=rv.get_values(id='close')
-    if n:
-      lines_chain_ca=[]
-      lines_target_xyz=[]
-      for i,j in close_match_list:
-        lines_chain_ca.append(chain_ca_lines[i])
-        lines_target_xyz.append(target_xyz_lines[j])
-      seq_chain_ca=get_seq_from_lines(lines_chain_ca)
-      seq_target_xyz=get_seq_from_lines(lines_target_xyz)
-      target_chain_ids=get_chains_from_lines(lines_target_xyz)
-      target_length=get_target_length(target_chain_ids=target_chain_ids,
-        hierarchy=target_ca,
-        target_length_from_matching_chains=target_length_from_matching_chains)
-      rv.add_target_length(id='close',target_length=target_length)
+    if verbose and not quiet:
+       print("SEQ1:",seq_chain_ca,len(lines_chain_ca))
+       print("SEQ2:",seq_target_xyz,len(lines_target_xyz))
 
-      if verbose:
-         print "SEQ1:",seq_chain_ca,len(lines_chain_ca)
-         print "SEQ2:",seq_target_xyz,len(lines_target_xyz)
+    match_n,match_percent=get_match_percent(seq_chain_ca,seq_target_xyz,
+      params=params)
+    rv.add_match_percent(id='close',match_percent=match_percent)
 
-      match_n,match_percent=get_match_percent(seq_chain_ca,seq_target_xyz)
-      rv.add_match_percent(id='close',match_percent=match_percent)
+    percent_close=rv.get_close_to_target_percent('close')
 
-      percent_close=rv.get_close_to_target_percent('close')
-
-      print >>out,\
-        "\nAll residues near target: "+\
-         "%4d  RMSD: %6.2f Seq match (%%):%5.1f  %% Found: %5.1f" %(
-         n,rmsd,match_percent,percent_close)
+    if not quiet:
+      print("\nAll residues near target: "+\
+       "%4d  RMSD: %6.2f Seq match (%%):%5.1f  %% Found: %5.1f" %(
+       n,rmsd,match_percent,percent_close), file=out)
       if verbose:
         for i,j in close_match_list:
-          print >>out,"ID:%d:%d  RESIDUES:  \n%s\n%s" %(i,j, chain_ca_lines[i],
-            target_xyz_lines[j])
+          print("ID:%d:%d  RESIDUES:  \n%s\n%s" %(i,j, chain_ca_lines[i],
+            target_xyz_lines[j]), file=out)
 
-    rmsd,n=rv.get_values(id='far_away')
-    if n:
-      print >>out,\
-        "Residues far from target: %4d " %(
-         n)
-      if verbose:
-        for i in far_away_match_list:
-          print >>out,"ID:%d  RESIDUES:  \n%s" %(i,chain_ca_lines[i])
+  rmsd,n=rv.get_values(id='far_away')
+  if n and not quiet:
+    print("Residues far from target: %4d " %(
+       n), file=out)
+    if verbose:
+      for i in far_away_match_list:
+        print("ID:%d  RESIDUES:  \n%s" %(i,chain_ca_lines[i]), file=out)
 
   rv.n_forward=n_forward
   rv.n_reverse=n_reverse
@@ -1431,4 +1713,7 @@ def run(args=None,
 
 if __name__=="__main__":
   args=sys.argv[1:]
-  run(args=args,out=sys.stdout)
+  rv=run(args=args,out=sys.stdout)
+  """
+  rv.show_summary()
+  """

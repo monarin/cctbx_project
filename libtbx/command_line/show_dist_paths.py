@@ -1,4 +1,6 @@
+"""Show paths to all components of Phenix"""
 from __future__ import absolute_import, division, print_function
+from six.moves import range
 
 def run(args):
   import libtbx.load_env
@@ -25,3 +27,4 @@ def run(args):
 if __name__ == "__main__":
   import sys
   run(args=sys.argv[1:])
+

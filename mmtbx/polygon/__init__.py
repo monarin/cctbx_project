@@ -1,10 +1,11 @@
-from __future__ import division
+from __future__ import absolute_import, division, print_function
 from scitbx.array_family import flex
 import iotbx.phil
 import mmtbx.polygon
-import libtbx, os, re
+import libtbx, os, re, sys
 from libtbx.utils import Sorry
 from libtbx import easy_pickle
+from six.moves import range
 
 keys_to_show = ["r_work", "r_free",
   "pdb_header_r_work", "pdb_header_r_free",
@@ -104,10 +105,10 @@ def show_histogram(data, n_slots, smooth = True):
   for i, s in enumerate(histogram.slots()):
     r = histogram.data_min() + histogram.slot_width() * (i+1)
     triplets.append( [l, r, s] )
-    print "%8.4f %8.4f %d" % (l, r, s)
+    print("%8.4f %8.4f %d" % (l, r, s))
     l = r
   if(smooth):
-    print "... smooth histogram"
+    print("... smooth histogram")
     triplets_smooth = []
     for i, t in enumerate(triplets):
       values = flex.double()
@@ -116,10 +117,10 @@ def show_histogram(data, n_slots, smooth = True):
           values.append(float(triplets[i+j][2]))
       triplets_smooth.append((t[0],t[1],flex.mean(values)))
     for t in triplets_smooth:
-      print "%8.4f %8.4f %d" % (t[0], t[1], int("%.0f"%t[2]))
+      print("%8.4f %8.4f %d" % (t[0], t[1], int("%.0f"%t[2])))
   return histogram
 
-def convert_to_histogram(data, n_slots) :
+def convert_to_histogram(data, n_slots):
   histogram = flex.histogram(data=data, n_slots=n_slots)
   return histogram
 
@@ -138,6 +139,7 @@ def apply_default_filter(database_dict, d_min, key = "high_resolution"):
   for key in result.keys():
     if(key in ["high_resolution"]): continue
     vals = result[key]
+    if vals.size()==0: continue
     if(key == "bond_rmsd"):
       sel &= vals < 0.05
     elif(key == "angle_rmsd"):
@@ -152,13 +154,20 @@ def apply_default_filter(database_dict, d_min, key = "high_resolution"):
   #
   return result
 
-def load_db (file_name=None) :
+def load_db(file_name=None):
   if(file_name is None):
     file_name = libtbx.env.find_in_repositories(
       relative_path = "chem_data/polygon_data/all_mvd.pickle",
       test = os.path.isfile)
   assert os.path.isfile(file_name)
   database_dict = easy_pickle.load(file_name)
+
+  # Python 3 pickle fix
+  # =========================================================================
+  if sys.version_info.major == 3:
+    database_dict = easy_pickle.fix_py2_pickle(database_dict)
+  # =========================================================================
+
   return database_dict
 
 def polygon(params = master_params.extract(), d_min = None,
@@ -177,8 +186,8 @@ def polygon(params = master_params.extract(), d_min = None,
   elif(show_histograms):
     for selected_key in params.polygon.keys_to_show:
       data = result[selected_key]
-      print "%s data_points=%d" % (selected_key, data.size()), \
-        "min/max/mean= %12.4f %12.4f %12.4f"%data.min_max_mean().as_tuple()
+      print("%s data_points=%d" % (selected_key, data.size()), \
+        "min/max/mean= %12.4f %12.4f %12.4f"%data.min_max_mean().as_tuple())
       n_slots = params.polygon.number_of_histogram_slots
       if(n_slots is None):
         assert 0
@@ -192,3 +201,68 @@ def polygon(params = master_params.extract(), d_min = None,
       h = show_histogram(data = data, n_slots = n_slots)
       histograms.append([selected_key,h])
   return histograms
+
+def get_statistics_percentiles(d_min, stats):
+  """
+  For a given set of statistics, determine their percentile ranking compared
+  to other crystal structures at similar resolution.
+  """
+  if (d_min is None):
+    return dict([ (s, None) for s in stats.keys()  ])
+  try :
+    db = load_db()
+  except Exception as e :
+    return {}
+  d_min_mvd = flex.double([ float(x) for x in db['high_resolution'] ])
+  sel_perm = flex.sort_permutation(d_min_mvd)
+  d_min_mvd = d_min_mvd.select(sel_perm)
+  def find_value_in_list(values, value):
+    i = 0
+    j = len(values) - 1
+    while (i != j):
+      k = i + (j - i) // 2
+      if (value and value <= values[k]):
+        j = k
+      else :
+        i = k + 1
+    return i
+  index = find_value_in_list(d_min_mvd, d_min)
+  sel_around = flex.bool(d_min_mvd.size(), False)
+  index_tmp = index
+  while (index_tmp > 0):
+    d_min_other = d_min_mvd[index_tmp]
+    if (d_min_other < d_min - 0.1):
+      break
+    sel_around[index_tmp] = True
+    index_tmp -= 1
+  index_tmp = index
+  while (index_tmp < d_min_mvd.size()):
+    d_min_other = d_min_mvd[index_tmp]
+    if (d_min_other > d_min + 0.1):
+      break
+    sel_around[index_tmp] = True
+    index_tmp += 1
+  #print "%d structures around %g" % (sel_around.count(True), d_min)
+  percentiles = {}
+  for stat_name in stats.keys():
+    stat = stats[stat_name]
+    if (not stat_name in db):
+      percentiles[stat_name] = None
+      continue
+    values = db[stat_name].select(sel_perm).select(sel_around)
+    fvalues = flex.double()
+    for value in values :
+      try :
+        fvalues.append(float(value))
+      except ValueError :
+        pass
+    assert fvalues.size() != 0
+    fvalues_sorted = fvalues.select(flex.sort_permutation(fvalues))
+    stat_index = find_value_in_list(fvalues_sorted, stat)
+    # FIXME I think for some of these statistics we need to reverse this -
+    # i.e. if higher statistics are better
+    stat_perc = 100 * (1 - (stat_index / fvalues.size()))
+    percentiles[stat_name] = stat_perc
+    #print stat_name, stat_index, fvalues.size(), stat_perc
+    #flex.histogram(fvalues, n_slots=10).show(prefix="  ")
+  return percentiles

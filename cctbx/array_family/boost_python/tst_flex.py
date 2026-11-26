@@ -1,9 +1,10 @@
-from __future__ import division
+from __future__ import absolute_import, division, print_function
 from libtbx.test_utils import approx_equal
 from cctbx import uctbx
 from cctbx.array_family import flex
+from six.moves import range
 try:
-  import cPickle as pickle
+  from six.moves import cPickle as pickle
 except ImportError:
   import pickle
 
@@ -51,7 +52,7 @@ def exercise_flex_hendrickson_lattman():
   assert approx_equal(a, [(2.2684820912654264, -3.1758749277715967, 0, 0),
                           (-0.3295836866004328, 0.43944491546724396, 0, 0)])
   assert approx_equal(
-    [a.slice(i) for i in xrange(4)],
+    [a.slice(i) for i in range(4)],
     [[2.2684820912654264, -0.3295836866004328],
      [-3.1758749277715967, 0.43944491546724396],
      [0.0, 0.0],
@@ -150,9 +151,17 @@ def exercise_flex_xray_scatterer():
     ((-0.1,-0.2,-0.3),(-0.2,-0.3,-0.4),(-0.3,-0.4,-0.5)))
   assert approx_equal(a[1].site, (-0.2,-0.3,-0.4))
   assert approx_equal(a.extract_occupancies(), (0.8,0.9,0.7))
+  assert approx_equal(a.extract_fps(), (0.0, 0.0, 5.0))
+  assert approx_equal(a.extract_fdps(), (0.0, 0.0, 7.0))
   a.set_occupancies(occupancies=flex.double((0.1,0.2,0.3)))
+  a.set_fps(fps=flex.double((0.0, 0.0, 1.0)))
+  a.set_fdps(fdps=flex.double((0.0, 0.0, 2.0)))
   assert approx_equal(a.extract_occupancies(), (0.1,0.2,0.3))
+  assert approx_equal(a.extract_fps(), (0.0, 0.0, 1.0))
+  assert approx_equal(a.extract_fdps(), (0.0, 0.0, 2.0))
   assert approx_equal(a[1].occupancy, 0.2)
+  assert approx_equal(a[2].fp, 1.0)
+  assert approx_equal(a[2].fdp, 2.0)
   assert approx_equal(a.extract_u_iso(), (0.0, -1.0, -1.0))
   assert approx_equal(a.extract_u_iso_or_u_equiv(unit_cell=uc),
     (0.0, 258, 236+1/3.))
@@ -280,7 +289,7 @@ def run():
   exercise_flex_hendrickson_lattman()
   exercise_flex_xray_scatterer()
   exercise_extract_u_cart_plus_u_iso()
-  print "OK"
+  print("OK")
 
 if (__name__ == "__main__"):
   run()

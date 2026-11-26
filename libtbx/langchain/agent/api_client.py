@@ -1,0 +1,893 @@
+"""
+API Client Adapter for PHENIX AI Agent.
+
+This module provides functions to:
+1. Build v2 requests from client data
+2. Parse v2 responses into the format expected by existing code
+3. Serialize/deserialize for transport
+
+Usage:
+    from libtbx.langchain.agent.api_client import (
+        build_request_v2,
+        parse_response_v2,
+        serialize_request,
+        deserialize_response,
+    )
+"""
+
+from __future__ import absolute_import, division, print_function
+
+import json
+import os
+
+# Import schema definitions
+from libtbx.langchain.knowledge.api_schema import (
+    create_request,
+    apply_request_defaults,
+    apply_response_defaults,
+)
+
+# Import transport functions for sanitization
+from libtbx.langchain.agent.transport import (
+    sanitize_string,
+    sanitize_for_transport,
+    sanitize_dict_recursive,
+    sanitize_request,
+    sanitize_response,
+    get_transport_config,
+    truncate_log_head_tail,
+)
+TRANSPORT_AVAILABLE = True
+
+# Silence unused import warnings - these are used conditionally
+assert sanitize_request is not None
+assert sanitize_response is not None
+assert get_transport_config is not None
+
+# v119.H1: central per-provider default models.  All four _call_*_llm
+# functions below resolve their model defaults via this helper rather
+# than hardcoding strings.  Fallback import path supports both PHENIX
+# and standalone-tests invocation per AI Agent guideline section 3.
+# v119.H13: also brings in helpers for ollama URL normalization,
+# env-var precedence, and provider-error classification.
+try:
+    from libtbx.langchain.core.llm import (
+        default_model_for_provider,
+        # v119.H13
+        normalize_ollama_openai_base_url,
+        resolve_model_for_provider,
+        anthropic_reply_text,
+        anthropic_request_max_tokens,
+        google_reply_text,
+        openai_reply_text,
+        google_generation_kwargs,
+        openai_completion_kwargs,
+        portkey_max_completion_tokens,
+    )
+except ImportError:
+    from core.llm import (
+        default_model_for_provider,
+        # v119.H13
+        normalize_ollama_openai_base_url,
+        resolve_model_for_provider,
+        anthropic_reply_text,
+        anthropic_request_max_tokens,
+        google_reply_text,
+        openai_reply_text,
+        google_generation_kwargs,
+        openai_completion_kwargs,
+        portkey_max_completion_tokens,
+    )
+
+
+# =============================================================================
+# SESSION STATE BUILDING
+# =============================================================================
+
+def build_session_state(session_info, session_resolution=None):
+    """
+    Build session_state dict from session_info.
+
+    Used by both LocalAgent and RemoteAgent to avoid code duplication.
+    The session_state is passed to build_request_v2 and transmitted to the server.
+
+    Args:
+        session_info: Dict with session state fields:
+            - experiment_type: Locked experiment type
+            - rfree_mtz: Locked R-free MTZ path
+            - best_files: Current best files dict
+            - directives: Extracted user directives
+            - force_retry_program: Program to force retry (error recovery)
+            - recovery_strategies: Dict of recovery strategies per file
+            - strategy_memory: Thinking agent accumulated state (v113)
+        session_resolution: Optional resolution value
+
+    Returns:
+        dict: Session state ready for build_request_v2
+    """
+    session_state = {}
+
+    if session_resolution is not None:
+        session_state["resolution"] = session_resolution
+
+    if session_info:
+        # Standard session fields
+        for key in ["experiment_type", "rfree_mtz", "best_files", "directives"]:
+            if session_info.get(key):
+                session_state[key] = session_info[key]
+
+        # Error recovery fields
+        for key in ["force_retry_program", "recovery_strategies"]:
+            if session_info.get(key):
+                session_state[key] = session_info[key]
+
+        # Explicit program request (from user advice)
+        if session_info.get("explicit_program"):
+            session_state["explicit_program"] = session_info["explicit_program"]
+
+        # Resume flag: new advice provided on a completed workflow — suppresses
+        # AUTO-STOP and steps back from 'complete' to 'validate' phase (Q1 fix)
+        if session_info.get("advice_changed"):
+            session_state["advice_changed"] = True
+
+        # S2L: client-side model CRYST1 cell for server-side Tier 1 mismatch check
+        if session_info.get("unplaced_model_cell"):
+            session_state["unplaced_model_cell"] = session_info["unplaced_model_cell"]
+
+        # Parameter blacklist: params that caused PHIL errors for specific programs
+        # (e.g. {"phenix.refine": ["ignore_symmetry_conflicts"]})
+        if session_info.get("bad_inject_params"):
+            session_state["bad_inject_params"] = session_info["bad_inject_params"]
+
+        # The protocol version the client reports.  Without this the
+        # server falls back to session_info.get("client_protocol_version",
+        # 1) and concludes every client is v1: check_client_version has
+        # therefore never rejected anything, and get_deprecation_warnings
+        # fires for every client on every cycle, including current ones.
+        # Harmless while state["warnings"] was not forwarded; visible to
+        # every user now that it is.
+        if session_info.get("client_protocol_version") is not None:
+            session_state["client_protocol_version"] = \
+                session_info["client_protocol_version"]
+
+        # v9: the program that produced log_content, named by the client.
+        # Sent only when the history entry and the log file name agree.
+        # NOTE the truthiness test: both are None when the client cannot
+        # confirm the program, and None must not be forwarded -- the
+        # server's normalize_session_info supplies the same default.
+        if session_info.get("log_program"):
+            session_state["log_program"] = session_info["log_program"]
+        if session_info.get("log_cycle") is not None:
+            session_state["log_cycle"] = session_info["log_cycle"]
+
+        # Thinking agent (v113): accumulated scientific understanding
+        if session_info.get("strategy_memory"):
+            session_state["strategy_memory"] = session_info["strategy_memory"]
+
+        # Goal-directed agent (v114): Structure Model + History
+        if session_info.get("structure_model"):
+            session_state["structure_model"] = (
+                session_info["structure_model"])
+        if session_info.get("validation_history"):
+            session_state["validation_history"] = (
+                session_info["validation_history"])
+
+        # Model-vs-Data Gate (v114.1)
+        if session_info.get("model_is_placed"):
+            session_state["model_is_placed"] = True
+        if session_info.get("input_has_ligand"):
+            session_state["input_has_ligand"] = True
+        if session_info.get("user_advice"):
+            session_state["user_advice"] = (
+                session_info["user_advice"])
+        # Plan status: suppress AUTO-STOP when plan
+        # has pending stages (v114.1)
+        if session_info.get("plan_has_pending_stages"):
+            session_state[
+                "plan_has_pending_stages"] = True
+
+        # Plan next-stage programs (v114.1) and the current ACTIVE stage's
+        # un-run lead program (v120 Option 2a).  Both let PERCEIVE inject
+        # plan-driven programs into valid_programs.  They must round-trip
+        # session_info -> session_state -> session_info (run_ai_agent) to reach
+        # the graph; without these two lines they are silently dropped at the
+        # client->server boundary (identically for LocalAgent and RemoteAgent,
+        # which share this function — so parity holds either way, but the
+        # feature would be inert).  Truthy-guarded, so empty []/"" are skipped.
+        if session_info.get("plan_next_stage_programs"):
+            session_state["plan_next_stage_programs"] = (
+                session_info["plan_next_stage_programs"])
+        if session_info.get("plan_current_unrun_lead_program"):
+            session_state["plan_current_unrun_lead_program"] = (
+                session_info["plan_current_unrun_lead_program"])
+
+        # v120: client-extracted input-MTZ R-free presence (tri-state bool).
+        # Use an explicit `is not None` guard, NOT a truthy guard: the value
+        # False (confirmed no flags) is meaningful and must survive the wire —
+        # a truthy guard would drop both False and None, collapsing "confirmed
+        # absent" into "undetermined" and changing the server's generate decision.
+        if session_info.get("input_mtz_has_rfree") is not None:
+            session_state["input_mtz_has_rfree"] = (
+                session_info["input_mtz_has_rfree"])
+
+        # v120.2: per-file R-free map (dict).  is-not-None guard so an empty
+        # map is distinguishable from "absent" (both ship as-is when present).
+        if session_info.get("mtz_rfree_map") is not None:
+            session_state["mtz_rfree_map"] = session_info["mtz_rfree_map"]
+
+        # P4: session-blocked programs — programs that have failed too many
+        # times this session.  Persisted client-side and re-injected each
+        # cycle so the server can filter them from valid_programs.
+        if session_info.get("session_blocked_programs"):
+            session_state["session_blocked_programs"] = (
+                session_info["session_blocked_programs"])
+
+        # ASU copy count (copies feature): known after xtriage or from user
+        # directives.  Forwarded each cycle so BUILD can inject
+        # phaser.search_copies without re-parsing xtriage output.
+        if session_info.get("asu_copies"):
+            session_state["asu_copies"] = session_info["asu_copies"]
+
+    return session_state
+
+
+# =============================================================================
+# REQUEST BUILDING (Client -> Server)
+# =============================================================================
+
+def build_request_v2(
+    files,
+    cycle_number,
+    log_content="",
+    history=None,
+    session_state=None,
+    user_advice="",
+    provider="google",
+    abort_on_red_flags=True,
+    abort_on_warnings=False,
+    client_version=None,
+):
+    """
+    Build a v2 API request from client data.
+
+    This is the main entry point for clients to create requests.
+
+    Args:
+        files: List of available file paths
+        cycle_number: Current cycle number
+        log_content: Log text from previous command
+        history: List of previous cycle records (dicts)
+        session_state: Dict with session state:
+            - resolution: float
+            - experiment_type: str ("xray" or "cryoem")
+            - rfree_mtz: str (path to locked MTZ)
+            - best_files: dict (category -> path)
+            - directives: dict (extracted user directives)
+        user_advice: User instructions/guidelines
+        provider: LLM provider name
+        abort_on_red_flags: Whether to abort on critical issues
+        abort_on_warnings: Whether to abort on warnings
+        client_version: Client software version
+
+    Returns:
+        dict: A valid v2 request ready for serialization
+    """
+    # Normalize files to absolute paths
+    normalized_files = []
+    for f in (files or []):
+        if f and isinstance(f, str):
+            normalized_files.append(os.path.abspath(f) if not os.path.isabs(f) else f)
+
+    # Normalize history using transport sanitization
+    normalized_history = []
+
+    for h in (history or []):
+        if isinstance(h, dict):
+            # Sanitize metrics recursively
+            # NOTE: get_history_for_agent returns 'analysis' key, but we store as 'metrics'
+            raw_metrics = h.get("analysis", h.get("metrics", {}))
+            sanitized_metrics = sanitize_dict_recursive(raw_metrics, max_len_per_string=500)
+
+            normalized_history.append({
+                # HISTORY_ENTRY_FIELDS declares "cycle_number".  Sending
+                # "cycle" made metrics_analyzer fall back to the loop
+                # index (entry.get("cycle_number", cycle_num)), which
+                # diverges as soon as history is filtered -- and
+                # get_history_for_agent DOES filter, emitting only cycles
+                # having both a command and a result.
+                "cycle_number": h.get("cycle_number", h.get("cycle", len(normalized_history) + 1)),
+                "program": sanitize_string(h.get("program", ""), max_len=100),
+                "command": sanitize_string(h.get("command", ""), max_len=1000),
+                "result": sanitize_for_transport(
+                    h.get("result", ""),
+                    max_len=500,
+                    truncate_quotes=True,
+                    quote_max_len=200
+                ),
+                "output_files": h.get("output_files", []),
+                # HISTORY_ENTRY_FIELDS declares "analysis", and
+                # get_history_for_agent (session.py:2280) already
+                # translates cycle["metrics"] into it.  Renaming back to
+                # "metrics" here left 8 of the 9 consumers reading a key
+                # that never arrived: derive_metrics_from_history (2
+                # sites) and thinking_agent (6 sites) both got {}.
+                "analysis": sanitized_metrics,
+            })
+
+    # Build session_state
+    # session_state passes through unchanged apart from the coercions
+    # and derived flags below.
+    #
+    # This block used to re-list every field by name -- a second
+    # allow-list twenty lines after build_session_state built the dict.
+    # It added nothing, transformed almost nothing, and applied no
+    # sanitization, yet a field missing from the list was dropped with
+    # no error.  Eleven fields were lost that way across two audits,
+    # including two fixes that had been made and marked verified.
+    #
+    # PARITY: this is the single chokepoint both LocalAgent and
+    # RemoteAgent pass through.  Nothing may be added in either agent.
+    normalized_session_state = dict(session_state or {})
+
+    if normalized_session_state.get("resolution") is not None:
+        normalized_session_state["resolution"] = float(
+            normalized_session_state["resolution"])
+    for _key in ("best_files", "directives", "recovery_strategies"):
+        if normalized_session_state.get(_key):
+            normalized_session_state[_key] = dict(
+                normalized_session_state[_key])
+    if normalized_session_state.get("advice_changed"):
+        normalized_session_state["advice_changed"] = True
+    if normalized_session_state.get("plan_next_stage_programs"):
+        normalized_session_state["plan_has_pending_stages"] = True
+
+    settings = {
+        "provider": provider or "google",
+        "abort_on_red_flags": bool(abort_on_red_flags),
+        "abort_on_warnings": bool(abort_on_warnings),
+    }
+
+    # Sanitize log_content with quoted string truncation, then keep the
+    # head AND the tail rather than the head alone.
+    #
+    # Order matters and follows sanitize_for_transport's own documented
+    # sequence: markers, quotes, tabs, control characters, THEN length.
+    # So quote truncation runs first with max_len=None -- it can shrink
+    # a log substantially on its own (autosol_2.log: 466,667 -> 275,444)
+    # and anything that then fits under the cap is sent whole -- and the
+    # head+tail cut is applied last, in place of the plain max_len
+    # truncation.
+    #
+    # Why not max_len=50000: truncate_string keeps the HEAD, and every
+    # final metric in a program log is at the END.  Measured over the six
+    # production logs above the cap, head-only preserved 2 of 17 metrics
+    # and fabricated values at the cut (residues_built 3802 ->
+    # 47352879980392415).  See truncate_log_head_tail for the split
+    # measurement.
+    _cleaned_log = sanitize_for_transport(
+        log_content or "",
+        max_len=None,
+        truncate_quotes=True,
+        quote_max_len=500
+    )
+    sanitized_log_content = truncate_log_head_tail(_cleaned_log)
+
+    # Also sanitize user_advice (user could input tabs)
+    sanitized_user_advice = sanitize_string(user_advice or "", max_len=10000)
+
+    # Create the request using schema helper
+    return create_request(
+        files=normalized_files,
+        cycle_number=cycle_number,
+        log_content=sanitized_log_content,
+        history=normalized_history,
+        session_state=normalized_session_state,
+        user_advice=sanitized_user_advice,
+        settings=settings,
+        client_version=client_version,
+    )
+
+
+def build_request_from_params(params, session=None, log_content="", history=None):
+    """
+    Build a v2 request from PHENIX params object and session.
+
+    This provides compatibility with existing code that uses params.
+
+    Args:
+        params: PHENIX params object
+        session: AgentSession object (optional)
+        log_content: Log text from previous command
+        history: List of history records
+
+    Returns:
+        dict: A valid v2 request
+    """
+    # Extract files from params
+    files = []
+    if hasattr(params, 'ai_analysis') and params.ai_analysis.original_files:
+        files = list(params.ai_analysis.original_files)
+
+    # Extract cycle number
+    cycle_number = 1
+    if history:
+        cycle_number = len(history) + 1
+
+    # Extract user advice
+    user_advice = ""
+    if hasattr(params, 'ai_analysis') and params.ai_analysis.project_advice:
+        user_advice = params.ai_analysis.project_advice
+
+    # Extract provider
+    provider = "google"
+    if hasattr(params, 'communication') and params.communication.provider:
+        provider = params.communication.provider
+
+    # Build session state from session object
+    session_state = {}
+    if session:
+        if hasattr(session, 'get_resolution') and session.get_resolution():
+            session_state["resolution"] = session.get_resolution()
+        if hasattr(session, 'get_experiment_type') and session.get_experiment_type():
+            session_state["experiment_type"] = session.get_experiment_type()
+        if hasattr(session, 'get_rfree_mtz') and session.get_rfree_mtz():
+            session_state["rfree_mtz"] = session.get_rfree_mtz()
+        if hasattr(session, 'get_best_files_dict'):
+            session_state["best_files"] = session.get_best_files_dict()
+        if hasattr(session, 'get_directives') and session.get_directives():
+            session_state["directives"] = session.get_directives()
+
+    # Extract abort settings
+    abort_on_red_flags = True
+    abort_on_warnings = False
+    if session and hasattr(session, 'get_abort_settings'):
+        settings = session.get_abort_settings()
+        abort_on_red_flags = settings.get("abort_on_red_flags", True)
+        abort_on_warnings = settings.get("abort_on_warnings", False)
+
+    return build_request_v2(
+        files=files,
+        cycle_number=cycle_number,
+        log_content=log_content,
+        history=history,
+        session_state=session_state,
+        user_advice=user_advice,
+        provider=provider,
+        abort_on_red_flags=abort_on_red_flags,
+        abort_on_warnings=abort_on_warnings,
+    )
+
+
+# =============================================================================
+# RESPONSE PARSING (Server -> Client)
+# =============================================================================
+
+def parse_response_v2(response):
+    """
+    Parse a v2 API response into the format expected by existing client code.
+
+    Args:
+        response: Dict containing v2 response data
+
+    Returns:
+        dict: Response in legacy format compatible with existing code:
+            {
+                "next_move": {
+                    "program": str,
+                    "command": str,
+                    "explanation": str,
+                    "strategy": dict,
+                },
+                "program": str,
+                "command": str,
+                "history_record": dict,
+                "debug_log": list,
+                "error": str or None,
+            }
+    """
+    if not isinstance(response, dict):
+        return {
+            "next_move": None,
+            "program": "",
+            "command": "",
+            "history_record": None,
+            "debug_log": ["ERROR: Invalid response format"],
+            "error": "Invalid response format",
+        }
+
+    # Apply defaults to ensure all fields exist
+    response = apply_response_defaults(response)
+
+    decision = response.get("decision", {})
+    metadata = response.get("metadata", {})
+    debug = response.get("debug", {})
+
+    program = decision.get("program", "")
+    command = decision.get("command", "")
+    reasoning = decision.get("reasoning", "")
+    strategy = decision.get("strategy", {})
+
+    # Build next_move in legacy format
+    next_move = {
+        "program": program,
+        "command": command,
+        "explanation": reasoning,
+        "strategy": strategy,
+        "confidence": decision.get("confidence", "unknown"),
+    }
+
+    # Build history_record in legacy format
+    history_record = {
+        "program": program,
+        "command": command,
+        "reasoning": reasoning,
+        "summary": f"Agent selected {program}" if program else "",
+        "analysis": "",
+        "error": response.get("error"),
+        "intent": {
+            "program": program,
+            "reasoning": reasoning,
+            "strategy": strategy,
+        },
+        "next_move": next_move,
+        "debug_log": debug.get("log", []),
+        "events": response.get("events", []),  # Include events
+        "experiment_type": metadata.get("experiment_type"),
+        "workflow_state": metadata.get("workflow_state"),
+        "stop": response.get("stop", False),
+        "stop_reason": response.get("stop_reason"),
+        "red_flag_issues": metadata.get("red_flags", []),
+        "warnings": metadata.get("warnings", []),
+    }
+
+    # Handle stop case
+    if response.get("stop"):
+        history_record["stop"] = True
+        if response.get("stop_reason") == "red_flag":
+            history_record["abort_message"] = reasoning
+
+    return {
+        "next_move": next_move,
+        "program": program,
+        "command": command,
+        "history_record": history_record,
+        "debug_log": debug.get("log", []),
+        "events": response.get("events", []),  # Include events
+        "error": response.get("error"),
+    }
+
+
+def parse_response_to_group_args(response):
+    """
+    Parse a v2 response into a group_args object for compatibility.
+
+    This matches the format returned by run_job_on_server.
+
+    Args:
+        response: Dict containing v2 response data
+
+    Returns:
+        group_args: Object with expected attributes
+    """
+    from libtbx import group_args
+
+    parsed = parse_response_v2(response)
+
+    return group_args(
+        group_args_type='log summary',
+        next_move=parsed["next_move"],
+        history_record=parsed["history_record"],
+        debug_log=parsed["debug_log"],
+        events=parsed.get("events", []),  # Include events
+        summary=parsed["history_record"].get("summary", ""),
+        analysis=parsed["history_record"].get("analysis", ""),
+        error=parsed["error"],
+        program=parsed["program"],
+    )
+
+
+# =============================================================================
+# SERIALIZATION
+# =============================================================================
+
+def serialize_request(request):
+    """
+    Serialize a v2 request to JSON string for transport.
+
+    Args:
+        request: Dict containing v2 request data
+
+    Returns:
+        str: JSON-encoded request
+    """
+    json_str = json.dumps(request, indent=None, separators=(',', ':'))
+    # NOTE: Do NOT post-process json_str with replace('\\t', ' ')
+    # — this corrupts Windows paths containing \t (e.g. \tutorials).
+    # Tab handling is done by text_as_simple_string in the REST
+    # encoding layer.
+    return json_str
+
+
+def deserialize_request(json_str):
+    """
+    Deserialize a JSON string to v2 request.
+
+    Args:
+        json_str: JSON-encoded request string
+
+    Returns:
+        dict: Parsed request with defaults applied
+    """
+    try:
+        request = json.loads(json_str)
+        return apply_request_defaults(request)
+    except (json.JSONDecodeError, TypeError) as e:
+        return apply_request_defaults({"error": f"Failed to parse request: {e}"})
+
+
+def serialize_response(response):
+    """
+    Serialize a v2 response to JSON string for transport.
+
+    Args:
+        response: Dict containing v2 response data
+
+    Returns:
+        str: JSON-encoded response
+    """
+    return json.dumps(response, indent=None, separators=(',', ':'))
+
+
+def deserialize_response(json_str):
+    """
+    Deserialize a JSON string to v2 response.
+
+    Args:
+        json_str: JSON-encoded response string
+
+    Returns:
+        dict: Parsed response with defaults applied
+    """
+    try:
+        response = json.loads(json_str)
+        return apply_response_defaults(response)
+    except (json.JSONDecodeError, TypeError) as e:
+        return apply_response_defaults({"error": f"Failed to parse response: {e}"})
+
+
+# =============================================================================
+# VERSION DETECTION
+# =============================================================================
+
+def detect_api_version(data):
+    """
+    Detect the API version from request or response data.
+
+    Args:
+        data: Dict that may contain api_version field
+
+    Returns:
+        str: Detected version, or "1.0" if not found
+    """
+    if isinstance(data, dict):
+        return data.get("api_version", "1.0")
+    return "1.0"
+
+
+def is_v2_request(data):
+    """
+    Check if data is a v2 format request.
+
+    Args:
+        data: Request data (dict or string)
+
+    Returns:
+        bool: True if this is a v2 request
+    """
+    if isinstance(data, str):
+        try:
+            data = json.loads(data)
+        except (json.JSONDecodeError, TypeError):
+            return False
+
+    if not isinstance(data, dict):
+        return False
+
+    version = data.get("api_version", "")
+    return version.startswith("2.")
+
+
+def is_v2_response(data):
+    """
+    Check if data is a v2 format response.
+
+    Args:
+        data: Response data (dict or string)
+
+    Returns:
+        bool: True if this is a v2 response
+    """
+    return is_v2_request(data)  # Same logic
+
+
+# =============================================================================
+# SIMPLE LLM CALLS
+# =============================================================================
+
+def call_llm_simple(prompt, provider="google", model=None, temperature=0.1, max_tokens=2000):
+    """
+    Make a simple LLM call without the full agent infrastructure.
+
+    This is used for one-off tasks like directive extraction where we don't
+    need the full graph/session machinery.
+
+    Args:
+        prompt: The prompt text to send
+        provider: LLM provider ("google", "openai", "anthropic", "ollama", "portkey")
+        model: Model name (uses provider default if None)
+        temperature: Sampling temperature (default 0.1 for consistency)
+        max_tokens: Maximum tokens in response
+
+    Returns:
+        str: The LLM response text.
+
+    Raises:
+        RuntimeError: for every provider when the reply was cut off or
+        contains no text (and for openai, portkey and ollama when the
+        content filter withheld it); other provider and network
+        errors propagate as raised by the SDK.
+    """
+    if provider == "google":
+        return _call_google_llm(prompt, model, temperature, max_tokens)
+    elif provider == "openai":
+        return _call_openai_llm(prompt, model, temperature, max_tokens)
+    elif provider == "anthropic":
+        return _call_anthropic_llm(prompt, model, temperature, max_tokens)
+    elif provider == "ollama":
+        return _call_ollama_llm(prompt, model, temperature, max_tokens)
+    elif provider == "portkey":
+        return _call_portkey_llm(prompt, model, temperature, max_tokens)
+    else:
+        raise ValueError(f"Unknown provider: {provider}")
+
+
+def _call_google_llm(prompt, model=None, temperature=0.1, max_tokens=2000):
+    """Call Google's Gemini API."""
+    api_key = os.environ.get("GOOGLE_API_KEY")
+    if not api_key:
+        raise ValueError("GOOGLE_API_KEY environment variable not set")
+
+    # v119.H1: central default; both google.genai paths share it.
+    if model is None:
+        model_name = default_model_for_provider("google")
+    else:
+        model_name = model
+
+    # Try new google.genai package first
+    try:
+        from google import genai
+        from google.genai import types
+
+        client = genai.Client(api_key=api_key)
+
+        response = client.models.generate_content(
+            model=model_name,
+            contents=prompt,
+            config=types.GenerateContentConfig(
+                **google_generation_kwargs(model_name, temperature, max_tokens))
+        )
+        return google_reply_text(response)
+
+    except ImportError:
+        # Fall back to deprecated google.generativeai
+        import google.generativeai as genai_old
+
+        genai_old.configure(api_key=api_key)
+        gen_model = genai_old.GenerativeModel(model_name)
+
+        response = gen_model.generate_content(
+            prompt,
+            generation_config=genai_old.types.GenerationConfig(
+                **google_generation_kwargs(model_name, temperature, max_tokens))
+        )
+        return google_reply_text(response)
+
+
+def _call_openai_llm(prompt, model=None, temperature=0.1, max_tokens=2000):
+    """Call OpenAI's API."""
+    import openai
+
+    model_name = model or default_model_for_provider("openai")
+    client = openai.OpenAI()  # Uses OPENAI_API_KEY env var
+
+    response = client.chat.completions.create(
+        model=model_name,
+        messages=[{"role": "user", "content": prompt}],
+        **openai_completion_kwargs(model_name, temperature, max_tokens))
+    return openai_reply_text(response)
+
+
+def _call_anthropic_llm(prompt, model=None, temperature=0.1, max_tokens=2000):
+    """Call Anthropic's API."""
+    import anthropic
+
+    model_name = model or default_model_for_provider("anthropic")
+    client = anthropic.Anthropic()  # Uses ANTHROPIC_API_KEY env var
+
+    # Thinking shares the output budget on Claude 5.x; keep the request
+    # between ANTHROPIC_MAX_TOKENS and the SDK's non-streaming limit.
+    response = client.messages.create(
+        model=model_name,
+        max_tokens=anthropic_request_max_tokens(max_tokens),
+        messages=[{"role": "user", "content": prompt}]
+    )
+    return anthropic_reply_text(response)
+
+
+def _call_portkey_llm(prompt, model=None, temperature=0.1, max_tokens=2000):
+    """Call Azure OpenAI via the Portkey SDK (OpenAI-compatible gateway).
+
+    v120: matches the deployment in add_portkey_support.patch -- the Portkey
+    SDK with provider="azure-openai".  Azure gpt-5 uses max_completion_tokens
+    (not max_tokens) and rejects temperature, so neither is forwarded.  Env
+    vars are read at call time; a missing one raises a clear ValueError
+    (via portkey_langchain_config-style checks) rather than a bare KeyError.
+
+    The `temperature` parameter is accepted for dispatch-signature parity but
+    intentionally not sent to the Azure-OpenAI upstream.
+    """
+    from portkey_ai import Portkey
+
+    api_key = os.environ.get("PORTKEY_AZURE_API_KEY")
+    base_url = os.environ.get("PORTKEY_BASE_URL")
+    missing = [n for n, v in (
+        ("PORTKEY_AZURE_API_KEY", api_key),
+        ("PORTKEY_BASE_URL", base_url)) if not v]
+    if missing:
+        raise ValueError(
+            "Provider 'portkey' requires environment variable(s): %s."
+            % ", ".join(missing))
+
+    model_name = model or resolve_model_for_provider("portkey", role="decision")
+    client = Portkey(
+        api_key=api_key,
+        base_url=base_url,
+        provider="azure-openai",
+    )
+    response = client.chat.completions.create(
+        model=model_name,
+        messages=[{"role": "user", "content": prompt}],
+        max_completion_tokens=portkey_max_completion_tokens(model_name, max_tokens),
+    )
+    return openai_reply_text(response)
+
+
+def _call_ollama_llm(prompt, model=None, temperature=0.1, max_tokens=2000):
+    """Call Ollama API (OpenAI-compatible).
+
+    v119.H13:
+      - Item A: normalize OLLAMA_BASE_URL to guarantee /v1 suffix
+      - Item B: honor OLLAMA_LLM_MODEL env-var via
+        resolve_model_for_provider (parity with directive_extractor
+        and core/llm.py).
+    """
+    import openai
+
+    model_name = model or resolve_model_for_provider("ollama")  # v119.H13/B
+    base_url = normalize_ollama_openai_base_url(                  # v119.H13/A
+        os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434"))
+
+    client = openai.OpenAI(
+        base_url=base_url,
+        api_key="ollama"  # Ollama doesn't require a real API key
+    )
+
+    response = client.chat.completions.create(
+        model=model_name,
+        messages=[{"role": "user", "content": prompt}],
+        temperature=temperature,
+        max_tokens=max_tokens
+    )
+    # Ollama's /v1 endpoint reports finish_reason "length" for a cut-off
+    # reply; check it like the OpenAI path does.
+    return openai_reply_text(response)

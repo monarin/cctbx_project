@@ -213,6 +213,36 @@ namespace boost_python {
     }
   };
 
+  struct vector_parameter_wrapper {
+    typedef vector_parameter wt;
+
+    static void wrap() {
+      using namespace boost::python;
+      return_value_policy<return_by_value> rbv;
+      class_<wt,
+        bases<parameter>,
+        boost::noncopyable>("vector_parameter", no_init)
+        .add_property("value",
+          make_getter(&wt::value, rbv),
+          make_setter(&wt::value, rbv));
+    }
+  };
+
+  struct independent_vector_parameter_wrapper {
+    typedef independent_vector_parameter wt;
+
+    static void wrap() {
+      using namespace boost::python;
+      class_<wt,
+        bases<vector_parameter>,
+        std::auto_ptr<wt> >("independent_vector_parameter", no_init)
+        .def(init<af::shared<double> const &, optional<bool> >
+        ((arg("value"), arg("variable") = true)));
+      ;
+      implicitly_convertible<std::auto_ptr<wt>, std::auto_ptr<parameter> >();
+    }
+  };
+
   struct site_parameter_wrapper
   {
     typedef site_parameter wt;
@@ -303,6 +333,48 @@ namespace boost_python {
     }
   };
 
+  struct anharmonic_adp_parameter_wrapper {
+    typedef anharmonic_adp_parameter wt;
+
+    static void wrap() {
+      using namespace boost::python;
+      return_value_policy<return_by_value> rbv;
+      class_<wt,
+        bases<parameter>,
+        boost::noncopyable>("anharmonic_adp_parameter", no_init)
+        .add_property("value",
+          make_getter(&wt::value, rbv),
+          make_setter(&wt::value, rbv));
+      ;
+    }
+  };
+
+  struct asu_anharmonic_adp_parameter_wrapper {
+    typedef asu_anharmonic_adp_parameter wt;
+
+    static void wrap() {
+      using namespace boost::python;
+      class_<wt,
+        bases<anharmonic_adp_parameter, single_asu_scatterer_parameter>,
+        boost::noncopyable>("asu_anharmonic_adp_parameter", no_init)
+        ;
+    }
+  };
+
+  struct independent_anharmonic_adp_parameter_wrapper {
+    typedef independent_anharmonic_adp_parameter wt;
+
+    static void wrap() {
+      using namespace boost::python;
+      class_<wt,
+        bases<asu_anharmonic_adp_parameter>,
+        std::auto_ptr<wt> >("independent_anharmonic_adp_parameter", no_init)
+        .def(init<asu_parameter::scatterer_type *>(arg("scatterer")))
+        ;
+      implicitly_convertible<std::auto_ptr<wt>, std::auto_ptr<parameter> >();
+    }
+  };
+
   struct asu_occupancy_parameter_wrapper
   {
     typedef asu_occupancy_parameter wt;
@@ -353,6 +425,58 @@ namespace boost_python {
       class_<wt,
              bases<asu_u_iso_parameter>,
              std::auto_ptr<wt> >("independent_u_iso_parameter", no_init)
+        .def(init<asu_parameter::scatterer_type *>(arg("scatterer")))
+        ;
+      implicitly_convertible<std::auto_ptr<wt>, std::auto_ptr<parameter> >();
+    }
+  };
+
+  struct asu_fp_parameter_wrapper {
+    typedef asu_fp_parameter wt;
+
+    static void wrap() {
+      using namespace boost::python;
+      class_<wt,
+        bases<scalar_parameter, single_asu_scatterer_parameter>,
+        boost::noncopyable>("asu_fp_parameter", no_init)
+        ;
+    }
+  };
+
+  struct independent_fp_parameter_wrapper {
+    typedef independent_fp_parameter wt;
+
+    static void wrap() {
+      using namespace boost::python;
+      class_<wt,
+        bases<asu_fp_parameter>,
+        std::auto_ptr<wt> >("independent_fp_parameter", no_init)
+        .def(init<asu_parameter::scatterer_type *>(arg("scatterer")))
+        ;
+      implicitly_convertible<std::auto_ptr<wt>, std::auto_ptr<parameter> >();
+    }
+  };
+
+  struct asu_fdp_parameter_wrapper {
+    typedef asu_fdp_parameter wt;
+
+    static void wrap() {
+      using namespace boost::python;
+      class_<wt,
+        bases<scalar_parameter, single_asu_scatterer_parameter>,
+        boost::noncopyable>("asu_fdp_parameter", no_init)
+        ;
+    }
+  };
+
+  struct independent_fdp_parameter_wrapper {
+    typedef independent_fdp_parameter wt;
+
+    static void wrap() {
+      using namespace boost::python;
+      class_<wt,
+        bases<asu_fdp_parameter>,
+        std::auto_ptr<wt> >("independent_fdp_parameter", no_init)
         .def(init<asu_parameter::scatterer_type *>(arg("scatterer")))
         ;
       implicitly_convertible<std::auto_ptr<wt>, std::auto_ptr<parameter> >();
@@ -478,6 +602,9 @@ namespace boost_python {
     small_vector_parameter_wrapper<6>::wrap();
     independent_small_vector_parameter_wrapper<6>::wrap();
 
+    vector_parameter_wrapper::wrap();
+    independent_vector_parameter_wrapper::wrap();
+
     site_parameter_wrapper::wrap();
     asu_site_parameter_wrapper::wrap();
     independent_site_parameter_wrapper::wrap();
@@ -486,11 +613,21 @@ namespace boost_python {
     asu_u_star_parameter_wrapper::wrap();
     independent_u_star_parameter_wrapper::wrap();
 
+    anharmonic_adp_parameter_wrapper::wrap();
+    asu_anharmonic_adp_parameter_wrapper::wrap();
+    independent_anharmonic_adp_parameter_wrapper::wrap();
+
     asu_occupancy_parameter_wrapper::wrap();
     independent_occupancy_parameter_wrapper::wrap();
 
     asu_u_iso_parameter_wrapper::wrap();
     independent_u_iso_parameter_wrapper::wrap();
+
+    asu_fp_parameter_wrapper::wrap();
+    independent_fp_parameter_wrapper::wrap();
+
+    asu_fdp_parameter_wrapper::wrap();
+    independent_fdp_parameter_wrapper::wrap();
 
     reparametrisation_wrapper::wrap();
 

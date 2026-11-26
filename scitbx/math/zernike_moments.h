@@ -8,7 +8,7 @@
 #include <iomanip>
 
 #include <scitbx/array_family/shared.h>
-#include<scitbx/array_family/versa.h>
+#include <scitbx/array_family/versa.h>
 #include <scitbx/array_family/accessors/c_grid.h>
 
 #include <scitbx/vec3.h>
@@ -136,23 +136,23 @@ namespace zernike {
         char tmp_info[128];
 
         info += "number of grid point is: ";
-        std::sprintf(tmp_info, "%8d\n", tot_point);
+        std::snprintf(tmp_info, sizeof(tmp_info), "%8d\n", tot_point);
         info += tmp_info;
 
         info += "rmax is                : ";
-        std::sprintf(tmp_info, "%3.8f\n", rmax_);
+        std::snprintf(tmp_info, sizeof(tmp_info), "%3.8f\n", rmax_);
         info += tmp_info;
 
         info += "max fraction one 1-d is: ";
-        std::sprintf(tmp_info, "%3.8f\n", fract_);
+        std::snprintf(tmp_info, sizeof(tmp_info), "%3.8f\n", fract_);
         info += tmp_info;
 
         info += "non-empty grid point is: ";
-        std::sprintf(tmp_info, "%8d\n", occupied_points);
+        std::snprintf(tmp_info, sizeof(tmp_info), "%8d\n", occupied_points);
         info += tmp_info;
 
         info += "non-empty grid fract is: ";
-        std::sprintf(tmp_info,"%3.8f\n", occupied_points/FloatType(tot_point));
+        std::snprintf(tmp_info, sizeof(tmp_info), "%3.8f\n", occupied_points/FloatType(tot_point));
         info += tmp_info;
 
         return info;
@@ -166,7 +166,6 @@ namespace zernike {
       void xyz2voxel() {
         // build voxel map based on xyz coord
         int xi,yi,zi;
-        int two_NP = NP_*2;
         for(int i=0;i<natom_;i++) {
           if(scaled_xyz_[i][0] <0 )
             xi=int(scaled_xyz_[i][0]/dx_-0.5)+NP_;
@@ -271,7 +270,7 @@ namespace zernike {
 
       bool initialize_voxel() {
         int n_tot=2*NP_+1;
-        int i,j,k;
+        int i,j;
         for(i=0;i<n_tot;i++){
           af::shared< af::shared<FloatType> > voxel_i;
           for(j=0;j<n_tot;j++) {
@@ -284,13 +283,11 @@ namespace zernike {
       }
 
       void find_nbr() {
-        FloatType splat2=splat_range_*splat_range_;
         FloatType d2(0.0), this_weight(0.0);
         for(int i=-splat_range_;i<=splat_range_;i++)
           for(int j=-splat_range_;j<=splat_range_;j++)
             for(int k=-splat_range_;k<=splat_range_;k++) {
               d2 = (i*i+j*j+k*k);
-            //  if(d2 <= splat2) {
                 neighbors_.push_back(scitbx::vec3<int>(i,j,k) );
                 this_weight=std::exp(-d2/10.0);
                 weight_sum_ += this_weight;

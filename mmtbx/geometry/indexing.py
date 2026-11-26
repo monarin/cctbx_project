@@ -1,7 +1,7 @@
-from __future__ import division
+from __future__ import absolute_import, division, print_function
 
-import boost.python
-ext = boost.python.import_ext( "mmtbx_geometry_indexing_ext" )
+import boost_adaptbx.boost.python as bp
+ext = bp.import_ext( "mmtbx_geometry_indexing_ext" )
 from mmtbx_geometry_indexing_ext import *
 
 def filter(range, predicate):
@@ -140,10 +140,10 @@ class structure_indexer(object):
 
     for atom in obj.atoms():
       centre = atom.xyz
-      yield filter(
+      yield list(filter(
         range = self.indexer.close_to( centre = centre ),
         predicate = predgen( predicates = predicates, centre = centre ),
-        )
+        ))
 
 
   def interaction_counts_with(self, obj, predicates = []):
@@ -242,4 +242,3 @@ class structure_indexer(object):
       datagen = datagen,
       maxdist = maxdist,
       )
-

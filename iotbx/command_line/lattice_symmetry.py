@@ -1,4 +1,6 @@
-from __future__ import division
+"""Analyze lattice symmetry"""
+
+from __future__ import absolute_import, division, print_function
 # Comments by Phil Evans, MRC-LMB, Cambridge, U.K.
 
 from cctbx import crystal
@@ -22,11 +24,11 @@ def run(args):
   input_symmetry = command_line.symmetry
   # Check that we have what we need
   if (input_symmetry.unit_cell() is None):
-    print
-    print "***********************************"
-    print "Please specify unit cell parameters"
-    print "***********************************"
-    print
+    print()
+    print("***********************************")
+    print("Please specify unit cell parameters")
+    print("***********************************")
+    print()
     command_line.parser.show_help()
     return
   if (len(command_line.args) > 0):

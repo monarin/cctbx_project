@@ -1,4 +1,4 @@
-from __future__ import division
+from __future__ import absolute_import, division, print_function
 
 '''
 Author      : Lyubimov, A.Y.
@@ -8,7 +8,7 @@ Description : IOTA GUI Dialogs
 '''
 
 import wx
-from iota.components.iota_misc import UnicodeCharacters, WxFlags
+from iota.components.iota_utils import UnicodeCharacters, WxFlags
 
 
 # Platform-specific stuff

@@ -1,4 +1,4 @@
-from __future__ import division
+from __future__ import absolute_import, division, print_function
 from cctbx.development import random_structure
 from cctbx.development import debug_utils
 from cctbx import xray
@@ -12,11 +12,13 @@ from libtbx.test_utils import Exception_expected, approx_equal, \
   is_above_limit, show_diff
 from libtbx.test_utils import not_approx_equal
 import random
+from six.moves import range
+from six.moves import zip
 try:
-  import cPickle as pickle
+  from six.moves import cPickle as pickle
 except ImportError:
   import pickle
-from cStringIO import StringIO
+from six.moves import cStringIO as StringIO
 import sys, random, math
 from itertools import count
 
@@ -82,7 +84,7 @@ def exercise_anomalous_scatterer_group():
   assert approx_equal(group.f_double_prime, 5)
   scatterers[0].fdp = 3
   try: groups[1].extract_from_scatterers_in_place(scatterers=scatterers)
-  except RuntimeError, e:
+  except RuntimeError as e:
     assert str(e) == """\
 Anomalous scatterer group with significantly different f_double_prime:
   Selection: "name S"
@@ -119,7 +121,7 @@ def exercise_structure():
   assert list(xs.by_index_selection([1,])) == [False, True]
   assert list(xs.by_index_selection([0,1])) == [True, True]
   try: sel = xs.by_index_selection([2,])
-  except IndexError, e:
+  except IndexError as e:
     assert str(e) == """\
 Tried to select a scatterer by index with index \
 => of scatterers for this structuture."""
@@ -162,12 +164,12 @@ Tried to select a scatterer by index with index \
   assert approx_equal(sx.scatterers()[1].site, (-0.19700, 0.19700, -0.833333))
   p1 = xs.asymmetric_unit_in_p1()
   assert p1.scatterers().size() == 2
-  for i in xrange(2):
+  for i in range(2):
     assert p1.scatterers()[i].weight() == xs.scatterers()[i].weight()
   assert str(p1.space_group_info()) == "P 1"
   p1 = xs.expand_to_p1()
   assert p1.scatterers().size() == 9
-  for i in xrange(2):
+  for i in range(2):
     assert p1.scatterers()[i].weight() != xs.scatterers()[i].weight()
   p1mp = xs.expand_to_p1(sites_mod_positive=True)
   def count_outside_unit_cell(xs):
@@ -186,7 +188,7 @@ Tried to select a scatterer by index with index \
   assert sl.scatterers()[0].label == sh.scatterers()[0].label
   sl = sh[1:4]
   assert sl.scatterers().size() == 3
-  for i in xrange(3):
+  for i in range(3):
     assert sl.scatterers()[i].label == sh.scatterers()[i+1].label
   xs.scatterers().set_occupancies(flex.double((0.5,0.2)))
   s = xs.sort(by_value="occupancy")
@@ -449,6 +451,42 @@ Si*5  O     Si*6   146.93
 *5 y,-x+y,z+2/3
 *6 -x+y,-x,z+1/3
 """)
+  s = StringIO()
+  quartz.show_dihedral_angles(distance_cutoff=2, max_d=1.62, out=s)
+  assert not show_diff(s.getvalue(), """\
+Si    O     *1Si    *2O     *3 -157.64
+Si    O     *1Si    *2O     *4 -36.91
+Si    O     *1Si    *2O     *5  78.30
+Si    O     *6Si    *7O     *8 -157.64
+Si    O     *6Si    *7O     *9  78.30
+Si    O     *6Si    *7O     *10 -36.91
+Si    O     *11Si    *12O     *13 -157.64
+Si    O     *11Si    *12O     *14 -36.91
+Si    O     *11Si    *12O     *15  78.30
+Si    O     *16Si    *17O     *18 -157.64
+Si    O     *16Si    *17O     *19  78.30
+Si    O     *16Si    *17O     *20 -36.91
+*1 -y,x-y,z-1/3
+*2 x-y,x,z+1/3
+*3 -x,-y,z
+*4 x,y+1,z
+*5 y,-x+y+1,z-1/3
+*6 x-y,x,z-2/3
+*7 y,-x+y,z-1/3
+*8 x,y,z-1
+*9 -x+y+1,-x,z-2/3
+*10 -x+1,-y,z-1
+*11 y+1,-x+y+1,z-1/3
+*12 -x+y+1,-x+1,z+1/3
+*13 x+1,y+1,z
+*14 -x+1,-y,z
+*15 -y+1,x-y,z-1/3
+*16 -x+y+1,-x+1,z-2/3
+*17 -y+1,x-y+1,z-1/3
+*18 -x+1,-y+1,z-1
+*19 x-y,x+1,z-2/3
+*20 x,y+1,z-1
+""")
 ### shake_adp()
   cs = crystal.symmetry((5.01, 6.01, 5.47, 60, 80, 120), "P1")
   sp = crystal.special_position_settings(cs)
@@ -510,6 +548,42 @@ Si*5  O     Si*6   146.93
         assert abs(sc.occupancy - sc_mod.occupancy) > 1.e-4
       else:
         assert approx_equal(sc.occupancy, sc_mod.occupancy)
+### shake_fps()
+  cs = crystal.symmetry((5.01, 6.01, 5.47, 60, 80, 120), "P1")
+  sp = crystal.special_position_settings(cs)
+  scatterers = flex.xray_scatterer([xray.scatterer("o")]*100)
+  selection = flex.bool()
+  for sc in scatterers:
+    sc.fp = random.random()
+    selection.append(random.choice((False,True)))
+  xs = xray.structure(sp, scatterers)
+  for sel in [None, selection]:
+    xs_mod = xs.deep_copy_scatterers()
+    xs_mod.shake_fps(selection = sel)
+    if(sel is None): sel = flex.bool(xs.scatterers().size(), True)
+    for sc, sc_mod, s in zip(xs.scatterers(),xs_mod.scatterers(), sel):
+      if(s):
+        assert abs(sc.fp - sc_mod.fp) > 1.e-4
+      else:
+        assert approx_equal(sc.fp, sc_mod.fp)
+### shake_fdps()
+  cs = crystal.symmetry((5.01, 6.01, 5.47, 60, 80, 120), "P1")
+  sp = crystal.special_position_settings(cs)
+  scatterers = flex.xray_scatterer([xray.scatterer("o")]*100)
+  selection = flex.bool()
+  for sc in scatterers:
+    sc.fdp = random.random()
+    selection.append(random.choice((False,True)))
+  xs = xray.structure(sp, scatterers)
+  for sel in [None, selection]:
+    xs_mod = xs.deep_copy_scatterers()
+    xs_mod.shake_fdps(selection = sel)
+    if(sel is None): sel = flex.bool(xs.scatterers().size(), True)
+    for sc, sc_mod, s in zip(xs.scatterers(),xs_mod.scatterers(), sel):
+      if(s):
+        assert abs(sc.fdp - sc_mod.fdp) > 1.e-4
+      else:
+        assert approx_equal(sc.fdp, sc_mod.fdp)
 ### shake_adp_if_all_equal()
   cs = crystal.symmetry((5.01, 6.01, 5.47, 60, 80, 120), "P1")
   sp = crystal.special_position_settings(cs)
@@ -589,12 +663,12 @@ Si*5  O     Si*6   146.93
         if(sc.u_iso != 0.0):
           assert approx_equal(sc_dc.u_iso / sc.u_iso, 2.0)
       if(sc.flags.use_u_aniso()):
-        for i in xrange(6):
+        for i in range(6):
           if(sc.u_star[i] != 0.0):
             assert approx_equal(sc_dc.u_star[i] / sc.u_star[i], 2.0)
 
 ### shake_sites
-  selection_ = flex.bool([random.choice((False,True)) for i in xrange(500)])
+  selection_ = flex.bool([random.choice((False,True)) for i in range(500)])
   xs = random_structure.xray_structure(
     space_group_info = sgtbx.space_group_info("P1"),
     elements         = ["N"]*500,
@@ -622,7 +696,7 @@ Si*5  O     Si*6   146.93
                      sites_cart_xs_shaked.select(~selection)).dot()))
         assert approx_equal(mean_err_fixed, 0.0)
   ### random remove sites
-  for fraction in xrange(1, 99+1, 10):
+  for fraction in range(1, 99+1, 10):
     fraction /= 100.
     selection = xs.random_remove_sites_selection(fraction = fraction)
     deleted = selection.count(False) / float(selection.size())
@@ -636,7 +710,7 @@ Si*5  O     Si*6   146.93
   assert approx_equal(xs.scatterers()[0].weight(), 1.0)
 # apply_rigid_body_shift
   selection_=flex.bool([random.choice((False,True))
-    for i in xrange(100)]).iselection()
+    for i in range(100)]).iselection()
   xs = random_structure.xray_structure(
     space_group_info = sgtbx.space_group_info("P1"),
     elements         = ["N"]*100,
@@ -651,7 +725,7 @@ Si*5  O     Si*6   146.93
       d = math.sqrt(r[0]**2+r[1]**2+r[2]**2)
       assert approx_equal(
         d, xs.mean_distance(other = xs_mod, selection = selection))
-  selection_=flex.bool([random.choice((False,True)) for i in xrange(100)])
+  selection_=flex.bool([random.choice((False,True)) for i in range(100)])
   xs_mod = xs.deep_copy_scatterers()
   xs_mod.apply_rigid_body_shift(
     rot=(0.999,-0.017,0.035,0.019,0.998,-0.052,-0.033,0.052,0.998),
@@ -730,6 +804,29 @@ Si*5  O     Si*6   146.93
     sc_fp_fdp_henke = sc_henke.at_angstrom(0.71073)
     assert approx_equal(sc.fp, sc_fp_fdp_henke.fp())
     assert approx_equal(sc.fdp, sc_fp_fdp_henke.fdp())
+
+  # Exercise structure.wavelength
+  from cctbx.eltbx import sasaki, wavelengths
+  test_wvl=1.1
+  xs = xray.structure(
+    crystal_symmetry=crystal.symmetry(
+      unit_cell=(3,4,5,90,90,90),
+      space_group_symbol="Pmmm"),
+      wavelength=test_wvl)
+  xs.add_scatterer(xray.scatterer("Mo1", site=(0.5, 0.5, 0.5)))
+  xs.add_scatterer(xray.scatterer("C2", site=(0.7, 0.7, 0.7)))
+  xs1 = xs.deep_copy_scatterers()
+  assert approx_equal(xs1.wavelength, test_wvl)
+  xs1.set_inelastic_form_factors(xs1.wavelength, "sasaki")
+  for sc in xs1.scatterers():
+    assert sc.flags.use_fp_fdp() == True
+    assert sc.fp != 0
+    assert sc.fdp != 0
+    sc_sasaki = sasaki.table(sc.element_symbol())
+    sc_fp_fdp_sasaki = sc_sasaki.at_angstrom(test_wvl)
+    assert approx_equal(sc.fp, sc_fp_fdp_sasaki.fp())
+    assert approx_equal(sc.fdp, sc_fp_fdp_sasaki.fdp())
+
   #
   xs = xray.structure(
     crystal_symmetry=crystal.symmetry(
@@ -801,6 +898,39 @@ def exercise_set_occupancies():
     value = -1, selection = flex.bool([True,True,False,True,False]))
   occ = xs.scatterers().extract_occupancies()
   assert approx_equal(occ, [-1.0, -1.0, 2.0, -1.0, 2.0])
+
+def exercise_set_fps():
+  xs = random_structure.xray_structure(
+    space_group_info = sgtbx.space_group_info("P1"),
+    elements         = ["N"]*5,
+    unit_cell        = (10, 20, 30, 70, 80, 120))
+  xs.set_inelastic_form_factors(1.54184, 'sasaki')
+  fp = xs.scatterers().extract_fps()
+  assert fp.all_approx_equal(0.029155200347304344)
+  xs.set_fps(value = 2)
+  fp = xs.scatterers().extract_fps()
+  assert fp.all_eq(2.0)
+  xs.set_fps(
+    value = -1, selection = flex.bool([True,True,False,True,False]))
+  fp = xs.scatterers().extract_fps()
+  assert approx_equal(fp, [-1.0, -1.0, 2.0, -1.0, 2.0])
+
+def exercise_set_fdps():
+  xs = random_structure.xray_structure(
+    space_group_info = sgtbx.space_group_info("P1"),
+    elements         = ["N"]*5,
+    unit_cell        = (10, 20, 30, 70, 80, 120))
+  xs.set_inelastic_form_factors(1.54184, 'sasaki')
+  fdp = xs.scatterers().extract_fdps()
+  assert fdp.all_approx_equal(0.018055198714137077)
+  xs.set_fdps(value = 2)
+  fdp = xs.scatterers().extract_fdps()
+  assert fdp.all_eq(2.0)
+  xs.set_fdps(
+    value = -1, selection = flex.bool([True,True,False,True,False]))
+  fdp = xs.scatterers().extract_fdps()
+  assert approx_equal(fdp, [-1.0, -1.0, 2.0, -1.0, 2.0])
+
 
 def exercise_u_base():
   d_min = 9
@@ -894,12 +1024,12 @@ def exercise_from_scatterers_direct(space_group_info,
     structure.scattering_type_registry()).f_calc()
   if (0 or verbose):
     for i,h in enumerate(f_obs_exact.indices()):
-      print h
-      print f_obs_simple[i]
-      print f_obs_exact.data()[i]
+      print(h)
+      print(f_obs_simple[i])
+      print(f_obs_exact.data()[i])
       if (abs(f_obs_simple[i]-f_obs_exact.data()[i]) >= 1.e-10):
-        print "MISMATCH"
-      print
+        print("MISMATCH")
+      print()
   mismatch = flex.max(flex.abs(f_obs_exact.data() - f_obs_simple))
   assert mismatch < 1.e-10, mismatch
   f_obs_table = f_obs_exact.structure_factors_from_scatterers(
@@ -909,7 +1039,7 @@ def exercise_from_scatterers_direct(space_group_info,
   ls = xray.targets_least_squares_residual(
     abs(f_obs_exact).data(), f_obs_table.data(), False, 1)
   if (0 or verbose):
-    print "r-factor:", ls.target()
+    print("r-factor:", ls.target())
   assert ls.target() < 1.e-4
 
 def exercise_f_obs_minus_xray_structure_f_calc(
@@ -936,7 +1066,7 @@ def exercise_f_obs_minus_xray_structure_f_calc(
   phase_error = two_f_obs_minus_f_calc.mean_weighted_phase_error(
     phase_source=f_obs_exact)
   if (0 or verbose):
-    print "%.2f" % phase_error
+    print("%.2f" % phase_error)
   assert approx_equal(phase_error, 0)
   two_f_obs_minus_f_calc=abs(f_obs_exact).f_obs_minus_xray_structure_f_calc(
     f_obs_factor=2,
@@ -952,7 +1082,7 @@ def exercise_f_obs_minus_xray_structure_f_calc(
     assert min(density_at_sites[:-1]) > 6.9
     assert density_at_sites[-1] > 2.5
   except AssertionError:
-    print "density_at_sites:", density_at_sites
+    print("density_at_sites:", density_at_sites)
     raise
   sites_cart = structure.sites_cart()
   sites_frac = structure.sites_frac()
@@ -962,7 +1092,7 @@ def exercise_f_obs_minus_xray_structure_f_calc(
     assert min(density_at_sites_tricubic[:-1]) > 6.9
     assert density_at_sites_tricubic[-1] > 2.5
   except AssertionError:
-    print "density_at_sites_tricubic:", density_at_sites_tricubic
+    print("density_at_sites_tricubic:", density_at_sites_tricubic)
     raise
 
 def exercise_n_gaussian(space_group_info, verbose=0):
@@ -1003,7 +1133,7 @@ def exercise_n_gaussian(space_group_info, verbose=0):
     ls = xray.targets_least_squares_residual(
       abs(f_calc_5g).data(), f_calc_ng.data(), False, 1)
     if (0 or verbose):
-      print "%d-gaussian r-factor:" % n, ls.target()
+      print("%d-gaussian r-factor:" % n, ls.target())
     if (n == 2):
       assert ls.target() < 0.002
     else:
@@ -1120,13 +1250,13 @@ Number of scattering types: 4
     xs1.scattering_type_registry(custom_dict = custom_gaussians)
     xs.concatenate_inplace(other = xs1)
     xs.scattering_type_registry().show()
-  except Exception, e: pass
-  assert str(e) == "Cannot concatenate: conflicting scatterers"
+  except Exception as e:
+    assert str(e) == "Cannot concatenate: conflicting scatterers"
   sys.stdout = out
   #
-  assert [(r.scattering_type, r.count, "%.1f" % r.occupancy_sum)
-    for r in xs.scattering_types_counts_and_occupancy_sums()] \
-      == [('C', 1, "1.0"), ('X1', 1, "0.5"), ('Z1', 1, "1.5"), ('O', 1, "1.0")]
+  assert set([(r.scattering_type, r.count, "%.1f" % r.occupancy_sum)
+    for r in xs.scattering_types_counts_and_occupancy_sums()])\
+      == set([('C', 1, "1.0"), ('X1', 1, "0.5"), ('Z1', 1, "1.5"), ('O', 1, "1.0")])
 
 def exercise_min_u_cart_eigenvalue():
   cs = crystal.symmetry((1, 1, 1, 90, 90, 90), "P 1")
@@ -1190,8 +1320,8 @@ def exercise_add_scatterer_insert():
   scatterer = xray.scatterer("zn", site=(0,0,0))
   ls = [sc.label for sc in xs.scatterers()]
   ss = [str(xs.site_symmetry_table().get(i_seq).special_op())
-    for i_seq in xrange(n_sites)]
-  for i_seq in xrange(n_sites+1):
+    for i_seq in range(n_sites)]
+  for i_seq in range(n_sites+1):
     xsw = xs.deep_copy_scatterers()
     xsw.add_scatterer(scatterer=scatterer, insert_at_index=i_seq)
     lsw = list(ls)
@@ -1200,7 +1330,7 @@ def exercise_add_scatterer_insert():
     ssw = list(ss)
     ssw.insert(i_seq, "0,y,0")
     assert ssw == [str(xsw.site_symmetry_table().get(i_seq).special_op())
-      for i_seq in xrange(n_sites+1)]
+      for i_seq in range(n_sites+1)]
 
 def exercise_select_on_name_or_chemical_element():
   cs = crystal.symmetry((5,7,9, 90, 120, 90), 'P2')
@@ -1215,10 +1345,6 @@ def exercise_select_on_name_or_chemical_element():
     )))
   sel = xs.element_selection('O', 'N')
   assert tuple(sel) == (0, 0, 0, 1, 0, 1)
-  sel = xs.label_selection('C4')
-  assert tuple(sel) == (0, 0, 0, 0, 1, 0)
-  sel = xs.label_regex_selection("^(O|C)(1|2)$")
-  assert tuple(sel) == (1, 1, 0, 1, 0, 0)
 
 def exercise_chemical_formula():
   cs = crystal.symmetry((10,10,10, 90,90,90), 'hall: P 2 2 3')
@@ -1245,7 +1371,7 @@ def exercise_chemical_formula():
 def exercise_parameter_map():
   cs = crystal.symmetry((8,9,10, 85, 95, 105), "P1")
   xs = xray.structure(cs.special_position_settings())
-  for i in xrange(5): xs.add_scatterer(xray.scatterer("C%i" % i))
+  for i in range(5): xs.add_scatterer(xray.scatterer("C%i" % i))
   grad_site      = (True , False, False, True , False)
   grad_u_iso     = (False, True , True , False, True )
   grad_u_aniso   = (True , False, False, True , True )
@@ -1300,7 +1426,6 @@ def exercise_parameter_map():
 
 
 def exercise_xray_structure_as_py_code():
-  import itertools
   xs = xray.structure(
     crystal_symmetry=crystal.symmetry((2, 2, 3, 90, 90, 80), "hall: P 2z"),
     scatterers=flex.xray_scatterer((
@@ -1315,7 +1440,8 @@ def exercise_xray_structure_as_py_code():
 Vxray.structure(
 V  crystal_symmetry=crystal.symmetry(
 V    unit_cell=(2, 2, 3, 90, 90, 80),
-V    space_group_symbol="P 1 1 2"),
+V    space_group_symbol="P 1 1 2"
+V  ),
 V  scatterers=flex.xray_scatterer([
 V    xray.scatterer( #0
 V      label="C1",
@@ -1337,7 +1463,7 @@ V      u=0.200000)]))""")
     xs1.crystal_symmetry(),
     relative_length_tolerance=0,
     absolute_angle_tolerance=0)
-  for sc, sc1 in itertools.izip(xs.scatterers(), xs1.scatterers()):
+  for sc, sc1 in zip(xs.scatterers(), xs1.scatterers()):
     assert sc.flags.bits == sc1.flags.bits
     assert sc.site  == sc1.site
     if sc.flags.use_u_iso():
@@ -1366,7 +1492,7 @@ def exercise_delta_sites_cart_measure():
     for sc in xs1.scatterers():
       x, y, z = continuously_shift(*sc.site)
       dx, dy, dz = [ random.uniform(-rnd_delta, rnd_delta)
-                     for i in xrange(3) ]
+                     for i in range(3) ]
       delta.append((dx, dy, dz))
       sc.site = (x + dx, y + dy, z + dz)
     delta = flex.vec3_double([ xs0.unit_cell().orthogonalize(d)
@@ -1389,7 +1515,7 @@ def exercise_discard_scattering_type_registry():
   failed = False
   try:
     fc_oss = xs_os.structure_factors(d_min=1, algorithm="direct").f_calc()
-  except RuntimeError, e:
+  except RuntimeError as e:
     assert str(e) == """scattering_type "S" not in scattering_type_registry."""
     failed = True
   assert failed
@@ -1418,7 +1544,7 @@ def exercise_guess_scattering_type_neutron():
 
 def exercise_truncate_at_pdb_format_precision(d_min=2, n_repeats=1,
       algorithm = "direct"):
-  for i in xrange(n_repeats):
+  for i in range(n_repeats):
     xrs = random_structure.xray_structure(
       space_group_info = sgtbx.space_group_info("P1"),
       elements=["H", "C", "O", "U", "Ca", "N", "Mg"]*50,
@@ -1438,6 +1564,26 @@ def exercise_truncate_at_pdb_format_precision(d_min=2, n_repeats=1,
     r = flex.sum(flex.abs(fc1-fc2))/flex.sum(flex.abs(fc1+fc2))*2*100
     assert r > 0.1
 
+def exercise_sf_calculation_both_ways_must_be_identical():
+  pdb_str = """
+CRYST1   21.937    4.866   23.477  90.00 107.08  90.00 P 1 21 1
+ATOM      1  U   DUM A   1      -9.009   4.612   6.102  1.00  0.00           U
+"""
+  import iotbx.pdb
+  pdb_inp = iotbx.pdb.input(source_info=None, lines=pdb_str)
+  xrs = pdb_inp.xray_structure_simple()
+  fc1 = xrs.structure_factors(
+    d_min     = 4,
+    algorithm = "fft").f_calc()
+  fc2 = fc1.structure_factors_from_scatterers(
+    algorithm      = "fft",
+    xray_structure = xrs).f_calc()
+  def rfactor(fo,fc):
+    o = abs(fo).data()
+    c = abs(fc).data()
+    return flex.sum(flex.abs(o-c))/flex.sum(o)
+  assert approx_equal(rfactor(fo=fc1,fc=fc2), 0.0)
+
 def run():
   exercise_truncate_at_pdb_format_precision()
   exercise_discard_scattering_type_registry()
@@ -1450,6 +1596,8 @@ def run():
   exercise_replace_sites()
   exercise_min_u_cart_eigenvalue()
   exercise_set_occupancies()
+  exercise_set_fps()
+  exercise_set_fdps()
   exercise_closest_distances()
   exercise_concatenate_inplace()
   exercise_scatterer()
@@ -1458,6 +1606,7 @@ def run():
   exercise_u_base()
   exercise_select_within()
   exercise_guess_scattering_type_neutron()
+  exercise_sf_calculation_both_ways_must_be_identical()
   debug_utils.parse_options_loop_space_groups(sys.argv[1:], run_call_back)
 
 if (__name__ == "__main__"):

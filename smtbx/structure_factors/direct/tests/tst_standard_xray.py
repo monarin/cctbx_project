@@ -1,4 +1,4 @@
-from __future__ import division
+from __future__ import absolute_import, division, print_function
 
 from cctbx.array_family import flex
 from cctbx import sgtbx, xray, crystal, miller, eltbx
@@ -11,9 +11,11 @@ from libtbx.test_utils import approx_equal
 from scitbx.math import approx_equal_relatively
 import libtbx.utils
 import random
-from itertools import islice, izip
+from itertools import islice
+from six.moves import zip
 from scitbx import matrix
 from scitbx.math import median_statistics
+from six.moves import range
 
 
 class test_case(object):
@@ -41,6 +43,10 @@ class test_case(object):
                 .set_grad_u_iso(set_grads).set_grad_u_aniso(set_grads)
                 .set_grad_occupancy(set_grads)
       )
+      if self.inelastic_scattering:
+        sc.flags.set_grad_fp(set_grads)
+        sc.flags.set_grad_fdp(set_grads)
+        sc.flags.set_use_fp_fdp(True)
       assert sc.flags.use_u_iso()
       assert sc.flags.use_u_aniso()
     return xs
@@ -80,19 +86,26 @@ class consistency_test_cases(test_case):
       eta = eta_norm * direction
 
       i = 0
-      for sc_forward, sc in izip(xs_forward.scatterers(), xs.scatterers()):
+      for sc_forward, sc in zip(xs_forward.scatterers(), xs.scatterers()):
         eta_site = matrix.col(eta[i:i+3])
         eta_iso = eta[i+3]
         eta_aniso = matrix.col(eta[i+4:i+10])
         eta_occ = eta[i+10]
-        i += 11
+        if self.inelastic_scattering:
+          eta_fp = eta[i+11]
+          eta_fdp = eta[i+12]
+          i += 13
+        else:
+          i += 11
 
         sc_forward.site = matrix.col(sc.site) + eta_site
         sc_forward.u_iso = sc.u_iso + eta_iso
         sc_forward.u_star = matrix.col(sc.u_star) + eta_aniso
         sc_forward.occupancy = sc.occupancy + eta_occ
+        if self.inelastic_scattering:
+          sc_forward.fp = sc.fp + eta_fp
+          sc_forward.fdp = sc.fdp + eta_fdp
       yield direction
-  structures_forward = classmethod(structures_forward)
 
   def do_exercise(self, verbose=False):
     xs = self.xs
@@ -133,10 +146,11 @@ class consistency_test_cases(test_case):
         delta = abs(1 - diff/diff_num)
         deltas.append(delta)
     stats = median_statistics(deltas)
-    tol = 1e-3
-    assert stats.median < tol, (str(space_group_info), stats.median)
-    assert stats.median_absolute_deviation < tol, (str(space_group_info),
-      stats.median_absolute_deviation)
+    tol = 1e-5
+    assert stats.median < tol, (
+        xs.space_group_info().symbol_and_number(), stats.median)
+    assert stats.median_absolute_deviation < tol, (
+        xs.space_group_info().symbol_and_number(), stats.median_absolute_deviation)
 
 class smtbx_against_cctbx_test_case(test_case):
 
@@ -170,7 +184,7 @@ class custom_vs_std_test_case(test_case):
     exp_i_2pi_functor = cctbx.math_module.cos_sin_table(1024)
     custom_fc_sq = (
       structure_factors.f_calc_modulus_squared(
-        xs, exp_i_2pi_functor))
+        xs, None, None, exp_i_2pi_functor))
     std_fc_sq = (
       structure_factors.f_calc_modulus_squared(xs))
     deltas = flex.double()
@@ -182,12 +196,12 @@ class custom_vs_std_test_case(test_case):
     stats = median_statistics(deltas)
     if verbose:
       if not self.has_printed_header:
-        print "f_calc and sin/cos: |tabulated - std|/|std|"
-        print "median & median absolute deviation"
+        print("f_calc and sin/cos: |tabulated - std|/|std|")
+        print("median & median absolute deviation")
         self.has_printed_header = True
-      print "%s: %.12g +/- %.12g" % (xs.space_group_info().type().hall_symbol(),
+      print("%s: %.12g +/- %.12g" % (xs.space_group_info().type().hall_symbol(),
                                      stats.median,
-                                     stats.median_absolute_deviation)
+                                     stats.median_absolute_deviation))
     assert stats.median < 0.01, (str(xs.space_group_info()), stats.median)
     assert stats.median_absolute_deviation < 0.005, (
       str(xs.space_group_info()), stats.median_absolute_deviation)
@@ -217,7 +231,7 @@ def exercise_trigonometric_ff():
   cs = sgi.any_compatible_crystal_symmetry(volume=1000)
   miller_set = miller.build_set(cs, anomalous_flag=False, d_min=1)
   miller_set = miller_set.select(flex.random_double(miller_set.size()) < 0.2)
-  for i in xrange(5):
+  for i in range(5):
     sites = flex.random_double(9)
     x1, x2, x3 = (matrix.col(sites[:3]),
                   matrix.col(sites[3:6]),

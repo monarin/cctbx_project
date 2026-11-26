@@ -1,7 +1,7 @@
-from __future__ import division
+from __future__ import absolute_import, division, print_function
 from scitbx.array_family import flex
 import iotbx.pdb
-import iotbx.ccp4_map
+import iotbx.mrcfile
 import iotbx.xplor.map
 from libtbx import easy_run
 import time
@@ -89,9 +89,9 @@ def run(prefix="tst_model_map"):
   xrs = pdb_inp.xray_structure_simple()
   fc0 = xrs.structure_factors(d_min=3.0).f_calc()
   #
-  easy_run.call("phenix.model_map %s.pdb output_file_name_prefix=%s"%(
+  assert not easy_run.call("phenix.model_map %s.pdb output_file_name_prefix=%s"%(
     prefix, prefix))
-  m1 = iotbx.ccp4_map.map_reader(file_name="%s.ccp4"%prefix).data.as_double()
+  m1 = iotbx.mrcfile.map_reader(file_name="%s.ccp4"%prefix).data.as_double()
   m2 = iotbx.xplor.map.reader(file_name="%s.xplor"%prefix).data
   #
   fc1 = fc0.structure_factors_from_map(
@@ -108,12 +108,12 @@ def run(prefix="tst_model_map"):
     x=abs(fc0).data(), y=abs(fc1).data()).coefficient()
   cc2 = flex.linear_correlation(
     x=abs(fc0).data(), y=abs(fc2).data()).coefficient()
-  print cc1, cc2
+  print(cc1, cc2)
   assert cc1>0.9999
   assert cc2>0.97 # WHY?
 
 if (__name__ == "__main__"):
   t0 = time.time()
   run()
-  print "Time: %6.3f"%(time.time()-t0)
-  print "OK"
+  print("Time: %6.3f"%(time.time()-t0))
+  print("OK")

@@ -1,5 +1,4 @@
-from __future__ import division
-import mmtbx.utils
+from __future__ import absolute_import, division, print_function
 import iotbx.phil
 from scitbx.array_family import flex
 from libtbx.utils import Sorry, date_and_time
@@ -12,6 +11,11 @@ import sys
 from mmtbx import map_tools
 from cctbx import miller
 from cctbx import maptbx
+from six.moves import zip
+from six.moves import range
+from iotbx import extract_xtal_data
+from cctbx.maptbx import servalcat_difference_map
+from libtbx import group_args
 
 map_coeff_params_base_str = """\
   map_coefficients
@@ -194,6 +198,14 @@ maps {
       will only affect the LLG map from Phaser.
   bulk_solvent_correction = True
     .type = bool
+  squeeze = False
+    .type = bool
+    .short_caption = Squeeze (final model only)
+    .help = Add positive mFo-DFc density in the solvent region that cannot \
+      be modelled with atoms to F_model, with a fitted scale and B (as \
+      PLATON SQUEEZE does). Maps are cleaner elsewhere. Only for a \
+      complete, final model: it hides what is not built yet in the solvent \
+      region. Used only if the data resolution is 1.1 A or better.
   anisotropic_scaling = True
     .type = bool
   skip_twin_detection = False
@@ -211,8 +223,8 @@ maps {
   %s
   %s
 }
-"""%(mmtbx.utils.data_and_flags_str_part1,
-     mmtbx.utils.data_and_flags_str_part2,
+"""%(extract_xtal_data.data_and_flags_str_part1,
+     extract_xtal_data.data_and_flags_str_part2,
      map_coeff_params_str,
      map_params_str)
 
@@ -267,7 +279,7 @@ class write_xplor_map_file(object):
       show_string(os.path.dirname(self.params.file_name)))
     title_lines.append("REMARK %s" % date_and_time())
     assert self.params.region in ["selection", "cell"]
-    if(self.params.region == "selection" and xray_structure is not None) :
+    if(self.params.region == "selection" and xray_structure is not None):
       map_iselection = None
       if atom_selection_manager is not None :
         map_iselection = self.atom_iselection()
@@ -367,7 +379,7 @@ def map_coefficients_from_fmodel(
   mnm = mmtbx.map_names(map_name_string = params.map_type)
   if(mnm.k==0 and abs(mnm.n)==1):
     # FIXME Fcalc maps require that fmodel is not None!
-    if (fmodel is None) :
+    if (fmodel is None):
       fmodel = map_calculation_server.fmodel
     return compute_f_calc(fmodel, params)
   if(fmodel is not None and
@@ -398,12 +410,12 @@ def map_coefficients_from_fmodel(
       map_coeffs = coeffs,
       b_sharp    = params.sharpening_b_factor)
   # XXX need to figure out why this happens
-  if (coeffs is None) :
+  if (coeffs is None):
     raise RuntimeError(("Map coefficient generation failed (map_type=%s, "
       "sharpening=%s, isotropize=%s, anomalous=%s.") %
         (params.map_type, params.sharpening, params.isotropize,
          fmodel.f_obs().anomalous_flag()))
-  if(coeffs.anomalous_flag()) :
+  if(coeffs.anomalous_flag()):
     coeffs = coeffs.average_bijvoet_mates()
   return coeffs
 
@@ -414,7 +426,7 @@ def compute_xplor_maps(
     file_name_prefix=None,
     file_name_base=None,
     post_processing_callback=None,
-    pdb_hierarchy=None) :
+    pdb_hierarchy=None):
   assert ((post_processing_callback is None) or
           (hasattr(post_processing_callback, "__call__")))
   output_files = []
@@ -424,7 +436,7 @@ def compute_xplor_maps(
         params = mp,
         post_processing_callback=post_processing_callback,
         pdb_hierarchy=pdb_hierarchy)
-      if (coeffs is None) :
+      if (coeffs is None):
         raise Sorry("Couldn't generate map type '%s'." % mp.map_type)
       if(mp.file_name is None):
         output_file_name = ""
@@ -463,7 +475,7 @@ class compute_map_coefficients(object):
     self.map_coeffs = []
     for mcp in params:
       if(mcp.map_type is not None):
-        if(fmodel.is_twin_fmodel_manager()) and (mcp.isotropize) :
+        if(fmodel.is_twin_fmodel_manager()) and (mcp.isotropize):
           mcp.isotropize = False
         coeffs = map_coefficients_from_fmodel(
           map_calculation_server   = map_calculation_server,
@@ -471,7 +483,7 @@ class compute_map_coefficients(object):
           post_processing_callback = post_processing_callback,
           pdb_hierarchy            = pdb_hierarchy)
         if("mtz" in mcp.format and coeffs is not None):
-          if coeffs.anomalous_flag() :
+          if coeffs.anomalous_flag():
             coeffs = coeffs.average_bijvoet_mates()
           lbl_mgr = map_coeffs_mtz_label_manager(map_params = mcp)
           if(self.mtz_dataset is None):
@@ -484,9 +496,9 @@ class compute_map_coefficients(object):
               column_root_label = lbl_mgr.amplitudes(),
               label_decorator   = lbl_mgr)
           self.map_coeffs.append(coeffs)
-        elif (coeffs is None) :
+        elif (coeffs is None):
           if ((mcp.map_type == "anomalous") and
-              (not fmodel.f_obs().anomalous_flag())) :
+              (not fmodel.f_obs().anomalous_flag())):
             # since anomalous map is included in the defaults, even if the
             # data are merged, no warning is issued here
             pass
@@ -500,7 +512,7 @@ class compute_map_coefficients(object):
       r_free_flags=None):
     from cctbx.array_family import flex
     if(self.mtz_dataset is not None):
-      if (r_free_flags is not None) :
+      if (r_free_flags is not None):
         self.mtz_dataset.add_miller_array(r_free_flags,
           column_root_label="FreeR_flag")
       if(mtz_history_buffer is None):
@@ -532,10 +544,134 @@ def b_factor_sharpening_by_map_kurtosis_maximization(map_coeffs, show=True,
         kurt = kurt_
         b_sharp_best = b_sharp
       if(show):
-        print "b_sharp: %6.1f skewness: %6.4f kurtosis: %6.4f"%(b_sharp,
-          o.skewness(), o.kurtosis())
-  if(show): print "Best sharpening B-factor:", b_sharp_best
+        print("b_sharp: %6.1f skewness: %6.4f kurtosis: %6.4f"%(b_sharp,
+          o.skewness(), o.kurtosis()))
+  if(show): print("Best sharpening B-factor:", b_sharp_best)
   k_sharp = 1./flex.exp(-ss * b_sharp_best)
   if(b_only): return b_sharp_best
   else:
     return map_coeffs.customized_copy(data = map_coeffs.data()*k_sharp)
+
+def mask_aware_map_standard_deviation(map_data, xray_structure, wrapping):
+  """
+  Compute map standard deviation (sigma, rms): overall, inside and outside the
+  molecular mask.
+  For sigma-scaled maps, use SD computed inside the mask.
+  """
+  assert tuple(map_data.origin())==(0,0,0), "Map must have an origin at (0,0,0)"
+  # Apply the boundary trick to guard non-periodic boxes
+  if not wrapping:
+    min_frac = xray_structure.sites_frac().min()
+    max_frac = xray_structure.sites_frac().max()
+    # Check if ANY atom is outside the 0.0 to 1.0 fractional boundaries
+    if(min_frac[0] < 0.0 or min_frac[1] < 0.0 or min_frac[2] < 0.0 or
+       max_frac[0] > 1.0 or max_frac[1] > 1.0 or max_frac[2] > 1.0):
+      raise Sorry("Cannot have coordinates outside non-periodic box.")
+  #
+  from mmtbx import masks
+  mp = masks.mask_master_params.extract()
+  mp.n_real = map_data.all()
+  mp.step = None
+  mp.ignore_hydrogens = False
+  mmtbx_masks_asu_mask_obj = masks.asu_mask(
+    xray_structure = xray_structure.expand_to_p1(sites_mod_positive=wrapping),
+    mask_params    = mp)
+  bulk_solvent_mask = mmtbx_masks_asu_mask_obj.mask_data_whole_uc()
+  map_1d  = map_data.as_1d()
+  mask_1d = bulk_solvent_mask.as_1d()
+  SDall = map_1d.standard_deviation_of_the_sample()
+  sel_solvent_isel  = (mask_1d > 0.5).iselection()
+  sel_molecule_isel = (mask_1d < 0.5).iselection()
+  map_solvent  = map_1d.select(sel_solvent_isel)
+  map_molecule = map_1d.select(sel_molecule_isel)
+  SDout = 0.0
+  if map_solvent.size() > 1:
+    SDout = map_solvent.standard_deviation_of_the_sample()
+  SDin = 0.0
+  if map_molecule.size() > 1:
+    SDin  = map_molecule.standard_deviation_of_the_sample()
+  return group_args(SDin=SDin, SDout=SDout, SDall=SDall, map_molecule=map_molecule)
+
+class diff_map_cryoem(object):
+
+  def __init__(self, xray_structure, fo=None, fo1=None, fo2=None, d_min=None,
+                     reflections_per_bin = 5000):
+    adopt_init_args(self, locals())
+    assert [fo1, fo2].count(None) in [0,2]
+    assert xray_structure.get_scattering_table() == "electron"
+    if fo1 is not None:
+      assert fo1.indices().all_eq(fo2.indices())
+      assert fo is None
+      self.fo = self.fo1.array(data=(self.fo1.data() + self.fo2.data())/2.)
+    else:
+      assert self.fo is not None
+    if d_min is not None:
+      ds = self.fo.d_spacings().data()
+      sel = ds >= d_min
+      self.fo = self.fo.select(selection = sel)
+      if fo1 is not None:
+        self.fo1 = fo1.select(selection = sel)
+        self.fo2 = fo2.select(selection = sel)
+    self.ss = 1./flex.pow2(self.fo.d_spacings().data())
+    self.fc = self.fo.structure_factors_from_scatterers(xray_structure).f_calc()
+    self.fc_scaled = None
+
+  def _prepare_arrays(self, phases):
+    assert phases in ["fo", "fc", "vector"]
+    fo = self.fo.deep_copy()
+    if self.fc_scaled is None:
+      self.fc_scaled = self.fo.multiscale(
+        other               = self.fc,
+        use_exp_scale       = True,
+        reflections_per_bin = self.reflections_per_bin)
+    fc = self.fc_scaled.deep_copy()
+    if   phases == "fo": fc = fc.phase_transfer(phase_source = fo)
+    elif phases == "fc": fo = fo.phase_transfer(phase_source = fc)
+    else: pass # Do nothing, leave arrays as is
+    return fo, fc
+
+  def compute_simple(self, phases="vector", isotropize=True, charge_density=False):
+    fo, fc = self._prepare_arrays(phases = phases)
+    diff = fo.data()-fc.data()
+    if isotropize:
+      scale = 1./flex.abs(self.fc_scaled.data()/self.fc.data())
+      diff = diff * scale
+    if charge_density: return fo.array(data = diff*self.ss)
+    else:              return fo.array(data = diff)
+
+  def compute_sigmaa(self, isotropize=True, charge_density=False):
+    import mmtbx.f_model
+    fmodel = mmtbx.f_model.manager(
+      f_obs          = abs(self.fo),
+      xray_structure = self.xray_structure)
+    fmodel.update_all_scales(remove_outliers = False)
+    r = fmodel.vector_diff_map(fo_phase_source = self.fo, isotropize=isotropize)
+    if charge_density: return self.fo.array(data = r.data()*self.ss)
+    else:              return r
+
+  def compute_servalcat(self, multiscale=False, use_fmodel=False):
+    assert self.fo1 is not None
+    fc = self.fc
+    tmp = self.fo.array(data=(self.fo1.data() + self.fo2.data())/2.)
+    #
+    if use_fmodel:
+      import mmtbx.f_model
+      fmodel = mmtbx.f_model.manager(
+        f_obs          = abs(tmp),
+        xray_structure = self.xray_structure)
+      fmodel.update_all_scales(remove_outliers = False)
+      fc = fmodel.f_model_scaled_with_k1()
+    #
+    if multiscale:
+      fc = tmp.multiscale(
+        other               = self.fc,
+        use_exp_scale       = True,
+        reflections_per_bin = self.reflections_per_bin)
+    return servalcat_difference_map.compute(
+      fo1                 = self.fo1,
+      fo2                 = self.fo2,
+      fc                  = fc,
+      reflections_per_bin = self.reflections_per_bin)
+
+  def compute_servalcat_charge_density(self):
+    return self.fo.array(data = self.compute_servalcat().data()*self.ss)

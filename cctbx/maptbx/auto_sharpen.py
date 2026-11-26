@@ -1,180 +1,11 @@
-from __future__ import division
+"""Command-line method to run auto-sharpening"""
+from __future__ import absolute_import, division, print_function
 import sys, os
 import iotbx.phil
 from libtbx.utils import Sorry
+import libtbx.phil
 
-master_phil = iotbx.phil.parse("""
-
-  input_files
-    .style = menu_item auto_align
-  {
-
-    map_file = None
-      .type = path
-      .help = File with CCP4-style map
-      .short_caption = Map file
-
-    half_map_file = None
-      .type = path
-      .multiple = True
-      .short_caption = Half map
-      .help = Half map (two should be supplied) for FSC calculation. Must \
-               have grid identical to map_file
-
-    map_coeffs_file = None
-      .type = path
-      .help = Optional file with map coefficients
-      .short_caption = Map coefficients
-      .style = bold file_type:hkl input_file process_hkl \
-        child:map_labels:map_coeffs_labels \
-        child:space_group:space_group child:unit_cell:unit_cell
-
-    map_coeffs_labels = None
-      .type = str
-      .input_size = 160
-      .help = Optional label specifying which columns of of map coefficients \
-          to use
-      .short_caption = Map coeffs label
-      .style = renderer:draw_map_arrays_widget
-
-    pdb_file = None
-      .type = path
-      .help = If a model is supplied, the map will be adjusted to \
-                maximize map-model correlation.  This can be used \
-                to improve a map in regions where no model is yet \
-                built.
-      .short_caption = Model file
-
-    ncs_file = None
-      .type = path
-      .help = File with NCS information (typically point-group NCS with \
-               the center specified). Typically in  PDB format. \
-              Can also be a .ncs_spec file from phenix. \
-              Created automatically if symmetry is specified.
-      .short_caption = NCS info file
-
-    seq_file = None
-       .type = path
-       .short_caption = Sequence file
-       .help = Sequence file (unique chains only,  \
-               1-letter code, chains separated by \
-               blank line or greater-than sign.)  \
-               Can have chains that are DNA/RNA/protein and\
-               all can be present in one file.
-
-    input_weight_map_pickle_file = None
-      .type = path
-      .short_caption = Input weight map pickle file
-      .help = Weight map pickle file
-
-  }
-
-  output_files
-    .style = menu_item auto_align
-  {
-
-    shifted_map_file = shifted_map.ccp4
-      .type = str
-      .help = Input map file shifted to new origin.
-      .short_caption = Shifted map file
-
-    sharpened_map_file = sharpened_map.ccp4
-      .type = str
-      .help = Sharpened input map file. In the same location as input map.
-      .short_caption = Sharpened map file
-      .input_size = 400
-
-    shifted_sharpened_map_file = None
-      .type = str
-      .help = Input map file shifted to place origin at 0,0,0 and sharpened.
-      .short_caption = Shifted sharpened map file
-      .input_size = 400
-
-    sharpened_map_coeffs_file = sharpened_map_coeffs.mtz
-      .type = str
-      .help = Sharpened input map \
-              (shifted to new origin if original origin was not 0,0,0), \
-              written out as map coefficients
-      .short_caption = Sharpened map coeffs file
-      .input_size = 400
-
-    output_weight_map_pickle_file = weight_map_pickle_file.pkl
-       .type = path
-       .short_caption = Output weight map pickle file
-       .help = Output weight map pickle file
-
-    output_directory =  None
-      .type = path
-      .help = Directory where output files are to be written \
-                applied.
-      .short_caption = Output directory
-      .style = directory
-
-  }
-
-  crystal_info
-    .style = menu_item auto_align
-  {
-
-     is_crystal = None
-       .type = bool
-       .short_caption = Is a crystal
-       .help = Defines whether this is a crystal (or cryo-EM).\
-                Default is True if use_sg_symmetry=True and False otherwise.
-
-     resolution = None
-       .type = float
-       .short_caption = Resolution
-       .help = Optional nominal resolution of the map.
-
-     solvent_content = None
-       .type = float
-       .help = Optional solvent fraction of the cell.
-       .short_caption = Solvent content
-
-     solvent_content_iterations = 3
-       .type = int
-       .help = Iterations of solvent fraction estimation. Used for ID of \
-               solvent content in boxed maps.
-       .short_caption = Solvent fraction iterations
-       .style = hidden
-
-     molecular_mass = None
-       .type = float
-       .help = Molecular mass of molecule in Da. Used as alternative method \
-                 of specifying solvent content.
-       .short_caption = Molecular mass in Da
-
-      ncs_copies = None
-        .type = int
-        .help = You can specify ncs copies and seq file to define solvent \
-            content
-        .short_caption = NCS copies
-
-     wang_radius = None
-       .type = float
-       .help = Wang radius for solvent identification. \
-           Default is 1.5* resolution
-       .short_caption = Wang radius
-
-     buffer_radius = None
-       .type = float
-       .help = Buffer radius for mask smoothing. \
-           Default is resolution
-       .short_caption = Buffer radius
-
-     pseudo_likelihood = None
-       .type = bool
-       .help = Use pseudo-likelihood method for half-map sharpening. \
-               (In development)
-       .short_caption = Pseudo-likelihood
-       .style = hidden
-
-  }
-
-  map_modification
-    .style = menu_item auto_align
-  {
+map_modification_phil_str = """
 
      b_iso = None
        .type = float
@@ -185,8 +16,8 @@ master_phil = iotbx.phil.parse("""
 
      b_sharpen = None
        .type = float
-       .short_caption = Sharpening
-       .help = Sharpen with this b-value. Contrast with b_iso that yield a \
+       .short_caption = B-sharpen to apply
+       .help = Sharpen with this b-value. Contrast with b_iso that yields a \
            targeted value of b_iso
 
      b_blur_hires = 200
@@ -260,7 +91,8 @@ master_phil = iotbx.phil.parse("""
 
      auto_sharpen_methods = no_sharpening b_iso *b_iso_to_d_cut \
                             resolution_dependent model_sharpening \
-                            half_map_sharpening target_b_iso_to_d_cut None
+                            half_map_sharpening target_b_iso_to_d_cut \
+                            external_map_sharpening None
 
        .type = choice(multi=True)
        .short_caption = Sharpening methods
@@ -386,7 +218,7 @@ master_phil = iotbx.phil.parse("""
 
      remove_aniso = True
        .type = bool
-       .short_caption = Remove aniso
+       .short_caption = Remove anisotropy
        .help = You can remove anisotropy (overall and locally) during sharpening
 
      max_box_fraction = 0.5
@@ -579,6 +411,13 @@ master_phil = iotbx.phil.parse("""
         .type = int
         .short_caption = Resolution bins
         .help = Number of resolution bins for sharpening. Default is 20.
+        .expert_level = 1
+
+     regions_to_keep = None
+       .type = int
+       .short_caption = Regions to keep
+       .help = You can specify a limit to the number of regions to keep\
+                when generating the asymmetric unit of density.
 
       max_regions_to_test = None
         .type = int
@@ -603,7 +442,206 @@ master_phil = iotbx.phil.parse("""
         .help = b_sol value for model map calculation. IGNORED (Not applied)
         .short_caption = b_sol IGNORED
         .style = hidden
+    """
+
+output_files = """
+
+    shifted_map_file = shifted_map.ccp4
+      .type = str
+      .help = Input map file shifted to new origin.
+      .short_caption = Shifted map file
+      .style = new_file
+
+    sharpened_map_file = None
+      .type = str
+      .help = Sharpened input map file. In the same location as input map.
+      .short_caption = Sharpened map file
+      .input_size = 400
+      .style = new_file
+      .expert_level = 1
+
+    shifted_sharpened_map_file = None
+      .type = str
+      .help = Input map file shifted to place origin at 0,0,0 and sharpened.
+      .short_caption = Shifted sharpened map file
+      .input_size = 400
+      .style = new_file
+
+    sharpened_map_coeffs_file = None
+      .type = str
+      .help = Sharpened input map \
+              (shifted to new origin if original origin was not 0,0,0), \
+              written out as map coefficients
+      .short_caption = Sharpened map coeffs file
+      .input_size = 400
+      .style = new_file
+
+    output_weight_map_pickle_file = weight_map_pickle_file.pkl
+       .type = path
+       .short_caption = Output weight map pickle file
+       .help = Output weight map pickle file
+       .style = new_file
+
+    output_directory =  None
+      .type = path
+      .help = Directory where output files are to be written \
+                applied.
+      .short_caption = Output directory
+      .style = new_file directory
+"""
+
+crystal_info = """
+     is_crystal = None
+       .type = bool
+       .short_caption = Is a crystal
+       .help = Defines whether this is a crystal (or cryo-EM).\
+                Default is True if use_sg_symmetry=True and False otherwise.
+
+     resolution = None
+       .type = float
+       .short_caption = Resolution
+       .help = Optional nominal resolution of the map.
+       .style = resolution
+       .expert_level = 1
+
+
+     solvent_content = None
+       .type = float
+       .help = Optional solvent fraction of the cell.
+       .short_caption = Solvent content
+
+     solvent_content_iterations = 3
+       .type = int
+       .help = Iterations of solvent fraction estimation. Used for ID of \
+               solvent content in boxed maps.
+       .short_caption = Solvent fraction iterations
+       .style = hidden
+
+     molecular_mass = None
+       .type = float
+       .help = Molecular mass of molecule in Da. Used as alternative method \
+                 of specifying solvent content.
+       .short_caption = Molecular mass in Da
+
+      ncs_copies = None
+        .type = int
+        .help = You can specify ncs copies and seq file to define solvent \
+            content
+        .short_caption = NCS copies
+
+     wang_radius = None
+       .type = float
+       .help = Wang radius for solvent identification. \
+           Default is 1.5* resolution
+       .short_caption = Wang radius
+
+     buffer_radius = None
+       .type = float
+       .help = Buffer radius for mask smoothing. \
+           Default is resolution
+       .short_caption = Buffer radius
+
+     pseudo_likelihood = None
+       .type = bool
+       .help = Use pseudo-likelihood method for half-map sharpening. \
+               (In development)
+       .short_caption = Pseudo-likelihood
+       .style = hidden
+"""
+
+master_phil = iotbx.phil.parse("""
+
+  input_files
+    .style = menu_item auto_align
+  {
+
+    map_file = None
+      .type = path
+      .help = File with CCP4-style map
+      .short_caption = Map file
+      .style = file_type:ccp4_map bold input_file
+
+    half_map_file = None
+      .type = path
+      .multiple = True
+      .short_caption = Half map
+      .style = file_type:ccp4_map bold input_file
+      .help = Half map (two should be supplied) for FSC calculation. Must \
+               have grid identical to map_file
+
+    external_map_file = None
+      .type = path
+      .short_caption = External map
+      .style = file_type:ccp4_map bold input_file
+      .help = External map to be used to scale map_file (power vs resolution\
+              will be matched)
+
+    map_coeffs_file = None
+      .type = path
+      .help = Optional file with map coefficients
+      .short_caption = Map coefficients
+      .style = bold file_type:hkl input_file process_hkl \
+        child:map_labels:map_coeffs_labels \
+        child:space_group:space_group child:unit_cell:unit_cell
+
+    map_coeffs_labels = None
+      .type = str
+      .input_size = 160
+      .help = Optional label specifying which columns of of map coefficients \
+          to use
+      .short_caption = Map coeffs label
+      .style = renderer:draw_map_arrays_widget
+
+    pdb_file = None
+      .type = path
+      .help = If a model is supplied, the map will be adjusted to \
+                maximize map-model correlation.  This can be used \
+                to improve a map in regions where no model is yet \
+                built.
+      .style = file_type:pdb input_file
+      .short_caption = Model file (optional)
+
+    ncs_file = None
+      .type = path
+      .help = File with NCS information (typically point-group NCS with \
+               the center specified). Typically in  PDB format. \
+              Can also be a .ncs_spec file from phenix. \
+              Created automatically if symmetry is specified.
+      .short_caption = NCS info file
+
+    seq_file = None
+       .type = path
+       .short_caption = Sequence file
+       .style = file_type:seq input_file
+       .help = Sequence file (unique chains only,  \
+               1-letter code, chains separated by \
+               blank line or greater-than sign.)  \
+               Can have chains that are DNA/RNA/protein and\
+               all can be present in one file.
+
+    input_weight_map_pickle_file = None
+      .type = path
+      .short_caption = Input weight map pickle file
+      .help = Weight map pickle file
+
   }
+
+  output_files
+    .style = menu_item auto_align
+  {
+   %s
+  }
+
+  crystal_info
+    .style = menu_item auto_align
+  {
+   %s
+  }
+
+  map_modification {
+    %s
+  }
+
 
    control
      .style = menu_item auto_align
@@ -617,6 +655,28 @@ master_phil = iotbx.phil.parse("""
         .type = int
         .help = "Size of resolve to use. "
         .style = hidden
+
+     ignore_map_limitations = None
+       .type = bool
+       .short_caption = Ignore map limitations
+       .help = Ignore limitations such as 'map cannot be sharpened'
+
+      multiprocessing = *multiprocessing sge lsf pbs condor pbspro slurm
+        .type = choice
+        .short_caption = multiprocessing type
+        .help = Choices are multiprocessing (single machine) or queuing systems
+
+      queue_run_command = None
+        .type = str
+        .short_caption = Queue run command
+        .help = run command for queue jobs. For example qsub.
+
+      nproc = 1
+        .type = int
+        .short_caption = Number of processors
+        .help = Number of processors to use
+        .style = renderer:draw_nproc_widget bold
+
    }
 
   include scope libtbx.phil.interface.tracking_params
@@ -629,10 +689,12 @@ master_phil = iotbx.phil.parse("""
     .style = output_dir
   }
 
-""", process_includes=True)
+""" %(output_files, crystal_info, map_modification_phil_str),
+  process_includes=True)
 master_params = master_phil
 
 def get_params(args,out=sys.stdout):
+  """Get parameters from args"""
 
   command_line = iotbx.phil.process_command_line_with_files(
     reflection_file_def="input_files.map_coeffs_file",
@@ -644,10 +706,10 @@ def get_params(args,out=sys.stdout):
     master_phil=master_phil)
 
 
-  print >>out,"\nAuto-sharpen a map\n"
+  print("\nAuto-sharpen a map\n", file=out)
   params=command_line.work.extract()
-  print >>out,"Command used: %s\n" %(
-   " ".join(['phenix.auto_sharpen']+args))
+  print("Command used: %s\n" %(
+   " ".join(['phenix.auto_sharpen']+args)), file=out)
   master_params.format(python_object=params).show(out=out)
 
   if params.output_files.output_directory is None:
@@ -660,6 +722,7 @@ def get_params(args,out=sys.stdout):
 
 
 def set_sharpen_params(params,out=sys.stdout):
+  """Set and check sharpening parameters"""
 
   if params.map_modification.resolution_dependent_b==[0,0,0]:
     params.map_modification.resolution_dependent_b=[0,0,1.e-10]
@@ -680,35 +743,39 @@ def set_sharpen_params(params,out=sys.stdout):
        ['b_iso_to_d_cut'],['b_iso']])   or  \
      (params.map_modification.resolution_dependent_b and \
        params.map_modification.auto_sharpen_methods in [
-       ['resolution_dependent']]) :
+       ['resolution_dependent']]):
     if params.map_modification.box_in_auto_sharpen and (
       not getattr(params.map_modification,'allow_box_if_b_iso_set',None)):
       params.map_modification.box_in_auto_sharpen=False
-      print >>out,"Set box_in_auto_sharpen=False as parameters are set "+\
+      print("Set box_in_auto_sharpen=False as parameters are set "+\
         "\nand sharpening method is %s" %(
-        params.map_modification.auto_sharpen_methods[0])
+        params.map_modification.auto_sharpen_methods[0]), file=out)
     if params.map_modification.density_select_in_auto_sharpen and (
       not getattr(params.map_modification,'allow_box_if_b_iso_set',None)):
       params.map_modification.density_select_in_auto_sharpen=False
-      print >>out,"Set density_select_in_auto_sharpen=False as parameters are set "+\
+      print("Set density_select_in_auto_sharpen=False as parameters are set "+\
         "\nand sharpening method is %s" %(
-        params.map_modification.auto_sharpen_methods[0])
+        params.map_modification.auto_sharpen_methods[0]), file=out)
 
   if params.map_modification.optimize_b_blur_hires and \
     not 'b_iso_to_d_cut' in params.map_modification.auto_sharpen_methods and \
        not 'b_iso' in params.map_modification.auto_sharpen_methods:
-     print >>out,\
-          "Set optimize_b_blur_hires=False as neither b_iso_to_d_cut nor"+\
-         " b_iso are used"
+     print("Set optimize_b_blur_hires=False as neither b_iso_to_d_cut nor"+\
+         " b_iso are used", file=out)
      params.map_modification.optimize_b_blur_hires=False
   if params.map_modification.iterate and \
     not 'b_iso_to_d_cut' in params.map_modification.auto_sharpen_methods and \
        not 'b_iso' in params.map_modification.auto_sharpen_methods:
-     print >>out,\
-          "Set iterate=False as neither b_iso_to_d_cut nor"+\
-         " b_iso are used"
+     print("Set iterate=False as neither b_iso_to_d_cut nor"+\
+         " b_iso are used", file=out)
      params.map_modification.iterate=False
 
+  if 'half_map_sharpening' in params.map_modification.auto_sharpen_methods and \
+   ((not params.input_files.half_map_file) or
+   (not len(params.input_files.half_map_file))==2):
+    print("Skipping half-map sharpening as there are no half-maps supplied...",
+      file = out)
+    params.map_modification.auto_sharpen_methods.remove('half_map_sharpening')
 
   return params
 
@@ -716,6 +783,8 @@ def set_sharpen_params(params,out=sys.stdout):
 def get_map_coeffs_from_file(
       map_coeffs_file=None,
       map_coeffs_labels=None):
+    """Get map coeffs from a file with reflection_file_reader. Use
+     data_manager instead."""
     from iotbx import reflection_file_reader
     reflection_file=reflection_file_reader.any_reflection_file(
         map_coeffs_file)
@@ -726,43 +795,69 @@ def get_map_coeffs_from_file(
       if not map_coeffs_labels or labels==map_coeffs_labels:  # take it
          return ma
 
-def map_inside_cell(pdb_inp,crystal_symmetry=None):
-  ph=pdb_inp.construct_hierarchy()
-  pa=ph.atoms()
+def map_inside_cell(pdb_hierarchy,crystal_symmetry=None):
+  """Map (move) coordinates in hierarchy to center them in the cell"""
+  pa=pdb_hierarchy.atoms()
   sites_cart=pa.extract_xyz()
   from cctbx.maptbx.segment_and_split_map import move_xyz_inside_cell
   new_sites_cart=move_xyz_inside_cell(xyz_cart=sites_cart,
      crystal_symmetry=crystal_symmetry)
   pa.set_xyz(new_sites_cart)
-  return ph.as_pdb_input()
+  return pdb_hierarchy
 
 
 def get_map_and_model(params=None,
     map_data=None,
     crystal_symmetry=None,
-    pdb_inp=None,
+    pdb_hierarchy=None,
     ncs_obj=None,
     half_map_data_list=None,
     map_coords_inside_cell=True,
+    get_map_labels=None,
     out=sys.stdout):
+
+  """Get maps and model for auto_sharpen.
+  Returns   pdb_hierarchy,
+       map_data,half_map_data_list,ncs_obj,crystal_symmetry,acc,
+       original_crystal_symmetry,original_unit_cell_grid.
+  if get_map_labels is set, also return map_labels
+  """
+
 
   acc=None # accessor used to shift map back to original location if desired
   origin_frac=(0,0,0)
+  map_labels=None
+  read_map_coeffs = False
   if map_data and crystal_symmetry:
     original_crystal_symmetry=crystal_symmetry
     original_unit_cell_grid=None
+    acc=map_data.accessor()
+    shift_needed = not \
+       (map_data.focus_size_1d() > 0 and map_data.nd() == 3 and
+        map_data.is_0_based())
+    if(shift_needed):
+      origin_shift=(
+        map_data.origin()[0]/map_data.all()[0],
+        map_data.origin()[1]/map_data.all()[1],
+        map_data.origin()[2]/map_data.all()[2])
+      origin_frac=origin_shift  # NOTE: fraction of NEW cell
+      map_data = map_data.shift_origin()
+    else:
+      origin_frac=(0.,0.,0.)
 
   elif params.input_files.map_file:
-    print >>out,"\nReading map from %s\n" %( params.input_files.map_file)
+    print("\nReading map from %s\n" %( params.input_files.map_file), file=out)
     from cctbx.maptbx.segment_and_split_map import get_map_object
     map_data,space_group,unit_cell,crystal_symmetry,origin_frac,acc,\
-        original_crystal_symmetry,original_unit_cell_grid=\
-      get_map_object(file_name=params.input_files.map_file,out=out)
+        original_crystal_symmetry,original_unit_cell_grid,map_labels=\
+      get_map_object(file_name=params.input_files.map_file,
+      must_allow_sharpening=(not params.control.ignore_map_limitations),
+      get_map_labels=True,out=out)
     map_data=map_data.as_double()
     if origin_frac != (0,0,0) and acc is None:
-      print >>out,"\nWARNING: Unable to place output map at position of "+\
+      print("\nWARNING: Unable to place output map at position of "+\
         "input map though input map has non-zero origin at %s\n" %(
-        str(origin_frac))
+        str(origin_frac)), file=out)
 
   elif params.input_files.map_coeffs_file:
     map_coeffs=get_map_coeffs_from_file(
@@ -772,20 +867,72 @@ def get_map_and_model(params=None,
     if not map_coeffs:
       raise Sorry("Could not get map coeffs from %s with labels %s" %(
         params.input_files.map_coeffs_file,params.input_files.map_coeffs_labels))
-    print >>out,"Map coefficients read from %s with labels %s" %(
+    read_map_coeffs = True
+    print("Map coefficients read from %s with labels %s" %(
          params.input_files.map_coeffs_file,
-         str(params.input_files.map_coeffs_labels))
+         str(params.input_files.map_coeffs_labels)), file=out)
     crystal_symmetry=map_coeffs.crystal_symmetry()
-    from cctbx.maptbx.segment_and_split_map import get_map_from_map_coeffs
+    from cctbx.development.create_models_or_maps import get_map_from_map_coeffs
     map_data=get_map_from_map_coeffs(
       map_coeffs=map_coeffs,crystal_symmetry=crystal_symmetry)
     acc=map_data.accessor()
+    original_crystal_symmetry=crystal_symmetry
+    original_unit_cell_grid=None
     if not params.crystal_info.resolution:
       params.crystal_info.resolution=map_coeffs.d_min()
-      print >>out,"Resolution from map_coeffs is %7.2f A" %(
-          params.crystal_info.resolution)
+      print("Resolution from map_coeffs is %7.2f A" %(
+          params.crystal_info.resolution), file=out)
+
   else:
     raise Sorry("Need ccp4 map or map_coeffs")
+  if params.crystal_info.is_crystal is None:
+    if read_map_coeffs:
+      print("Assuming this is crystallographic data as map coefficients read",
+         file = out)
+      params.crystal_info.is_crystal = True
+    elif (not (crystal_symmetry.space_group().type().number() in [0, 1])):
+      print("Assuming this is crystallographic data as map is not P1",
+         file = out)
+      params.crystal_info.is_crystal = True
+    else:
+      print("Assuming this is cryo-EM data as map read in space group P1",
+         file = out)
+      params.crystal_info.is_crystal = False
+  elif params.crystal_info.is_crystal:
+      print("Assuming this is crystallographic data as is_crystal=True",
+         file = out)
+  else:
+      print("Assuming this is cryo-EM data as is_crystal=False",
+         file = out)
+
+
+  if params.input_files.external_map_file and not \
+      params.map_modification.auto_sharpen_methods==['external_map_sharpening']:
+    raise Sorry("For external map sharpening, please do not set any other "+
+        "options in 'Sharpening methods' (options set: %s)" %(
+      ", ".join(params.map_modification.auto_sharpen_methods)))
+
+
+  if params.map_modification.auto_sharpen_methods==['external_map_sharpening']:
+    if not params.input_files.external_map_file:
+      raise Sorry("Need external_map_file for external_map")
+    if params.input_files.half_map_file:
+      raise Sorry("Cannot use half_map_file with external_map")
+    half_map_data_list=[]
+    file_name=params.input_files.external_map_file
+    print("\nReading external map from %s\n" %(file_name), file=out)
+    half_map_data,half_map_space_group,half_map_unit_cell,\
+        half_map_crystal_symmetry,half_map_origin_frac,half_map_acc,\
+         half_map_original_crystal_symmetry,half_map_original_unit_cell_grid=\
+        get_map_object(file_name=file_name,out=out)
+    half_map_data=half_map_data.as_double()
+    assert half_map_crystal_symmetry.is_similar_symmetry(crystal_symmetry)
+    half_map_data_list.append(half_map_data) # save it in half_map_data_list
+    # and add another just so we have two..
+    half_map_data_list.append(half_map_data.deep_copy())
+    if map_data and half_map_data.size()!=map_data.size():
+      raise Sorry("Map data and external_map_file data must be the same size")
+
 
   if params.input_files.half_map_file:
     if len(params.input_files.half_map_file) != 2:
@@ -793,7 +940,7 @@ def get_map_and_model(params=None,
     half_map_data_list=[]
     from cctbx.maptbx.segment_and_split_map import get_map_object
     for file_name in params.input_files.half_map_file:
-      print >>out,"\nReading half-map from %s\n" %(file_name)
+      print("\nReading half-map from %s\n" %(file_name), file=out)
       half_map_data,half_map_space_group,half_map_unit_cell,\
         half_map_crystal_symmetry,half_map_origin_frac,half_map_acc,\
          half_map_original_crystal_symmetry,half_map_original_unit_cell_grid=\
@@ -804,33 +951,36 @@ def get_map_and_model(params=None,
       half_map_data_list.append(half_map_data)
 
   if params.crystal_info.resolution is None:
-    raise Sorry("Need resolution if map is supplied")
+    raise Sorry("Need resolution for b-sharpening if "+
+       "map is supplied and no model is supplied")
 
   if params.crystal_info.resolution >= 10:
-    print >>out,"\n** WARNING: auto_sharpen is designed for maps at a "+\
+    print("\n** WARNING: auto_sharpen is designed for maps at a "+\
       "resolution of about 4.5 A\nor better.  Sharpening may be"+\
-      "poor at %7.0f A" %(params.crystal_info.resolution)
+      "poor at %7.0f A" %(params.crystal_info.resolution), file=out)
 
 
-  if params.input_files.pdb_file and not pdb_inp: # get model
+  if params.input_files.pdb_file and not pdb_hierarchy: # get model
     model_file=params.input_files.pdb_file
     if not os.path.isfile(model_file):
       raise Sorry("Missing the model file: %s" %(model_file))
-    pdb_inp=iotbx.pdb.input(file_name=model_file)
+    from iotbx.pdb.utils import get_pdb_hierarchy
+    pdb_hierarchy= get_pdb_hierarchy(file_name = model_file)
+  if pdb_hierarchy: # XXX added 2019-05-05
     if origin_frac != (0,0,0):
-      print >>out,"Shifting model by %s" %(str(origin_frac))
+      print("Shifting model by %s" %(str(origin_frac)), file=out)
       from cctbx.maptbx.segment_and_split_map import \
          apply_shift_to_pdb_hierarchy
       origin_shift=crystal_symmetry.unit_cell().orthogonalize(
          (-origin_frac[0],-origin_frac[1],-origin_frac[2]))
-      pdb_inp=apply_shift_to_pdb_hierarchy(
+      pdb_hierarchy=apply_shift_to_pdb_hierarchy(
        origin_shift=origin_shift,
        crystal_symmetry=crystal_symmetry,
-       pdb_hierarchy=pdb_inp.construct_hierarchy(),
-       out=out).as_pdb_input()
+       pdb_hierarchy=pdb_hierarchy,
+       out=out)
     if map_coords_inside_cell:
       # put inside (0,1)
-      pdb_inp=map_inside_cell(pdb_inp,crystal_symmetry=crystal_symmetry)
+      pdb_hierarchy=map_inside_cell(pdb_hierarchy,crystal_symmetry=crystal_symmetry)
 
   if params.input_files.ncs_file and not ncs_obj: # NCS
     from cctbx.maptbx.segment_and_split_map import get_ncs
@@ -838,19 +988,26 @@ def get_map_and_model(params=None,
     if origin_frac != (0,0,0):
       origin_shift=crystal_symmetry.unit_cell().orthogonalize(
          (-origin_frac[0],-origin_frac[1],-origin_frac[2]))
-      print >>out,"Shifting NCS by (%7.2f,%7.2f,%7.2f) " %((origin_shift))
+      print("Shifting NCS by (%7.2f,%7.2f,%7.2f) " %((origin_shift)), file=out)
       from scitbx.math import  matrix
       ncs_obj=ncs_obj.coordinate_offset(
        coordinate_offset=matrix.col(origin_shift))
 
-  return pdb_inp,map_data,half_map_data_list,ncs_obj,crystal_symmetry,acc,\
+  if get_map_labels:
+    return pdb_hierarchy,\
+       map_data,half_map_data_list,ncs_obj,crystal_symmetry,acc,\
+       original_crystal_symmetry,original_unit_cell_grid,map_labels
+  else:
+    return pdb_hierarchy,\
+      map_data,half_map_data_list,ncs_obj,crystal_symmetry,acc,\
        original_crystal_symmetry,original_unit_cell_grid
 
 
 def run(args=None,params=None,
     map_data=None,crystal_symmetry=None,
+    wrapping = None,
     write_output_files=True,
-    pdb_inp=None,
+    pdb_hierarchy=None,
     ncs_obj=None,
     return_map_data_only=False,
     return_unshifted_map=False,
@@ -858,6 +1015,8 @@ def run(args=None,params=None,
     ncs_copies=None,
     n_residues=None,
     out=sys.stdout):
+  """Run auto-sharpening"""
+
   # Get the parameters
   if not params:
     params=get_params(args,out=out)
@@ -867,18 +1026,22 @@ def run(args=None,params=None,
 
   # get map_data and crystal_symmetry
 
-  pdb_inp,map_data,half_map_data_list,ncs_obj,crystal_symmetry,acc,\
-       original_crystal_symmetry,original_unit_cell_grid=get_map_and_model(
+
+
+
+  pdb_hierarchy,map_data,half_map_data_list,ncs_obj,crystal_symmetry,acc,\
+       original_crystal_symmetry,original_unit_cell_grid,map_labels=\
+        get_map_and_model(
      map_data=map_data,
      half_map_data_list=half_map_data_list,
-     pdb_inp=pdb_inp,
+     pdb_hierarchy=pdb_hierarchy,
      ncs_obj=ncs_obj,
      map_coords_inside_cell=False,
      crystal_symmetry=crystal_symmetry,
+     get_map_labels=True,
      params=params,out=out)
   # NOTE: map_data is now relative to origin at (0,0,0).
   # Use map_data.reshape(acc) to put it back where it was if acc is not None
-
 
   # auto-sharpen the map
   from cctbx.maptbx.segment_and_split_map import auto_sharpen_map_or_map_coeffs
@@ -888,7 +1051,11 @@ def run(args=None,params=None,
         is_crystal=params.crystal_info.is_crystal,
         verbose=params.control.verbose,
         resolve_size=params.control.resolve_size,
+        multiprocessing=params.control.multiprocessing,
+        nproc=params.control.nproc,
+        queue_run_command=params.control.queue_run_command,
         map=map_data,
+        wrapping=wrapping,
         half_map_data_list=half_map_data_list,
         solvent_content=params.crystal_info.solvent_content,
         molecular_mass=params.crystal_info.molecular_mass,
@@ -924,6 +1091,7 @@ def run(args=None,params=None,
         eps=params.map_modification.eps,
         n_bins=params.map_modification.n_bins,
         max_regions_to_test=params.map_modification.max_regions_to_test,
+        regions_to_keep=params.map_modification.regions_to_keep,
         fraction_occupied=params.map_modification.fraction_occupied,
         sharpening_target=params.map_modification.sharpening_target,
         d_min_ratio=params.map_modification.d_min_ratio,
@@ -964,7 +1132,7 @@ def run(args=None,params=None,
            params.map_modification.resolution_dependent_b,
         normalize_amplitudes_in_resdep=\
            params.map_modification.normalize_amplitudes_in_resdep,
-        pdb_inp=pdb_inp,
+        pdb_hierarchy=pdb_hierarchy,
         ncs_obj=ncs_obj,
         rmsd=params.map_modification.rmsd,
         rmsd_resolution_factor=params.map_modification.rmsd_resolution_factor,
@@ -986,54 +1154,67 @@ def run(args=None,params=None,
   temp_b_iso=get_b_iso(f,d_min=params.crystal_info.resolution)
 
   if not si.is_model_sharpening():
-    print >>out
-    print >>out,80*"=","\n",80*"="
-    print >>out,"\n           Summary of sharpening information\n "
+    print(file=out)
+    print(80*"=","\n",80*"=", file=out)
+    print("\n           Summary of sharpening information\n ", file=out)
     si.show_summary(verbose=params.control.verbose,out=out)
-    print >>out,80*"=","\n",80*"="
+    print(80*"=","\n",80*"=", file=out)
 
   # write out the new map_coeffs and map if requested:
 
   offset_map_data=new_map_data.deep_copy()
   if acc is not None:  # offset the map to match original if possible
-    #ZZZoffset_map_data=offset_map_data.as_1d()
     offset_map_data.reshape(acc)
 
+  if write_output_files and (not params.output_files.sharpened_map_file):
+    params.output_files.sharpened_map_file = 'sharpened_map.ccp4'
   if write_output_files and params.output_files.sharpened_map_file and \
       offset_map_data:
     output_map_file=os.path.join(params.output_files.output_directory,
         params.output_files.sharpened_map_file)
     from cctbx.maptbx.segment_and_split_map import write_ccp4_map
     if acc is not None:  # we offset the map to match original
-      print >>out,\
-       "\nWrote sharpened map in original location with origin at %s\nto %s" %(
-         str(offset_map_data.origin()),output_map_file)
-      write_ccp4_map(original_crystal_symmetry, output_map_file, 
+      print("\nWrote sharpened map in original location with origin at %s\nto %s" %(
+         str(offset_map_data.origin()),output_map_file), file=out)
+      write_ccp4_map(original_crystal_symmetry, output_map_file,
         offset_map_data,
         output_unit_cell_grid=original_unit_cell_grid)
     else:
-      print >>out,"\nWrote sharpened map with origin at 0,0,0 "+\
+      print("\nWrote sharpened map with origin at 0,0,0 "+\
         "(NOTE: may be boxed map and may not be "+\
         "\nsame as original location) to %s\n" %(
-         output_map_file)
-      write_ccp4_map(crystal_symmetry, output_map_file, offset_map_data)
+         output_map_file), file=out)
+
+    from iotbx.mrcfile import create_output_labels
+    program_name='auto_sharpen'
+    limitations=["map_is_sharpened"]
+    labels=create_output_labels(program_name=program_name,
+       input_file_name=params.input_files.map_file,
+       input_labels=map_labels,
+       limitations=limitations,
+       output_labels=None)
+
+    write_ccp4_map(crystal_symmetry, output_map_file, offset_map_data,
+        labels=labels)
 
   if write_output_files and params.output_files.shifted_sharpened_map_file:
     output_map_file=os.path.join(params.output_files.output_directory,
         params.output_files.shifted_sharpened_map_file)
     from cctbx.maptbx.segment_and_split_map import write_ccp4_map
     write_ccp4_map(crystal_symmetry, output_map_file, new_map_data)
-    print >>out,"\nWrote sharpened map (origin at %s)\nto %s" %(
-     str(new_map_data.origin()),output_map_file)
+    print("\nWrote sharpened map (origin at %s)\nto %s" %(
+     str(new_map_data.origin()),output_map_file), file=out)
 
+  if write_output_files and (not params.output_files.sharpened_map_coeffs_file):
+     params.output_files.sharpened_map_coeffs_file = 'sharpened_map_coeffs.mtz'
   if write_output_files and params.output_files.sharpened_map_coeffs_file and \
       new_map_coeffs:
     output_map_coeffs_file=os.path.join(params.output_files.output_directory,
         params.output_files.sharpened_map_coeffs_file)
     new_map_coeffs.as_mtz_dataset(column_root_label='FWT').mtz_object().write(
        file_name=output_map_coeffs_file)
-    print >>out,"\nWrote sharpened map_coeffs (origin at 0,0,0)\n to %s\n" %(
-       output_map_coeffs_file)
+    print("\nWrote sharpened map_coeffs (origin at 0,0,0)\n to %s\n" %(
+       output_map_coeffs_file), file=out)
 
   if return_unshifted_map:
     map_to_return=offset_map_data
@@ -1048,16 +1229,21 @@ def run(args=None,params=None,
 # =============================================================================
 # GUI-specific bits for running command
 from libtbx import runtime_utils
-class launcher (runtime_utils.target_with_save_result) :
-  def run (self) :
+class launcher(runtime_utils.target_with_save_result):
+  """Launch this method from GUI"""
+  def run(self):
     import os
     from wxGUI2 import utils
     utils.safe_makedirs(self.output_dir)
     os.chdir(self.output_dir)
-    result = run(args=self.args, out=sys.stdout)
+    map_to_return, new_map_coeffs, crystal_symmetry, si = \
+      run(args=self.args, out=sys.stdout)
+    si.map_data = None
+    result = (None, None, crystal_symmetry, si)
     return result
 
 def validate_params(params):
+  """Check parameters for GUI"""
   if ( (params.input_files.map_coeffs_file is None) and
        (params.input_files.map_file is None) ):
     raise Sorry('Please provide a map file.')

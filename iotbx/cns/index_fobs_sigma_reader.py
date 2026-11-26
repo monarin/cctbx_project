@@ -1,4 +1,4 @@
-from __future__ import division
+from __future__ import absolute_import, division, print_function
 from cctbx import miller
 from cctbx import crystal
 from cctbx.array_family import flex
@@ -27,20 +27,22 @@ class reader(object):
     assert [file_name, file_object].count(None) == 1
     if (file_object is None):
       file_object = open(file_name)
+    lines = file_object.readlines()
+    file_object.close()
     self._names = None
     self._indices = flex.miller_index()
     self._data = flex.double()
     self._sigmas = flex.double()
     have_data = False
     self.n_lines = 0
-    for raw_line in file_object:
+    for raw_line in lines:
       self.n_lines += 1
       ifs = index_fobs_sigma_line(raw_line)
       if (not ifs.is_complete):
         if (raw_line.strip().lower() == "end"):
           break
         if (self.n_lines == max_header_lines or have_data):
-          raise RuntimeError, "Unkown file format."
+          raise RuntimeError("Unkown file format.")
       else:
         if (self._names is None): self._names = ifs.names
         self._indices.append(ifs.index)
@@ -48,7 +50,7 @@ class reader(object):
         self._sigmas.append(ifs.sigma)
         have_data = True
     if (not have_data):
-      raise RuntimeError, "No data found in file."
+      raise RuntimeError("No data found in file.")
 
   def indices(self):
     return self._indices
@@ -63,14 +65,17 @@ class reader(object):
         crystal_symmetry=None,
         force_symmetry=False,
         merge_equivalents=True,
-        base_array_info=None):
+        base_array_info=None,
+        anomalous=None):
     if (crystal_symmetry is None):
       crystal_symmetry = crystal.symmetry()
     if (base_array_info is None):
       base_array_info = miller.array_info(source_type="cns_index_fobs_sigma")
     miller_set = miller.set(
       crystal_symmetry=crystal_symmetry,
-      indices=self.indices()).auto_anomalous()
+      indices=self.indices(), anomalous_flag=anomalous)
+    if anomalous is None:
+      miller_set = miller_set.auto_anomalous()
     return [miller.array(
       miller_set=miller_set,
       data=self.data(),

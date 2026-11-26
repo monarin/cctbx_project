@@ -1,5 +1,7 @@
-from __future__ import division
+from __future__ import absolute_import, division, print_function
 import libtbx.load_env
+from six.moves import range
+from six.moves import zip
 if (libtbx.env.has_module("ccp4io")):
   from iotbx import mtz
 else:
@@ -206,7 +208,7 @@ def verify_miller_arrays(a1, a2, eps=1.e-5):
     else:
       assert flex.max(flex.abs(a1.data().as_double() - v.data())) < eps
   elif (a1.is_hendrickson_lattman_array()):
-    for i in xrange(4):
+    for i in range(4):
       assert flex.max(flex.abs(a1.data().slice(i) - v.data().slice(i))) < eps
   else:
     assert flex.max(flex.abs(a1.data() - v.data())) < eps
@@ -429,7 +431,7 @@ def exercise_hl_ab_only(anomalous_flag):
   columns[-1].set_type("F")
   try:
     mtz_obj.as_miller_arrays()
-  except RuntimeError, e:
+  except RuntimeError as e:
     if (not anomalous_flag):
       assert str(e) == 'Invalid MTZ column combination' \
         ' (incomplete Hendrickson-Lattman array),' \
@@ -440,7 +442,7 @@ def exercise_hl_ab_only(anomalous_flag):
         ' column labels: "HA(-)", "HB(-)" column types: "A", "F"'
   else: raise Exception_expected
 
-def exercise_wavelength () :
+def exercise_wavelength():
   miller_set = crystal.symmetry(
     unit_cell=(10,10,10,90,90,90),
     space_group_symbol="P1").miller_set(
@@ -558,7 +560,7 @@ def exercise_unmerged(space_group_info):
       #miller.map_to_asu(m.space_group().type(), False, extracted_indices)
       #assert (extracted_indices == m.extract_miller_indices()).count(False) == 0
 
-def exercise_util () :
+def exercise_util():
   miller_set = miller.build_set(
     crystal.symmetry(
       unit_cell=(10,10,10,90,90,90),
@@ -629,7 +631,7 @@ def exercise_change_basis_in_place():
 
 def exercise():
   if (mtz is None):
-    print "Skipping iotbx/mtz/tst.py: ccp4io not available"
+    print("Skipping iotbx/mtz/tst.py: ccp4io not available")
     return
   from cctbx import sgtbx
   exercise_change_basis_in_place()
@@ -645,7 +647,7 @@ def exercise():
 
 def run():
   exercise()
-  print "OK"
+  print("OK")
 
 if (__name__ == "__main__"):
   run()

@@ -1,5 +1,5 @@
 
-from __future__ import division
+from __future__ import absolute_import, division, print_function
 from iotbx import reflection_file_editor, file_reader
 from iotbx.reflection_file_editor import master_phil
 from cctbx import miller
@@ -11,9 +11,10 @@ from libtbx.utils import Sorry, null_out
 import warnings
 import os.path
 import sys
+from six.moves import range
 
 # this will run without phenix_regression
-def exercise_basic (verbose=False) :
+def exercise_basic(verbose=False):
   symm = crystal.symmetry(
     space_group_info=sgtbx.space_group_info("P212121"),
     unit_cell=uctbx.unit_cell((6,7,8,90,90,90)))
@@ -24,9 +25,9 @@ def exercise_basic (verbose=False) :
   assert (set1.indices().size() == 341)
   data0 = flex.double(set1.indices().size(), 100.)
   sigmas1 = flex.double(set1.indices().size(), 4.)
-  for i in range(10) :
+  for i in range(10):
     data0[2+i*30] = -1
-  for i in range(10) :
+  for i in range(10):
     data0[5+i*30] = 7.5
   array0 = set1.array(data=data0, sigmas=sigmas1)
   array0.set_observation_type_xray_intensity()
@@ -54,9 +55,9 @@ mtz_file {
 }""")
   params = master_phil.fetch(source=new_phil).extract()
   log = sys.stdout
-  if (not verbose) :
+  if (not verbose):
     log = null_out()
-  def run_and_reload (params, file_name) :
+  def run_and_reload(params, file_name):
     p = reflection_file_editor.process_arrays(params, log=log)
     p.finish()
     mtz_in = file_reader.any_file(file_name)
@@ -65,7 +66,7 @@ mtz_file {
   params.mtz_file.miller_array[0].output_as = "amplitudes"
   try :
     miller_arrays = run_and_reload(params, "tst1.mtz")
-  except Sorry, e :
+  except Sorry as e :
     assert ("inconsistent with" in str(e)), str(e)
   else :
     raise Exception_expected
@@ -104,7 +105,7 @@ mtz_file {
   params.mtz_file.miller_array[0].anomalous_data = "merged"
   try :
     run_and_reload(params, "tst1.mtz")
-  except Sorry, e :
+  except Sorry as e :
     assert ("too many column labels" in str(e)), str(e)
   else :
     raise Exception_expected
@@ -114,7 +115,7 @@ mtz_file {
   params.mtz_file.miller_array[1].anomalous_data = "anomalous"
   try :
     run_and_reload(params, "tst1.mtz")
-  except Sorry, e :
+  except Sorry as e :
     assert ("not specified enough" in str(e)), str(e)
   else :
     raise Exception_expected
@@ -181,7 +182,7 @@ mtz_file {
   params.mtz_file.miller_array[1].force_type = "amplitudes"
   try :
     miller_arrays = run_and_reload(params, "tst1.mtz")
-  except Sorry, e :
+  except Sorry as e :
     pass
   else :
     raise Exception_expected
@@ -189,7 +190,7 @@ mtz_file {
   params.mtz_file.miller_array[1].filter_by_signal_to_noise = 2.0
   try :
     miller_arrays = run_and_reload(params, "tst1.mtz")
-  except Sorry, e :
+  except Sorry as e :
     pass
   else :
     raise Exception_expected
@@ -198,7 +199,7 @@ mtz_file {
   params.mtz_file.miller_array[1].output_labels.append("NULL")
   try :
     miller_arrays = run_and_reload(params, "tst1.mtz")
-  except Sorry, e :
+  except Sorry as e :
     assert ("number of output labels" in str(e))
   else :
     raise Exception_expected
@@ -206,7 +207,7 @@ mtz_file {
   params.mtz_file.miller_array[0].output_labels.pop()
   try :
     miller_arrays = run_and_reload(params, "tst1.mtz")
-  except Sorry, e :
+  except Sorry as e :
     assert ("number of output labels" in str(e))
   else :
     raise Exception_expected
@@ -222,14 +223,14 @@ mtz_file {
   params.mtz_file.miller_array[0].column_root_label = "asdf"
   try :
     miller_arrays = run_and_reload(params, "tst1.mtz")
-  except Sorry, s :
+  except Sorry as s :
     assert ("inconsistent" in str(s))
   else :
     raise Exception_expected
   params.mtz_file.miller_array[0].column_root_label = "F_tst"
   try :
     miller_arrays = run_and_reload(params, "tst1.mtz")
-  except Sorry, s :
+  except Sorry as s :
     assert ("inconsistent" in str(s))
   else :
     raise Exception_expected
@@ -313,7 +314,7 @@ mtz_file {
   params.mtz_file.crystal_symmetry.space_group = sgtbx.space_group_info("P4")
   try :
     miller_arrays = run_and_reload(params, "tst1.mtz")
-  except Sorry, e :
+  except Sorry as e :
     assert ("Input unit cell" in str(e))
   else :
     raise Exception_expected
@@ -323,7 +324,7 @@ mtz_file {
     sgtbx.space_group_info("P6322")
   try :
     miller_arrays = run_and_reload(params, "tst1.mtz")
-  except Sorry, e :
+  except Sorry as e :
     assert ("incompatible with the specified" in str(e))
   else :
     raise Exception_expected
@@ -406,7 +407,7 @@ mtz_file {
   params.mtz_file.r_free_flags.adjust_fraction = True
   try :
     miller_arrays = run_and_reload(params, "tst4.mtz")
-  except Sorry, s :
+  except Sorry as s :
     assert ("resizing" in str(s))
   else :
     raise Exception_expected
@@ -455,7 +456,7 @@ mtz_file {
   mtz2.mtz_object().write("tst_data4.mtz")
   try :
     miller_arrays = run_and_reload(params, "tst5.mtz")
-  except Sorry, s :
+  except Sorry as s :
     pass
   else :
     raise Exception_expected
@@ -500,7 +501,7 @@ mtz_file {
   params = master_phil.fetch(source=new_phil).extract()
   try :
     miller_arrays = run_and_reload(params, "tst6.mtz")
-  except Sorry, e :
+  except Sorry as e :
     assert ("Five columns" in str(e))
   else :
     raise Exception_expected
@@ -529,7 +530,7 @@ mtz_file {
     "I-obs(+) SIGI-obs(+) I-obs(-) SIGI-obs(-)".split()
   try :
     miller_arrays = run_and_reload(params, "tst7.mtz")
-  except Sorry, e :
+  except Sorry as e :
     assert ("Duplicate column label 'I-obs(+)'" in str(e))
   else :
     raise Exception_expected
@@ -542,7 +543,7 @@ mtz_file {
     "data.mtz")
   try :
     miller_arrays = run_and_reload(params, "tst6.mtz")
-  except Sorry, e :
+  except Sorry as e :
     pass
   else :
     raise Exception_expected
@@ -551,7 +552,7 @@ mtz_file {
   params.mtz_file.miller_array = []
   try :
     miller_arrays = run_and_reload(params, "tst6.mtz")
-  except Sorry, e :
+  except Sorry as e :
     pass
   else :
     raise Exception_expected
@@ -639,7 +640,7 @@ mtz_file {
   mtz3.mtz_object().write("tst_data9.mtz")
   try :
     miller_arrays = run_and_reload(params, "tst9.mtz")
-  except Sorry, s :
+  except Sorry as s :
     assert (str(s) == """Multiple wavelengths present in input experimental data arrays: 1.116, 1.54.  Please specify the wavelength parameter explicitly.""")
   else :
     raise Exception_expected
@@ -698,10 +699,10 @@ mtz_file {
     d_min=1.0)
   flags = set1.generate_r_free_flags(fraction=0.1, max_free=None)
   n_flipped = 0
-  for i_hkl, (h,k,l) in enumerate(flags.indices()) :
-    if (i_hkl % 100 == 0) and (h > 0) and (k > 0) and (l > 0) :
+  for i_hkl, (h,k,l) in enumerate(flags.indices()):
+    if (i_hkl % 100 == 0) and (h > 0) and (k > 0) and (l > 0):
       flag = flags.data()[i_hkl]
-      if (not flag) :
+      if (not flag):
         n_flipped += 1
         flags.data()[i_hkl] = True
   assert (n_flipped > 0)
@@ -780,9 +781,9 @@ mtz_file {
 ########################################################################
 # this requires data in phenix_regression
 # TODO replace this with equivalent using synthetic data
-def exercise_command_line () :
-  if (not libtbx.env.has_module("phenix_regression")) :
-    print "phenix_regression not available, skipping"
+def exercise_command_line():
+  if (not libtbx.env.has_module("phenix_regression")):
+    print("phenix_regression not available, skipping")
     return
   file1 = libtbx.env.find_in_repositories(
     relative_path="phenix_regression/reflection_files/enk.mtz",
@@ -793,13 +794,13 @@ def exercise_command_line () :
   log = null_out()
   test_file = "tst_hkl_editor_cmdline-1.mtz"
   test_file2 = "tst_hkl_editor_cmdline-2.mtz"
-  if os.path.exists(test_file2) :
+  if os.path.exists(test_file2):
     os.remove(test_file2)
   try :
     p = reflection_file_editor.run(
       args=[file1, file2, "dry_run=True"],
       out=log)
-  except Sorry, e :
+  except Sorry as e :
     assert str(e).startswith("Duplicate column label 'R-free-flags'.")
   else :
     raise Exception_expected
@@ -874,12 +875,12 @@ def exercise_command_line () :
           ['F_INFL(+)', 'S_INFL(+)', 'F_INFL(-)', 'S_INFL(-)'])
 
 # this mainly just tests recycling of wavelength
-def exercise_xds_input () :
+def exercise_xds_input():
   xds_file = libtbx.env.find_in_repositories(
     relative_path="phenix_regression/reflection_files/xds_correct_unmerged.hkl",
     test=os.path.isfile)
-  if (xds_file is None) :
-    print "phenix_regression not available, skipping exercise_xds_input"
+  if (xds_file is None):
+    print("phenix_regression not available, skipping exercise_xds_input")
     return False
   xds_in = file_reader.any_file(xds_file)
   wl = xds_in.file_server.miller_arrays[0].info().wavelength
@@ -896,10 +897,30 @@ def exercise_xds_input () :
   wl2 = mtz_in.file_server.miller_arrays[0].info().wavelength
   assert approx_equal(wl2, 0.9792)
 
+def exercise_cif():
+  if (not libtbx.env.has_module("phenix_regression")):
+    print("phenix_regression not available, skipping")
+    return
+  cif_file = libtbx.env.find_in_repositories(
+    relative_path="phenix_regression/reflection_files/1yjp-sf.cif",
+    test=os.path.isfile)
+  p = reflection_file_editor.run(
+    args=[cif_file, "dry_run=True",
+          "output_file=cif_file.mtz"],
+    out=null_out())
+  assert ([ c.label() for c in p.mtz_object.columns() ] == [
+     'H', 'K', 'L', 'crystal_id', 'wavelength_id', 'scale_group_code', 'F_meas_au', 'F_meas_sigma_au', 'FreeR_flag'])
+  p.finish()
+  mtz_in = file_reader.any_file("cif_file.mtz")
+  miller_arrays = mtz_in.file_object.as_miller_arrays()
+  assert [str(ma.info()) for ma in miller_arrays] == ['cif_file.mtz:crystal_id', 'cif_file.mtz:wavelength_id', 'cif_file.mtz:scale_group_code', 'cif_file.mtz:F_meas_au,F_meas_sigma_au', 'cif_file.mtz:FreeR_flag']
+
+
 if __name__ == "__main__" :
   with warnings.catch_warnings(record=True) as w:
     exercise_basic(verbose=("--verbose" in sys.argv))
     assert (len(w) == 7), len(w)
     exercise_command_line()
     exercise_xds_input()
-  print "OK"
+    exercise_cif()
+  print("OK")

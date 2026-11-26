@@ -1,4 +1,4 @@
-from __future__ import division
+from __future__ import absolute_import, division, print_function
 
 import mmtbx.refinement.minimization_ncs_constraints
 import mmtbx.model
@@ -7,6 +7,7 @@ import iotbx.ncs
 import iotbx.pdb
 import sys
 from libtbx import easy_run
+from six.moves import range
 
 pdb_string1 = """\
 CRYST1   18.415   14.419   12.493  90.00  90.00  90.00 P 1
@@ -50,16 +51,15 @@ def tst_1(prefix="gm_ncs_constr_tst1"):
   # print dir(pdb_in)
   pdb_int_params = mmtbx.model.manager.get_default_pdb_interpretation_params()
   pdb_int_params.pdb_interpretation.ncs_search.enabled = True
-  model = mmtbx.model.manager(
-      model_input = pdb_in,
-      pdb_interpretation_params = pdb_int_params,
-      build_grm = True)
+  model = mmtbx.model.manager(model_input = pdb_in)
+  model.process(pdb_interpretation_params=pdb_int_params,
+    make_restraints=True)
   ncs_obj = iotbx.ncs.input(hierarchy=model.get_hierarchy())
   ncs_restraints_group_list = ncs_obj.get_ncs_restraints_group_list()
   ncs_obj.show(format='phil')
   grm = model.get_restraints_manager()
   tmp_xrs = model.get_xray_structure().deep_copy_scatterers()
-  refine_selection = flex.size_t(xrange(model.get_number_of_atoms()))
+  refine_selection = flex.size_t(range(model.get_number_of_atoms()))
 
   # print "refining sites"
   cycle = 0

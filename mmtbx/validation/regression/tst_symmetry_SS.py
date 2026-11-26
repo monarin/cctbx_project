@@ -1,4 +1,4 @@
-from __future__ import division
+from __future__ import absolute_import, division, print_function
 from libtbx import easy_run
 import unittest
 import os
@@ -48,21 +48,22 @@ ATOM    410  C   GLN A 536       5.808  71.230 189.153  1.00116.48           C
 ATOM    411  O   GLN A 536       5.180  70.277 188.684  1.00123.87           O
 '''
 
-class TestMPGeo(unittest.TestCase) :
+class TestMPGeo(unittest.TestCase):
 
   def setUp(self):
     self.file_to_delete = ['try.geo']
     # import files used in tests
     self.file_name = 'symmetry_SS.pdb'
-    open(self.file_name,'w').write(test_pdb_str)
+    with open(self.file_name,'w')as f:
+      f.write(test_pdb_str)
     self.file_to_delete.append(self.file_name)
 
-  def test_mpgeo(self) :
+  def test_mpgeo(self):
     cmd = "mmtbx.mp_geo pdb=symmetry_SS.pdb "
     cmd+= "out_file=try.geo kinemage=True"
     er = easy_run.call(command=cmd)
     #er.show_stderr()
-    assert er == 0
+    assert er == 0, 'command "%s" failed' % cmd
 
   def tearDown(self):
     """ delete files created in during testing"""

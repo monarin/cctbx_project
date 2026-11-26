@@ -1,4 +1,5 @@
-from __future__ import division
+"""Extract information on symmetry from REMARK 290 records"""
+from __future__ import absolute_import, division, print_function
 from cctbx import sgtbx
 
 example = """\

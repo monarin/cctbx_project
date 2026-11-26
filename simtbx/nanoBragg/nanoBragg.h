@@ -20,11 +20,12 @@
 #include <boost/math/special_functions/erf.hpp>
 #include <boost/math/special_functions/fpclassify.hpp>
 #include <boost_adaptbx/python_streambuf.h>
-#include <omptbx/omp_or_stubs.h>
+// #include <omptbx/omp_or_stubs.h>
+#include <simtbx/nanoBragg/nanotypes.h>
 
 using boost::math::erf;
 using boost::math::isnan;
-#define isnan(X) boost::math::isnan(X)
+//#define isnan(X) boost::math::isnan(X)
 
 
 /* need this on macs */
@@ -120,23 +121,12 @@ double ran1(long *idum);
 /* ln of the gamma function */
 double gammln(double xx);
 
-/* return Gaussian deviate with rms=1 and FWHM = 2/sqrt(log(2)) */
-double gaussdev(long *idum);
-/* return Poissonian deviate given expectation value */
-double poidev(double xm, long *idum);
-
-
 /* Fourier transform of a truncated lattice */
 double sincg(double x, double N);
 /* Fourier transform of a sphere */
 double sinc3(double x);
 /* Fourier transform of a spherically-truncated lattice */
 double sinc_conv_sinc3(double x);
-
-/* typedefs to help remember options */
-typedef enum { SAMPLE, BEAM } pivot;
-typedef enum { UNKNOWN, SQUARE, ROUND, GAUSS, TOPHAT, FIBER } shapetype;
-typedef enum { CUSTOM, ADXV, MOSFLM, XDS, DIALS, DENZO } convention;
 
 /* math functions for point spread */
 /* 2D Gaussian integral=1 */
@@ -281,11 +271,13 @@ class nanoBragg {
     double Fclose,Sclose; //=NAN;
     double ORGX,ORGY; //=NAN;
     double dials_origin[4];
+    double detector_is_righthanded; //true;
     double adc_offset; // = 40.0;
 
     /* use these to remember "user" inputs */
     bool user_beam; //=false;
     bool user_distance; //=false;
+    bool user_mosdomains; //=false;
 
     /* scattering vectors */
     double incident[4];
@@ -374,6 +366,7 @@ class nanoBragg {
     af::flex_double raw_pixels;
     unsigned short int *intimage;
     unsigned char *pgmimage;
+    bool cbf_int; // if saving the cbf file raw pixels will be converted to int
 //    char *byte_order; // = get_byte_order();
     /* optional input image to extract background? */
 //    SMVinfo imginfile;
@@ -446,14 +439,14 @@ class nanoBragg {
     /* misseting angles, applied after any provided A and U matrices */
     double misset[4];
 
-
+    int device_Id;
     /* special options */
 //    bool calculate_noise; // = 1;
 //    bool write_pgm; // = 1;
 //    bool binary_spots; // = 0; no inter-Bragg spots, flat-top spots inside FWHM of sinc function instead
 
     /* the constructor that takes a DXTBX detector and beam model */
-    nanoBragg(const dxtbx::model::Detector&, const dxtbx::model::Beam& beam, int verbose);
+    nanoBragg(const dxtbx::model::Detector&, const dxtbx::model::Beam& beam, int verbose, int panel_id = 0);
 
     /* the default constructor */
 //    nanoBragg();
@@ -461,7 +454,7 @@ class nanoBragg {
     /* member-wise constructor, allowing all members to be initialized in various ways */
     nanoBragg(
         scitbx::vec2<int> detpixels_slowfast, // = 1024, 1024
-        scitbx::vec3<int> Nabc, // 1 1 1
+        scitbx::vec3<double> Nabc, // 1. 1. 1.
         cctbx::uctbx::unit_cell unitcell, // lysozyme
         vec3 misset, // 0 0 0
         vec2 beam_center, // NAN NAN
@@ -484,8 +477,8 @@ class nanoBragg {
          with class variables that manage memory and lifetime.  These will include std::string,
          std::map, std::vector, std::shared_ptr, and flex arrays.
        */
-
-      printf("free all memory within nanoBragg\n");
+      if (verbose)
+        printf("free all memory within nanoBragg\n");
       if(verbose>9)printf("pixels_in %p\n",pixels_in);
       free(pixels_in);
       if(verbose>9)printf("bin_start %p\n",bin_start);
@@ -534,8 +527,8 @@ class nanoBragg {
         free(Fhkl);
       }
       hkls = 0;
-
-      printf("finished freeing memory\n");
+      if (verbose)
+        printf("finished freeing memory\n");
     }
 
     /* member functions to run once (might allocate memory) */
@@ -555,6 +548,7 @@ class nanoBragg {
     /* member functions for reconciling inter-related parameters */
     void update_oversample();   // automatic oversampling decision based on xtal size and pixel size
     void update_beamcenter();   // beam center, Xbeam, Fbeam, ORGX using selected convention
+    void set_dxtbx_detector_panel(const dxtbx::model::Panel& panel, const vec3& s0_vector);
 
     /* member functions for debugging */
     void show_phisteps();       // print out everything to screen, enumerate all phi steps
@@ -571,9 +565,12 @@ class nanoBragg {
     /* member function for triggering spot simulation over region of interest */
     void add_nanoBragg_spots();
     void add_nanoBragg_spots_nks(boost_adaptbx::python::streambuf &);
+#ifdef NANOBRAGG_HAVE_CUDA
+    void add_nanoBragg_spots_cuda();
+#endif
 
     /* member function for triggering background simulation */
-    void add_background(int oversample, int source);
+    void add_background(int oversample, int const& override_source);
 
     /* member function for extracting background from raw image */
     void extract_background(int source);
@@ -583,12 +580,119 @@ class nanoBragg {
 
     /* member function for triggering noise calculation */
     void add_noise();
+    af::flex_double add_noise(af::flex_double) const;
 
     /* utility function for outputting an image to examine */
     void to_smv_format(std::string const& fileout, double intfile_scale, int debug_x, int debug_y);
+    double get_intfile_scale(double intfile_scale) const;
     void to_smv_format_streambuf(boost_adaptbx::python::streambuf &, double, int const&, int const&) const;
 };
 
+class encapsulated_twodev
+{
+/* Convert gaussdev from a function to a class.
+ * Implemented as a function, the state variable iset
+ * valued at 0 or 1, unintentionally stored global state, thus
+ * producing different gaussian deviates depending on the order in
+ * which images are simulated within a parallel-computing environment.
+ * Despite random seeds being the same, resulting deviates differed.
+ * Switching to a class now forces iset to be initialized for each new
+ * class instance.
+ * Furthermore, implement poidev() within the same new class, since
+ * gaussdev() is a dependency of poidev().
+ */
+  private:
+    // instance variables for gaussdev
+    int iset;
+    double gset; //set value to avoid compiler warnings, but the 0 value must not be used.
+    double fac,rsq,v1,v2;
+    // instance variables for poidev
+    /* oldm is a flag for whether xm has changed since last call */
+    double sq,alxm,g,oldm; //formerly static when poidev was a function
+    double em,t,y;
+
+  public:
+    inline
+    encapsulated_twodev() : iset(0), gset(0.), sq(0), alxm(0), g(0), oldm(-1.0) {}
+
+    /* return gaussian deviate with rms=1 and FWHM = 2/sqrt(log(2)) */
+    inline
+    double gaussdev(long *idum){
+    if (iset == 0) {
+        /* no extra deviats handy ... */
+
+        /* so pick two uniform deviates on [-1:1] */
+        do {
+            v1=2.0*ran1(idum)-1.0;
+            v2=2.0*ran1(idum)-1.0;
+            rsq=v1*v1+v2*v2;
+        } while (rsq >= 1.0 || rsq == 0);
+        /* restrained to the unit circle */
+
+        /* apply Box-Muller transformation to convert to a normal deviate */
+        fac=sqrt(-2.0*log(rsq)/rsq);
+        gset=v1*fac;
+        iset=1;         /* we now have a spare deviate */
+        return v2*fac;
+    } else {
+        /* there is an extra deviate in gset */
+        iset=0;
+        return gset;
+    }
+    }
+
+    /* Poisson deviate given expectation value of photon count (xm) */
+    inline
+    double poidev(double xm, long *idum){
+
+    /* routine below locks up for > 1e6 photons? */
+    if (xm > 1.0e6) {
+        return xm+sqrt(xm)*gaussdev(idum);
+    }
+
+    if (xm < 12.0) {
+        /* use direct method: simulate exponential delays between events */
+        if(xm != oldm) {
+            /* xm is new, compute the exponential */
+            oldm=xm;
+            g=exp(-xm);
+        }
+        /* adding exponential deviates is equivalent to multiplying uniform deviates */
+        /* final comparison is to the pre-computed exponential */
+        em = -1;
+        t = 1.0;
+        do {
+            ++em;
+            t *= ran1(idum);
+        } while (t > g);
+    } else {
+        /* Use rejection method */
+        if(xm != oldm) {
+            /* xm has changed, pre-compute a few things... */
+            oldm=xm;
+            sq=sqrt(2.0*xm);
+            alxm=log(xm);
+            g=xm*alxm-gammln(xm+1.0);
+        }
+        do {
+            do {
+                /* y is a deviate from a lorentzian comparison function */
+                y=tan(M_PI*ran1(idum));
+                /* shift and scale */
+                em=sq*y+xm;
+            } while (em < 0.0);         /* there are no negative Poisson deviates */
+            /* round off to nearest integer */
+            em=floor(em);
+            /* ratio of Poisson distribution to comparison function */
+            /* scale it back by 0.9 to make sure t is never > 1.0 */
+            t=0.9*(1.0+y*y)*exp(em*alxm-gammln(em+1.0)-g);
+        } while (ran1(idum) > t);
+    }
+
+    return em;
+    }
+
+};
 
 }}// namespace simtbx::nanoBragg
 #endif //SIMTBX_NANOBRAGG_H

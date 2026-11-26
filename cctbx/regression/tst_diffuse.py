@@ -1,8 +1,9 @@
-from __future__ import division
+from __future__ import absolute_import, division, print_function
 from libtbx import easy_run
+import libtbx.load_env
 import iotbx.mtz
 from libtbx.test_utils import approx_equal
-import time
+import os, time
 
 pdb_str = """
 CRYST1   50.840   42.770   28.950  90.00  90.00  90.00 P 21 21 21
@@ -100,26 +101,40 @@ TER
 ENDMDL
 END
 """
-#cctbx.diffuse pdb=m.pdb probabilities=0.5,0.5 resolution=4.0 prefix=tst
+#phenix.diffuse pdb=m.pdb probabilities=0.5,0.5 resolution=4.0 prefix=tst
 def exercise():
   fo = open("tst_diffuse.pdb","w")
-  print >> fo, pdb_str
+  print(pdb_str, file=fo)
   fo.close()
-  cmd = " ".join([
-    "cctbx.diffuse",
+  cmd_list = [
     "pdb=tst_diffuse.pdb",
     "probabilities=0.5,0.5",
     "resolution=4.0",
-    "prefix=tst_diffuse"])
-  if 0: print cmd
-  easy_run.call(cmd)
+    "prefix=tst_diffuse"]
+  file_location = os.path.join(abs(libtbx.env.bin_path), 'phenix.diffuse')
+  if os.path.isfile(file_location):
+    cmd_list.insert(0, 'phenix.diffuse')
+  else:
+    import cctbx
+    file_location = os.path.join(
+      os.path.dirname(cctbx.__file__),
+      'command_line',
+      'diffuse.py')
+    cmd_list.insert(0, 'python %s ' % file_location)
+  cmd = " ".join(cmd_list)
+  if 0: print(cmd)
+  assert not easy_run.call(cmd)
   mas = iotbx.mtz.object(file_name="tst_diffuse.mtz").as_miller_arrays()
   assert len(mas) == 1
   ma = mas[0]
-  assert ma.data().size() == 937, ma.data().size()
+  # Intensities are truncated to integers and zeros are not written: the
+  # number of reflections depends on tiny changes of structure factors
+  # (it was 937 before the table of exponents got interpolated: (2,10,0)
+  # with intensity 1 is gone).
+  assert ma.data().size() == 936, ma.data().size()
   assert approx_equal(ma.d_max_min(), (32.728, 4.0), 1.e-3)
   assert approx_equal((ma.data()/1000.).min_max_mean().as_tuple(),
-    (0.001, 6.118, 0.35456), 1.e-3)
+    (0.001, 6.123, 0.354912), 1.e-3)
   assert ma.info().labels == ['I', 'SIGI']
   assert approx_equal(ma.unit_cell().parameters(),
     (50.84,42.77,28.95,90.0,90.0,90.0), 1.e-2)
@@ -127,5 +142,5 @@ def exercise():
 if __name__ == '__main__':
   t0 = time.time()
   exercise()
-  print "Time: %5.2f"%(time.time()-t0)
-  print "OK"
+  print("Time: %5.2f"%(time.time()-t0))
+  print("OK")

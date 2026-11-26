@@ -1,13 +1,13 @@
-from __future__ import division
+from __future__ import absolute_import, division, print_function
 # (jEdit options) :folding=explicit:collapseFolds=1:
 from mmtbx.validation import residue, validation, atom
 from cctbx import geometry_restraints
-from iotbx import pdb, file_reader
 from mmtbx.rotamer.n_dim_table import NDimTable #handles contours
 from libtbx import easy_pickle #NDimTables are stored as pickle files
 import libtbx.load_env
-import libtbx.phil.command_line
 import os, sys
+from iotbx.pdb.hybrid_36 import hy36decode
+import json
 
 #{{{ global constants
 #-------------------------------------------------------------------------------
@@ -36,74 +36,6 @@ THREETEN_CUTOFF = 0.001
 #  structure elements
 #These values were set heuristically through inspection of known secondary
 #  structure in low-resolution models
-#-------------------------------------------------------------------------------
-#}}}
-
-#{{{ phil
-#-------------------------------------------------------------------------------
-#commandline parameters
-master_phil = libtbx.phil.parse("""
-cablam {
-  pdb_infile = None
-    .type = path
-    .help = '''input PDB file'''
-  output = *text kin full_kin points_kin records records_and_pdb oneline
-    .type = choice
-    .help = '''choose output type:
-    =text for default colon-separated residue-by-residue validation
-    =kin for outlier markup in kinemage format
-    =full_kin for outlier markup appended to structure - opens in KiNG
-    =points_kin for pointcloud in cablam space
-    =records for PDB-style HELIX/SHEET records
-    =records_and_pdb for PDB-style HELIX/SHEET records attached to a PDB file
-    =oneline for a one-line structure summary
-    '''
-  outliers_only = False
-    .type = bool
-    .help = '''compress certain outputs to show only outliers'''
-  help = False
-    .type = bool
-    .help = '''help and data interpretation messages'''
-}
-""",process_includes=True)
-#-------------------------------------------------------------------------------
-#}}}
-
-#{{{ usage
-#-------------------------------------------------------------------------------
-def usage():
-  #prints help text
-  sys.stderr.write("""
-phenix.cablam file.pdb [options ...]
-
-Options:
-
-  pdb_infile=filename   path to input PDB file
-                          structure coordinates file readable by Phenix.
-                          Supports .pdb, .ent, .cif, etc.
-
-  output=(choose one)   text : default output.  Prints machine-readable
-                          columnated and colon-separated validation text to
-                          screen.
-                        kin : prints kinemage markup for validation to screen
-                        full_kin : prints kinemage markup and struture kinamge
-                          to screen
-                        points_kin : prints point cloud of residues in cablam
-                          space in kinemage format
-                        records : prints pdb-style HELIX and SHEET records to
-                          screen, based on CaBLAM's identification of secondary
-                          structure
-                        records_and_pdb : prints pdb-style HELIX and SHEET
-                          records to screen, followed by PDB file formatted
-                          coordinates for the input structure
-                        oneline : prints single-line summary of CaBLAM
-                          validation statistics
-
-  outliers_only=False   compresses certain outputs (text) to show only outlier
-                          residues
-
-  help=False            prints this usage text, plus an interpretation guide
-""")
 #-------------------------------------------------------------------------------
 #}}}
 
@@ -210,7 +142,7 @@ def fetch_peptide_expectations():
       test=os.path.isfile)
     if (picklefile is None):
       sys.stderr.write("\nCould not find a needed pickle file for category "+
-        category+" in chem_data.\nExiting.\n")
+        category+" in chem_data.\nPlease run mmtbx.rebuild_cablam_cache\nExiting.\n")
       sys.exit()
     ndt = easy_pickle.load(file_name=picklefile)
     unpickled[category] = ndt
@@ -231,7 +163,7 @@ def fetch_ca_expectations():
       test=os.path.isfile)
     if (picklefile is None):
       sys.stderr.write("\nCould not find a needed pickle file for category "+
-        category+" in chem_data.\nExiting.\n")
+        category+" in chem_data.\nPlease run mmtbx.rebuild_cablam_cache\nExiting.\n")
       sys.exit()
     ndt = easy_pickle.load(file_name=picklefile)
     unpickled[category] = ndt
@@ -252,7 +184,7 @@ def fetch_motif_contours():
       test=os.path.isfile)
     if (picklefile is None):
       sys.stderr.write("\nCould not find a needed pickle file for motif "+
-        motif+" in chem_data.\nExiting.\n")
+        motif+" in chem_data.\nPlease run mmtbx.rebuild_cablam_cache\nExiting.\n")
       sys.exit()
     ndt = easy_pickle.load(file_name=picklefile)
     unpickled[motif] = ndt
@@ -299,12 +231,18 @@ class cablam_chain():
     self.conf_names = []
     self.confs = {}
 
+  def __repr__(self):
+    return str(self.conf_names)+str(self.confs)
+
 class cablam_conf():
   #conformer-level organization for cablam results
   def __init__(self):
     self.conf_name = None
     self.results = {}
     self.sec_struc_records = []
+
+  def __repr__(self):
+    return str(self.conf_name)+str(self.results)+str(self.sec_struc_records)
 
 class secondary_structure_segment():
   #holds a secondary structure element identified by cablam
@@ -313,8 +251,73 @@ class secondary_structure_segment():
     self.end = end
     self.segment_type = segment_type
     self.segment_length = segment_length
+
+class wheel_wedge():
+  #a wedge of space generated from rotating a peptide plane, and the corresponding cablam score
+  #for drawing kinemage markup
+  def __init__(self, start, end, offset, cablam_score):
+    self.start = [start[0]-offset[0], start[1]-offset[1], start[2]-offset[2]]
+    self.end = [end[0]-offset[0], end[1]-offset[1], end[2]-offset[2]]
+    self.cablam_score = cablam_score
 #-------------------------------------------------------------------------------
 #}}}
+
+#{{{ get_cablam_scores_from_atoms
+#-------------------------------------------------------------------------------
+def get_cablam_scores_from_atoms(CA0, CA1, CA2, CA3, CA4, O1, O2, residue_type='general', cablam_contours=None, ca_contours=None):
+  #this funtion is meant for use by outside programs that already know the
+  #  positions of the atoms CaBLAM needs
+  #It takes 5 CA positions and 2 O positions and a residue type
+  #  Positions should be x,y,z coords in list-like form
+  #  Supported residue types are strings "general", "pro", and "gly"
+  #  Assumes general case residue by default
+  #  For this 0-indexed list of residues, residue #2 is the residue of interest
+  #    and the one whose type matters
+  #It returns a list of CaBLAM validation scores [CaBLAM,  CA geom]
+  ca_in = geometry_restraints.dihedral(sites=[CA0,CA1,CA2,CA3],
+    angle_ideal=180, weight=1).angle_model
+  ca_out = geometry_restraints.dihedral(sites=[CA1,CA2,CA3,CA4],
+    angle_ideal=180, weight=1).angle_model
+  ca_virtual_angle = geometry_restraints.angle(sites=[CA1,CA2,CA3],
+    angle_ideal=120, weight=1).angle_model
+  X1 = perptersect(CA1,CA2,O1)
+  X2 = perptersect(CA2,CA3,O2)
+  peptide_dihedral = geometry_restraints.dihedral(sites=[O1,X1,X2,O2],
+    angle_ideal=180, weight=1).angle_model
+  if not cablam_contours:
+    cablam_contours = fetch_peptide_expectations()
+  if not ca_contours:
+    ca_contours = fetch_ca_expectations()
+  cablam_point = [ca_in, ca_out, peptide_dihedral]
+  ca_point = [ca_in, ca_out, ca_virtual_angle]
+  cablam_score = cablam_contours[residue_type].valueAt(cablam_point)
+  c_alpha_geom_score = ca_contours[residue_type].valueAt(ca_point)
+  return [cablam_score,c_alpha_geom_score]
+#-------------------------------------------------------------------------------
+#}}}
+
+def selection_from_table_row(row):
+  """
+  Atom selection for a row of cablam_result.as_table_row_phenix().
+
+  GUI tables saved by older versions carry no selection, so restored
+  results rebuild it from the chain and residue cells; the residue cell
+  ends with the fixed-width "%4s%1s" resid.
+
+  Parameters
+  ----------
+  row : list
+      Table cells: chain ID, "resname resid", ...
+
+  Returns
+  -------
+  str or None
+      e.g. "chain A and resid 3"
+  """
+  from mmtbx.validation import residue_selection_string
+  resid = row[1][-5:]
+  return residue_selection_string(chain_id=row[0], resseq=resid[:4],
+    icode=resid[4:])
 
 #{{{ cablam_result class
 #-------------------------------------------------------------------------------
@@ -335,7 +338,8 @@ class cablam_result(residue):
     "alts",
     "measures",
     "scores",
-    "feedback"
+    "feedback",
+    "model_id"
     ]
 
   @staticmethod
@@ -356,6 +360,9 @@ class cablam_result(residue):
   #-----------------------------------------------------------------------------
   #}}}
 
+  def __repr__(self):
+    return self.as_string()
+
   #{{{ mp_id
   #-----------------------------------------------------------------------------
   def mp_id(self):
@@ -366,9 +373,6 @@ class cablam_result(residue):
     #  i: insertion code, space for none
     #  l: alternate ID, space for none
     #  t: residue type (ALA, LYS, etc.), all caps left justified, space padded
-    ##id_str = self.residue.id_str()
-    ##| A  75 |
-    ##chain = id_str[0:2]
     chain = self.chain_id
     resnum = self.residue.resseq
     ins = self.residue.icode
@@ -388,10 +392,11 @@ class cablam_result(residue):
     #  c: 2-char Chain ID, space for none
     #  n: sequence number, right justified, space padded
     #  i: insertion code, space for none
+    model = self.model_id
     chain = self.chain_id
     resnum = self.residue.resseq
     ins = self.residue.icode
-    return chain + resnum + ins
+    return model + chain + resnum + ins
   #-----------------------------------------------------------------------------
   #}}}
 
@@ -399,9 +404,11 @@ class cablam_result(residue):
   #-----------------------------------------------------------------------------
   #returns the desired atom from a hierarchy residue object
   def get_atom(self, atom_name):
-    for atom in self.residue.atoms():
-      if atom.name == atom_name: return atom
-    else: return None
+    #for atom in self.residue.atoms():
+    #  if atom.name == atom_name: return atom
+    atom = self.residue.find_atom_by(atom_name)
+    return atom
+    #else: return None
   #-----------------------------------------------------------------------------
   #}}}
 
@@ -530,7 +537,7 @@ class cablam_result(residue):
     resname = self.resname.upper()
     if resname == "GLY": return "gly"
     elif resname == "PRO":
-      if self.measures.omega < 90 and self.measures.omega > -90:
+      if self.measures.omega is not None and self.measures.omega < 90 and self.measures.omega > -90:
         return "cispro"
       else: return "transpro"
     else: return "general"
@@ -587,7 +594,7 @@ class cablam_result(residue):
       self.outlier = True
     #secondary structure
     #This is semi-duplicated from assemble_secondary_structure
-    if not self.prevres or not self.nextres:
+    if not self.prevres or not self.nextres or not self.prevres.scores or not self.nextres.scores:
       #alpha, beta, and threeten defaults are already None
       return
     if ((self.scores.alpha >= ALPHA_CUTOFF or self.scores.threeten >=THREETEN_CUTOFF)
@@ -632,20 +639,48 @@ class cablam_result(residue):
   #-----------------------------------------------------------------------------
   #}}}
 
+  def as_JSON(self):
+    non_serializable_list = ['residue','prevres','nextres','measures','scores','feedback']
+    serializable_slots = [s for s in self.__slots__ if s not in non_serializable_list and hasattr(self, s)]
+    slots_as_dict = ({s: getattr(self, s) for s in serializable_slots})
+    slots_as_dict['outlier_type'] = self.find_single_outlier_type().strip()
+    slots_as_dict['feedback'] = self.find_single_structure_suggestion().strip()
+    slots_as_dict['scores'] = {
+      "cablam": self.scores.cablam,
+      "c_alpha_geom": self.scores.c_alpha_geom,
+      "alpha": self.scores.alpha,
+      "beta": self.scores.beta,
+      "threeten": self.scores.threeten
+    }
+    slots_as_dict['measures'] = {
+      "mu_in" : self.measures.mu_in,
+      "mu_out" : self.measures.mu_out,
+      "nu" : self.measures.nu,
+      "ca_virtual" : self.measures.ca_virtual,
+      "omega" : self.measures.omega
+    }
+    return json.dumps(slots_as_dict, indent=2)
+
+  def as_hierarchical_JSON(self):
+    hierarchical_dict = {}
+    hierarchy_nest_list = ['model_id', 'chain_id', 'resid', 'altloc']
+    return json.dumps(self.nest_dict(hierarchy_nest_list, hierarchical_dict), indent=2)
+
   #{{{ as_kinemage
   #-----------------------------------------------------------------------------
-  def as_kinemage(self, mode=None, out=sys.stdout):
-    #prints kinemage markup for this residue
+  def as_kinemage(self, mode=None, out=None):
+    #returns kinemage markup for this residue as a string
     #has separate output modes for cablam outliers and for ca geom outliers
+    kin_text = ""
     if mode == 'ca_geom':
       if self.feedback.c_alpha_geom_outlier is not None:
         stats = self.mp_id() + " ca_geom=%.2f alpha=%.2f beta=%.2f three-ten=%.2f" %(self.scores.c_alpha_geom*100, self.scores.alpha*100, self.scores.beta*100, self.scores.threeten*100)
         CA_1 = self.prevres.get_atom(' CA ').xyz
         CA_2 = self.get_atom(' CA ').xyz
         CA_3 = self.nextres.get_atom(' CA ').xyz
-        out.write('\n{'+stats+'} P '+str(CA_2[0]-(CA_2[0]-CA_1[0])*0.9)+' '+str(CA_2[1]-(CA_2[1]-CA_1[1])*0.9)+' '+str(CA_2[2]-(CA_2[2]-CA_1[2])*0.9))
-        out.write('\n{'+stats+'} '+str(CA_2[0])+' '+str(CA_2[1])+' '+str(CA_2[2]))
-        out.write('\n{'+stats+'} '+str(CA_2[0]-(CA_2[0]-CA_3[0])*0.9)+' '+str(CA_2[1]-(CA_2[1]-CA_3[1])*0.9)+' '+str(CA_2[2]-(CA_2[2]-CA_3[2])*0.9))
+        kin_text += '\n{'+stats+'} P '+str(CA_2[0]-(CA_2[0]-CA_1[0])*0.9)+' '+str(CA_2[1]-(CA_2[1]-CA_1[1])*0.9)+' '+str(CA_2[2]-(CA_2[2]-CA_1[2])*0.9)
+        kin_text += '\n{'+stats+'} '+str(CA_2[0])+' '+str(CA_2[1])+' '+str(CA_2[2])
+        kin_text += '\n{'+stats+'} '+str(CA_2[0]-(CA_2[0]-CA_3[0])*0.9)+' '+str(CA_2[1]-(CA_2[1]-CA_3[1])*0.9)+' '+str(CA_2[2]-(CA_2[2]-CA_3[2])*0.9)
     elif mode == 'cablam':
       if self.feedback.cablam_outlier is not None:
         stats = self.mp_id() + " cablam=%.2f alpha=%.2f beta=%.2f three-ten=%.2f" %(self.scores.cablam*100, self.scores.alpha*100, self.scores.beta*100, self.scores.threeten*100)
@@ -655,11 +690,119 @@ class cablam_result(residue):
         X_1 = perptersect(CA_1,CA_2,O_1)
         X_2 = perptersect(CA_2,CA_3,O_2)
         midpoint = [ (X_1[0]+X_2[0])/2.0 , (X_1[1]+X_2[1])/2.0 , (X_1[2]+X_2[2])/2.0 ]
-        out.write('\n{'+stats+'} P '+ str(O_1[0]) +' '+ str(O_1[1]) +' '+ str(O_1[2]))
-        out.write('\n{'+stats+'} '+ str(X_1[0]) +' '+ str(X_1[1]) +' '+ str(X_1[2]))
-        out.write('\n{'+stats+'} '+ str(midpoint[0]) +' '+ str(midpoint[1]) +' '+ str(midpoint[2]))
-        out.write('\n{'+stats+'} '+ str(X_2[0]) +' '+ str(X_2[1]) +' '+ str(X_2[2]))
-        out.write('\n{'+stats+'} '+ str(O_2[0]) +' '+ str(O_2[1]) +' '+ str(O_2[2]))
+        kin_text += '\n{'+stats+'} P '+ str(O_1[0]) +' '+ str(O_1[1]) +' '+ str(O_1[2])
+        kin_text += '\n{'+stats+'} '+ str(X_1[0]) +' '+ str(X_1[1]) +' '+ str(X_1[2])
+        kin_text += '\n{'+stats+'} '+ str(midpoint[0]) +' '+ str(midpoint[1]) +' '+ str(midpoint[2])
+        kin_text += '\n{'+stats+'} '+ str(X_2[0]) +' '+ str(X_2[1]) +' '+ str(X_2[2])
+        kin_text += '\n{'+stats+'} '+ str(O_2[0]) +' '+ str(O_2[1]) +' '+ str(O_2[2])
+    if out is not None:
+      out.write(kin_text)
+    return kin_text
+  #-----------------------------------------------------------------------------
+  #}}}
+
+  #{{{ calculate_kinemage_wheels
+  #-----------------------------------------------------------------------------
+  def calculate_kinemage_wheels(self, cablam_contours):
+    from scitbx.matrix import rotate_point_around_axis
+    category = self.contour_category()
+    CA_1 = self.prevres.get_atom(' CA ').xyz
+    O_1  = self.prevres.get_atom(' O  ').xyz
+    CA_2 = self.get_atom(' CA ').xyz
+    O_2  = self.get_atom(' O  ').xyz
+    CA_3 = self.nextres.get_atom(' CA ').xyz
+    if None in [CA_1, CA_2, CA_3, O_1, O_2]: return
+    #markup wheels should extend to less than the full CO length
+    #moving the used CO position is an easy way to propagate this across calculations
+    #along the X-O line used in the dihedral so as not to change the cablam results
+    scaling = 0.75
+    X1 = perptersect(CA_1,CA_2,O_1)
+    X2 = perptersect(CA_2,CA_3,O_2)
+    O_1 = ( (O_1[0]-X1[0])*scaling+X1[0], (O_1[1]-X1[1])*scaling+X1[1], (O_1[2]-X1[2])*scaling+X1[2])
+    O_2 = ( (O_2[0]-X2[0])*scaling+X2[0], (O_2[1]-X2[1])*scaling+X2[1], (O_2[2]-X2[2])*scaling+X2[2])
+    #-----------------------------
+    #markup wheels are offset from the carbonyl oxygen position for visual clarity
+    #offset is a move along the CA-CA line
+    #calculate unit vector alone CA-CA line, offset is some fraction of that
+    offset = 0.15
+    CA_2_1 = (CA_1[0]-CA_2[0], CA_1[1]-CA_2[1], CA_1[2]-CA_2[2])
+    CA_2_1_len = (CA_2_1[0]**2 + CA_2_1[1]**2 + CA_2_1[2]**2)**0.5
+    CA_2_1_offset = (CA_2_1[0]/CA_2_1_len*offset, CA_2_1[1]/CA_2_1_len*offset, CA_2_1[2]/CA_2_1_len*offset)
+    CA_2_3 = (CA_3[0]-CA_2[0], CA_3[1]-CA_2[1], CA_3[2]-CA_2[2])
+    CA_2_3_len = (CA_2_3[0]**2 + CA_2_3[1]**2 + CA_2_3[2]**2)**0.5
+    CA_2_3_offset = (CA_2_3[0]/CA_2_3_len*offset, CA_2_3[1]/CA_2_3_len*offset, CA_2_3[2]/CA_2_3_len*offset)
+
+    #Each CaBLAM outlier is based on the relative positions of *two* peptide planes, represented by CO positions
+    #Test rotation of each peptide plane independently, and draw a wheel for each
+    #Starting with O_2 is arbitrary, but O_2 is the CO in the residue named as an outlier by CaBLAM convention
+    angle = -10
+    #prev_O_2_xyz = O_2
+    wheel1_center = (X2[0]-CA_2_3_offset[0], X2[1]-CA_2_3_offset[1], X2[2]-CA_2_3_offset[2])
+    wheel1 = []
+    while angle < 360:
+      angle += 10
+      new_xyz = rotate_point_around_axis(
+        axis_point_1 = CA_2,
+        axis_point_2 = CA_3,
+        point        = O_2,
+        angle        = angle,
+        deg          = True)
+      new_nu = geometry_restraints.dihedral(sites=[O_1, X1, X2, new_xyz],
+                                            angle_ideal=180, weight=1).angle_model
+      cablam_point = [self.measures.mu_in, self.measures.mu_out, new_nu]
+      cablam_score = cablam_contours[category].valueAt(cablam_point)
+      if cablam_score >= 0.05:
+        wheel1.append(None)
+        continue
+      wedge_start = rotate_point_around_axis(
+        axis_point_1 = CA_2,
+        axis_point_2 = CA_3,
+        point        = O_2,
+        angle        = angle-5,
+        deg          = True)
+      wedge_end = rotate_point_around_axis(
+        axis_point_1=CA_2,
+        axis_point_2=CA_3,
+        point=O_2,
+        angle=angle+5,
+        deg=True)
+      wedge = wheel_wedge(wedge_start, wedge_end, CA_2_3_offset, cablam_score)
+      wheel1.append(wedge)
+
+    angle = -10
+    #prev_O_1_xyz = O_1
+    wheel2_center = (X1[0]-CA_2_1_offset[0], X1[1]-CA_2_1_offset[1], X1[2]-CA_2_1_offset[2])
+    wheel2 = []
+    while angle <= 360:
+      angle += 10
+      new_xyz = rotate_point_around_axis(
+        axis_point_1 = CA_1,
+        axis_point_2 = CA_2,
+        point        = O_1,
+        angle        = angle,
+        deg          = True)
+      new_nu = geometry_restraints.dihedral(sites=[new_xyz,X1,X2,O_2],
+        angle_ideal=180, weight=1).angle_model
+      cablam_point = [self.measures.mu_in,self.measures.mu_out, new_nu]
+      cablam_score = cablam_contours[category].valueAt(cablam_point)
+      if cablam_score >= 0.05:
+        wheel2.append(None)
+        continue
+      wedge_start = rotate_point_around_axis(
+        axis_point_1=CA_1,
+        axis_point_2=CA_2,
+        point=O_1,
+        angle=angle-5,
+        deg=True)
+      wedge_end = rotate_point_around_axis(
+        axis_point_1=CA_1,
+        axis_point_2=CA_2,
+        point=O_1,
+        angle=angle+5,
+        deg=True)
+      wedge = wheel_wedge(wedge_start, wedge_end, CA_2_1_offset, cablam_score)
+      wheel2.append(wedge)
+    return [(wheel1, wheel1_center), (wheel2, wheel2_center)]
   #-----------------------------------------------------------------------------
   #}}}
 
@@ -670,7 +813,7 @@ class cablam_result(residue):
     if not (self.measures.mu_in and self.measures.mu_out and self.measures.nu):
       return
     point_name = "{"+self.mp_id()+"}"
-    print >> out, point_name, "%.2f %.2f %.2f" % (self.measures.mu_in, self.measures.mu_out, self.measures.nu)
+    print(point_name, "%.2f %.2f %.2f" % (self.measures.mu_in, self.measures.mu_out, self.measures.nu), file=out)
   #-----------------------------------------------------------------------------
   #}}}
 
@@ -806,6 +949,7 @@ class cablamalyze(validation):
     all_keys = []
     confs = []
     for model in pdb_hierarchy.models():
+      self.all_results[model.id] = {}
       for chain in model.chains():
         if not chain.is_protein():
           continue
@@ -813,12 +957,14 @@ class cablamalyze(validation):
           if conf.is_protein(): break #at least one conformer must be protein
         else: continue
         if use_segids:
-          chain_id = utils.get_segid_as_chainid(chain=chain).rjust(2)
+          chain_id = utils.get_segid_as_chainid(chain=chain)
         else:
-          chain_id = chain.id.rjust(2)
+          chain_id = chain.id
+        if len(chain_id) < 2:
+          chain_id = chain_id.rjust(2)
         #The above .rjust(2)'s are to force 2-char chain ids
         current_chain = cablam_chain()
-        self.all_results[chain_id] = current_chain
+        self.all_results[model.id][chain_id] = current_chain
         previous_result = None
         for conf in chain.conformers():
           if not conf.is_protein():
@@ -829,15 +975,13 @@ class cablamalyze(validation):
           current_chain.conf_names.append(conf.altloc)
           for residue in conf.residues():
             result = cablam_result(
+              model_id=model.id,
               residue=residue,
               resseq=residue.resseq,
               icode=residue.icode,
               altloc=conf.altloc,
               chain_id=chain_id,
               resname = residue.resname,
-              #formatting note: residue.id_str() = 'pdbres="THR B 182 "'
-              #chain=residue.id_str()[11:13],
-              #residue.id_str() turned out to break on some segid formatting
               prevres=None,
               nextres=None,
               has_ca=False,
@@ -857,21 +1001,23 @@ class cablamalyze(validation):
             if result.sorting_id() not in current_conf.results:
               current_conf.results[result.sorting_id()] = result
             previous_result = result
-    for chain in self.all_results:
-      for conf in self.all_results[chain].confs:
-        for result in self.all_results[chain].confs[conf].results:
-          if self.all_results[chain].confs[conf].results[result].has_ca:
-            self.all_results[chain].confs[conf].results[result].calculate_cablam_geometry()
-            self.all_results[chain].confs[conf].results[result].calculate_contour_values(cablam_contours, ca_contours, motif_contours)
-            self.all_results[chain].confs[conf].results[result].xyz = self.all_results[chain].confs[conf].results[result].get_atom(' CA ').xyz
+    for model_id in self.all_results:
+      for chain in self.all_results[model_id]:
+        for conf in self.all_results[model_id][chain].confs:
+          for result in self.all_results[model_id][chain].confs[conf].results:
+            if self.all_results[model_id][chain].confs[conf].results[result].has_ca:
+              self.all_results[model_id][chain].confs[conf].results[result].calculate_cablam_geometry()
+              self.all_results[model_id][chain].confs[conf].results[result].calculate_contour_values(cablam_contours, ca_contours, motif_contours)
+              self.all_results[model_id][chain].confs[conf].results[result].xyz = self.all_results[model_id][chain].confs[conf].results[result].get_atom(' CA ').xyz
     self.outlier_count = 0
-    for chain in self.all_results:
-      for conf in self.all_results[chain].confs:
-        for result in self.all_results[chain].confs[conf].results:
-          if self.all_results[chain].confs[conf].results[result].has_ca:
-            self.all_results[chain].confs[conf].results[result].set_cablam_feedback()
-            if self.all_results[chain].confs[conf].results[result].outlier:
-              self.outlier_count += 1
+    for model_id in self.all_results:
+      for chain in self.all_results[model_id]:
+        for conf in self.all_results[model_id][chain].confs:
+          for result in self.all_results[model_id][chain].confs[conf].results:
+            if self.all_results[model_id][chain].confs[conf].results[result].has_ca:
+              self.all_results[model_id][chain].confs[conf].results[result].set_cablam_feedback()
+              if self.all_results[model_id][chain].confs[conf].results[result].outlier:
+                self.outlier_count += 1
     self.assemble_secondary_structure()
     self.make_single_results_object(confs, all_keys)
     self.residue_count = len(self.results)
@@ -885,96 +1031,98 @@ class cablamalyze(validation):
     #assembles complete secondary structure elements (alpha helices, three-ten
     #  helices, and beta strands) from individual residue
     #have to assemble from scores to handle helix transitions
-    for chain in self.all_results:
-      for conf_id in self.all_results[chain].confs:
-        conf = self.all_results[chain].confs[conf_id]
-        records = []
-        record_start = None
-        helix_in_progress = False
-        result_ids = conf.results.keys()
-        result_ids.sort()
-        for result_id in result_ids:
-          result = conf.results[result_id]
-          #is it evaluable?
-          if not result.prevres:
-            continue
-          if not result.has_ca or not result.nextres:
-            if helix_in_progress:
-              records.append(secondary_structure_segment(start=record_start, end=result.prevres, segment_type=helix_in_progress, segment_length=record_length))
-              helix_in_progress = False
-            continue
-
-          #helix building
-          #This requires that the residues be the center of three in any combination of helix types
-          #threeten segments of only 2 are lost in this method relative to the previous
-          if ((result.scores.alpha >= ALPHA_CUTOFF or result.scores.threeten >=THREETEN_CUTOFF)
-            and (result.prevres.scores.alpha >= ALPHA_CUTOFF or result.prevres.scores.threeten >= THREETEN_CUTOFF)
-            and (result.nextres.scores.alpha >= ALPHA_CUTOFF or result.nextres.scores.threeten >= THREETEN_CUTOFF)):
-            #now determine which helix type the current residue should be identified as
-            #if at least two residues in a row have higher threeten scores than alpha scores, they can be considered threeten
-            if (result.scores.threeten > result.scores.alpha and
-              (result.nextres.scores.threeten > result.nextres.scores.alpha or
-                result.prevres.scores.threeten > result.prevres.scores.alpha)):
-              thisres = 'threeten'
-            else:
-              thisres = 'alpha'
-            if helix_in_progress:
-              if thisres == helix_in_progress: #is it same as previous residue
-                record_length += 1
-                continue
-              else: #or has it changed helix types
+    for model_id in self.all_results:
+      for chain in self.all_results[model_id]:
+        for conf_id in self.all_results[model_id][chain].confs:
+          conf = self.all_results[model_id][chain].confs[conf_id]
+          records = []
+          record_start = None
+          helix_in_progress = False
+          result_ids = list(conf.results.keys())
+          #result_ids.sort(key=lambda k: (k[0:2], int(hy36decode(4,k[2:6])), k[6:7])) #this broke for non 2-char segids
+          result_ids.sort(key=lambda k: (conf.results[k].chain_id, int(hy36decode(len(conf.results[k].resseq),conf.results[k].resseq)), conf.results[k].icode))
+          for result_id in result_ids:
+            result = conf.results[result_id]
+            #is it evaluable?
+            if not result.prevres or not result.prevres.scores:
+              continue
+            if not result.has_ca or not result.nextres or not result.nextres.scores:
+              if helix_in_progress:
                 records.append(secondary_structure_segment(start=record_start, end=result.prevres, segment_type=helix_in_progress, segment_length=record_length))
+                helix_in_progress = False
+              continue
+
+            #helix building
+            #This requires that the residues be the center of three in any combination of helix types
+            #threeten segments of only 2 are lost in this method relative to the previous
+            if ((result.scores.alpha >= ALPHA_CUTOFF or result.scores.threeten >=THREETEN_CUTOFF)
+              and (result.prevres.scores.alpha >= ALPHA_CUTOFF or result.prevres.scores.threeten >= THREETEN_CUTOFF)
+              and (result.nextres.scores.alpha >= ALPHA_CUTOFF or result.nextres.scores.threeten >= THREETEN_CUTOFF)):
+              #now determine which helix type the current residue should be identified as
+              #if at least two residues in a row have higher threeten scores than alpha scores, they can be considered threeten
+              if (result.scores.threeten > result.scores.alpha and
+                (result.nextres.scores.threeten > result.nextres.scores.alpha or
+                  result.prevres.scores.threeten > result.prevres.scores.alpha)):
+                thisres = 'threeten'
+              else:
+                thisres = 'alpha'
+              if helix_in_progress:
+                if thisres == helix_in_progress: #is it same as previous residue
+                  record_length += 1
+                  continue
+                else: #or has it changed helix types
+                  records.append(secondary_structure_segment(start=record_start, end=result.prevres, segment_type=helix_in_progress, segment_length=record_length))
+                  helix_in_progress = thisres
+                  record_start = result
+                  record_length = 1
+              else:
                 helix_in_progress = thisres
                 record_start = result
                 record_length = 1
-            else:
-              helix_in_progress = thisres
-              record_start = result
-              record_length = 1
-          else: #(current residue is not helix)
-            if helix_in_progress:
-              #might fail on chain breaks?
-              records.append(secondary_structure_segment(start=record_start, end=result.prevres, segment_type=helix_in_progress, segment_length=record_length))
-              helix_in_progress = False
-              record_start = None
-              record_length = 0
-            else:
-              continue
-        #helix building end
+            else: #(current residue is not helix)
+              if helix_in_progress:
+                #might fail on chain breaks?
+                records.append(secondary_structure_segment(start=record_start, end=result.prevres, segment_type=helix_in_progress, segment_length=record_length))
+                helix_in_progress = False
+                record_start = None
+                record_length = 0
+              else:
+                continue
+          #helix building end
 
-        #beta strands require another, separate pass
-        strand_in_progress = False
-        record_start = None
-        for result_id in result_ids:
-          result = conf.results[result_id]
-          if not result.prevres:
-            continue
-          if not result.has_ca or not result.nextres:
-            if strand_in_progress:
-              records.append(secondary_structure_segment(start=record_start, end=result.prevres, segment_type='beta', segment_length=record_length))
-              strand_in_progress = False
-            continue
-          if result.scores.beta >= BETA_CUTOFF and result.prevres.scores.beta >= BETA_CUTOFF and result.nextres.scores.beta >= BETA_CUTOFF:
-            if strand_in_progress:
-              record_length += 1
+          #beta strands require another, separate pass
+          strand_in_progress = False
+          record_start = None
+          for result_id in result_ids:
+            result = conf.results[result_id]
+            if not result.prevres or not result.prevres.scores:
               continue
-            else:
-              strand_in_progress = True
-              record_start = result
-              record_length = 1
-          else:
-            if strand_in_progress:
-              records.append(secondary_structure_segment(start=record_start, end=result.prevres, segment_type='beta', segment_length=record_length))
-              strand_in_progress = False
-              record_start = None
-              record_length = 0
-            else:
+            if not result.has_ca or not result.nextres or result.nextres.scores:
+              if strand_in_progress:
+                records.append(secondary_structure_segment(start=record_start, end=result.prevres, segment_type='beta', segment_length=record_length))
+                strand_in_progress = False
               continue
-        #beta strand building end
-        #NOTE: Each strand is currently treated as its own sheet
-        #Developing or implementing strand-to-sheet assembly that does not rely on
-        #  H-bonds is a major future goal
-        conf.sec_struc_records = records
+            if result.scores and result.prevres.scores and result.nextres.scores and result.scores.beta >= BETA_CUTOFF and result.prevres.scores.beta >= BETA_CUTOFF and result.nextres.scores.beta >= BETA_CUTOFF:
+              if strand_in_progress:
+                record_length += 1
+                continue
+              else:
+                strand_in_progress = True
+                record_start = result
+                record_length = 1
+            else:
+              if strand_in_progress:
+                records.append(secondary_structure_segment(start=record_start, end=result.prevres, segment_type='beta', segment_length=record_length))
+                strand_in_progress = False
+                record_start = None
+                record_length = 0
+              else:
+                continue
+          #beta strand building end
+          #NOTE: Each strand is currently treated as its own sheet
+          #Developing or implementing strand-to-sheet assembly that does not rely on
+          #  H-bonds is a major future goal
+          conf.sec_struc_records = records
   #-----------------------------------------------------------------------------
   #}}}
 
@@ -984,40 +1132,42 @@ class cablamalyze(validation):
     #should work without any arguments
     #populates self.results
     self.results = []
-    chains = self.all_results.keys()
-    chains.sort()
-    for chain_id in chains:
-      chain = self.all_results[chain_id]
-      #take the first conformer as the basis for comparison
-      conf  = chain.confs[chain.conf_names[0]]
-      if len(chain.conf_names) == 0:
-        for result_id in conf.results:
+    for model_id in self.all_results:
+      chains = list(self.all_results[model_id].keys())
+      chains.sort()
+      for chain_id in chains:
+        chain = self.all_results[model_id][chain_id]
+        #take the first conformer as the basis for comparison
+        conf  = chain.confs[chain.conf_names[0]]
+        if len(chain.conf_names) == 0:
+          for result_id in conf.results:
+            result = conf.results[result_id]
+            result.altloc = ''
+            #set self.results id
+          continue #go to next chain
+        #else, combine results into single list
+        result_ids = list(conf.results.keys())
+        ###result_ids.sort()
+        #for result_id in conf.results:
+        for result_id in result_ids:
           result = conf.results[result_id]
-          result.altloc = ''
-          #set self.results id
-        continue #go to next chain
-      #else, combine results into single list
-      result_ids = conf.results.keys()
-      result_ids.sort()
-      #for result_id in conf.results:
-      for result_id in result_ids:
-        result = conf.results[result_id]
-        if not result.has_ca: continue
-        #results without CAs have measures=None and break the
-        #  is_same_as_other_result check. Also, they aren't evaluable residues.
-        self.results.append(result)
-        found_meaningful_alt = False
-        for other_conf in chain.conf_names[1:]:
-          if result.sorting_id() in chain.confs[other_conf].results:
-            other_result = chain.confs[other_conf].results[result.sorting_id()]
-            if not other_result.has_ca: continue
-            if not result.is_same_as_other_result(other_result):
-              self.results.append(other_result)
-              found_meaningful_alt = True
-        if not found_meaningful_alt:
-          result.altloc = ''
-          #set self.results id
-          pass
+          if not result.has_ca: continue
+          #results without CAs have measures=None and break the
+          #  is_same_as_other_result check. Also, they aren't evaluable residues.
+          self.results.append(result)
+          found_meaningful_alt = False
+          for other_conf in chain.conf_names[1:]:
+            if result.sorting_id() in chain.confs[other_conf].results:
+              other_result = chain.confs[other_conf].results[result.sorting_id()]
+              if not other_result.has_ca: continue
+              if not result.is_same_as_other_result(other_result):
+                self.results.append(other_result)
+                found_meaningful_alt = True
+          if not found_meaningful_alt:
+            result.altloc = ''
+            #set self.results id
+            pass
+    self.results.sort(key=lambda r: (r.chain_id, int(hy36decode(len(r.resseq),r.resseq)), r.icode, r.altloc))
   #-----------------------------------------------------------------------------
   #}}}
 
@@ -1093,20 +1243,33 @@ class cablamalyze(validation):
     is_alpha, is_beta, is_threeten = 0,0,0
     correctable_helix_count, correctable_beta_count = 0,0
     is_correctable_helix, is_correctable_beta = 0,0
+    residue_count_by_model = {}
+    outlier_count_by_model = {}
+    disfavored_count_by_model = {}
+    ca_geom_outlier_count_by_model = {}
     for result in self.results:
       if not result.has_ca:
         continue
+      if result.model_id not in residue_count_by_model:
+        residue_count_by_model[result.model_id] = 0
+        outlier_count_by_model[result.model_id] = 0
+        disfavored_count_by_model[result.model_id] = 0
+        ca_geom_outlier_count_by_model[result.model_id] = 0
       is_residue = 1
       if result.scores.cablam is None:
         is_residue = 0
       if result.sorting_id() != prev_result_id:
         #new residue; update counts
         residue_count    += is_residue
+        residue_count_by_model[result.model_id] += is_residue
         if result.scores.c_alpha_geom is not None:
           ca_residue_count += 1
         cablam_outliers  += is_cablam_outlier
         cablam_disfavored+= is_cablam_disfavored
         ca_geom_outliers += is_ca_geom_outlier
+        outlier_count_by_model[result.model_id] += is_cablam_outlier
+        disfavored_count_by_model[result.model_id] += is_cablam_disfavored
+        ca_geom_outlier_count_by_model[result.model_id] += is_ca_geom_outlier
         is_cablam_outlier    = 0
         is_cablam_disfavored = 0
         is_ca_geom_outlier   = 0
@@ -1117,13 +1280,13 @@ class cablamalyze(validation):
         correctable_helix_count += is_correctable_helix
         correctable_beta_count += is_correctable_beta
         is_correctable_helix, is_correctable_beta = 0,0
-      if result.scores.cablam < CABLAM_OUTLIER_CUTOFF and is_residue:
+      if result.scores.cablam is not None and result.scores.cablam < CABLAM_OUTLIER_CUTOFF and is_residue:
         is_cablam_outlier    = 1
         if result.feedback.alpha or result.feedback.threeten:
           is_correctable_helix = 1
         elif result.feedback.beta:
           is_correctable_beta = 1
-      if result.scores.cablam < CABLAM_DISFAVORED_CUTOFF and is_residue:
+      if result.scores.cablam is not None and result.scores.cablam < CABLAM_DISFAVORED_CUTOFF and is_residue:
         is_cablam_disfavored = 1
       if result.scores.c_alpha_geom is not None and result.scores.c_alpha_geom < CA_GEOM_CUTOFF:
         is_ca_geom_outlier = 1
@@ -1140,27 +1303,34 @@ class cablamalyze(validation):
     cablam_outliers  += is_cablam_outlier
     cablam_disfavored+= is_cablam_disfavored
     ca_geom_outliers += is_ca_geom_outlier
+    #outlier_count_by_model[result.model_id] += is_cablam_outlier
+    #disfavored_count_by_model[result.model_id] += is_cablam_disfavored
+    #ca_geom_outlier_count_by_model[result.model_id] += is_ca_geom_outlier
     alpha_count    += is_alpha
     beta_count     += is_beta
     threeten_count += is_threeten
     return {'residue_count':residue_count,'ca_residue_count':ca_residue_count,
       'cablam_outliers':cablam_outliers,'cablam_disfavored':cablam_disfavored,'ca_geom_outliers':ca_geom_outliers,
       'alpha_count':alpha_count, 'beta_count':beta_count,'threeten_count':threeten_count,
-      'correctable_helix_count':correctable_helix_count,'correctable_beta_count':correctable_beta_count}
+      'correctable_helix_count':correctable_helix_count,'correctable_beta_count':correctable_beta_count,
+      'num_cablam_outliers_by_model': outlier_count_by_model,
+      'num_cablam_disfavored_by_model': disfavored_count_by_model,
+      'num_ca_geom_outliers_by_model': ca_geom_outlier_count_by_model,
+      'num_residues_by_model': residue_count_by_model}
   #-----------------------------------------------------------------------------
   #}}}
 
   #{{{ as_oneline
   #-----------------------------------------------------------------------------
-  def as_oneline(self):
+  def as_oneline(self,pdbid='pdbid'):
     #prints a one-line summary of cablam statistics for a structure
     #for oneline purposes, alternates are collapsed: each residue contributes up
     #  to 1 to each outlier count, regarless of how many outlier alternates it
     #  may contain
     if self.count_residues() == 0:
-      self.out.write('pdbid:0:0:0:0\n')
+      self.out.write(pdbid+':0:0:0:0\n')
     else:
-      self.out.write('pdbid:%i:%.1f:%.1f:%.2f\n' %(self.count_residues(), self.percent_outliers(), self.percent_disfavored(), self.percent_ca_outliers()) )
+      self.out.write('%s:%i:%.1f:%.1f:%.2f\n' %(pdbid,self.count_residues(), self.percent_outliers(), self.percent_disfavored(), self.percent_ca_outliers()) )
   #-----------------------------------------------------------------------------
   #}}}
 
@@ -1215,32 +1385,109 @@ class cablamalyze(validation):
   #-----------------------------------------------------------------------------
   #}}}
 
+  def cablam_wheel_triangle(self, wheel_center, wedge, color):
+    kin_text = ""
+    kin_text += '\n{} P X %s %.3f %.3f %.3f' % (color, wheel_center[0], wheel_center[1], wheel_center[2])
+    kin_text += '\n{} %s %.3f %.3f %.3f' % (color, wedge.start[0], wedge.start[1], wedge.start[2])
+    kin_text += '\n{} %s %.3f %.3f %.3f' % (color, wedge.end[0], wedge.end[1], wedge.end[2])
+    return kin_text
+
+  def cablam_wheel_edge(self, wheel_center, wedge, prevwedge):
+    pass
+
   #{{{ as_kinemage
   #-----------------------------------------------------------------------------
-  def as_kinemage(self):
-    #output cablam validation as standalone kinemage markup for viewing in KiNG
-    self.out.write('\n@subgroup {cablam disfavored} dominant\n')
-    self.out.write('@vectorlist {cablam disfavored} color= purple width= 4 master={cablam disfavored} off') #default off
+  def as_kinemage(self, chain_id=None, include_wheels=True):
+    #output cablam validation as kinemage markup, returns string
+    #
+    #include_wheels=True emits the purple/magenta peptide-plane score wheels
+    #(and their deadblack outline) alongside the outlier line markup. Set to
+    #False to emit only the {cablam disfavored} / {cablam outlier} /
+    #{ca geom outlier} line subgroups — useful when the wheels are too busy
+    #for an embedded multicrit kinemage viewer.
+    kin_out = '\n@subgroup {cablam disfavored} dominant\n'
+    kin_out += '@vectorlist {cablam disfavored} color= purple width= 4 master={cablam disfavored} off' #default off
     for result in self.results:
       if not result.has_ca:
+        continue
+      if chain_id is not None and result.chain_id.strip() != chain_id.strip():
         continue
       if result.feedback.cablam_disfavored:
-        result.as_kinemage(mode="cablam", out=self.out)
-    self.out.write('\n@subgroup {cablam outlier} dominant\n')
-    self.out.write('@vectorlist {cablam outlier} color= magenta width= 4 master={cablam outlier}') #default on
+        kin_out += result.as_kinemage(mode="cablam")
+    kin_out += '\n@subgroup {cablam outlier} dominant\n'
+    kin_out += '@vectorlist {cablam outlier} color= magenta width= 4 master={cablam outlier}' #default on
     for result in self.results:
       if not result.has_ca:
+        continue
+      if chain_id is not None and result.chain_id.strip() != chain_id.strip():
         continue
       if result.feedback.cablam_outlier:
-        result.as_kinemage(mode="cablam", out=self.out)
-    self.out.write('\n@subgroup {ca geom outlier} dominant\n')
-    self.out.write('@vectorlist {ca geom outlier} color= red width= 4 master={ca geom outlier}') #default on
+        kin_out += result.as_kinemage(mode="cablam")
+    kin_out += '\n@subgroup {ca geom outlier} dominant\n'
+    kin_out += '@vectorlist {ca geom outlier} color= red width= 4 master={ca geom outlier}' #default on
     for result in self.results:
       if not result.has_ca:
         continue
+      if chain_id is not None and result.chain_id.strip() != chain_id.strip():
+        continue
       if result.feedback.c_alpha_geom_outlier:
-        result.as_kinemage(mode="ca_geom", out=self.out)
-    self.out.write('\n')
+        kin_out += result.as_kinemage(mode="ca_geom")
+    if include_wheels:
+      #----------------------------
+      #"wheels" show favorable and unfavorabe regions for each peptide plane involved in a cablam outlier
+      #Some additional calculations are required to generate these wheels
+      cablam_contours = fetch_peptide_expectations()
+      wheels_list = []
+      for result in self.results:
+        if not result.has_ca:
+          continue
+        if chain_id is not None and result.chain_id.strip() != chain_id.strip():
+          continue
+        if result.feedback.cablam_disfavored:
+          wheels_list.extend(result.calculate_kinemage_wheels(cablam_contours=cablam_contours))
+      #wheels are made of 10-degree wedges, each wedge drawn as a triangle
+      kin_out += '\n@subgroup {cablam_wheels} dominant master={cablam wheels}\n'
+      kin_out += '@trianglelist {cablam_wheels} alpha=0.75'
+      for cablam_wheel in wheels_list:
+        wheel = cablam_wheel[0]
+        wheel_center = cablam_wheel[1]
+        for wedge in wheel:
+          if wedge is None:
+            continue
+          elif wedge.cablam_score < 0.01:
+            color = 'magenta'
+          else:
+            color = 'purple'
+          kin_out += self.cablam_wheel_triangle(wheel_center, wedge, color)
+      #a thin black line outlining the wheel greatly aids visual interpretation
+      kin_out += '\n@vectorlist {cablam_wheels_lines} color=deadblack width= 1 alpha=0.75'
+      for cablam_wheel in wheels_list:
+        wheel = cablam_wheel[0]
+        wheel_center = cablam_wheel[1]
+        prevwedge = wheel[-1]
+        new_poly = ' P' #starts a new polyline in kinemage format, print this for each new wheel
+        for wedge in wheel:
+          if wedge and prevwedge:
+            kin_out += '\n{}%s %.3f %.3f %.3f' % (new_poly, wedge.start[0], wedge.start[1], wedge.start[2])
+            kin_out += '\n{} %.3f %.3f %.3f' % (wedge.end[0], wedge.end[1], wedge.end[2])
+          elif wedge and not prevwedge:
+            kin_out += '\n{}%s %.3f %.3f %.3f' % (new_poly, wheel_center[0], wheel_center[1], wheel_center[2])
+            kin_out += '\n{} %.3f %.3f %.3f' % (wedge.start[0], wedge.start[1], wedge.start[2])
+            kin_out += '\n{} %.3f %.3f %.3f' % (wedge.end[0], wedge.end[1], wedge.end[2])
+          elif prevwedge and not wedge:
+            kin_out += '\n{}%s %.3f %.3f %.3f' % (new_poly, prevwedge.end[0], prevwedge.end[1], prevwedge.end[2])
+            kin_out += '\n{} %.3f %.3f %.3f' % (wheel_center[0], wheel_center[1], wheel_center[2])
+          else:
+            prevwedge = wedge
+            continue
+          prevwedge = wedge
+          new_poly=''
+      #----------------------------
+    kin_out += '\n'
+    # Write to self.out for backward compatibility with standalone use
+    if self.out is not None:
+      self.out.write(kin_out)
+    return kin_out
   #-----------------------------------------------------------------------------
   #}}}
 
@@ -1253,18 +1500,17 @@ class cablamalyze(validation):
     #Pdb-to-kinemage printing has been hijacked from mmtbx.kinemage.validation
     #  That code was not meant to be used outside its original context, so this
     #  may be fragile.
-    from mmtbx.kinemage.validation import get_kin_lots, build_name_hash
+    from mmtbx.kinemage.validation import get_kin_lots, build_name_hash, _build_bond_hash
     from mmtbx import monomer_library
     from mmtbx.monomer_library import pdb_interpretation
     i_seq_name_hash = build_name_hash(pdb_hierarchy=self.pdb_hierarchy)
     sites_cart=self.pdb_hierarchy.atoms().extract_xyz()
     mon_lib_srv = monomer_library.server.server()
     ener_lib = monomer_library.server.ener_lib()
-    pdb_io=self.pdb_hierarchy.as_pdb_input()
     processed_pdb_file = pdb_interpretation.process(
         mon_lib_srv=mon_lib_srv,
         ener_lib=ener_lib,
-        pdb_inp=pdb_io,
+        pdb_hierarchy=self.pdb_hierarchy,
         #params=work_params.kinemage.pdb_interpretation,
         substitute_non_crystallographic_unit_cell_if_necessary=True)
     geometry = processed_pdb_file.geometry_restraints_manager()
@@ -1272,12 +1518,7 @@ class cablamalyze(validation):
     #angle_proxies = geometry.angle_proxies
     pair_proxies = geometry.pair_proxies(flags=flags, sites_cart=sites_cart)
     bond_proxies = pair_proxies.bond_proxies
-    quick_bond_hash = {}
-    for bp in bond_proxies.simple:
-      if (i_seq_name_hash[bp.i_seqs[0]][9:14] == i_seq_name_hash[bp.i_seqs[1]][9:14]):
-        if quick_bond_hash.get(bp.i_seqs[0]) is None:
-          quick_bond_hash[bp.i_seqs[0]] = []
-        quick_bond_hash[bp.i_seqs[0]].append(bp.i_seqs[1])
+    quick_bond_hash = _build_bond_hash(bond_proxies, i_seq_name_hash)
 
     for model in self.pdb_hierarchy.models():
       for chain in model.chains():
@@ -1289,8 +1530,8 @@ class cablamalyze(validation):
   #{{{ as_pointcloud_kinemage
   #-----------------------------------------------------------------------------
   def as_pointcloud_kinemage(self):#, out=self.out):
-    print >> self.out, "@group {cablam-space points} dominant"
-    print >> self.out, "@dotlist (cablam-space points)"
+    print("@group {cablam-space points} dominant", file=self.out)
+    print("@dotlist (cablam-space points)", file=self.out)
     for result in self.results:
       result.as_kinemage_point()
   #-----------------------------------------------------------------------------
@@ -1310,60 +1551,61 @@ class cablamalyze(validation):
     helix_records = []
     strand_records = []
 
-    chain_list = self.all_results.keys()
-    chain_list.sort()
-    for chain_id in chain_list:
-      chain = self.all_results[chain_id]
-      if conf_request in chain.conf_names:
-        conf = conf_request
-      else:
-        conf = chain.conf_names[0]
-      for record in chain.confs[conf].sec_struc_records:
-        if record.segment_type == 'alpha' or record.segment_type == 'threeten':
-          helix_i += 1
-          if record.segment_type == 'alpha':
-            helix_class = 1
-          elif record.segment_type == 'threeten':
-            helix_class = 5
-          return_record = secondary_structure.pdb_helix(
-            serial = helix_i,
-            helix_id = helix_i,
-            start_resname  = record.start.resname,
-            start_chain_id = record.start.chain_id,
-            #start_chain_id = " A",
-            start_resseq   = record.start.resseq,
-            start_icode    = record.start.icode,
-            end_resname    = record.end.resname,
-            end_chain_id   = record.end.chain_id,
-            end_resseq     = record.end.resseq,
-            end_icode      = record.end.icode,
-            helix_class    = helix_class,
-            comment = "",
-            length = record.segment_length)
-          helix_records.append(return_record)
-        if record.segment_type == 'beta':
-          sheet_i += 1
-          strand_record = secondary_structure.pdb_strand(
-            sheet_id       = sheet_i,
-            strand_id      = 1,
-            start_resname  = record.start.resname,
-            start_chain_id = record.start.chain_id,
-            start_resseq   = record.start.resseq,
-            start_icode    = record.start.icode,
-            end_resname    = record.end.resname,
-            end_chain_id   = record.end.chain_id,
-            end_resseq     = record.end.resseq,
-            end_icode      = record.end.icode,
-            sense          = 1
-            )
-          return_record=secondary_structure.pdb_sheet(
-            sheet_id = sheet_i,
-            n_strands = 1,
-            strands = [strand_record],
-            registrations = [None],
-            hbond_list = []
-            )
-          strand_records.append(return_record)
+    for model_id in self.all_results:
+      chain_list = list(self.all_results[model_id].keys())
+      chain_list.sort()
+      for chain_id in chain_list:
+        chain = self.all_results[model_id][chain_id]
+        if conf_request in chain.conf_names:
+          conf = conf_request
+        else:
+          conf = chain.conf_names[0]
+        for record in chain.confs[conf].sec_struc_records:
+          if record.segment_type == 'alpha' or record.segment_type == 'threeten':
+            helix_i += 1
+            if record.segment_type == 'alpha':
+              helix_class = 1
+            elif record.segment_type == 'threeten':
+              helix_class = 5
+            return_record = secondary_structure.pdb_helix(
+              serial = helix_i,
+              helix_id = helix_i,
+              start_resname  = record.start.resname,
+              start_chain_id = record.start.chain_id,
+              #start_chain_id = " A",
+              start_resseq   = record.start.resseq,
+              start_icode    = record.start.icode,
+              end_resname    = record.end.resname,
+              end_chain_id   = record.end.chain_id,
+              end_resseq     = record.end.resseq,
+              end_icode      = record.end.icode,
+              helix_class    = helix_class,
+              comment = "",
+              length = record.segment_length)
+            helix_records.append(return_record)
+          if record.segment_type == 'beta':
+            sheet_i += 1
+            strand_record = secondary_structure.pdb_strand(
+              sheet_id       = sheet_i,
+              strand_id      = 1,
+              start_resname  = record.start.resname,
+              start_chain_id = record.start.chain_id,
+              start_resseq   = record.start.resseq,
+              start_icode    = record.start.icode,
+              end_resname    = record.end.resname,
+              end_chain_id   = record.end.chain_id,
+              end_resseq     = record.end.resseq,
+              end_icode      = record.end.icode,
+              sense          = 1
+              )
+            return_record=secondary_structure.pdb_sheet(
+              sheet_id = sheet_i,
+              n_strands = 1,
+              strands = [strand_record],
+              registrations = [None],
+              hbond_list = []
+              )
+            strand_records.append(return_record)
     return secondary_structure.annotation(helices=helix_records,sheets=strand_records)
   #-----------------------------------------------------------------------------
   #}}}
@@ -1390,6 +1632,49 @@ class cablamalyze(validation):
   #-----------------------------------------------------------------------------
   #}}}
 
+  def as_JSON(self, addon_json={}):
+    if not addon_json:
+      addon_json = {}
+    addon_json["validation_type"] = "cablam"
+    data = addon_json
+    flat_results = []
+    hierarchical_results = {}
+    for result in self.results:
+      if result.scores.cablam:
+        flat_results.append(json.loads(result.as_JSON()))
+        hier_result = json.loads(result.as_hierarchical_JSON())
+        hierarchical_results = self.merge_dict(hierarchical_results, hier_result)
+
+    data['flat_results'] = flat_results
+    data['hierarchical_results'] = hierarchical_results
+    data['summary_results'] = self.summary_JSON()
+    return json.dumps(data, indent=2)
+
+  def summary_JSON(self):
+    summary_results = {}
+    for model_id in self.summary_stats['num_residues_by_model'].keys():
+      if self.summary_stats['num_residues_by_model'][model_id]:
+        num_cablam_outliers = self.summary_stats['num_cablam_outliers_by_model'][model_id]
+        num_cablam_disfavored = self.summary_stats['num_cablam_disfavored_by_model'][model_id]
+        num_ca_geom_outliers = self.summary_stats['num_ca_geom_outliers_by_model'][model_id]
+        num_residues = self.summary_stats['num_residues_by_model'][model_id]
+        cablam_outliers_percentage = 0
+        cablam_disfavored_percentage = 0
+        ca_geom_outliers_percentage = 0
+        if num_residues != 0:
+          cablam_outliers_percentage = num_cablam_outliers/num_residues*100
+          cablam_disfavored_percentage = num_cablam_disfavored/num_residues*100
+          ca_geom_outliers_percentage = num_ca_geom_outliers/num_residues*100
+        summary_results[model_id] = {
+          "num_cablam_outliers" : num_cablam_outliers,
+          "cablam_outliers_percentage" : cablam_outliers_percentage,
+          "num_cablam_disfavored" : num_cablam_disfavored,
+          "cablam_disfavored_percentage" : cablam_disfavored_percentage,
+          "num_ca_geom_outliers" : num_ca_geom_outliers,
+          "ca_geom_outliers_percentage" : ca_geom_outliers_percentage,
+          "num_residues": num_residues,
+        }
+    return summary_results
   #{{{ as_coot_data
   #-----------------------------------------------------------------------------
   def as_coot_data(self):
@@ -1442,77 +1727,3 @@ class cablamalyze(validation):
   #}}}
 #-------------------------------------------------------------------------------
 #}}}
-
-#{{{ run
-#-------------------------------------------------------------------------------
-def run(args):
-  #{{{ phil parsing
-  #-----------------------------------------------------------------------------
-  interpreter = libtbx.phil.command_line.argument_interpreter(master_phil=master_phil)
-  sources = []
-  for arg in args:
-    if os.path.isfile(arg): #Handles loose filenames
-      input_file = file_reader.any_file(arg)
-      if (input_file.file_type == "pdb"):
-        sources.append(interpreter.process(arg="pdb_infile=\"%s\"" % arg))
-      elif (input_file.file_type == "phil"):
-        sources.append(input_file.file_object)
-    else: #Handles arguments with xxx=yyy formatting
-      arg_phil = interpreter.process(arg=arg)
-      sources.append(arg_phil)
-  work_phil = master_phil.fetch(sources=sources)
-  work_params = work_phil.extract()
-  params = work_params.cablam
-  #-----------------------------------------------------------------------------
-  #}}}
-
-  if params.help:
-    usage()
-    interpretation()
-    sys.exit()
-
-  if not params.pdb_infile:
-    sys.stderr.write(
-      '\nMissing input data, please provide .pdb file\n')
-    usage()
-    sys.exit()
-
-  if not os.path.isfile(params.pdb_infile):
-    sys.stderr.write(params.pdb_infile + " is not a file or could not be found")
-    sys.exit()
-  else:
-    pdb_infile = params.pdb_infile
-
-  pdb_in = file_reader.any_file(pdb_infile)
-  if pdb_in.file_type != "pdb":
-    sys.stderr.write(pdb_infile +" not id'd as readable file\n")
-    sys.exit()
-  pdbid = os.path.splitext(os.path.basename(pdb_infile))[0]
-  pdb_io = pdb.input(pdb_infile)
-  input_hierarchy = pdb_io.construct_hierarchy()
-  cablam = cablamalyze(
-    pdb_hierarchy=input_hierarchy,
-    outliers_only=False,
-    out=sys.stdout,
-    quiet=False)
-
-  #output = *text kin full_kin points_kin records records_and_pdb oneline
-  if params.output=='oneline':
-    cablam.as_oneline()
-  elif params.output=='kin':
-    cablam.as_kinemage()
-  elif params.output=='full_kin':
-    cablam.as_full_kinemage(pdbid=pdbid)
-  elif params.output=='points_kin':
-    cablam.as_pointcloud_kinemage()
-  elif params.output=='records':
-    cablam.as_records()
-  elif params.output=='records_and_pdb':
-    cablam.as_records_and_pdb()
-  else: #default text output
-    cablam.as_text(outliers_only=params.outliers_only)
-#-------------------------------------------------------------------------------
-#}}}
-
-if __name__ == "__main__":
-  run(sys.argv[1:])

@@ -1,0 +1,1789 @@
+from __future__ import absolute_import, division, print_function
+import time, os, traceback
+from libtbx.utils import null_out, Sorry
+import mmtbx.model
+import iotbx.pdb
+import iotbx.phil
+from cctbx.array_family import flex
+import libtbx.load_env
+from libtbx.test_utils import approx_equal
+from iotbx.cli_parser import run_program
+from mmtbx.programs import validate_ligands as val_lig
+from mmtbx.validation import validate_ligands as val_lig_mod
+import mmtbx.ligands.rdkit_utils as rdkit_utils
+
+from rdkit import RDLogger
+lg = RDLogger.logger()
+lg.setLevel(RDLogger.CRITICAL) # Only show critical errors
+
+# ------------------------------------------------------------------------------
+
+_1avd_manager_cache = None  # populated lazily by _load_1avd_manager()
+
+def _load_1avd_manager():
+  """Load the 1avd structure once and cache the ligand manager.
+
+  Returns the validate_ligands.manager for streptavidin (1avd), or None
+  if phenix_regression is not available.
+  """
+  global _1avd_manager_cache
+  if _1avd_manager_cache is not None:
+    return _1avd_manager_cache
+  mtz_fname = libtbx.env.find_in_repositories(
+    relative_path="phenix_regression/reflection_files/1avd.mtz",
+    test=os.path.isfile)
+  pdb_fname = libtbx.env.find_in_repositories(
+    relative_path="phenix_regression/pdb/pdb1avd.ent.gz",
+    test=os.path.isfile)
+  if mtz_fname is None or pdb_fname is None:
+    return None
+  # the values pinned below are those of the input's heavy atoms: no flips
+  from mmtbx.bulk_solvent import mosaic
+  n_mosaic = mosaic.number_of_runs
+  result = run_program(
+    program_class=val_lig.Program,
+    args=[pdb_fname, mtz_fname, 'add_flip_movers=False',
+      'include_symmetric_copies=False', 'metal_bound_amines_as_nh2=False'],
+    logger=null_out())
+  # maps are those of the mosaic bulk-solvent model
+  assert mosaic.number_of_runs > n_mosaic
+  _1avd_manager_cache = result.ligand_manager
+  return _1avd_manager_cache
+
+# ------------------------------------------------------------------------------
+
+def run():
+  run_test01()
+  run_test02()
+  run_test03()
+  run_test04()
+  run_test05()
+  run_test06()
+  run_test08()
+  run_test09()
+  run_test10()
+  run_test11()
+  run_test12()
+  run_test_has_restraints()
+  run_test_has_restraints_ccd_placeholder()
+  run_test13()
+  run_test14()
+  run_test15()
+  run_test16()
+  run_test17()
+  run_test18()
+  run_test19()
+  run_test20()
+  run_test21()
+  run_test22()
+  run_test23()
+  run_test24()
+  run_test25()
+  run_test26()
+  run_test27()
+  run_test28()
+  run_test29()
+
+# ------------------------------------------------------------------------------
+
+def run_test01():
+  '''
+  Several tests:
+    - check if iselection for ligand PG5 (chain A resseq 201) is correct
+    - count clashes involving ligand and calculate ligand clashscore
+    - check geometry outliers
+  '''
+  print('test01')
+  pdb_fname = libtbx.env.find_in_repositories(
+    relative_path="mmtbx/regression/pdbs/one_chain_ligand_water.pdb",
+    test=os.path.isfile)
+
+  args=[pdb_fname, 'save_reduce2_model=True']
+  #print("phenix.validate_ligands %s" %(" ".join(args)))
+  try:
+    result = run_program(program_class=val_lig.Program,args=args,
+     logger = null_out())
+  except Exception as e:
+    msg = traceback.format_exc()
+
+  vl_manager = result.ligand_manager
+
+  assert (len(vl_manager) == 1)
+  lr = vl_manager[0]
+  #assert (lr.id_str == 'PG5 A 201')
+
+  pdb_inp = iotbx.pdb.input(result.working_model_fn, source_info=None)
+  model = mmtbx.model.manager(
+    model_input=pdb_inp,
+    log = null_out())
+  model.process(make_restraints=True)
+  ligand_isel = model.iselection('resname PG5 and chain A and resseq 201')
+
+  # test iselection
+  assert (set(lr.ligand_isel) == set(ligand_isel))
+
+  # Number of clashes and clashscore
+  clashes_result = lr.get_overlaps()
+  assert(clashes_result.n_clashes == 5)
+  # 5/172; 5/182 if a methyl pose brings Val A46 (10 atoms) within 3 A
+  assert approx_equal(clashes_result.clashscore, 29.07, eps=0.5)
+  #
+  # Geometry deviations
+  rmsd_result = lr.get_rmsds()
+  assert approx_equal(rmsd_result.bond_rmsd, 0.093, eps=0.005)
+  assert approx_equal(rmsd_result.bond_rmsz, 4.654, eps=0.005)
+  assert(rmsd_result.bond_n_outliers == 4)
+  assert approx_equal(rmsd_result.angle_rmsd, 4.48, eps=0.05)
+  assert approx_equal(rmsd_result.angle_rmsz, 1.49, eps=0.05)
+  assert(rmsd_result.angle_n_outliers == 0)
+  assert approx_equal(rmsd_result.dihedral_rmsd, 32.6, eps=0.5)
+
+  if os.path.isfile('one_chain_ligand_water_newH.cif'):
+    os.remove('one_chain_ligand_water_newH.cif')
+
+# ------------------------------------------------------------------------------
+
+def run_test02():
+  '''
+  Test
+  - occupancy determination for ligands
+  - adp determination for ligands and neighbors
+  '''
+  print('test02')
+  pdb_fname = libtbx.env.find_in_repositories(
+    relative_path="mmtbx/regression/pdbs/two_chains_ligand_water.pdb",
+    test=os.path.isfile)
+  args=[pdb_fname]
+  #print("phenix.validate_ligands %s" %(" ".join(args)))
+  try:
+    result = run_program(program_class=val_lig.Program,args=args,
+     logger = null_out())
+  except Exception as e:
+    msg = traceback.format_exc()
+    print(msg)
+
+  ligands = ['ABEN A   2',
+             'BBEN A   2',
+             'SO4 A   3',
+             'SO4 A   4',
+             'GOL A   5']
+
+  vl_manager = result.ligand_manager
+  for lr in vl_manager:
+    id_str = lr.id_str
+    assert id_str in ligands
+
+  tst_occupancies(vl_manager = vl_manager)
+  tst_adps(vl_manager = vl_manager)
+  tst_rmsds(vl_manager = vl_manager)
+
+# ------------------------------------------------------------------------------
+
+def find_lr(vl_manager, sel):
+  '''Return the ligand_result whose ligand_isel matches model.iselection(sel).'''
+  ref = set(vl_manager.model.iselection(sel))
+  for lr in vl_manager:
+    if set(lr.ligand_isel) == ref:
+      return lr
+  raise AssertionError("no ligand found for: %s" % sel)
+
+# ------------------------------------------------------------------------------
+
+def tst_rmsds(vl_manager):
+  ligand_isel = vl_manager.model.iselection('resname SO4 and chain A and resseq 4')
+  for lr in vl_manager:
+    if lr.ligand_isel.size() != ligand_isel.size(): continue
+    are_equal = (set(lr.ligand_isel) == set(ligand_isel))
+    if are_equal:
+      rmsd_result = lr.get_rmsds()
+      assert approx_equal(rmsd_result.bond_rmsd, 0.055, eps=0.005)
+      assert approx_equal(rmsd_result.bond_rmsz, 2.761, eps=0.005)
+      assert(rmsd_result.bond_n_outliers == 1)
+      #
+      assert approx_equal(rmsd_result.angle_rmsd, 4.08, eps=0.05)
+      assert approx_equal(rmsd_result.angle_rmsz, 1.36, eps=0.05)
+      assert(rmsd_result.angle_n_outliers == 0)
+
+# ------------------------------------------------------------------------------
+
+def tst_occupancies(vl_manager):
+  '''
+  Test occupancies
+  '''
+  assert len(vl_manager) == 5
+
+  occs = find_lr(vl_manager,
+    'chain A and resseq 2 and resname BEN and (altloc A)').get_occupancies()
+  assert approx_equal(occs.occ_mean, 0.56, eps=0.01)
+
+  occs = find_lr(vl_manager,
+    'chain A and resseq 2 and resname BEN and (altloc B)').get_occupancies()
+  assert approx_equal(occs.occ_mean, 0.44, eps=0.01)
+
+  occs = find_lr(vl_manager, 'chain A and resseq 3 and resname SO4').get_occupancies()
+  assert approx_equal(occs.occ_mean, 0.65, eps=0.01)
+
+  occs = find_lr(vl_manager, 'chain A and resseq 4 and resname SO4').get_occupancies()
+  assert approx_equal(occs.occ_mean, 0.48, eps=0.01)
+
+  occs = find_lr(vl_manager, 'chain A and resseq 5 and resname GOL').get_occupancies()
+  assert approx_equal(occs.occ_mean, 0.67, eps=0.01)
+
+# ------------------------------------------------------------------------------
+
+def tst_adps(vl_manager):
+  '''
+  Test ADPs of ligands
+  '''
+  adps = find_lr(vl_manager,
+    'chain A and resseq 2 and resname BEN and (altloc A)').get_adps()
+  assert adps.n_iso == 0
+  assert adps.n_aniso == 9
+  assert adps.b_min_within is None
+  assert approx_equal([adps.b_min, adps.b_max, adps.b_mean],
+          [4.7, 8.1, 6.0], eps=0.1)
+
+  adps = find_lr(vl_manager,
+    'chain A and resseq 2 and resname BEN and (altloc B)').get_adps()
+  assert adps.n_iso == 0
+  assert adps.n_aniso == 9
+  assert adps.b_min_within is None
+  assert approx_equal([adps.b_min, adps.b_max, adps.b_mean],
+          [5.1, 8.2, 6.4], eps=0.1)
+
+  adps = find_lr(vl_manager, 'chain A and resseq 3 and resname SO4').get_adps()
+  assert adps.n_iso == 5
+  assert adps.n_aniso == 0
+  assert adps.b_min_within is None
+  assert approx_equal([adps.b_min, adps.b_max, adps.b_mean],
+          [7.4, 13.1, 10.2], eps=0.1)
+
+  adps = find_lr(vl_manager, 'chain A and resseq 4 and resname SO4').get_adps()
+  assert adps.n_iso == 0
+  assert adps.n_aniso == 5
+  assert adps.b_min_within is None
+  assert approx_equal([adps.b_min, adps.b_max, adps.b_mean],
+          [10.3, 14.6, 12.3], eps=0.1)
+
+  adps = find_lr(vl_manager, 'chain A and resseq 5 and resname GOL').get_adps()
+  assert adps.n_iso == 6
+  assert adps.n_aniso == 0
+  assert adps.b_min_within is None
+  assert approx_equal([adps.b_min, adps.b_max, adps.b_mean],
+          [58.7, 114.9, 96.9], eps=0.1)
+
+# ------------------------------------------------------------------------------
+
+def run_test03():
+  '''
+  Test CC, ADP, occupancy, overlap, and geometry metrics for three ligands
+  in streptavidin (1avd): BTN A 400, BTN B 401, NAG A 600.
+  '''
+  print('test03')
+  vl_manager = _load_1avd_manager()
+  if vl_manager is None:
+    print('  skipping: phenix_regression not available')
+    return
+
+  # Universal assertions: hold for every ligand in 1avd
+  for lr in vl_manager:
+    occs = lr.get_occupancies()
+    assert occs.negative_count == 0
+    assert occs.negative_isel.size() == 0
+    assert lr.get_adps().n_zero == 0
+    assert lr.get_overlaps().n_clashes_sym == 0
+
+  # --- NAG A 600 ---
+  lr = find_lr(vl_manager, 'chain A and resseq 600 and resname NAG')
+  occs = lr.get_occupancies()
+  adps = lr.get_adps()
+  ccs = lr.get_ccs()
+  overlaps = lr.get_overlaps()
+
+  assert approx_equal(ccs.rscc, 0.87, eps=0.03)
+  assert approx_equal(ccs.rscc_sites, 0.886, eps=0.03)
+  assert approx_equal(occs.occ_min, 0, eps=0.01)
+  assert approx_equal(occs.occ_max, 1, eps=0.01)
+  assert approx_equal(occs.occ_mean, 0.86, eps=0.01)
+  assert occs.zero_count >= 1         # occ_min == 0 -> at least one atom has occ 0
+  assert occs.zero_isel.size() == occs.zero_count
+  assert approx_equal(adps.b_min, 27.99, eps=0.01)
+  assert approx_equal(adps.b_max, 90.00, eps=0.01)
+  assert approx_equal(adps.b_mean, 70.71, eps=0.05)
+  assert approx_equal(adps.b_min_within, 5.23, eps=0.01)
+  assert approx_equal(adps.b_max_within, 79.14, eps=0.01)
+  assert approx_equal(adps.b_mean_within, 35.37, eps=0.02)
+  assert overlaps.n_clashes == 1
+  assert overlaps.n_hbonds == 1
+  assert approx_equal(overlaps.clashscore, 9.4, eps=0.5)
+
+  # --- BTN A 400 ---
+  lr = find_lr(vl_manager, 'chain A and resseq 400 and resname BTN')
+  occs = lr.get_occupancies()
+  adps = lr.get_adps()
+  ccs = lr.get_ccs()
+  overlaps = lr.get_overlaps()
+  rmsd_result = lr.get_rmsds()
+
+  assert approx_equal(ccs.rscc, 0.97, eps=0.03)
+  assert approx_equal(ccs.rscc_sites, 0.885, eps=0.03)
+  assert isinstance(ccs.frag_ccs, dict)
+  assert len(ccs.frag_ccs) == len(lr.ligand_rigid_components_isels)
+  assert len(ccs.frag_ccs) == 3
+  for cc_val in ccs.frag_ccs.values():
+    assert -1 <= cc_val <= 1
+    assert cc_val > 0.85         # all fragments well-fitted in 1avd
+  assert occs.zero_count == 0
+  assert occs.zero_isel.size() == 0
+  assert approx_equal(occs.occ_mean, 1, eps=0.01)
+  assert approx_equal(adps.b_min, 4.00, eps=0.01)
+  assert approx_equal(adps.b_max, 90.00, eps=0.01)
+  assert approx_equal(adps.b_mean, 31.19, eps=0.05)
+  assert approx_equal(adps.b_min_within, 4.00, eps=0.01)
+  assert approx_equal(adps.b_max_within, 54.65, eps=0.01)
+  # Asn A12 is not within 3 A: its HD21, as placed (no amide Mover without
+  # flips), is 3.02 A from O3.
+  assert approx_equal(adps.b_mean_within, 23.23, eps=0.02)
+  assert overlaps.n_clashes == 4
+  # 2 as donor (HN1, HN2) + 4 as acceptor (Ser16 HG, Ser73 HG, Ala39 H, Thr40 H)
+  # Ser16 HG...O3 D-H...A is 122.5 deg, cutoff 120
+  assert overlaps.n_hbonds == 6
+  assert approx_equal(overlaps.clashscore, 13.03, eps=0.5)
+  assert rmsd_result.bond_n == 17
+  assert approx_equal(rmsd_result.bond_rmsd, 0.033, eps=0.005)
+  assert approx_equal(rmsd_result.bond_rmsz, 1.639, eps=0.005)
+  assert rmsd_result.bond_n_outliers == 1
+  assert rmsd_result.angle_n == 23
+  assert approx_equal(rmsd_result.angle_rmsd, 4.00, eps=0.05)
+  assert approx_equal(rmsd_result.angle_rmsz, 1.33, eps=0.05)
+  assert rmsd_result.angle_n_outliers == 1
+  assert rmsd_result.dihedral_n == 20
+  assert approx_equal(rmsd_result.dihedral_rmsd, 17.4, eps=0.5)
+  assert approx_equal(rmsd_result.dihedral_rmsz, 0.579, eps=0.1)
+  assert approx_equal(rmsd_result.planarity_rmsd, 0.02, eps=0.05)
+  assert rmsd_result.dihedral_n_outliers == 0
+
+  # --- BTN B 401 ---
+  lr = find_lr(vl_manager, 'chain B and resseq 401 and resname BTN')
+  occs = lr.get_occupancies()
+  adps = lr.get_adps()
+  ccs = lr.get_ccs()
+  overlaps = lr.get_overlaps()
+
+  assert approx_equal(ccs.rscc, 0.95, eps=0.03)
+  assert approx_equal(ccs.rscc_sites, 0.867, eps=0.03)
+  assert occs.zero_count == 0
+  assert occs.zero_isel.size() == 0
+  assert approx_equal(occs.occ_mean, 1, eps=0.01)
+  assert approx_equal(adps.b_min, 4.00, eps=0.01)
+  assert approx_equal(adps.b_max, 46.67, eps=0.01)
+  assert approx_equal(adps.b_mean, 23.04, eps=0.05)
+  assert approx_equal(adps.b_min_within, 4.00, eps=0.01)
+  assert approx_equal(adps.b_max_within, 75.42, eps=0.01)
+  assert approx_equal(adps.b_mean_within, 28.20, eps=0.02)
+  assert overlaps.n_clashes == 6
+  # 2 as donor (HN1, HN2) + 6 as acceptor (Asn12, Ser16, Tyr33, Ala39, Thr40,
+  # Ser73)
+  assert overlaps.n_hbonds == 8
+  assert approx_equal(overlaps.clashscore, 19.3, eps=0.5)
+
+# ------------------------------------------------------------------------------
+
+def run_test04():
+  '''
+  Test if ligands with 5-letter ID are processed properly
+  from PDB model 7has
+  '''
+  print('test04')
+  model_fn = "tst_4_fragment.cif"
+  with open(model_fn, "w") as f:
+    f.write(cif_str_tst_4)
+  args = [model_fn]
+  #print("phenix.validate_ligands %s run_reduce2=False" % model_fn)
+  try:
+    result = run_program(program_class=val_lig.Program,args=args,
+     logger = null_out())
+  except Exception as e:
+    msg = traceback.format_exc()
+
+  vl_manager = result.ligand_manager
+
+  assert len(vl_manager) == 1
+  lr = vl_manager[0]
+  assert lr.resname == 'A1AYY'   # 5-character resname preserved
+  assert lr.altloc == ''
+
+  occs = lr.get_occupancies()
+  adps = lr.get_adps()
+  assert approx_equal(occs.occ_mean, 0.91, eps=0.01)
+  assert approx_equal(adps.b_min, 38.36, eps=0.01)
+  assert approx_equal(adps.b_max, 66.40, eps=0.01)
+  assert approx_equal(adps.b_mean, 47.82, eps=0.05)
+  assert approx_equal(adps.b_min_within, 30.55, eps=0.01)
+  assert approx_equal(adps.b_max_within, 63.10, eps=0.01)
+  assert approx_equal(adps.b_mean_within, 42.45, eps=0.02)
+  os.remove(model_fn)
+
+# ------------------------------------------------------------------------------
+
+def run_test05():
+  '''
+  Test if ligand with two conformers with different names is processed correctly
+  from PDB model 4d3w
+  '''
+  print('test05')
+  model_fn = "tst_5.pdb"
+  with open(model_fn, "w") as f:
+    f.write(pdb_str_tst_5)
+  args = [model_fn]
+  try:
+    result = run_program(program_class=val_lig.Program,args=args,
+     logger = null_out())
+  except Exception as e:
+    msg = traceback.format_exc()
+
+  vl_manager = result.ligand_manager
+
+  # Check identity via (resname, altloc) pairs — independent of id_str
+  expected = {('NGA', 'A'), ('A2G', 'B'), ('GAL', '')}
+  found    = {(lr.resname, lr.altloc) for lr in vl_manager}
+  assert found == expected, "unexpected ligand set: %s" % found
+
+  # Verify iselection size against selection strings derived from pdb_str_tst_5
+  expected_sel = {
+    ('NGA', 'A'): 'chain B and resseq 1 and resname NGA',
+    ('A2G', 'B'): 'chain B and resseq 1 and resname A2G',
+    ('GAL', ''):  'chain B and resseq 2 and resname GAL',
+  }
+  model = vl_manager.model
+  for lr in vl_manager:
+    key = (lr.resname, lr.altloc)
+    ligand_isel = model.iselection(expected_sel[key])
+    expected_size = ligand_isel.size()
+    assert lr.ligand_isel.size() == expected_size, \
+        "isel size mismatch for %s %s: got %d, expected %d" % (
+            lr.resname, lr.altloc,
+            lr.ligand_isel.size(), expected_size)
+    assert (set(lr.ligand_isel) == set(ligand_isel))
+  #
+  os.remove(model_fn)
+
+# ------------------------------------------------------------------------------
+
+def run_test06():
+  print('test06')
+  pdb_str = '''
+CRYST1   14.103   13.596   12.544  90.00  90.00  90.00 P 1
+SCALE1      0.070907  0.000000  0.000000        0.00000
+SCALE2      0.000000  0.073551  0.000000        0.00000
+SCALE3      0.000000  0.000000  0.079719        0.00000
+ATOM      1  N   SER A   9       8.404   8.079   5.179  1.00 16.08           N
+ATOM      2  CA  SER A   9       7.167   7.545   5.742  1.00 17.80           C
+ATOM      3  C   SER A   9       6.169   8.596   6.220  1.00 19.90           C
+ATOM      4  O   SER A   9       5.000   8.269   6.456  1.00 19.71           O
+ATOM      5  CB  SER A   9       7.456   6.619   6.919  1.00 16.95           C
+ATOM      6  OG  SER A   9       8.035   5.415   6.447  1.00 17.71           O
+ATOM      7  H   SER A   9       9.103   7.949   5.663  1.00 16.08           H
+ATOM      8  HA  SER A   9       6.761   7.070   5.000  1.00 17.80           H
+ATOM      9  HB2 SER A   9       8.057   7.054   7.544  1.00 16.95           H
+ATOM     10  HB3 SER A   9       6.636   6.427   7.400  1.00 16.95           H
+ATOM     11  HG  SER A   9       8.382   5.000   7.090  1.00 17.71           H
+  '''
+  pdb_inp = iotbx.pdb.input(lines=pdb_str.split("\n"), source_info=None)
+  model = mmtbx.model.manager(
+    model_input = pdb_inp,
+    log         = null_out())
+  model.process(make_restraints=True)
+  stats = model.geometry_statistics(use_hydrogens=True)
+  dihedral = stats.dihedral()
+  dihedralz = stats.dihedral(return_rmsZ=True)
+  assert dihedral.n == 3
+  assert len(dihedral.outliers) == 0
+  assert approx_equal(dihedral.mean, 10.91, eps=0.05)
+  assert approx_equal(dihedralz.mean, 0.52, eps=0.05)
+
+# ------------------------------------------------------------------------------
+
+def run_test08():
+  '''
+  Test get_map_values():
+  - fofc_map_values size matches non-H atom count
+  - percent_bad_at_atom_centers, n_bad_blobs, percent_bad_blobs
+    are in valid ranges and meaningful for well-fitted ligands
+  '''
+  print('test08')
+  vl_manager = _load_1avd_manager()
+  if vl_manager is None:
+    print('  skipping: phenix_regression not available')
+    return
+
+  # Sanity ranges valid for all ligands; fmodel is set so result is never None
+  for lr in vl_manager:
+    map_values = lr.get_map_values()
+    assert map_values is not None
+    assert map_values.percent_bad_at_atom_centers >= 0
+    assert map_values.n_bad_blobs >= 0
+    assert map_values.percent_bad_blobs >= 0
+    assert map_values.percent_bad_blobs <= 100
+
+  # --- BTN A 400: well-fitted; one marginal difference-density blob nearby
+  # (none with the pre-2026-11 bulk-solvent mask radii; the model carries H,
+  # so the mask now uses mmtbx.masks.mask_radii_with_hydrogens) ---
+  map_values = find_lr(vl_manager, 'chain A and resseq 400 and resname BTN').get_map_values()
+  assert map_values.fofc_map_values.size() == 16
+  assert map_values.percent_bad_at_atom_centers == 0.0
+  # no blob with the mosaic bulk-solvent model (one marginal blob, 0.07 %,
+  # with the flat one)
+  assert map_values.n_bad_blobs == 0
+  assert approx_equal(map_values.percent_bad_blobs, 0.0, eps=0.1)
+
+  # --- BTN B 401: well-fitted; one small difference-density blob nearby ---
+  map_values = find_lr(vl_manager, 'chain B and resseq 401 and resname BTN').get_map_values()
+  assert map_values.fofc_map_values.size() == 16
+  assert map_values.percent_bad_at_atom_centers == 0.0
+  assert map_values.n_bad_blobs == 1
+  assert approx_equal(map_values.percent_bad_blobs, 0.89, eps=0.5)
+
+  # --- NAG A 600: moderately fitted, no atoms in bad density ---
+  map_values = find_lr(vl_manager, 'chain A and resseq 600 and resname NAG').get_map_values()
+  assert map_values.fofc_map_values.size() == 14
+  assert map_values.percent_bad_at_atom_centers == 0.0
+  assert map_values.n_bad_blobs == 0
+  assert approx_equal(map_values.percent_bad_blobs, 0.0, eps=0.1)
+
+
+# ------------------------------------------------------------------------------
+
+def run_test09():
+  '''
+  Test get_ccs_map() - the map_manager code path of get_ccs().
+  Writes a 2mFo-DFc model map from 1avd to a temp CCP4 file, then runs
+  the program with PDB + map (no MTZ) to exercise the map_manager branch.
+  '''
+  print('test09')
+  from mmtbx import map_tools
+  from cctbx import maptbx, miller
+  from iotbx import mrcfile
+  from cctbx.array_family import flex
+
+  vl_manager = _load_1avd_manager()
+  if vl_manager is None:
+    print('  skipping: phenix_regression not available')
+    return
+
+  pdb_fname = libtbx.env.find_in_repositories(
+    relative_path="phenix_regression/pdb/pdb1avd.ent.gz",
+    test=os.path.isfile)
+  if pdb_fname is None:
+    print('  skipping: phenix_regression not available')
+    return
+
+  # Compute a 2mFo-DFc model map from the 1avd fmodel
+  fmodel = vl_manager[0].fmodel
+  cs = fmodel.f_obs().crystal_symmetry()
+  d_min = round(fmodel.f_obs().d_min(), 2)
+  crystal_gridding = maptbx.crystal_gridding(
+    unit_cell        = cs.unit_cell(),
+    space_group_info = cs.space_group_info(),
+    symmetry_flags   = maptbx.use_space_group_symmetry,
+    step             = 0.6)
+  map_coefficients = map_tools.electron_density_map(
+    fmodel=fmodel).map_coefficients(
+      map_type     = "2mFo-DFc",
+      isotropize   = True,
+      fill_missing = False)
+  fft_map = miller.fft_map(
+    crystal_gridding     = crystal_gridding,
+    fourier_coefficients = map_coefficients)
+  fft_map.apply_sigma_scaling()
+  map_data = fft_map.real_map_unpadded()
+
+  map_fn = "tst09_1avd.ccp4"
+  try:
+    mrcfile.write_ccp4_map(
+      file_name   = map_fn,
+      unit_cell   = cs.unit_cell(),
+      space_group = cs.space_group(),
+      map_data    = map_data,
+      labels      = flex.std_string([""]))
+    result = run_program(
+      program_class = val_lig.Program,
+      args          = [pdb_fname, map_fn,
+                       'validate_ligands.resolution=%s' % d_min],
+      logger        = null_out())
+    vl_manager2 = result.ligand_manager
+    assert vl_manager2 is not None
+    for lr in vl_manager2:
+      ccs = lr.get_ccs()
+      assert ccs is not None
+      assert hasattr(ccs, 'rscc')
+      assert -1 <= ccs.rscc <= 1
+      # a ligand with nothing inside within_radius still has no sites RSCC
+      assert ccs.rscc_sites is None or -1 <= ccs.rscc_sites <= 1
+    # Well-fitted ligand: CC with its own model map should be positive.
+    ccs_btn = find_lr(
+      vl_manager2, 'chain A and resseq 400 and resname BTN').get_ccs()
+    # eps is deliberately tighter than in run_test04: an all-atom mask gives
+    # 0.934 here, so anything looser would not notice hydrogen re-entering the
+    # mask.
+    assert approx_equal(ccs_btn.rscc, 0.918, eps=0.01), ccs_btn.rscc
+    # Biotin is buried in avidin, so it has an environment
+    assert approx_equal(ccs_btn.rscc_sites, 0.937, eps=0.01), ccs_btn.rscc_sites
+    assert ccs_btn.frag_ccs
+  finally:
+    if os.path.isfile(map_fn):
+      os.remove(map_fn)
+
+# ------------------------------------------------------------------------------
+
+# Two glycerol (GOL) ligands. Chain A resseq 1 is missing the O3 heavy atom;
+# chain A resseq 2 is heavy-complete (no H atoms are modelled in either).
+_gol_missing_atom_pdb_str = '''
+CRYST1   30.000   20.000   20.000  90.00  90.00  90.00 P 1
+SCALE1      0.033333  0.000000  0.000000        0.00000
+SCALE2      0.000000  0.050000  0.000000        0.00000
+SCALE3      0.000000  0.000000  0.050000        0.00000
+HETATM    1  C1  GOL A   1       5.000   5.000   5.000  1.00 20.00           C
+HETATM    2  C2  GOL A   1       6.520   5.000   5.000  1.00 20.00           C
+HETATM    3  C3  GOL A   1       7.100   6.400   5.000  1.00 20.00           C
+HETATM    4  O1  GOL A   1       4.300   3.850   5.400  1.00 20.00           O
+HETATM    5  O2  GOL A   1       7.220   4.050   5.700  1.00 20.00           O
+HETATM    6  C1  GOL A   2      15.000   5.000   5.000  1.00 20.00           C
+HETATM    7  C2  GOL A   2      16.520   5.000   5.000  1.00 20.00           C
+HETATM    8  C3  GOL A   2      17.100   6.400   5.000  1.00 20.00           C
+HETATM    9  O1  GOL A   2      14.300   3.850   5.400  1.00 20.00           O
+HETATM   10  O2  GOL A   2      17.220   4.050   5.700  1.00 20.00           O
+HETATM   11  O3  GOL A   2      18.500   6.350   4.700  1.00 20.00           O
+'''
+
+def _gol_missing_atom_model():
+  pdb_inp = iotbx.pdb.input(
+    lines=_gol_missing_atom_pdb_str.split("\n"), source_info=None)
+  model = mmtbx.model.manager(model_input=pdb_inp, log=null_out())
+  model.process(make_restraints=True)
+  return model
+
+def run_test10():
+  print('test10')
+  model = _gol_missing_atom_model()
+  missing = model.get_missing_atoms()
+  atoms = model.get_hierarchy().atoms()
+
+  def ag_key(sel_str):
+    isel = model.iselection(sel_str)
+    return atoms[isel[0]].parent().id_str()
+
+  key1 = ag_key('resname GOL and chain A and resseq 1')
+  key2 = ag_key('resname GOL and chain A and resseq 2')
+
+  assert key1 in missing, missing
+  heavy1 = missing[key1].get('missing', {}).get('heavy', {})
+  assert 'O3' in heavy1, list(heavy1)
+
+  heavy2 = missing.get(key2, {}).get('missing', {}).get('heavy', {})
+  assert len(heavy2) == 0, list(heavy2)
+
+  # Lazy path: a fresh, un-processed model must auto-process on access.
+  pdb_inp2 = iotbx.pdb.input(
+    lines=_gol_missing_atom_pdb_str.split("\n"), source_info=None)
+  model_lazy = mmtbx.model.manager(model_input=pdb_inp2, log=null_out())
+  missing_lazy = model_lazy.get_missing_atoms()
+  assert missing_lazy is not None
+  assert any('O3' in v.get('missing', {}).get('heavy', {})
+             for v in missing_lazy.values()), missing_lazy
+
+# ------------------------------------------------------------------------------
+
+def _gol_missing_atom_manager():
+  from mmtbx.validation import validate_ligands as vlmod
+  model = _gol_missing_atom_model()
+  params = vlmod.master_params().extract().validate_ligands
+  params.ligand_code = []
+  vl_manager = vlmod.manager(
+    model       = model,
+    fmodel      = None,
+    map_manager = None,
+    params      = params,
+    log         = null_out())
+  vl_manager.run()
+  return vl_manager
+
+def run_test11():
+  print('test11')
+  vl_manager = _gol_missing_atom_manager()
+  lr1 = find_lr(vl_manager, 'resname GOL and chain A and resseq 1')
+  ma1 = lr1.get_missing_atoms()
+  assert ma1.missing_heavy == ['O3'], ma1.missing_heavy
+  assert ma1.n_missing_heavy == 1, ma1.n_missing_heavy
+  #
+  lr2 = find_lr(vl_manager, 'resname GOL and chain A and resseq 2')
+  ma2 = lr2.get_missing_atoms()
+  assert ma2.missing_heavy == [], ma2.missing_heavy
+  assert ma2.n_missing_heavy == 0, ma2.n_missing_heavy
+
+# ------------------------------------------------------------------------------
+
+def run_test12():
+  print('test12')
+  from six.moves import cStringIO as StringIO
+  vl_manager = _gol_missing_atom_manager()
+  sio = StringIO()
+  vl_manager.show_table(out=sio)
+  text = sio.getvalue()
+  assert 'missing' in text, text
+  assert 'O3' in text, text
+
+# ------------------------------------------------------------------------------
+
+def run_test13():
+  print('test13')
+  vl_manager = _gol_missing_atom_manager()
+  snap1 = find_lr(vl_manager, 'resname GOL and chain A and resseq 1').as_picklable_snapshot()
+  assert snap1.missing_atoms is not None
+  assert snap1.missing_atoms.missing_heavy == ['O3'], snap1.missing_atoms.missing_heavy
+  assert snap1.missing_atoms.n_missing_heavy == 1, snap1.missing_atoms.n_missing_heavy
+  #
+  snap2 = find_lr(vl_manager, 'resname GOL and chain A and resseq 2').as_picklable_snapshot()
+  assert snap2.missing_atoms is not None
+  assert snap2.missing_atoms.missing_heavy == [], snap2.missing_atoms.missing_heavy
+  assert snap2.missing_atoms.n_missing_heavy == 0, snap2.missing_atoms.n_missing_heavy
+
+# ------------------------------------------------------------------------------
+
+def _gol_frag_mol_and_cif(vl_manager, resseq):
+  lr = find_lr(vl_manager, 'resname GOL and chain A and resseq %d' % resseq)
+  ag = lr._atoms_ligand[0].parent()
+  srv = lr.model.get_mon_lib_srv()
+  cif_object, _ani = srv.get_comp_comp_id_and_atom_name_interpretation(
+    residue_name=ag.resname, atom_names=ag.atoms().extract_name())
+  return lr._frag_mol, cif_object, lr
+
+def run_test14():
+  print('test14')
+  vl = _gol_missing_atom_manager()
+  frag_mol, cif_object, lr = _gol_frag_mol_and_cif(vl, 1)
+  draw_mol, missing_idxs = rdkit_utils.build_drawing_mol_with_missing(
+    frag_mol, cif_object, ['O3'])
+  assert draw_mol.GetNumAtoms() == frag_mol.GetNumAtoms() + 1, draw_mol.GetNumAtoms()
+  assert len(missing_idxs) == 1, missing_idxs
+  idx = list(missing_idxs)[0]
+  assert idx == frag_mol.GetNumAtoms(), idx
+  assert draw_mol.GetAtomWithIdx(idx).GetProp('_Name').strip() == 'O3'
+  assert draw_mol.GetAtomWithIdx(idx).GetProp('atomLabel') == 'O3'
+  draw_mol2, mi2 = rdkit_utils.build_drawing_mol_with_missing(frag_mol, cif_object, [])
+  assert len(mi2) == 0
+  assert draw_mol2.GetNumAtoms() == frag_mol.GetNumAtoms()
+  draw_mol3, mi3 = rdkit_utils.build_drawing_mol_with_missing(frag_mol, cif_object, None)
+  assert len(mi3) == 0
+  assert draw_mol3.GetNumAtoms() == frag_mol.GetNumAtoms()
+
+# ------------------------------------------------------------------------------
+
+def run_test15():
+  print('test15')
+  import tempfile, os
+  vl = _gol_missing_atom_manager()
+  frag_mol, cif_object, lr = _gol_frag_mol_and_cif(vl, 1)
+  draw_mol, missing_idxs = rdkit_utils.build_drawing_mol_with_missing(
+    frag_mol, cif_object, ['O3'])
+  tf = tempfile.NamedTemporaryFile(suffix='.png', delete=False)
+  tf.close()
+  try:
+    rdkit_utils.draw_colored_fragments(
+      draw_mol, lr._rdkit_frags, filename=tf.name, missing_atom_idxs=missing_idxs)
+    assert os.path.getsize(tf.name) > 0
+    rdkit_utils.draw_colored_fragments(
+      draw_mol, lr._rdkit_frags, filename=tf.name,
+      missing_atom_idxs=missing_idxs, frag_ccs=None)
+    assert os.path.getsize(tf.name) > 0
+  finally:
+    os.unlink(tf.name)
+
+# ------------------------------------------------------------------------------
+
+def run_test16():
+  print('test16')
+  vl = _gol_missing_atom_manager()
+  lr1 = find_lr(vl, 'resname GOL and chain A and resseq 1')
+  assert len(lr1._draw_missing_idxs) == 1, lr1._draw_missing_idxs
+  lr2 = find_lr(vl, 'resname GOL and chain A and resseq 2')
+  assert len(lr2._draw_missing_idxs) == 0, lr2._draw_missing_idxs
+  snap = lr1.as_picklable_snapshot()
+  assert snap.fragment_png_bytes is not None
+
+def run_test18():
+  from mmtbx.validation.validate_ligands import fragment_consistency as fc
+  # consistent: balances ~equal, no weak fragment
+  r = fc(0.90, [0.88, 0.91, 0.89], [0.60, 0.70, 0.65], [0.90, 1.00, 0.95])
+  assert r.flag == 'consistent', r.flag
+  # (A) localized weak fragment (STI-like): frag 6 RSCC 0.19 << overall 0.86
+  r = fc(0.86, [0.78, 0.93, 0.88, 0.84, 0.73, 0.19],
+              [0.49, 0.60, 0.37, 0.18, 0.24, -0.22],
+              [0.77, 0.95, 0.96, 0.83, 0.96, 0.02])
+  assert r.flag == 'inspect', r.flag
+  assert '(A)' in r.reason and 'fragment 6' in r.reason, r.reason
+  # (B) inconsistent balance (EPE-like): sulfonate mod/obs 2.46 vs ring 1.46
+  r = fc(0.78, [0.83, 0.82, 0.77], [0.505, 0.681, 0.520], [1.244, 0.992, 1.096])
+  assert r.flag == 'inspect', r.flag
+  assert '(B)' in r.reason, r.reason
+  # obs_floor guard: a near-zero-obs fragment is excluded from (B), not a div blow-up
+  r = fc(0.90, [0.90, 0.90], [0.05, 0.60], [1.00, 0.90])
+  assert r.flag == 'consistent', r.flag   # only 1 fragment clears obs_floor -> (B) skipped
+  # overall already bad -> localized-weak (A) suppressed (redundant when whole ligand is poor)
+  r = fc(0.60, [0.20, 0.50], [0.50, 0.50], [0.50, 0.50])
+  assert r.flag == 'consistent', (r.flag, r.reason)
+  # boundary: overall at the floor (0.70) still raises (A)
+  r = fc(0.70, [0.20, 0.50], [0.50, 0.50], [0.50, 0.50])
+  assert r.flag == 'inspect' and '(A)' in r.reason, (r.flag, r.reason)
+  # just below the floor -> suppressed
+  r = fc(0.69, [0.20, 0.50], [0.50, 0.50], [0.50, 0.50])
+  assert r.flag == 'consistent', (r.flag, r.reason)
+  print('OK run_test18')
+
+# ------------------------------------------------------------------------------
+
+def run_test19():
+  print('test19')
+  # Reuse the cached real 1avd fmodel; skip if phenix_regression is absent.
+  vl = _load_1avd_manager()
+  if vl is None:
+    print('Skipping run_test19 (no phenix_regression)')
+    return
+  fmodel = vl[0].fmodel
+  mtz_object = val_lig_mod.map_coefficients_as_mtz_object(fmodel)
+  labels = list(mtz_object.column_labels())
+  for lbl in ['2FOFCWT', 'PH2FOFCWT', 'FOFCWT', 'PHFOFCWT']:
+    assert lbl in labels, (lbl, labels)
+  n_complex = sum(1 for ma in mtz_object.as_miller_arrays()
+                  if ma.is_complex_array())
+  assert n_complex == 2, n_complex
+
+# ------------------------------------------------------------------------------
+
+def run_test20():
+  print('test20')
+  # End-to-end: run the Program on 1avd with save_map_coeffs=True and confirm
+  # the MTZ is written with the expected columns. Skip if data unavailable.
+  import os
+  mtz_fname = libtbx.env.find_in_repositories(
+    relative_path="phenix_regression/reflection_files/1avd.mtz",
+    test=os.path.isfile)
+  pdb_fname = libtbx.env.find_in_repositories(
+    relative_path="phenix_regression/pdb/pdb1avd.ent.gz",
+    test=os.path.isfile)
+  if mtz_fname is None or pdb_fname is None:
+    print('Skipping run_test20 (no phenix_regression)')
+    return
+  out_fn = 'pdb1avd_map_coeffs.mtz'
+  if os.path.isfile(out_fn):
+    os.remove(out_fn)
+  run_program(
+    program_class=val_lig.Program,
+    args=[pdb_fname, mtz_fname, 'save_map_coeffs=True', 'run_reduce2=False'],
+    logger=null_out())
+  try:
+    assert os.path.isfile(out_fn), out_fn
+    from iotbx import mtz
+    labels = list(mtz.object(out_fn).column_labels())
+    for lbl in ['2FOFCWT', 'PH2FOFCWT', 'FOFCWT', 'PHFOFCWT']:
+      assert lbl in labels, (lbl, labels)
+  finally:
+    if os.path.isfile(out_fn):
+      os.remove(out_fn)
+
+# ------------------------------------------------------------------------------
+
+# One glycerol (GOL, has restraints) and one genuinely-unknown ligand J99 (no
+# monomer entry -> no restraints). Atoms of J99 are >2 A apart so no automatic
+# bonds form; processed with stop_for_unknowns=False (as the Program does), it
+# yields bond_n = angle_n = dihedral_n = 0 -- the "no restraints" case.
+_gol_and_unknown_ligand_pdb_str = '''
+CRYST1   40.000   30.000   30.000  90.00  90.00  90.00 P 1
+SCALE1      0.025000  0.000000  0.000000        0.00000
+SCALE2      0.000000  0.033333  0.000000        0.00000
+SCALE3      0.000000  0.000000  0.033333        0.00000
+HETATM    1  C1  GOL A   1       5.000   5.000   5.000  1.00 20.00           C
+HETATM    2  C2  GOL A   1       6.520   5.000   5.000  1.00 20.00           C
+HETATM    3  C3  GOL A   1       7.100   6.400   5.000  1.00 20.00           C
+HETATM    4  O1  GOL A   1       4.300   3.850   5.400  1.00 20.00           O
+HETATM    5  O2  GOL A   1       7.220   4.050   5.700  1.00 20.00           O
+HETATM    6  O3  GOL A   1       8.500   6.350   4.700  1.00 20.00           O
+HETATM    7  C1  J99 A   2      20.000   5.000   5.000  1.00 20.00           C
+HETATM    8  C2  J99 A   2      23.000   8.000   5.000  1.00 20.00           C
+HETATM    9  N1  J99 A   2      20.000  10.000  10.000  1.00 20.00           N
+'''
+
+def _gol_and_unknown_ligand_manager():
+  model = mmtbx.model.manager(
+    model_input = iotbx.pdb.input(
+      lines=_gol_and_unknown_ligand_pdb_str.split("\n"), source_info=None),
+    log = null_out())
+  model.set_stop_for_unknowns(False)
+  model.process(make_restraints=True)
+  params = val_lig_mod.master_params().extract().validate_ligands
+  params.ligand_code = []
+  vl_manager = val_lig_mod.manager(
+    model=model, fmodel=None, map_manager=None, params=params, log=null_out())
+  vl_manager.run()
+  return vl_manager
+
+def run_test_has_restraints():
+  '''
+  get_missing_atoms().has_restraints says whether restraints were applied to
+  this ligand; without them the geometry rmsZ values are vacuous. J99 IS in the
+  monomer library, but the three atoms modelled here do not match its atom
+  names, so no restraints are built - a library lookup would say "known".
+  Missing atoms come from the library entry and are reported either way.
+  '''
+  print('test_has_restraints')
+  vl_manager = _gol_and_unknown_ligand_manager()
+
+  lr_gol = find_lr(vl_manager, 'resname GOL and chain A and resseq 1')
+  assert lr_gol.get_missing_atoms().has_restraints is True
+  assert lr_gol.get_rmsds().bond_n > 0
+
+  lr_unknown = find_lr(vl_manager, 'resname J99 and chain A and resseq 2')
+  assert lr_unknown.get_missing_atoms().has_restraints is False
+  assert lr_unknown.get_rmsds().bond_n == 0
+  assert lr_unknown.get_missing_atoms().n_missing_heavy > 0
+
+# 7n63 TQP A 401, conformer A, altloc and occupancy dropped. TQP is in the
+# CCD but not in GeoStd.
+pdb_str_tqp = """\
+CRYST1   61.005  150.766   91.058  90.00  90.00  90.00 C 2 2 21
+HETATM 3015  O2P TQP A 401      14.019   8.748   0.260  1.00  9.38           O
+HETATM 3016  P   TQP A 401      15.124   9.767   0.464  1.00  8.40           P
+HETATM 3017  O3P TQP A 401      15.606  10.421  -0.816  1.00 10.42           O
+HETATM 3018  O1P TQP A 401      16.203   9.330   1.365  1.00  6.81           O
+HETATM 3019  O4P TQP A 401      14.417  10.922   1.362  1.00  7.88           O
+HETATM 3020  C5' TQP A 401      13.122  11.387   0.950  1.00  8.19           C
+HETATM 3021  C5P TQP A 401      12.843  12.818   1.430  1.00  8.15           C
+HETATM 3022  C4P TQP A 401      13.519  13.927   0.940  1.00  9.26           C
+HETATM 3023  C4' TQP A 401      14.573  13.817  -0.100  1.00 10.60           C
+HETATM 3024  C3P TQP A 401      13.182  15.169   1.435  1.00  9.64           C
+HETATM 3025  O3' TQP A 401      13.797  16.239   1.028  1.00 11.28           O
+HETATM 3026  C2P TQP A 401      12.220  15.251   2.359  1.00  8.74           C
+HETATM 3027  C2' TQP A 401      11.801  16.593   2.935  1.00  8.78           C
+HETATM 3028  N1P TQP A 401      11.612  14.163   2.742  1.00  7.92           N
+HETATM 3029  C6P TQP A 401      11.923  13.019   2.312  1.00  8.08           C
+HETATM 3030  O4  TQP A 401      25.710  10.729  -6.034  1.00 15.88           O
+HETATM 3031  C4  TQP A 401      25.630  11.953  -6.092  1.00 17.71           C
+HETATM 3032  N3  TQP A 401      26.665  12.742  -6.419  1.00 16.04           N
+HETATM 3033  C2  TQP A 401      26.530  14.063  -6.499  1.00 20.67           C
+HETATM 3034  O2  TQP A 401      27.481  14.762  -6.797  1.00 21.21           O
+HETATM 3035  C5  TQP A 401      24.424  12.541  -5.831  1.00 18.23           C
+HETATM 3036  C5M TQP A 401      23.261  11.691  -5.443  1.00 18.13           C
+HETATM 3037  C6  TQP A 401      24.290  13.914  -5.899  1.00 18.62           C
+HETATM 3038  N1  TQP A 401      25.317  14.659  -6.229  1.00 17.50           N
+HETATM 3039  C1' TQP A 401      25.180  16.130  -6.321  1.00 18.68           C
+HETATM 3040  O4' TQP A 401      24.356  16.615  -5.294  1.00 17.48           O
+HETATM 3041  C2H TQP A 401      24.371  16.500  -7.547  1.00 19.95           C
+HETATM 3042  C3' TQP A 401      23.644  17.756  -7.139  1.00 19.60           C
+HETATM 3043  O3H TQP A 401      24.336  18.877  -7.599  1.00 20.65           O
+HETATM 3044  C4H TQP A 401      23.737  17.826  -5.676  1.00 18.18           C
+HETATM 3045  C5H TQP A 401      22.244  17.506  -5.244  1.00 18.31           C
+HETATM 3046  O5' TQP A 401      21.698  16.192  -5.242  1.00 17.30           O
+HETATM 3048  PA  TQP A 401      20.402  15.783  -5.915  1.00 16.34           P
+HETATM 3050  O1A TQP A 401      20.243  16.576  -7.170  1.00 15.21           O
+HETATM 3052  O2A TQP A 401      20.266  14.336  -6.185  1.00 15.42           O
+HETATM 3054  O3A TQP A 401      19.139  16.142  -5.146  1.00 15.22           O
+HETATM 3056  PB  TQP A 401      18.234  17.483  -4.797  1.00 13.45           P
+HETATM 3057  O1B TQP A 401      19.127  18.492  -4.120  1.00 13.38           O
+HETATM 3058  O2B TQP A 401      17.416  18.062  -5.947  1.00 13.06           O
+HETATM 3059  O3B TQP A 401      17.248  16.781  -3.708  1.00 13.28           O
+HETATM 3060  O4Q TQP A 401      16.646  12.780  -2.086  1.00 14.11           O
+HETATM 3061  C4Q TQP A 401      15.911  13.764  -2.728  1.00 13.21           C
+HETATM 3062  C5Q TQP A 401      16.642  14.063  -4.049  1.00 14.13           C
+HETATM 3063  O5Q TQP A 401      16.015  15.092  -4.750  1.00 13.08           O
+HETATM 3064  C6Q TQP A 401      16.590  12.839  -4.939  1.00 15.08           C
+HETATM 3065  C3Q TQP A 401      15.861  15.039  -1.892  1.00 11.25           C
+HETATM 3066  N3Q TQP A 401      14.899  14.825  -0.785  1.00 11.28           N
+HETATM 3067  C2Q TQP A 401      15.225  16.174  -2.742  1.00 12.63           C
+HETATM 3068  O2Q TQP A 401      15.309  17.425  -2.082  1.00 11.58           O
+HETATM 3069  C1Q TQP A 401      15.970  16.311  -4.033  1.00 12.83           C
+END
+"""
+
+def run_test_has_restraints_ccd_placeholder():
+  '''
+  A ligand in the CCD but not in GeoStd (7n63 TQP): reduce2 places its H with
+  a placeholder dictionary generated from the CCD (bond sigma 0.1 A, angle
+  and torsion sigma 1 deg), which stays in the model's monomer library
+  server. Its geometry is not validated against that: has_restraints False,
+  no bond, angle or dihedral counted.
+  '''
+  print('test_has_restraints_ccd_placeholder')
+  fn = 'tst_validate_ligands_tqp.pdb'
+  with open(fn, 'w') as fh:
+    fh.write(pdb_str_tqp)
+  result = run_program(program_class=val_lig.Program,
+    args=[fn, 'ligand_code=TQP'], logger=null_out())
+  lr = find_lr(result.ligand_manager, 'resname TQP')
+  # reduce2 placed H on TQP, so the placeholder was used
+  atoms = lr.model.get_hierarchy().atoms()
+  n_h = [a.element.strip() for a in atoms.select(lr.ligand_isel)].count('H')
+  assert n_h > 0, n_h
+  assert lr.get_missing_atoms().has_restraints is False
+  rmsds = lr.get_rmsds()
+  assert rmsds.bond_n == 0, rmsds.bond_n
+  assert rmsds.angle_n == 0, rmsds.angle_n
+  assert rmsds.dihedral_n == 0, rmsds.dihedral_n
+
+
+def run_test21():
+  print('test21')
+  from six.moves import cStringIO as StringIO
+  vl_manager = _gol_and_unknown_ligand_manager()
+
+  # The unknown ligand has no restraints of any kind.
+  lr_unknown = find_lr(vl_manager, 'resname J99 and chain A and resseq 2')
+  rmsds = lr_unknown.get_rmsds()
+  assert rmsds.bond_n == 0, rmsds.bond_n
+  assert rmsds.angle_n == 0, rmsds.angle_n
+  assert rmsds.dihedral_n == 0, rmsds.dihedral_n
+
+  # GOL still has restraints.
+  lr_gol = find_lr(vl_manager, 'resname GOL and chain A and resseq 1')
+  assert lr_gol.get_rmsds().bond_n > 0
+
+  sio = StringIO()
+  vl_manager.show_table(out=sio)
+  lines = sio.getvalue().splitlines()
+  j99_line = [l for l in lines if 'J99 A   2' in l]
+  gol_line = [l for l in lines if 'GOL A   1' in l]
+  assert len(j99_line) == 1, j99_line
+  assert len(gol_line) == 1, gol_line
+  j99_line, gol_line = j99_line[0], gol_line[0]
+
+  # No-restraints ligand: geometry cells must show '-', never a spurious 0(0).
+  assert '0(0)' not in j99_line, j99_line
+  assert '0.00' not in j99_line, j99_line
+  # GOL keeps its real geometry numbers.
+  assert '(5)' in gol_line, gol_line
+
+# ------------------------------------------------------------------------------
+
+# One glycerol (GOL, has restraints -> bonded rdkit mol) and one ligand 7Q8
+# with no monomer entry (cif_object is None -> rdkit mol has NO bonds). A
+# bond-less molecule fragments into one atom per fragment and its figure is a
+# meaningless grid of disconnected atoms -> no figure should be produced.
+_gol_and_norestraints_pdb_str = '''
+CRYST1   40.000   30.000   30.000  90.00  90.00  90.00 P 1
+SCALE1      0.025000  0.000000  0.000000        0.00000
+SCALE2      0.000000  0.033333  0.000000        0.00000
+SCALE3      0.000000  0.000000  0.033333        0.00000
+HETATM    1  C1  GOL A   1       5.000   5.000   5.000  1.00 20.00           C
+HETATM    2  C2  GOL A   1       6.520   5.000   5.000  1.00 20.00           C
+HETATM    3  C3  GOL A   1       7.100   6.400   5.000  1.00 20.00           C
+HETATM    4  O1  GOL A   1       4.300   3.850   5.400  1.00 20.00           O
+HETATM    5  O2  GOL A   1       7.220   4.050   5.700  1.00 20.00           O
+HETATM    6  O3  GOL A   1       8.500   6.350   4.700  1.00 20.00           O
+HETATM    7  C1  7Q8 A   2      20.000   5.000   5.000  1.00 20.00           C
+HETATM    8  C2  7Q8 A   2      21.500   5.000   5.000  1.00 20.00           C
+HETATM    9  N1  7Q8 A   2      23.000   5.000   5.000  1.00 20.00           N
+HETATM   10  O1  7Q8 A   2      24.500   5.000   5.000  1.00 20.00           O
+'''
+
+def _gol_and_norestraints_manager():
+  model = mmtbx.model.manager(
+    model_input = iotbx.pdb.input(
+      lines=_gol_and_norestraints_pdb_str.split("\n"), source_info=None),
+    log = null_out())
+  model.set_stop_for_unknowns(False)
+  model.process(make_restraints=True)
+  params = val_lig_mod.master_params().extract().validate_ligands
+  params.ligand_code = []
+  vl_manager = val_lig_mod.manager(
+    model=model, fmodel=None, map_manager=None, params=params, log=null_out())
+  vl_manager.run()
+  return vl_manager
+
+def run_test22():
+  print('test22')
+  vl_manager = _gol_and_norestraints_manager()
+
+  # No-restraints ligand: rdkit mol has no bonds -> no figure.
+  lr_nr = find_lr(vl_manager, 'resname 7Q8 and chain A and resseq 2')
+  assert lr_nr._frag_mol.GetNumBonds() == 0, lr_nr._frag_mol.GetNumBonds()
+  assert lr_nr.as_picklable_snapshot().fragment_png_bytes is None
+
+  # GOL is bonded -> a figure is produced as usual.
+  lr_gol = find_lr(vl_manager, 'resname GOL and chain A and resseq 1')
+  assert lr_gol._frag_mol.GetNumBonds() > 0
+  assert lr_gol.as_picklable_snapshot().fragment_png_bytes is not None
+
+# ------------------------------------------------------------------------------
+
+def run_test17():
+  print('test17')
+  import os, tempfile
+  from mmtbx.monomer_library import server
+  gol_cif = libtbx.env.find_in_repositories(
+    relative_path='chem_data/geostd/g/data_GOL.cif', test=os.path.isfile)
+  if gol_cif is None:
+    print('  skipping: geostd not available')
+    return
+  lines = [ln for ln in open(gol_cif).read().splitlines()
+           if not (ln.strip().startswith('GOL') and
+                   (' O3 ' in ln or ' HO3 ' in ln or ln.rstrip().endswith(' O3')
+                    or ln.rstrip().endswith(' HO3')))]
+  tf = tempfile.NamedTemporaryFile(suffix='.cif', delete=False, mode='w')
+  tf.write('\n'.join(lines) + '\n')
+  tf.close()
+  try:
+    from mmtbx.validation import validate_ligands as vlmod
+    pdb_inp = iotbx.pdb.input(
+      lines=_gol_missing_atom_pdb_str.split('\n'), source_info=None)
+    model = mmtbx.model.manager(model_input=pdb_inp, log=null_out())
+    model.set_restraint_objects([(tf.name, server.read_cif(tf.name))])
+    model.set_stop_for_unknowns(False)
+    model.process(make_restraints=True)
+    params = vlmod.master_params().extract().validate_ligands
+    params.ligand_code = []
+    vl = vlmod.manager(model=model, fmodel=None, map_manager=None,
+                       params=params, log=null_out())
+    vl.run()
+    lr1 = find_lr(vl, 'resname GOL and chain A and resseq 1')
+    assert lr1.get_missing_atoms().missing_heavy == [], lr1.get_missing_atoms().missing_heavy
+    assert len(lr1._draw_missing_idxs) == 0, lr1._draw_missing_idxs
+  finally:
+    os.unlink(tf.name)
+
+# ------------------------------------------------------------------------------
+
+cif_str_tst_4 = '''
+data_default
+_cell.length_a                    67.330
+_cell.length_b                    91.060
+_cell.length_c                    98.090
+_cell.angle_alpha                 90.000
+_cell.angle_beta                  90.000
+_cell.angle_gamma                 90.000
+_cell.volume                      601396.637
+_space_group.crystal_system       orthorhombic
+_space_group.IT_number            23
+_space_group.name_H-M_alt         'I 2 2 2'
+_space_group.name_Hall            ' I 2 2'
+_symmetry.space_group_name_H-M    'I 2 2 2'
+_symmetry.space_group_name_Hall   ' I 2 2'
+_symmetry.Int_Tables_number       23
+loop_
+  _space_group_symop.id
+  _space_group_symop.operation_xyz
+   1 x,y,z
+   2 x,-y,-z
+   3 -x,y,-z
+   4 -x,-y,z
+   5 x+1/2,y+1/2,z+1/2
+   6 x+1/2,-y+1/2,-z+1/2
+   7 -x+1/2,y+1/2,-z+1/2
+   8 -x+1/2,-y+1/2,z+1/2
+
+loop_
+  _atom_site.group_PDB
+  _atom_site.id
+  _atom_site.label_atom_id
+  _atom_site.label_alt_id
+  _atom_site.label_comp_id
+  _atom_site.auth_asym_id
+  _atom_site.auth_seq_id
+  _atom_site.pdbx_PDB_ins_code
+  _atom_site.Cartn_x
+  _atom_site.Cartn_y
+  _atom_site.Cartn_z
+  _atom_site.occupancy
+  _atom_site.B_iso_or_equiv
+  _atom_site.type_symbol
+  _atom_site.pdbx_formal_charge
+  _atom_site.label_asym_id
+  _atom_site.label_entity_id
+  _atom_site.label_seq_id
+  _atom_site.auth_atom_id
+  _atom_site.pdbx_PDB_model_num
+   ATOM 1452 N . LEU A 107 ? 9.35882 -9.46004 -29.05718 1.000 40.04006 N ? A ? 92 N 1
+   ATOM 1453 CA . LEU A 107 ? 9.05649 -9.42408 -27.62920 1.000 44.50060 C ? A ? 92 CA 1
+   ATOM 1454 C . LEU A 107 ? 10.31164 -9.61463 -26.78677 1.000 46.34740 C ? A ? 92 C 1
+   ATOM 1455 O . LEU A 107 ? 10.50736 -8.91194 -25.78853 1.000 46.42741 O ? A ? 92 O 1
+   ATOM 1456 CB . LEU A 107 ? 8.01963 -10.49032 -27.29190 1.000 38.73807 C ? A ? 92 CB 1
+   ATOM 1457 CG . LEU A 107 ? 6.62315 -10.23446 -27.85167 1.000 43.87342 C ? A ? 92 CG 1
+   ATOM 1458 CD1 . LEU A 107 ? 5.73330 -11.41418 -27.53992 1.000 45.90445 C ? A ? 92 CD1 1
+   ATOM 1459 CD2 . LEU A 107 ? 6.03694 -8.94954 -27.28925 1.000 39.54185 C ? A ? 92 CD2 1
+   ATOM 1460 H . LEU A 107 ? 9.03211 -10.13489 -29.47842 1.000 40.04006 H ? A ? 92 H 1
+   ATOM 1461 HA . LEU A 107 ? 8.68818 -8.55585 -27.40243 1.000 44.50060 H ? A ? 92 HA 1
+   ATOM 1462 HB2 . LEU A 107 ? 7.94074 -10.54597 -26.32672 1.000 38.73807 H ? A ? 92 HB2 1
+   ATOM 1463 HB3 . LEU A 107 ? 8.32562 -11.33861 -27.64921 1.000 38.73807 H ? A ? 92 HB3 1
+   ATOM 1464 HG . LEU A 107 ? 6.67444 -10.12742 -28.81438 1.000 43.87342 H ? A ? 92 HG 1
+   ATOM 1465 HD11 . LEU A 107 ? 5.68474 -11.52758 -26.57780 1.000 45.90445 H ? A ? 92 HD11 1
+   ATOM 1466 HD12 . LEU A 107 ? 6.10907 -12.20979 -27.94821 1.000 45.90445 H ? A ? 92 HD12 1
+   ATOM 1467 HD13 . LEU A 107 ? 4.84786 -11.24525 -27.89818 1.000 45.90445 H ? A ? 92 HD13 1
+   ATOM 1468 HD21 . LEU A 107 ? 6.61336 -8.20750 -27.53013 1.000 39.54185 H ? A ? 92 HD21 1
+   ATOM 1469 HD22 . LEU A 107 ? 5.98014 -9.02441 -26.32381 1.000 39.54185 H ? A ? 92 HD22 1
+   ATOM 1470 HD23 . LEU A 107 ? 5.15199 -8.81593 -27.66329 1.000 39.54185 H ? A ? 92 HD23 1
+   ATOM 1511 N . ALA A 111 ? 11.99545 -7.07173 -24.18626 1.000 41.28916 N ? A ? 96 N 1
+   ATOM 1512 CA . ALA A 111 ? 12.14347 -7.55654 -22.81984 1.000 50.33630 C ? A ? 96 CA 1
+   ATOM 1513 C . ALA A 111 ? 13.58717 -7.55437 -22.33204 1.000 56.57231 C ? A ? 96 C 1
+   ATOM 1514 O . ALA A 111 ? 13.80955 -7.73541 -21.12990 1.000 50.29603 O ? A ? 96 O 1
+   ATOM 1515 CB . ALA A 111 ? 11.56279 -8.96693 -22.70298 1.000 40.65961 C ? A ? 96 CB 1
+   ATOM 1516 H . ALA A 111 ? 11.80242 -7.68526 -24.75715 1.000 41.28916 H ? A ? 96 H 1
+   ATOM 1517 HA . ALA A 111 ? 11.65287 -6.95070 -22.24264 1.000 50.33630 H ? A ? 96 HA 1
+   ATOM 1518 HB1 . ALA A 111 ? 12.03907 -9.55576 -23.30906 1.000 40.65961 H ? A ? 96 HB1 1
+   ATOM 1519 HB2 . ALA A 111 ? 10.62194 -8.94153 -22.93762 1.000 40.65961 H ? A ? 96 HB2 1
+   ATOM 1520 HB3 . ALA A 111 ? 11.66773 -9.27700 -21.78988 1.000 40.65961 H ? A ? 96 HB3 1
+   ATOM 1904 N . TYR A 139 ? 6.63097 -13.56248 -17.86012 1.000 30.55156 N ? A ? 124 N 1
+   ATOM 1905 CA . TYR A 139 ? 7.45336 -14.64062 -17.32367 1.000 31.38192 C ? A ? 124 CA 1
+   ATOM 1906 C . TYR A 139 ? 7.10974 -14.98654 -15.88117 1.000 32.69682 C ? A ? 124 C 1
+   ATOM 1907 O . TYR A 139 ? 7.55705 -16.02976 -15.39099 1.000 36.48358 O ? A ? 124 O 1
+   ATOM 1908 CB . TYR A 139 ? 8.93112 -14.27595 -17.45657 1.000 32.07174 C ? A ? 124 CB 1
+   ATOM 1909 CG . TYR A 139 ? 9.33068 -14.07862 -18.89825 1.000 38.57699 C ? A ? 124 CG 1
+   ATOM 1910 CD1 . TYR A 139 ? 9.44155 -15.16247 -19.76172 1.000 40.13981 C ? A ? 124 CD1 1
+   ATOM 1911 CD2 . TYR A 139 ? 9.56183 -12.80879 -19.40739 1.000 41.42076 C ? A ? 124 CD2 1
+   ATOM 1912 CE1 . TYR A 139 ? 9.79161 -14.98764 -21.09024 1.000 45.33438 C ? A ? 124 CE1 1
+   ATOM 1913 CE2 . TYR A 139 ? 9.91275 -12.62417 -20.73234 1.000 42.40061 C ? A ? 124 CE2 1
+   ATOM 1914 CZ . TYR A 139 ? 10.02524 -13.71558 -21.56910 1.000 42.57300 C ? A ? 124 CZ 1
+   ATOM 1915 OH . TYR A 139 ? 10.37367 -13.53282 -22.88819 1.000 63.10415 O ? A ? 124 OH 1
+   ATOM 1916 H . TYR A 139 ? 7.04775 -12.82240 -17.99492 1.000 30.55156 H ? A ? 124 H 1
+   ATOM 1917 HA . TYR A 139 ? 7.28145 -15.44460 -17.83842 1.000 31.38192 H ? A ? 124 HA 1
+   ATOM 1918 HB2 . TYR A 139 ? 9.10075 -13.44967 -16.97762 1.000 32.07174 H ? A ? 124 HB2 1
+   ATOM 1919 HB3 . TYR A 139 ? 9.47142 -14.99119 -17.08589 1.000 32.07174 H ? A ? 124 HB3 1
+   ATOM 1920 HD1 . TYR A 139 ? 9.27775 -16.02013 -19.44158 1.000 40.13981 H ? A ? 124 HD1 1
+   ATOM 1921 HD2 . TYR A 139 ? 9.47946 -12.06989 -18.84869 1.000 41.42076 H ? A ? 124 HD2 1
+   ATOM 1922 HE1 . TYR A 139 ? 9.86854 -15.72241 -21.65512 1.000 45.33438 H ? A ? 124 HE1 1
+   ATOM 1923 HE2 . TYR A 139 ? 10.07228 -11.76780 -21.05805 1.000 42.40061 H ? A ? 124 HE2 1
+   ATOM 1924 HH . TYR A 139 ? 10.08188 -12.79454 -23.16278 1.000 63.10415 H ? A ? 124 HH 1
+   HETATM 3297 C1 . A1AYY A 301 ? 8.22925 -10.43941 -22.78041 0.908 57.20233 C ? B ? . C1 1
+   HETATM 3298 C10 . A1AYY A 301 ? 6.78537 -14.46083 -25.10107 0.908 38.35600 C ? B ? . C10 1
+   HETATM 3299 C2 . A1AYY A 301 ? 6.84230 -10.87462 -23.16045 0.908 50.12524 C ? B ? . C2 1
+   HETATM 3300 C3 . A1AYY A 301 ? 5.71051 -10.11856 -22.88689 0.908 51.79520 C ? B ? . C3 1
+   HETATM 3301 C4 . A1AYY A 301 ? 4.47648 -10.59742 -23.27872 0.908 47.07763 C ? B ? . C4 1
+   HETATM 3302 C5 . A1AYY A 301 ? 4.38335 -11.81161 -23.93830 0.908 50.92592 C ? B ? . C5 1
+   HETATM 3303 C6 . A1AYY A 301 ? 5.57038 -12.49750 -24.17023 0.908 45.47959 C ? B ? . C6 1
+   HETATM 3304 C7 . A1AYY A 301 ? 4.38671 -14.37271 -25.31214 0.908 45.16716 C ? B ? . C7 1
+   HETATM 3305 C8 . A1AYY A 301 ? 4.92432 -15.75041 -25.62964 0.908 39.66964 C ? B ? . C8 1
+   HETATM 3306 C9 . A1AYY A 301 ? 6.29365 -15.42865 -26.15268 0.908 40.01913 C ? B ? . C9 1
+   HETATM 3307 N1 . A1AYY A 301 ? 5.57761 -13.69344 -24.81157 0.908 40.78911 N ? B ? . N1 1
+   HETATM 3308 N2 . A1AYY A 301 ? 6.77696 -12.05090 -23.79944 0.908 48.68856 N ? B ? . N2 1
+   HETATM 3309 O1 . A1AYY A 301 ? 9.18903 -10.97661 -23.66412 0.908 66.39976 O ? B ? . O1 1
+'''
+
+pdb_str_tst_5 = '''
+CRYST1   67.843   26.790   30.439  90.00  90.00  90.00 P 1
+SCALE1      0.014740  0.000000  0.000000        0.00000
+SCALE2      0.000000  0.037327  0.000000        0.00000
+SCALE3      0.000000  0.000000  0.032853        0.00000
+ATOM      1  N   TYR A  76      58.963   6.159  18.630  1.00 13.67           N
+ATOM      2  C   TYR A  76      57.652   6.230  16.561  1.00 13.45           C
+ATOM      3  O   TYR A  76      58.062   5.249  15.941  1.00 14.53           O
+ATOM      4  CA ATYR A  76      58.559   7.008  17.518  0.50 14.05           C
+ATOM      5  CB ATYR A  76      59.750   7.628  16.752  0.50 14.89           C
+ATOM      6  CG ATYR A  76      59.283   8.584  15.663  0.50 16.30           C
+ATOM      7  CD1ATYR A  76      58.642   9.783  15.996  0.50 17.47           C
+ATOM      8  CD2ATYR A  76      59.437   8.280  14.316  0.50 17.43           C
+ATOM      9  CE1ATYR A  76      58.192  10.650  15.022  0.50 18.29           C
+ATOM     10  CE2ATYR A  76      58.987   9.137  13.335  0.50 17.65           C
+ATOM     11  CZ ATYR A  76      58.364  10.319  13.691  0.50 19.22           C
+ATOM     12  OH ATYR A  76      57.897  11.200  12.733  0.50 21.32           O
+ATOM     13  CA BTYR A  76      58.566   6.992  17.509  0.50 13.57           C
+ATOM     14  CB BTYR A  76      59.788   7.499  16.746  0.50 13.80           C
+ATOM     15  CG BTYR A  76      60.605   8.433  17.575  0.50 14.39           C
+ATOM     16  CD1BTYR A  76      61.568   7.949  18.448  0.50 14.45           C
+ATOM     17  CD2BTYR A  76      60.411   9.803  17.508  0.50 15.07           C
+ATOM     18  CE1BTYR A  76      62.316   8.804  19.222  0.50 15.57           C
+ATOM     19  CE2BTYR A  76      61.170  10.664  18.280  0.50 15.82           C
+ATOM     20  CZ BTYR A  76      62.115  10.158  19.127  0.50 15.67           C
+ATOM     21  OH BTYR A  76      62.843  10.998  19.920  0.50 17.94           O
+ATOM     22  N   PRO A  77      56.379   6.620  16.465  1.00 12.19           N
+ATOM     23  CA  PRO A  77      55.680   7.664  17.202  1.00 11.58           C
+ATOM     24  C   PRO A  77      55.507   7.326  18.675  1.00 10.59           C
+ATOM     25  O   PRO A  77      55.674   6.178  19.090  1.00 10.13           O
+ATOM     26  CB  PRO A  77      54.306   7.694  16.515  1.00 12.59           C
+ATOM     27  CG  PRO A  77      54.542   7.081  15.184  1.00 13.41           C
+ATOM     28  CD  PRO A  77      55.502   5.992  15.467  1.00 13.11           C
+ATOM     29  N   TRP A  79      52.719   7.480  20.378  1.00  9.15           N
+ATOM     30  CA  TRP A  79      51.452   6.851  20.599  1.00  9.12           C
+ATOM     31  C   TRP A  79      51.516   5.378  20.145  1.00  9.16           C
+ATOM     32  O   TRP A  79      52.373   5.000  19.354  1.00  9.65           O
+ATOM     33  CB  TRP A  79      50.308   7.586  19.873  1.00  9.06           C
+ATOM     34  CG  TRP A  79      50.559   7.920  18.458  1.00  8.62           C
+ATOM     35  CD1 TRP A  79      51.101   9.076  17.989  1.00  8.79           C
+ATOM     36  CD2 TRP A  79      50.326   7.108  17.311  1.00  8.00           C
+ATOM     37  NE1 TRP A  79      51.203   9.049  16.634  1.00  8.50           N
+ATOM     38  CE2 TRP A  79      50.763   7.825  16.188  1.00  8.27           C
+ATOM     39  CE3 TRP A  79      49.775   5.840  17.115  1.00  7.63           C
+ATOM     40  CZ2 TRP A  79      50.649   7.307  14.900  1.00  8.35           C
+ATOM     41  CZ3 TRP A  79      49.647   5.359  15.833  1.00  8.08           C
+ATOM     42  CH2 TRP A  79      50.094   6.075  14.759  1.00  8.28           C
+ATOM     43  N   GLY A 118      52.212  17.874  22.406  1.00 10.97           N
+ATOM     44  CA  GLY A 118      52.287  16.536  21.821  1.00  9.61           C
+ATOM     45  C   GLY A 118      52.843  15.513  22.767  1.00 10.10           C
+ATOM     46  O   GLY A 118      53.685  15.834  23.623  1.00  9.35           O
+ATOM     47  N   CYS A 119      52.411  14.273  22.618  1.00  9.67           N
+ATOM     48  CA  CYS A 119      53.033  13.132  23.277  1.00 10.60           C
+ATOM     49  C   CYS A 119      53.102  13.263  24.794  1.00 10.47           C
+ATOM     50  O   CYS A 119      53.997  12.760  25.439  1.00 10.67           O
+ATOM     51  CB  CYS A 119      54.437  12.899  22.674  1.00 10.72           C
+ATOM     52  SG  CYS A 119      54.337  12.396  20.924  1.00 12.24           S
+ATOM     53  N   THR A 154       9.203   8.604  11.635  1.00  8.67           N
+ATOM     54  CA  THR A 154       9.431   7.472  10.794  1.00  8.42           C
+ATOM     55  C   THR A 154      10.007   7.956   9.480  1.00  8.45           C
+ATOM     56  O   THR A 154       9.446   8.840   8.822  1.00  9.72           O
+ATOM     57  CB  THR A 154       8.116   6.726  10.521  1.00  7.82           C
+ATOM     58  OG1 THR A 154       7.641   6.150  11.740  1.00  7.74           O
+ATOM     59  CG2 THR A 154       8.300   5.606   9.484  1.00  8.33           C
+ATOM     60  N   GLY A 155      11.111   7.363   9.053  1.00  7.99           N
+ATOM     61  CA  GLY A 155      11.710   7.739   7.798  1.00  8.58           C
+ATOM     62  C   GLY A 155      13.216   7.596   7.781  1.00  8.60           C
+ATOM     63  O   GLY A 155      13.809   7.064   8.710  1.00  8.47           O
+ATOM     64  N   TRP A 198      40.718   9.388  12.154  1.00  7.65           N
+ATOM     65  CA  TRP A 198      41.594  10.496  11.835  1.00  7.72           C
+ATOM     66  C   TRP A 198      42.823   9.995  11.061  1.00  8.32           C
+ATOM     67  O   TRP A 198      43.482   9.071  11.488  1.00  7.86           O
+ATOM     68  CB  TRP A 198      42.033  11.221  13.131  1.00  7.86           C
+ATOM     69  CG  TRP A 198      42.767  12.505  12.833  1.00  8.01           C
+ATOM     70  CD1 TRP A 198      42.243  13.756  12.803  1.00  8.47           C
+ATOM     71  CD2 TRP A 198      44.164  12.653  12.580  1.00  8.09           C
+ATOM     72  NE1 TRP A 198      43.219  14.674  12.487  1.00  8.73           N
+ATOM     73  CE2 TRP A 198      44.413  14.024  12.350  1.00  8.09           C
+ATOM     74  CE3 TRP A 198      45.232  11.768  12.538  1.00  8.16           C
+ATOM     75  CZ2 TRP A 198      45.708  14.510  12.050  1.00  8.10           C
+ATOM     76  CZ3 TRP A 198      46.496  12.242  12.231  1.00  8.18           C
+ATOM     77  CH2 TRP A 198      46.715  13.600  12.019  1.00  8.23           C
+ATOM     78  N   ARG A 226      44.174   8.773  20.806  1.00  6.26           N
+ATOM     79  CA  ARG A 226      45.520   8.155  20.967  1.00  6.36           C
+ATOM     80  C   ARG A 226      46.553   9.119  21.539  1.00  6.53           C
+ATOM     81  O   ARG A 226      47.569   8.695  22.043  1.00  6.59           O
+ATOM     82  CB  ARG A 226      46.021   7.625  19.619  1.00  6.51           C
+ATOM     83  CG  ARG A 226      46.663   8.679  18.715  1.00  6.55           C
+ATOM     84  CD  ARG A 226      46.846   8.283  17.267  1.00  6.45           C
+ATOM     85  NE  ARG A 226      47.551   9.318  16.549  1.00  6.18           N
+ATOM     86  CZ  ARG A 226      47.879   9.277  15.272  1.00  6.50           C
+ATOM     87  NH1 ARG A 226      47.480   8.244  14.509  1.00  7.33           N
+ATOM     88  NH2 ARG A 226      48.549  10.297  14.764  1.00  6.78           N
+ATOM     89  N   GLU A 227      46.321  10.418  21.321  1.00  6.60           N
+ATOM     90  CA  GLU A 227      47.312  11.490  21.603  1.00  6.80           C
+ATOM     91  C   GLU A 227      46.718  12.848  21.199  1.00  6.74           C
+ATOM     92  O   GLU A 227      45.932  12.943  20.249  1.00  6.73           O
+ATOM     93  CB  GLU A 227      48.569  11.257  20.731  1.00  7.47           C
+ATOM     94  CG  GLU A 227      49.771  12.088  21.155  1.00  8.11           C
+ATOM     95  CD  GLU A 227      50.424  12.817  20.036  1.00  8.20           C
+ATOM     96  OE1 GLU A 227      50.547  12.305  18.895  1.00  8.84           O
+ATOM     97  OE2 GLU A 227      50.804  13.987  20.273  1.00  9.21           O
+ATOM     98  N   TYR A 228      47.138  13.905  21.881  1.00  6.66           N
+ATOM     99  CA  TYR A 228      46.859  15.283  21.420  1.00  6.71           C
+ATOM    100  C   TYR A 228      45.348  15.555  21.380  1.00  6.73           C
+ATOM    101  O   TYR A 228      44.626  15.121  22.289  1.00  6.90           O
+ATOM    102  CB  TYR A 228      47.592  15.604  20.114  1.00  6.93           C
+ATOM    103  CG  TYR A 228      47.971  17.038  19.932  1.00  7.09           C
+ATOM    104  CD1 TYR A 228      48.848  17.648  20.817  1.00  6.97           C
+ATOM    105  CD2 TYR A 228      47.543  17.742  18.828  1.00  6.98           C
+ATOM    106  CE1 TYR A 228      49.272  18.954  20.592  1.00  7.05           C
+ATOM    107  CE2 TYR A 228      47.954  19.054  18.588  1.00  7.38           C
+ATOM    108  CZ  TYR A 228      48.822  19.627  19.498  1.00  8.06           C
+ATOM    109  OH  TYR A 228      49.252  20.952  19.309  1.00  8.46           O
+TER
+HETATM  110  C1 ANGA B   1      52.184  16.633  15.213  0.50 10.82           C
+HETATM  111  C2 ANGA B   1      51.328  15.445  15.648  0.50 10.31           C
+HETATM  112  C3 ANGA B   1      50.232  15.929  16.563  0.50  9.54           C
+HETATM  113  C4 ANGA B   1      50.840  16.728  17.712  0.50 10.02           C
+HETATM  114  C5 ANGA B   1      51.754  17.850  17.194  0.50 10.27           C
+HETATM  115  C6 ANGA B   1      52.419  18.596  18.349  0.50 10.78           C
+HETATM  116  C7 ANGA B   1      51.064  13.601  14.053  0.50 10.97           C
+HETATM  117  C8 ANGA B   1      50.412  13.261  12.752  0.50 11.18           C
+HETATM  118  N2 ANGA B   1      50.777  14.837  14.457  0.50 10.28           N
+HETATM  119  O1 ANGA B   1      53.223  16.116  14.399  0.50 13.50           O
+HETATM  120  O3 ANGA B   1      49.470  14.809  17.068  0.50  7.48           O
+HETATM  121  O4 ANGA B   1      51.582  15.870  18.572  0.50 10.21           O
+HETATM  122  O5 ANGA B   1      52.747  17.304  16.339  0.50 10.70           O
+HETATM  123  O6 ANGA B   1      52.951  19.847  17.881  0.50 11.05           O
+HETATM  124  O7 ANGA B   1      51.809  12.830  14.679  0.50 12.42           O
+HETATM  125  C1 BA2G B   1      52.458  16.255  15.225  0.50  6.53           C
+HETATM  126  C2 BA2G B   1      51.405  15.203  15.602  0.50  6.62           C
+HETATM  127  C3 BA2G B   1      50.303  15.813  16.446  0.50  6.74           C
+HETATM  128  C4 BA2G B   1      50.898  16.605  17.603  0.50  6.75           C
+HETATM  129  C5 BA2G B   1      51.801  17.682  17.009  0.50  6.75           C
+HETATM  130  C6 BA2G B   1      52.362  18.579  18.090  0.50  7.01           C
+HETATM  131  C7 BA2G B   1      51.061  13.291  14.119  0.50  7.43           C
+HETATM  132  C8 BA2G B   1      50.576  12.828  12.782  0.50  7.73           C
+HETATM  133  N2 BA2G B   1      50.868  14.598  14.391  0.50  6.93           N
+HETATM  134  O1 BA2G B   1      51.913  17.115  14.227  0.50  6.16           O
+HETATM  135  O3 BA2G B   1      49.470  14.809  17.068  0.50  7.48           O
+HETATM  136  O4 BA2G B   1      51.678  15.787  18.475  0.50  7.10           O
+HETATM  137  O5 BA2G B   1      52.868  17.027  16.346  0.50  6.65           O
+HETATM  138  O6 BA2G B   1      53.328  19.464  17.495  0.50  7.14           O
+HETATM  139  O7 BA2G B   1      51.651  12.510  14.891  0.50  8.28           O
+HETATM  140  C1  GAL B   2      48.317  14.425  16.335  1.00  7.03           C
+HETATM  141  C2  GAL B   2      47.709  13.209  17.044  1.00  6.63           C
+HETATM  142  C3  GAL B   2      46.407  12.813  16.374  1.00  6.30           C
+HETATM  143  C4  GAL B   2      45.528  14.023  16.145  1.00  6.50           C
+HETATM  144  C5  GAL B   2      46.290  15.197  15.510  1.00  6.90           C
+HETATM  145  C6  GAL B   2      45.452  16.426  15.354  1.00  7.16           C
+HETATM  146  O2  GAL B   2      48.594  12.104  17.056  1.00  6.77           O
+HETATM  147  O3  GAL B   2      45.706  11.865  17.180  1.00  6.72           O
+HETATM  148  O4  GAL B   2      44.917  14.359  17.391  1.00  6.48           O
+HETATM  149  O5  GAL B   2      47.392  15.490  16.361  1.00  6.90           O
+HETATM  150  O6  GAL B   2      46.180  17.431  14.607  1.00  8.08           O
+HETATM  151  O   HOH A 402      57.128  11.582  10.607  1.00 37.41           O
+HETATM  152  O   HOH A 411      52.843  10.296  14.419  1.00 11.30           O
+HETATM  153  O   HOH A 427      12.140   9.626   5.000  1.00 13.06           O
+HETATM  154  O   HOH A 428       6.271  10.855  14.160  1.00 22.13           O
+HETATM  155  O   HOH A 432      53.837  18.561  13.105  1.00 11.71           O
+HETATM  156  O   HOH A 435      52.791  12.317  17.459  1.00 11.07           O
+HETATM  157  O   HOH A 437      59.801   5.040  13.918  1.00 18.21           O
+HETATM  158  O   HOH A 465      54.179  14.751  18.063  1.00 15.00           O
+HETATM  159  O   HOH A 468      51.565  21.790  20.530  1.00 15.45           O
+HETATM  160  O   HOH A 492      55.498  18.792  15.849  1.00 36.08           O
+HETATM  161  O   HOH A 497      49.326   9.494  12.172  1.00  9.02           O
+HETATM  162  O   HOH A 501       5.000   5.247  11.295  1.00 12.56           O
+HETATM  163  O   HOH A 534      53.660  20.077  21.205  1.00 20.82           O
+HETATM  164  O  BHOH A 553      10.800  11.452   8.547  0.50 21.63           O
+HETATM  165  O   HOH A 561      55.104  10.811  17.827  1.00 13.93           O
+HETATM  166  O  AHOH A 566      12.525  11.257   7.358  0.50 19.22           O
+HETATM  167  O   HOH A 594      55.378  10.746  14.920  1.00 25.54           O
+HETATM  168  O  AHOH A 596      56.056  15.010  15.909  0.50 22.86           O
+HETATM  169  O  BHOH A 596      55.819  16.141  16.535  0.50 25.09           O
+HETATM  170  O   HOH A 604      55.413  15.482  20.526  1.00 20.46           O
+HETATM  171  O   HOH A 612      55.669  18.124  20.272  1.00 30.96           O
+HETATM  172  O   HOH A 628      52.150   8.845  12.227  0.50  9.11           O
+END
+'''
+
+# ------------------------------------------------------------------------------
+
+# ------------------------------------------------------------------------------
+
+_gol_and_protein_shells_pdb_str = '''
+CRYST1   60.000   40.000   40.000  90.00  90.00  90.00 P 1
+SCALE1      0.016667  0.000000  0.000000        0.00000
+SCALE2      0.000000  0.025000  0.000000        0.00000
+SCALE3      0.000000  0.000000  0.025000        0.00000
+HETATM    1  C1  GOL A   1       5.000   5.000   5.000  1.00 20.00           C
+HETATM    2  C2  GOL A   1       6.520   5.000   5.000  1.00 20.00           C
+HETATM    3  C3  GOL A   1       7.100   6.400   5.000  1.00 20.00           C
+HETATM    4  O1  GOL A   1       4.300   3.850   5.400  1.00 20.00           O
+HETATM    5  O2  GOL A   1       7.220   4.050   5.700  1.00 20.00           O
+HETATM    6  O3  GOL A   1       8.500   6.350   4.700  1.00 20.00           O
+ATOM      7  N   ALA B   1       7.220   4.050   8.500  1.00 30.00           N
+ATOM      8  CA  ALA B   1       8.678   4.050   8.500  1.00 30.00           C
+ATOM      9  C   ALA B   1       9.229   5.470   8.500  1.00 30.00           C
+ATOM     10  O   ALA B   1       8.471   6.440   8.500  1.00 30.00           O
+ATOM     11  CB  ALA B   1       9.508   2.750   8.500  1.00 30.00           C
+ATOM     12  N   ALA B   2       8.500   6.350   0.700  1.00 40.00           N
+ATOM     13  CA  ALA B   2       9.958   6.350   0.700  1.00 40.00           C
+ATOM     14  C   ALA B   2      10.509   7.770   0.700  1.00 40.00           C
+ATOM     15  O   ALA B   2       9.751   8.740   0.700  1.00 40.00           O
+ATOM     16  CB  ALA B   2      10.788   5.050   0.700  1.00 40.00           C
+ATOM     17  N   ALA B   3      22.000   5.000   5.000  1.00 50.00           N
+ATOM     18  CA  ALA B   3      23.458   5.000   5.000  1.00 50.00           C
+ATOM     19  C   ALA B   3      24.009   6.420   5.000  1.00 50.00           C
+ATOM     20  O   ALA B   3      23.251   7.390   5.000  1.00 50.00           O
+ATOM     21  CB  ALA B   3      24.288   3.700   5.000  1.00 50.00           C
+END
+'''
+
+def _gol_and_protein_shells_manager(within_radius=None, ala_b=None):
+  """Manager for a GOL with three ALA residues at controlled distances.
+
+  Closest approach of each ALA to the GOL: B/1 ~2.8 A (inside the 3 A
+  default), B/2 ~4.0 A (outside 3 A, inside 5 A), B/3 >7 A (outside both).
+  """
+  pdb_str = _gol_and_protein_shells_pdb_str
+  if ala_b is not None:
+    # overwrite the B-factor column (61-66) of every ALA atom
+    pdb_str = "\n".join(
+      (ln[:60] + '%6.2f' % ala_b + ln[66:])
+      if (ln.startswith('ATOM') and ' ALA ' in ln) else ln
+      for ln in pdb_str.split("\n"))
+  model = mmtbx.model.manager(
+    model_input = iotbx.pdb.input(
+      lines=pdb_str.split("\n"), source_info=None),
+    log = null_out())
+  model.set_stop_for_unknowns(False)
+  model.process(make_restraints=True)
+  params = val_lig_mod.master_params().extract().validate_ligands
+  params.ligand_code = []
+  if within_radius is not None:
+    params.within_radius = within_radius
+  vl_manager = val_lig_mod.manager(
+    model=model, fmodel=None, map_manager=None, params=params, log=null_out())
+  vl_manager.run()
+  return vl_manager
+
+def _within_resids(vl_manager):
+  """resseq of the residues selected as the ligand environment."""
+  lr = find_lr(vl_manager, 'resname GOL and chain A and resseq 1')
+  ph_within = lr._ph.select(lr.get_adps().isel_within_noH)
+  return sorted(rg.resseq_as_int() for rg in ph_within.residue_groups())
+
+def run_test23():
+  print('test23')
+  # default radius is 3 A: only the ALA at ~2.8 A is part of the environment
+  vl_default = _gol_and_protein_shells_manager()
+  assert vl_default.params.within_radius == 3.0, vl_default.params.within_radius
+  assert _within_resids(vl_default) == [1], _within_resids(vl_default)
+
+  # widening to 5 A pulls in the ALA at ~4.0 A, but not the one beyond 7 A
+  vl_wide = _gol_and_protein_shells_manager(within_radius=5.0)
+  assert _within_resids(vl_wide) == [1, 2], _within_resids(vl_wide)
+
+  # the mean B of the environment follows the selection (B = 30 vs 40)
+  adps_default = find_lr(
+    vl_default, 'resname GOL and chain A and resseq 1').get_adps()
+  adps_wide = find_lr(
+    vl_wide, 'resname GOL and chain A and resseq 1').get_adps()
+  assert approx_equal(adps_default.b_mean_within, 30.0, eps=0.01)
+  assert approx_equal(adps_wide.b_mean_within, 35.0, eps=0.01)
+
+  # narrowing to 2 A leaves the environment empty
+  vl_narrow = _gol_and_protein_shells_manager(within_radius=2.0)
+  assert _within_resids(vl_narrow) == [], _within_resids(vl_narrow)
+
+# ------------------------------------------------------------------------------
+
+def run_test24():
+  print('test24')
+  # the 2-5 A bounds are enforced for library callers, not only through phil
+  for bad_radius in [0.0, 1.9, 5.1]:
+    try:
+      _gol_and_protein_shells_manager(within_radius=bad_radius)
+    except Sorry as e:
+      assert 'within_radius' in str(e), str(e)
+    else:
+      raise AssertionError(
+        'no Sorry raised for within_radius=%s' % bad_radius)
+
+  # the bounds themselves are accepted
+  for good_radius in [2.0, 5.0]:
+    _gol_and_protein_shells_manager(within_radius=good_radius)
+
+  # the phil bounds and the library-level bounds must not drift apart
+  obj = val_lig_mod.master_params().get(
+    'validate_ligands.within_radius').objects[0]
+  assert obj.type.value_min == val_lig_mod.WITHIN_RADIUS_MIN, obj.type.value_min
+  assert obj.type.value_max == val_lig_mod.WITHIN_RADIUS_MAX, obj.type.value_max
+
+  # and phil itself rejects an out-of-range value on the command line
+  try:
+    val_lig_mod.master_params().fetch(
+      source=iotbx.phil.parse('validate_ligands.within_radius=7')).extract()
+  except RuntimeError as e:
+    assert 'maximum allowed value' in str(e), str(e)
+  else:
+    raise AssertionError('phil accepted within_radius=7')
+
+# ------------------------------------------------------------------------------
+
+def run_test25():
+  print('test25')
+  # 3 atoms beyond +-3 sigma out of 47 is 6.4%. Rounding the fraction to two
+  # decimals before scaling quantised this to whole percent and reported 6.0.
+  values = flex.double([0.0]*44 + [3.5, -4.0, 7.0])
+  assert values.size() == 47
+  pb = val_lig_mod.percent_bad_at_atom_centers(values)
+  assert approx_equal(pb, 100.0*3/47, eps=1.e-9), pb
+  assert round(pb, 1) == 6.4, pb
+
+  # the cutoff is inclusive at exactly +-3 sigma, on both signs
+  assert val_lig_mod.percent_bad_at_atom_centers(
+    flex.double([3.0, 0.0, 0.0, 0.0])) == 25.0
+  assert val_lig_mod.percent_bad_at_atom_centers(
+    flex.double([-3.0, 0.0, 0.0, 0.0])) == 25.0
+  assert val_lig_mod.percent_bad_at_atom_centers(
+    flex.double([2.999, -2.999, 0.0, 0.0])) == 0.0
+
+  # a ligand with no non-H atoms gives no percentage, not ZeroDivisionError
+  assert val_lig_mod.percent_bad_at_atom_centers(flex.double()) == 0.0
+
+  # the +-3 sigma cutoff is one named constant
+  assert val_lig_mod.FOFC_SIGMA_CUTOFF == 3.0, val_lig_mod.FOFC_SIGMA_CUTOFF
+
+  # an explicit cutoff overrides it
+  assert val_lig_mod.percent_bad_at_atom_centers(
+    flex.double([3.5, 0.0, 0.0, 0.0]), cutoff=4.0) == 0.0
+
+# ------------------------------------------------------------------------------
+
+def run_test26():
+  print('test26')
+  # GOL has B = 20 throughout; the ALA at ~2.8 A has B = 30, the one at
+  # ~4.0 A has B = 40. b_ratio is ligand B over environment B.
+  def _adps(vl):
+    return find_lr(vl, 'resname GOL and chain A and resseq 1').get_adps()
+
+  adps = _adps(_gol_and_protein_shells_manager())
+  assert approx_equal(adps.b_mean, 20.0, eps=0.01), adps.b_mean
+  assert approx_equal(adps.b_mean_within, 30.0, eps=0.01), adps.b_mean_within
+  assert approx_equal(adps.b_ratio, 20.0/30.0, eps=1.e-6), adps.b_ratio
+
+  # the ratio follows the environment selection
+  adps_wide = _adps(_gol_and_protein_shells_manager(within_radius=5.0))
+  assert approx_equal(adps_wide.b_ratio, 20.0/35.0, eps=1.e-6), adps_wide.b_ratio
+
+  # empty environment -> no ratio, rather than TypeError on None
+  adps_narrow = _adps(_gol_and_protein_shells_manager(within_radius=2.0))
+  assert adps_narrow.b_mean_within is None
+  assert adps_narrow.b_ratio is None, adps_narrow.b_ratio
+
+  # zero environment B -> no ratio, rather than ZeroDivisionError
+  adps_zero = _adps(_gol_and_protein_shells_manager(ala_b=0.0))
+  assert approx_equal(adps_zero.b_mean_within, 0.0, eps=0.01)
+  assert adps_zero.b_ratio is None, adps_zero.b_ratio
+
+  # it reaches the snapshot the GUI and CSV are built from
+  vl = _gol_and_protein_shells_manager()
+  snap = find_lr(vl, 'resname GOL and chain A and resseq 1').as_picklable_snapshot()
+  assert approx_equal(snap.adps.b_ratio, 20.0/30.0, eps=1.e-6), snap.adps.b_ratio
+
+  # and it is shown in the log table
+  from six.moves import cStringIO as StringIO
+  sio = StringIO()
+  vl.show_table(out=sio)
+  text = sio.getvalue()
+  assert 'B ratio' in text, text
+  assert '0.67' in text, text
+
+# ------------------------------------------------------------------------------
+
+def run_test27():
+  print('test27')
+  vl_manager = _load_1avd_manager()
+  if vl_manager is None:
+    print('  skipping: phenix_regression not available')
+    return
+
+  # biotin has three chiral centres, the NAG sugar four; none is an outlier
+  btn_a = find_lr(vl_manager, 'chain A and resseq 400 and resname BTN').get_rmsds()
+  assert btn_a.chirality_n == 3, btn_a.chirality_n
+  assert btn_a.chirality_n_outliers == 0, btn_a.chirality_n_outliers
+  assert approx_equal(btn_a.chirality_rmsd, 0.2318, eps=0.005), btn_a.chirality_rmsd
+
+  btn_b = find_lr(vl_manager, 'chain B and resseq 401 and resname BTN').get_rmsds()
+  assert btn_b.chirality_n == 3, btn_b.chirality_n
+  assert approx_equal(btn_b.chirality_rmsd, 0.4550, eps=0.005), btn_b.chirality_rmsd
+
+  nag = find_lr(vl_manager, 'chain A and resseq 600 and resname NAG').get_rmsds()
+  assert nag.chirality_n == 4, nag.chirality_n
+  assert approx_equal(nag.chirality_rmsd, 0.1913, eps=0.005), nag.chirality_rmsd
+
+  # it reaches the snapshot the GUI and CSV are built from
+  snap = find_lr(vl_manager,
+    'chain A and resseq 400 and resname BTN').as_picklable_snapshot()
+  assert snap.rmsds.chirality_n == 3, snap.rmsds.chirality_n
+  assert approx_equal(snap.rmsds.chirality_rmsd, 0.2318, eps=0.005)
+
+  # a ligand with no chiral centre reports zero rather than failing
+  gol = find_lr(_gol_and_protein_shells_manager(),
+                'resname GOL and chain A and resseq 1').get_rmsds()
+  assert gol.chirality_n == 0, gol.chirality_n
+  assert gol.chirality_rmsd == 0.0, gol.chirality_rmsd
+
+  # a ligand without restraints does not raise
+  nr = find_lr(_gol_and_norestraints_manager(),
+               'resname 7Q8 and chain A and resseq 2').get_rmsds()
+  assert nr.chirality_n == 0, nr.chirality_n
+
+  # and it is shown in the log table
+  from six.moves import cStringIO as StringIO
+  sio = StringIO()
+  vl_manager.show_table(out=sio)
+  text = sio.getvalue()
+  assert 'chirality' in text, text
+  assert '0(3)' in text, text
+
+# ------------------------------------------------------------------------------
+
+_gol_bad_h_occupancy_pdb_str = '''
+CRYST1   40.000   30.000   30.000  90.00  90.00  90.00 P 1
+SCALE1      0.025000  0.000000  0.000000        0.00000
+SCALE2      0.000000  0.033333  0.000000        0.00000
+SCALE3      0.000000  0.000000  0.033333        0.00000
+HETATM    1  C1  GOL A   1       5.000   5.000   5.000  1.00 20.00           C
+HETATM    2  C2  GOL A   1       6.520   5.000   5.000  1.00 20.00           C
+HETATM    3  O1  GOL A   1       4.300   3.850   5.400  1.00 20.00           O
+HETATM    4  O2  GOL A   1       7.220   4.050   5.700  1.00 20.00           O
+HETATM    5  C3 AGOL A   1       7.100   6.400   5.000  0.60 20.00           C
+HETATM    6  O3 AGOL A   1       8.500   6.350   4.700  0.60 20.00           O
+HETATM    7  H31AGOL A   1       6.700   7.000   5.700  1.00 20.00           H
+HETATM    8  HO3AGOL A   1       8.900   7.100   4.900  1.00 20.00           H
+HETATM    9  C3 BGOL A   1       7.000   6.500   5.200  0.40 20.00           C
+HETATM   10  O3 BGOL A   1       8.400   6.500   4.900  0.40 20.00           O
+HETATM   11  H31BGOL A   1       6.600   7.100   5.900  1.00 20.00           H
+HETATM   12  HO3BGOL A   1       8.800   7.200   5.100  1.00 20.00           H
+END
+'''
+
+def run_test28():
+  print('test28')
+  # A DELIBERATELY MALFORMED model: only part of the ligand is split - C1, C2,
+  # O1 and O2 are shared (blank altloc, occupancy 1.00) while C3/O3 are alt
+  # confs A (0.60) and B (0.40) - and the hydrogens on the split atoms carry
+  # occupancy 1.00 instead of following their parents.
+  #
+  # The protonation here is incomplete, which does not matter: the point
+  # is that _conformer_occ must derive a conformer's occupancy from its HEAVY
+  # atoms and so be unaffected by whatever the H occupancies happen to be.
+  #
+  # Without that, averaging the H in gives conformers of 0.80/0.70 summing to
+  # 1.50, and a correctly modelled ligand is flagged.
+  model = mmtbx.model.manager(
+    model_input = iotbx.pdb.input(
+      lines=_gol_bad_h_occupancy_pdb_str.split("\n"), source_info=None),
+    log = null_out())
+  model.set_stop_for_unknowns(False)
+  model.process(make_restraints=True)
+  params = val_lig_mod.master_params().extract().validate_ligands
+  params.ligand_code = []
+  vl = val_lig_mod.manager(model=model, fmodel=None, map_manager=None,
+                           params=params, log=null_out())
+  vl.run()
+
+  seen = 0
+  for lr in vl:
+    ac = lr.get_alt_conf()
+    assert ac.state == 'alt_conf', ac.state
+    assert sorted(ac.altlocs) == ['A', 'B'], ac.altlocs
+    occ = ac.occupancy
+    assert occ is not None
+    # the conformers themselves, from the heavy atoms alone
+    expected_self = 0.60 if lr.altloc.strip() == 'A' else 0.40
+    assert approx_equal(occ.self_occ, expected_self, eps=1.e-6), (
+      lr.altloc, occ.self_occ)
+    assert approx_equal(occ.occ_sum, 1.0, eps=1.e-6), occ.occ_sum
+    assert occ.sum_ok is True, occ.occ_sum
+    assert ac.flag == 'ok', (ac.flag, ac.reason)
+    seen += 1
+  assert seen == 2, seen
+
+# ------------------------------------------------------------------------------
+
+def run_test29():
+  print('test29')
+  # get_map_values must report positive and negative difference blobs
+  # separately.
+  vl_manager = _load_1avd_manager()
+  if vl_manager is None:
+    print('  skipping: phenix_regression not available')
+    return
+
+  seen = 0
+  for lr in vl_manager:
+    mv = lr.get_map_values()
+    if mv is None: continue
+    seen += 1
+    # the split fields exist and are non-negative
+    for attr in ('n_blobs_pos', 'n_blobs_neg',
+                 'percent_blobs_pos', 'percent_blobs_neg'):
+      assert hasattr(mv, attr), attr
+      assert getattr(mv, attr) >= 0, (attr, getattr(mv, attr))
+    # and they reconstruct the pooled values that were reported before
+    assert mv.n_blobs_pos + mv.n_blobs_neg == mv.n_bad_blobs, (
+      mv.n_blobs_pos, mv.n_blobs_neg, mv.n_bad_blobs)
+    assert approx_equal(mv.percent_blobs_pos + mv.percent_blobs_neg,
+                        mv.percent_bad_blobs, eps=1.e-6), (
+      mv.percent_blobs_pos, mv.percent_blobs_neg, mv.percent_bad_blobs)
+  assert seen > 0, 'no ligand had map values'
+
+# ------------------------------------------------------------------------------
+
+if (__name__ == "__main__"):
+  t0 = time.time()
+  run()
+  print("OK. Time: %8.3f" % (time.time()-t0))

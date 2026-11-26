@@ -1,4 +1,4 @@
-from __future__ import division
+from __future__ import absolute_import, division, print_function
 import libtbx.load_env
 if(not libtbx.env.has_module(name="phaser")):
   phaser = None
@@ -6,14 +6,14 @@ else:
   import phaser.phenix_adaptors.sad_target
 from cctbx.array_family import flex
 from cctbx import xray
-import boost.python
+import boost_adaptbx.boost.python as bp
 from libtbx.utils import Sorry, user_plus_sys_time
 from cctbx.eltbx.xray_scattering import wk1995
 from cctbx import adptbx
 from libtbx import adopt_init_args
 
 
-ext = boost.python.import_ext("mmtbx_f_model_ext")
+ext = bp.import_ext("mmtbx_f_model_ext")
 
 time_bulk_solvent_and_scale         = 0.0
 time_mask                           = 0.0
@@ -243,11 +243,17 @@ class target_functor(object):
     return (self.manager.target_name != "mlhl")
 
   def __call__(self, compute_gradients=False):
-    result = target_result(
-      manager=self.manager,
-      core_result=self.core(
-        f_calc=self.manager.f_model(),
-        compute_gradients=compute_gradients))
+    try:
+      result = target_result(
+        manager=self.manager,
+        core_result=self.core(
+          f_calc=self.manager.f_model(),
+          compute_gradients=compute_gradients))
+    except RuntimeError as e:
+      if str(e) == "mli target is not implemented (yet)!":
+        raise Sorry("mli target is not implemented (yet). Pick another target.")
+      else:
+        raise e
     target_memory = getattr(self.core, "target_memory", None)
     if (target_memory is not None):
       self.manager._target_memory = target_memory()
@@ -282,7 +288,8 @@ class target_result_mixin(object):
         xray_structure=xray_structure,
         n_parameters=0,
         miller_set=d_target_d_f_calc,
-        algorithm=manager.sfg_params.algorithm).d_target_d_u_cart()
+        algorithm=manager.sfg_params.algorithm,
+        extra_params=manager.sfg_params.extra).d_target_d_u_cart()
     elif(u_iso):
       result = manager.structure_factor_gradients_w(
         u_iso_refinable_params=None,
@@ -290,7 +297,8 @@ class target_result_mixin(object):
         xray_structure=xray_structure,
         n_parameters=0,
         miller_set=d_target_d_f_calc,
-        algorithm=manager.sfg_params.algorithm).d_target_d_u_iso()
+        algorithm=manager.sfg_params.algorithm,
+        extra_params=manager.sfg_params.extra).d_target_d_u_iso()
     elif(occupancy):
       result = manager.structure_factor_gradients_w(
         u_iso_refinable_params=None,
@@ -298,7 +306,8 @@ class target_result_mixin(object):
         xray_structure=xray_structure,
         n_parameters=0,
         miller_set=d_target_d_f_calc,
-        algorithm=manager.sfg_params.algorithm).d_target_d_occupancy()
+        algorithm=manager.sfg_params.algorithm,
+        extra_params=manager.sfg_params.extra).d_target_d_occupancy()
     else:
       result = manager.structure_factor_gradients_w(
         u_iso_refinable_params=u_iso_refinable_params,
@@ -306,7 +315,8 @@ class target_result_mixin(object):
         xray_structure=xray_structure,
         n_parameters=xray_structure.n_parameters(),
         miller_set=d_target_d_f_calc,
-        algorithm=manager.sfg_params.algorithm)
+        algorithm=manager.sfg_params.algorithm,
+        extra_params=manager.sfg_params.extra)
     time_gradients_wrt_atomic_parameters += timer.elapsed()
     return result
 

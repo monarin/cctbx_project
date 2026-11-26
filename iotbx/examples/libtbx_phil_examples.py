@@ -1,4 +1,6 @@
-from __future__ import division
+"""Examples of use of the PHIL command syntax"""
+from __future__ import absolute_import, division, print_function
+from six.moves import range
 
 if (__name__ == "__main__"):
 
@@ -42,8 +44,8 @@ if (__name__ == "__main__"):
 
   # ---- line 289 -------------------------------------------------------------
 
-  print working_params.minimization.input.file_name
-  print working_params.minimization.input.label
+  print(working_params.minimization.input.file_name)
+  print(working_params.minimization.input.label)
 
   # ---- line 311 -------------------------------------------------------------
 
@@ -74,7 +76,7 @@ if (__name__ == "__main__"):
   # ---- line 377 -------------------------------------------------------------
 
   working_params = master_phil.fetch(source=user_phil).extract()
-  print working_params.minimization.input.file_name
+  print(working_params.minimization.input.file_name)
 
   # ---- line 390 -------------------------------------------------------------
 
@@ -110,8 +112,8 @@ if (__name__ == "__main__"):
 
   working_params = master_phil.fetch(source=user_phil).extract()
   for input in working_params.minimization.input:
-    print input.file_name
-    print input.label
+    print(input.file_name)
+    print(input.label)
 
   # ---- line 448 -------------------------------------------------------------
 
@@ -151,8 +153,8 @@ if (__name__ == "__main__"):
 
   working_params = master_phil.fetch(source=user_phil).extract()
   for input in working_params.minimization.input:
-    print input.file_name
-    print input.label
+    print(input.file_name)
+    print(input.label)
 
   # ---- line 519 -------------------------------------------------------------
 
@@ -220,7 +222,7 @@ if (__name__ == "__main__"):
       converter_registry=converter_registry)
   user_phil = parse("value = extracted")
   working_params = master_phil.fetch(source=user_phil).extract()
-  print working_params.value
+  print(working_params.value)
 
   # ---- line 694 -------------------------------------------------------------
 
@@ -250,13 +252,13 @@ if (__name__ == "__main__"):
 
   working_phil = master_phil.fetch(source=user_phil)
   working_phil.show()
-  print
+  print()
   working_params = working_phil.extract()
-  print working_params.random_integers
-  print working_params.euler_angles
-  print working_params.unit_cell_parameters
-  print working_params.rotation_part
-  print
+  print(working_params.random_integers)
+  print(working_params.euler_angles)
+  print(working_params.unit_cell_parameters)
+  print(working_params.rotation_part)
+  print()
   working_phil = master_phil.format(python_object=working_params)
   working_phil.show()
 
@@ -277,7 +279,7 @@ if (__name__ == "__main__"):
   jims_phil = master_phil.fetch(source=jims_choices)
   jims_phil.show()
   jims_params = jims_phil.extract()
-  print jims_params.gender, jims_params.favorite_sweets
+  print(jims_params.gender, jims_params.favorite_sweets)
 
   # ---- line 845 -------------------------------------------------------------
 
@@ -287,7 +289,7 @@ if (__name__ == "__main__"):
     """)
 
   ignorant_params = master_phil.fetch(source=ignorant_choices).extract()
-  print ignorant_params.gender, ignorant_params.favorite_sweets
+  print(ignorant_params.gender, ignorant_params.favorite_sweets)
 
   # ---- line 880 -------------------------------------------------------------
 
@@ -296,7 +298,7 @@ if (__name__ == "__main__"):
     """)
 
   greedy_params = master_phil.fetch(source=greedy_choices).extract()
-  print greedy_params.favorite_sweets
+  print(greedy_params.favorite_sweets)
 
   # ---- line 898 -------------------------------------------------------------
 
@@ -305,7 +307,7 @@ if (__name__ == "__main__"):
     """)
 
   no_thanks_params = master_phil.fetch(source=no_thanks_choices).extract()
-  print no_thanks_params.favorite_sweets
+  print(no_thanks_params.favorite_sweets)
 
   # ---- line 920 -------------------------------------------------------------
 
@@ -326,14 +328,14 @@ if (__name__ == "__main__"):
     """)
 
   working_params = master_phil.fetch(source=user_phil).extract()
-  print working_params
-  print working_params.minimization.input.file_name
-  print working_params.minimization.parameters.max_iterations
+  print(working_params)
+  print(working_params.minimization.input.file_name)
+  print(working_params.minimization.parameters.max_iterations)
 
   # ---- line 956 -------------------------------------------------------------
 
-  print working_params.minimization.input.__phil_path__()
-  print working_params.minimization.parameters.__phil_path__()
+  print(working_params.minimization.input.__phil_path__())
+  print(working_params.minimization.parameters.__phil_path__())
 
   # ---- line 1014 ------------------------------------------------------------
 
@@ -365,7 +367,7 @@ if (__name__ == "__main__"):
   # ---- line 1056 ------------------------------------------------------------
 
   working_params = working_phil.extract()
-  print working_params.plot
+  print(working_params.plot)
 
   # ---- line 1073 ------------------------------------------------------------
 
@@ -389,7 +391,7 @@ if (__name__ == "__main__"):
 
   working_phil = master_phil.fetch(source=user_phil)
   working_phil.show()
-  print working_phil.extract().plot
+  print(working_phil.extract().plot)
 
   # ---- line 1144 ------------------------------------------------------------
 
@@ -412,7 +414,7 @@ if (__name__ == "__main__"):
     source=user_phil, track_unused_definitions=True)
   working_phil.show()
   for object_locator in unused:
-    print "unused:", object_locator
+    print("unused:", object_locator)
 
   # ---- line 1189 ------------------------------------------------------------
 
@@ -438,7 +440,7 @@ if (__name__ == "__main__"):
   user_phil = parse("""
     input.file_name = experiment.dat
     """)
-  print len(master_phil.fetch(source=user_phil).as_str())
+  print(len(master_phil.fetch(source=user_phil).as_str()))
 
   # ---- line 1316 ------------------------------------------------------------
 
@@ -457,5 +459,5 @@ if (__name__ == "__main__"):
     }
     """)
 
-  for attributes_level in xrange(4):
+  for attributes_level in range(4):
     master_phil.show(attributes_level=attributes_level)

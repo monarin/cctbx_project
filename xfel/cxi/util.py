@@ -1,10 +1,13 @@
-from __future__ import division
+from __future__ import absolute_import, division, print_function
+from six.moves import range
 import os
 
 #for integration pickles:
 allowable_basename_endings = ["_00000.pickle",
                               ".pickle",
+                              ".refl",
                               "_refined_experiments.json",
+                              "_refined.expt",
                               "_experiments.json"
                              ]
 def is_odd_numbered(file_name, use_hash = False):
@@ -20,9 +23,9 @@ def is_odd_numbered(file_name, use_hash = False):
         file_name = os.path.basename(file_name).split(allowable)[0]
         break
   #can not find standard filename extension, instead find the last digit:
-  for idx in xrange(1,len(file_name)+1):
+  for idx in range(1,len(file_name)+1):
     if file_name[-idx].isdigit():
       return int(file_name[-idx])%2==1
   raise ValueError
 if __name__=="__main__":
-  print is_odd_numbered("int_fake_19989.img")
+  print(is_odd_numbered("int_fake_19989.img"))

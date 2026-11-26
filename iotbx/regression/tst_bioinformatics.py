@@ -1,14 +1,25 @@
-from __future__ import division
+from __future__ import absolute_import, division, print_function
 from iotbx import bioinformatics
 
 import unittest
 import sys
+from six.moves import zip
 
+residue_basket="ACCDDDEEEE"
 sequence1 = "VVKMDGRKHRLILPEAKVQDSGEFECRTEGVSAFFGVTVQDPSGPS"
 sequence2 = "LVKFYGRKFVLLFMDQKTFDKYESKLETSGYEKFFIFCMASPISPA"
 name1 = "gi|159164330|pdb|2E6P|A"
 name2 = "Q8E5Q5_STRA3"
 description_tmplt = "Chain %s, Solution Structure Of The Ig-Like Domain"
+a3m_text = \
+""">101
+GSKLKSANDKGLSAAMVVKSFTDQIQLSMEYGDNDSECAAGEFEDAAARDKEFSSQFGSKLKSANDKGLSAAMVVKSFTDQIQLSMEYGDNDSECAAGEFEDAAARDKEFSSQFGSKLKSANDKGLSAAMVVKSFTDQIQLSMEYGDNDSECAAGEFEDAAARDKEFSSQFGSKLKSANDKGLSAAMVVKSFTDQIQLSMEYGDNDSECAAGEFEDAAARDKEFSSQFGSKLKSANDKGLSAAMVVKSFTDQIQLSMEYGDNDSECAAGEFEDAAARDKEFSSQFGSKLKSANDKGLSAAMVVKSFTDQIQLSMEYGDNDSECAAGEFEDAAARDKEFSSQFGSKLKSANDKGLSAAMVVKSFTDQIQLSMEYGDNDSECAAGEFEDAAARDKEFSSQFGSKLKSANDKGLSAAMVVKSFTDQIQLSMEYGDNDSECAAGEFEDAAARDKEFSSQFGSKLKSANDKGLSAAMVVKSFTDQIQLSMEYGDNDSECAAGEFEDAAARDKEFSSQFGSKLKSANDKGLSAAMVVKSFTDQIQLSMEYGDNDSECAAGEFEDAAARDKEFSSQFGSKLKSANDKGLSAAMVVKSFTDQIQLSME
+>101
+GSKLKSANDKGLSAAMVVKSFTDQIQLSMEYGDNDSECAAGEFEDAAARDKEFSSQFGSKLKSANDKGLSAAMVVKSFTDQIQLSMEYGDNDSECAAGEFEDAAARDKEFSSQFGSKLKSANDKGLSAAMVVKSFTDQIQLSMEYGDNDSECAAGEFEDAAARDKEFSSQFGSKLKSANDKGLSAAMVVKSFTDQIQLSMEYGDNDSECAAGEFEDAAARDKEFSSQFGSKLKSANDKGLSAAMVVKSFTDQIQLSMEYGDNDSECAAGEFEDAAARDKEFSSQFGSKLKSANDKGLSAAMVVKSFTDQIQLSMEYGDNDSECAAGEFEDAAARDKEFSSQFGSKLKSANDKGLSAAMVVKSFTDQIQLSMEYGDNDSECAAGEFEDAAARDKEFSSQFGSKLKSANDKGLSAAMVVKSFTDQIQLSMEYGDNDSECAAGEFEDAAARDKEFSSQFGSKLKSANDKGLSAAMVVKSFTDQIQLSMEYGDNDSECAAGEFEDAAARDKEFSSQFGSKLKSANDKGLSAAMVVKSFTDQIQLSMEYGDNDSECAAGEFEDAAARDKEFSSQFGSKLKSANDKGLSAAMVVKSFTDQIQLSME
+>547|Ga0247610_10220222_2|-972|01 87 0.781 2.428E-13 15 68 600 55 105 328
+---------------MGVK-FTDsQIQHLMEYGDND--WSDAEFEDAAARDKEFSSQF-SKLKSANDKGL---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+"""
 
 class test_sequence(unittest.TestCase):
 
@@ -88,10 +99,10 @@ class test_sequence(unittest.TestCase):
       description = description_tmplt % "A"
       )
 
-    self.assert_( seq1 != seq2 )
-    self.assert_( seq1 != seq3 )
-    self.assert_( seq1 != fasta1 )
-    self.assert_( seq1 != pir1 )
+    self.assertTrue( seq1 != seq2 )
+    self.assertTrue( seq1 != seq3 )
+    self.assertTrue( seq1 != fasta1 )
+    self.assertTrue( seq1 != pir1 )
 
 
 class test_fasta_sequence(unittest.TestCase):
@@ -315,7 +326,7 @@ class test_alignment(unittest.TestCase):
       gap = "#"
       )
 
-    self.assert_( c is not self.alignment1 )
+    self.assertTrue( c is not self.alignment1 )
     self.assertEqual( c.alignments, [ "AB", "BA" ] )
     self.assertEqual( c.names, [ "XY", "YX" ] )
     self.assertEqual( c.gap, "#" )
@@ -589,6 +600,10 @@ Error
 > chain_A
  TPDCVTGKVE YTKYNDDDTF TVKVGDKELF TNRWNLQSLL LSAQITGMTV TIKTNACHNG
  GGFSEVIFR*
+
+>
+ TPDCVTGKVE YTKYNDDDTF TVKVGDKELF TNRWNLQSLL LSAQITGMTV TIKTNACHNG
+ GGFSEVIFR
 >chain_A"""
 
 seq_sequence = "TPDCVTGKVEYTKYNDDDTFTVKVGDKELFTNRWNLQSLLLSAQITGMTVTIKTNACHNGGGFSEVIFR"
@@ -917,7 +932,7 @@ class test_sequence_parse(unittest.TestCase):
 
     ( sequences, unknowns ) = bioinformatics.seq_sequence_parse( seq )
 
-    self.assertEqual( len( sequences ), 3 )
+    self.assertEqual( len( sequences ), 4 )
     self.assertEqual( unknowns, [ "\nError\n", ">chain_A" ] )
 
     self.assertEqual(
@@ -946,6 +961,15 @@ class test_sequence_parse(unittest.TestCase):
       sequences[2].sequence,
       seq_sequence
       )
+
+    self.assertEqual(
+      sequences[3].name,
+      ''
+    )
+    self.assertEqual(
+      sequences[3].sequence,
+      seq_sequence
+    )
 
     ( fastas, unknowns ) = bioinformatics.seq_sequence_parse( fasta )
 
@@ -1778,10 +1802,16 @@ class test_hhalign_parser(unittest.TestCase):
     for ( o, e ) in zip( i1, i2 ):
       self.assertAlmostEqual( o, e, digits )
 
-def exercise_guess_chain_types () :
+def exercise_read_a3m():
+  from iotbx.bioinformatics import read_a3m
+  a3m_info = read_a3m(a3m_text)
+  assert a3m_info is not None
+  assert a3m_info.sequence_length == 600, a3m_info.sequence_length
+
+def exercise_guess_chain_types():
   from iotbx.bioinformatics import \
      guess_chain_types_from_sequences,text_from_chains_matching_chain_type
-  print "Testing guess_chain_types ...",
+  print("Testing guess_chain_types ...", end=' ')
   text_rna="""
 >4a17.pdb|Chain=2
 AGAAAAUUUUCAACGGUGGAUAUCUAGGUUCCCGUGACGAUGAAGAACGCAGCGAAAUGCGAUACGCAAUGCGAAUUGCA
@@ -1795,6 +1825,10 @@ TTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTT
 >4a17.pdb|Chain=A
 AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
   """
+  text_ambiguous_ag="""
+AAAAAAAG
+  """
+
   text_protein="""
 >4a17.pdb|Chain=A
 GRVIRAQRKGRANGVYKSHKSGRIAPAQYRVYDFAERQGYIRGCIRDIVHEPGRGAPLAEVAFRDPYRYKTNKEHFIAAE
@@ -1825,6 +1859,78 @@ UGGAGAGUUUGAUCCU
 >> chain 2
 
 """
+
+  text_protein_pdb = \
+"""
+ATOM      2  CA  GLY A 511      12.652  44.232  24.646  1.00 31.14      A    C
+ATOM      6  CA  ASP A 512       9.025  45.287  24.299  1.00 36.73      A    C
+ATOM     14  CA  PRO A 513       7.666  41.856  25.348  1.00 32.96      A    C
+ATOM     21  CA  VAL A 514       9.071  42.422  28.848  1.00 29.77      A    C
+ATOM     28  CA  THR A 515       6.954  45.559  29.147  1.00 33.07      A    C
+ATOM     35  CA  ARG A 516       3.960  43.821  27.518  1.00 36.02      A    C
+ATOM     46  CA  VAL A 517       4.094  40.967  30.053  1.00 29.54      A    C
+ATOM     53  CA  LEU A 518       4.292  43.291  33.052  1.00 27.54      A    C
+ATOM     61  CA  ASP A 519       1.537  45.543  31.676  1.00 29.63      A    C
+ATOM     69  CA  ASP A 520      -0.827  42.633  30.996  1.00 31.79      A    C
+"""
+  text_rna_pdb = \
+"""
+ATOM     23  P     G U   1      13.063  22.026  11.420  1.00  0.00
+ATOM     43  P     U U   2      18.716  21.164  10.071  1.00  0.00
+ATOM     66  P     G U   3      22.765  18.088   7.789  1.00  0.00
+ATOM     89  P     G U   4      23.803  13.287   4.325  1.00  0.00
+ATOM    109  P     U U   5      21.549   8.522   0.878  1.00  0.00
+ATOM    132  P     G U   6      18.176   5.108  -2.281  1.00  0.00
+ATOM    160  P     A V   2       5.037  12.654   6.095  1.00  0.00
+ATOM    180  P     C V   3       6.536   7.470   8.349  1.00  0.00
+ATOM    200  P     C V   4      10.409   4.550  10.972  1.00  0.00
+ATOM    222  P     A V   5      15.160   3.698  14.124  1.00  0.00
+ATOM    242  P     C V   6      19.171   5.322  17.832  1.00  0.00
+"""
+  text_rna_pdb_o_two = \
+"""
+ATOM     23  P     G U   1      13.063  22.026  11.420  1.00  0.00
+ATOM     24  O2'   G U   1      14.063  23.026  12.420  1.00  0.00
+ATOM     43  P     U U   2      18.716  21.164  10.071  1.00  0.00
+ATOM     66  P     G U   3      22.765  18.088   7.789  1.00  0.00
+ATOM     89  P     G U   4      23.803  13.287   4.325  1.00  0.00
+ATOM    109  P     U U   5      21.549   8.522   0.878  1.00  0.00
+ATOM    132  P     G U   6      18.176   5.108  -2.281  1.00  0.00
+ATOM    160  P     A V   2       5.037  12.654   6.095  1.00  0.00
+ATOM    180  P     C V   3       6.536   7.470   8.349  1.00  0.00
+ATOM    200  P     C V   4      10.409   4.550  10.972  1.00  0.00
+ATOM    222  P     A V   5      15.160   3.698  14.124  1.00  0.00
+ATOM    242  P     C V   6      19.171   5.322  17.832  1.00  0.00
+"""
+  text_dna_pdb = \
+"""
+ATOM     23  P     G U   1      13.063  22.026  11.420  1.00  0.00
+ATOM     43  P     T U   2      18.716  21.164  10.071  1.00  0.00
+ATOM     66  P     G U   3      22.765  18.088   7.789  1.00  0.00
+ATOM     89  P     G U   4      23.803  13.287   4.325  1.00  0.00
+ATOM    109  P     T U   5      21.549   8.522   0.878  1.00  0.00
+ATOM    132  P     G U   6      18.176   5.108  -2.281  1.00  0.00
+ATOM    160  P     A V   2       5.037  12.654   6.095  1.00  0.00
+ATOM    180  P     C V   3       6.536   7.470   8.349  1.00  0.00
+ATOM    200  P     C V   4      10.409   4.550  10.972  1.00  0.00
+ATOM    222  P     A V   5      15.160   3.698  14.124  1.00  0.00
+ATOM    242  P     C V   6      19.171   5.322  17.832  1.00  0.00
+"""
+  text_dna_pdb_lc = \
+"""
+ATOM     23  P     g U   1      13.063  22.026  11.420  1.00  0.00
+ATOM     43  P     t U   2      18.716  21.164  10.071  1.00  0.00
+ATOM     66  P     g U   3      22.765  18.088   7.789  1.00  0.00
+ATOM     89  P     g U   4      23.803  13.287   4.325  1.00  0.00
+ATOM    109  P     t U   5      21.549   8.522   0.878  1.00  0.00
+ATOM    132  P     g U   6      18.176   5.108  -2.281  1.00  0.00
+ATOM    160  P     a V   2       5.037  12.654   6.095  1.00  0.00
+ATOM    180  P     c V   3       6.536   7.470   8.349  1.00  0.00
+ATOM    200  P     c V   4      10.409   4.550  10.972  1.00  0.00
+ATOM    222  P     a V   5      15.160   3.698  14.124  1.00  0.00
+ATOM    242  P     c V   6      19.171   5.322  17.832  1.00  0.00
+"""
+
   assert guess_chain_types_from_sequences(text=text_protein)==["PROTEIN"]
   assert guess_chain_types_from_sequences(text=text_dna)==["DNA"]
   assert guess_chain_types_from_sequences(text=text_rna)==["RNA"]
@@ -1852,6 +1958,9 @@ UGGAGAGUUUGAUCCU
   assert guess_chain_types_from_sequences(text=
     text_from_chains_matching_chain_type(text=text_ambiguous_a))==['PROTEIN']
   assert guess_chain_types_from_sequences(text=
+    text_from_chains_matching_chain_type(text=text_ambiguous_ag))==['PROTEIN']
+
+  assert guess_chain_types_from_sequences(text=
     text_from_chains_matching_chain_type(text=text_ambiguous_a),
        likely_chain_types=['RNA'])==['RNA']
   assert guess_chain_types_from_sequences(text=text_ambiguous,
@@ -1862,11 +1971,30 @@ UGGAGAGUUUGAUCCU
 TTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTT
  """
 
-  print "OK"
+  print("OK")
+def exercise_random_sequences():
+  import random
+  random.seed(71231)
+  seq=bioinformatics.random_sequence(n_residues=100,
+     residue_basket=residue_basket)
+  # random number generator is not consistent between Python 2 and 3
+  assert len(seq) == 100
+  assert seq.count('E') > seq.count('D')
+  assert seq.count('D') > seq.count('C')
+  assert seq.count('C') > seq.count('A')
+  seq=bioinformatics.random_sequence(n_residues=100, chain_type = 'PROTEIN')
+  assert len(seq) == 100
+  seq=bioinformatics.random_sequence(n_residues=100, chain_type = 'RNA')
+  assert len(seq) == 100
+  seq=bioinformatics.random_sequence(n_residues=100, chain_type = 'DNA')
+  assert len(seq) == 100
+  seq=bioinformatics.random_sequence(n_residues=100)
+  assert len(seq) == 100
 
-def exercise_merge_sequences () :
-  print "Testing merge_sequences ...",
-  open("tmp_iotbx_bioinfo.fa", "w").write("""\
+def exercise_merge_sequences():
+  print("Testing merge_sequences ...", end=' ')
+  with open("tmp_iotbx_bioinfo.fa", "w") as f:
+    f.write("""\
 > 9zzz
 ARGLYS
 > 8xxx
@@ -1878,7 +2006,7 @@ PHETYR""")
     sequences=["SERTHR"])
   seq_in, nc = bioinformatics.any_sequence_format(output_file)
   assert (len(seq_in) == 3) and (len(nc) == 0)
-  print "OK"
+  print("OK")
 
 suite_sequence = unittest.TestLoader().loadTestsFromTestCase(
   test_sequence
@@ -1935,6 +2063,8 @@ alltests = unittest.TestSuite(
   )
 
 if __name__ == "__main__":
+  exercise_read_a3m()
   exercise_guess_chain_types()
   exercise_merge_sequences()
+  exercise_random_sequences()
   unittest.TextTestRunner( stream=sys.stdout, verbosity = 2 ).run( alltests )

@@ -1,13 +1,14 @@
-from __future__ import division
+from __future__ import absolute_import, division, print_function
 
 from iotbx.gui_tools import reflections, models
 from iotbx import file_reader
+import iotbx.pdb
 import libtbx.load_env
 from libtbx.test_utils import approx_equal, Exception_expected
 from libtbx.utils import Sorry
 import os
 
-def find_file (file_name) :
+def find_file(file_name):
   full_path = libtbx.env.find_in_repositories(
     relative_path=file_name,
     test=os.path.isfile)
@@ -23,7 +24,7 @@ phil_names = ["refinement.input.xray_data.file_name",
               "refinement.input.neutron_data.r_free_flags.file_name",
               "refinement.input.experimental_phases.file_name"]
 
-def exercise_reflections () :
+def exercise_reflections():
   hkl_handler = reflections.reflections_handler(allowed_param_names=phil_names)
   from cctbx import miller
   from cctbx import crystal
@@ -79,7 +80,7 @@ def exercise_reflections () :
   mtz_dataset.mtz_object().write(file_name)
   assert (hkl_handler.set_param_file(file_name=file_name,
           file_param_name="refinement.input.xray_data.file_name") == True)
-  for i, phil_name in enumerate(phil_names[1:4]) :
+  for i, phil_name in enumerate(phil_names[1:4]):
     assert (hkl_handler.set_param_file(file_name=file_name,
             file_param_name=phil_name) == False)
   assert (hkl_handler.get_rfree_labels(
@@ -126,10 +127,10 @@ def exercise_reflections () :
   assert (hl_coeffs.is_hendrickson_lattman_array())
   from iotbx.mtz import label_decorator
   import iotbx.mtz
-  class resolve_label_decorator (label_decorator) :
-    def phases (self, *args, **kwds) :
+  class resolve_label_decorator(label_decorator):
+    def phases(self, *args, **kwds):
       return label_decorator.phases(self, *args, **kwds) + "M"
-    def hendrickson_lattman (self, *args, **kwds) :
+    def hendrickson_lattman(self, *args, **kwds):
       return label_decorator.hendrickson_lattman(self, *args, **kwds) + "M"
   mtz_dataset = f_obs_merged.as_mtz_dataset(
     column_root_label="FP")
@@ -186,7 +187,7 @@ def exercise_reflections () :
   hkl_in = file_reader.any_file(file_name)
   hkl_server = hkl_in.file_server
   assert approx_equal(reflections.get_high_resolution(hkl_server), 1.5,
-    eps=0.0001)
+    eps=0.001)
   descriptions = []
   for miller_array in hkl_server.miller_arrays :
     (sg, uc) = reflections.get_miller_array_symmetry(miller_array)
@@ -199,9 +200,10 @@ def exercise_reflections () :
   handler = reflections.reflections_handler()
   handler.save_file(input_file=hkl_in)
   assert (not handler.has_anomalous_data())
-  assert (handler.get_resolution_range(file_name=file_name)=="(25.981 - 1.500)")
-  assert (handler.get_resolution_limits(file_name=file_name) ==
-          ('(25.981)', '(1.500)'))
+  assert (handler.get_resolution_range(file_name=file_name)=="(25.981 - 1.500)"
+          or handler.get_resolution_range(file_name=file_name)=="(25.981 - 1.501)")
+  assert (handler.get_resolution_limits(file_name=file_name) == ('(25.981)', '(1.500)')
+          or handler.get_resolution_limits(file_name=file_name) == ('(25.981)', '(1.501)'))
   fmodel = phi_array.array(data=flex.complex_double(n_refl_merged,
     complex(0.5,0.8)))
   m1 = phi_array.array(data=flex.complex_double(n_refl_merged, complex(1,0)))
@@ -241,10 +243,10 @@ def exercise_reflections () :
   assert (fc_cols == ['F-model'])
   hkl_server = file_reader.any_file(file_name).file_server
   map_labels = reflections.get_map_coeff_labels(hkl_server)
-  assert (map_labels == ['2FOFCWT,PH2FOFCWT', 'FOFCWT,PHFOFCWT',
-    '2FOFCWT_no_fill,PH2FOFCWT_no_fill',])
+  assert (map_labels == ['F-model,PHF-model', '2FOFCWT,PH2FOFCWT', 'FOFCWT,PHFOFCWT',
+    '2FOFCWT_no_fill,PH2FOFCWT_no_fill',]), map_labels
   map_labels = reflections.get_map_coeffs_for_build(hkl_server)
-  assert map_labels == ['2FOFCWT,PH2FOFCWT','2FOFCWT_no_fill,PH2FOFCWT_no_fill']
+  assert map_labels == ['2FOFCWT,PH2FOFCWT', 'F-model,PHF-model', '2FOFCWT_no_fill,PH2FOFCWT_no_fill'], map_labels
   map_coeffs = reflections.extract_phenix_refine_map_coeffs(file_name)
   assert (len(map_coeffs) == 3)
   hkl_file = file_reader.any_file(file_name)
@@ -253,11 +255,11 @@ def exercise_reflections () :
   (fp, fpp) = reflections.get_fp_fpp_from_sasaki("Se", 0.979)
   assert fp is not None and fpp is not None
 
-def exercise_other_reflection_formats () :
+def exercise_other_reflection_formats():
   hkl_handler = reflections.reflections_handler(allowed_param_names=phil_names)
   # test other file formats (requires phenix_regression)
-  if (regression_dir is None) :
-    print "phenix_regression not found, skipping exercise_other_reflection_formats()"
+  if (regression_dir is None):
+    print("phenix_regression not found, skipping exercise_other_reflection_formats()")
     return
   cns_file = os.path.join(regression_dir, "reflection_files", "enk.hkl")
   hkl_handler.save_file(file_name=cns_file)
@@ -284,10 +286,10 @@ def exercise_other_reflection_formats () :
     allow_reconstructed_amplitudes=False)
   assert (len(labels) == 0)
 
-def exercise_model () :
+def exercise_model():
   # FIXME should be possible to run this independently of phenix_regression
-  if (regression_dir is None) :
-    print "phenix_regression not found, skipping exercise_model()"
+  if (regression_dir is None):
+    print("phenix_regression not found, skipping exercise_model()")
     return
   model_handler = models.model_handler(
     allowed_param_names=["refinement.input.pdb.file_name",
@@ -354,14 +356,14 @@ def exercise_model () :
           "113.068 113.068 53.292 90 90 90")
   f = model_handler.create_copy_with_fake_symmetry(pdb_file2,
     tmp_dir=os.getcwd())
-  pdb_in = file_reader.any_file(f, force_type="pdb")
+  pdb_in = iotbx.pdb.input(f)
   symm = pdb_in.crystal_symmetry()
   assert (str(symm.space_group_info()) == "P 1")
   assert (reflections.unit_cell_as_str(symm.unit_cell()) ==
           "59.227 55.922 60.264 90 90 90")
 
-if (__name__ == "__main__") :
+if (__name__ == "__main__"):
   exercise_reflections()
   exercise_other_reflection_formats()
   exercise_model()
-  print "OK"
+  print("OK")

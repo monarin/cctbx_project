@@ -3,39 +3,39 @@
 Various tools and controls for displaying tabular data.
 """
 
-from __future__ import division
+from __future__ import absolute_import, division, print_function
 import wxtbx.plots
 import wx
 import sys
 
-class TableView (wx.ListCtrl) :
+class TableView(wx.ListCtrl):
   """
   Table display using wx.ListCtrl in combination with iotbx.data_plots.
   """
-  def __init__ (self, *args, **kwds) :
+  def __init__(self, *args, **kwds):
     style = kwds.get("style", 0)
-    if (not style & wx.LC_REPORT) :
+    if (not style & wx.LC_REPORT):
       style = style | wx.LC_REPORT
       kwds['style'] = style
     super(TableView, self).__init__(*args, **kwds)
     self._table = None
 
-  def SetTable (self, table) :
+  def SetTable(self, table):
     self._table = table
     w, h = self.GetSize()
     rows = self._table.export_rows()
     labels = rows[0]
     col_width = ((w - 20) / len(labels))
-    for i_lab, label in enumerate(labels) :
+    for i_lab, label in enumerate(labels):
       self.InsertColumn(i_lab, label)
-      self.SetColumnWidth(i_lab, col_width)
+      self.SetColumnWidth(i_lab, int(col_width))
     for row in rows[1:] :
       assert len(row) == len(labels), labels
-      idx = self.InsertStringItem(sys.maxint, row[0])
-      for i, cell in enumerate(row[1:]) :
+      idx = self.InsertStringItem(sys.maxunicode, row[0])
+      for i, cell in enumerate(row[1:]):
         self.SetStringItem(idx, i+1, cell)
 
-  def OnViewGraphs (self, evt) :
+  def OnViewGraphs(self, evt):
     """
     Open a wxtbx.plots.loggraph_frame window with the table.
     """
@@ -47,7 +47,7 @@ class TableView (wx.ListCtrl) :
     graph_frame.Show()
 
 # TESTING
-if (__name__ == "__main__") :
+if (__name__ == "__main__"):
   from iotbx import data_plots
   table = data_plots.table_data(
     title = "Resolution shell statistics",

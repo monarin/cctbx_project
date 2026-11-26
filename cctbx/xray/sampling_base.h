@@ -87,6 +87,13 @@ namespace cctbx { namespace xray {
   namespace detail {
 
     // self-expanding exponent table
+    /* Values between table entries are linearly interpolated: the result is
+       a continuous function of the argument (relative error is at most 1/8
+       of the squared table step). With the nearest entry taken instead the
+       sampled density, and so structure factors and targets computed from
+       it, change in jumps as atoms move, and line searches in minimization
+       fail.
+     */
     template <typename FloatType>
     class exponent_table
     {
@@ -112,11 +119,12 @@ namespace cctbx { namespace xray {
         {
           if (one_over_step_size_ == 0) return std::exp(x);
           FloatType xs = x * one_over_step_size_;
-          std::size_t i = static_cast<std::size_t>(xs+.5);
-          if (i >= table_.size()) {
-            expand(i + 1);
+          std::size_t i = static_cast<std::size_t>(xs);
+          if (i + 1 >= table_.size()) {
+            expand(i + 2);
           }
-          return table_[i];
+          FloatType e = table_[i];
+          return e + (xs - i) * (table_[i+1] - e);
         }
 
         std::vector<FloatType> const&
@@ -184,7 +192,7 @@ namespace cctbx { namespace xray {
       FloatType d = b_all * b_all * b_all;
       if (d <= 0) {
         char buf[80];
-        std::sprintf(buf,
+        std::snprintf(buf, sizeof(buf),
           "isotropic_3d_gaussian_fourier_transform: b_all=%.6g", b_all);
         throw CCTBX_ERROR(buf);
       }
@@ -547,7 +555,8 @@ namespace cctbx { namespace xray {
         FloatType const& wing_cutoff,
         FloatType const& exp_table_one_over_step_size,
         FloatType const& tolerance_positive_definite,
-        bool use_u_base_as_u_extra=false);
+        bool use_u_base_as_u_extra=false,
+        FloatType const& rho_cutoff=0);
 
       uctbx::unit_cell const&
       unit_cell() { return unit_cell_; }
@@ -560,6 +569,9 @@ namespace cctbx { namespace xray {
 
       FloatType
       u_min() const { return u_min_; }
+
+      FloatType
+      rho_cutoff() const { return rho_cutoff_; }
 
       FloatType
       wing_cutoff() const { return wing_cutoff_; }
@@ -671,7 +683,8 @@ namespace cctbx { namespace xray {
     FloatType const& wing_cutoff,
     FloatType const& exp_table_one_over_step_size,
     FloatType const& tolerance_positive_definite,
-    bool use_u_base_as_u_extra)
+    bool use_u_base_as_u_extra,
+    FloatType const& rho_cutoff)
   :
     unit_cell_(unit_cell),
     n_scatterers_passed_(scatterers.size()),
@@ -691,7 +704,7 @@ namespace cctbx { namespace xray {
     sum_sampling_box_n_points_(0),
     max_sampling_box_edges_(0,0,0)
   {
-    CCTBX_ASSERT(u_base >= 0);
+    CCTBX_ASSERT(use_u_base_as_u_extra || u_base >= 0);
     scitbx::mat3<FloatType> orth_mx = unit_cell_.orthogonalization_matrix();
     if (orth_mx[3] != 0 || orth_mx[6] != 0 || orth_mx[7] != 0) {
       throw error(
@@ -754,7 +767,12 @@ namespace cctbx { namespace xray {
       }
     }
     // determine rho_cutoff as average rho(0) * wing_cutoff
-    {
+    // A given rho_cutoff (together with use_u_base_as_u_extra) makes the
+    // sampling of each scatterer independent of the other scatterers passed.
+    if (rho_cutoff > 0) {
+      rho_cutoff_ = rho_cutoff;
+    }
+    else {
       // exp function is not actually called by gaussian_ft.rho_real_0() below.
       detail::exponent_table<FloatType> exp_table(0);
       FloatType sum_abs_rho_real_0 = 0;

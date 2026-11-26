@@ -1,5 +1,6 @@
-from __future__ import division
-from boost.rational import gcd
+from __future__ import absolute_import, division, print_function
+
+from boost_adaptbx.boost.rational import gcd
 from libtbx.utils import Usage
 import libtbx.load_env
 import sys
@@ -11,7 +12,7 @@ def run(args, func=gcd):
   result = values[0]
   for value in values[1:]:
     result = func(result, value)
-  print result
+  print(result)
 
 if (__name__ == "__main__"):
   run(sys.argv[1:])

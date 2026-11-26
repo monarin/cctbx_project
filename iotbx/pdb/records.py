@@ -1,4 +1,5 @@
-from __future__ import division
+"""Unpack information from PDB file"""
+from __future__ import absolute_import, division, print_function
 class FormatError(RuntimeError): pass
 
 def chain_id_strip(id):
@@ -42,7 +43,9 @@ class expdta(_base):
     self.technique = self.pdb_str[10:70]
     TECH = self.technique.upper()
     self.keywords = []
-    for keyword in ("ELECTRON DIFFRACTION",
+    for keyword in ("ELECTRON CRYSTALLOGRAPHY",
+                    "ELECTRON DIFFRACTION",
+                    "ELECTRON MICROSCOPY",
                     "FIBER DIFFRACTION",
                     "FLUORESCENCE TRANSFER",
                     "NEUTRON DIFFRACTION",

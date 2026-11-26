@@ -1,7 +1,11 @@
-from __future__ import division
-import boost.python
-ext = boost.python.import_ext("gltbx_gl_ext")
-from gltbx_gl_ext import *
+from __future__ import absolute_import, division, print_function
+try:
+  import OpenGL  # implicit import
+  from OpenGL.GL import *
+except ImportError:
+  import boost_adaptbx.boost.python as bp
+  ext = bp.import_ext("gltbx_gl_ext")
+  from gltbx_gl_ext import *
 
 def __function_taking_transposed_matrix(f):
   def wrapper(m):

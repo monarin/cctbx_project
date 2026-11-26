@@ -1,10 +1,10 @@
 
-from __future__ import division
+from __future__ import absolute_import, division, print_function
 from mmtbx.monomer_library import pdb_interpretation
 from mmtbx.validation import restraints
 import sys
 
-def run (args, log=sys.stdout) :
+def run(args, log=sys.stdout):
   processed_pdb_file = pdb_interpretation.run(
     args=args,
     substitute_non_crystallographic_unit_cell_if_necessary=True,
@@ -24,5 +24,5 @@ def run (args, log=sys.stdout) :
     ignore_hd=True)
   result.show(out=log, prefix="  ")
 
-if (__name__ == "__main__") :
+if (__name__ == "__main__"):
   run(sys.argv[1:])

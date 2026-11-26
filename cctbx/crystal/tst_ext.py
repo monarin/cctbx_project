@@ -1,4 +1,4 @@
-from __future__ import division
+from __future__ import absolute_import, division, print_function
 from cctbx import crystal
 import cctbx.crystal.coordination_sequences
 from cctbx import sgtbx, xray
@@ -10,12 +10,11 @@ from libtbx.test_utils import Exception_expected, approx_equal, show_diff
 import hashlib
 from libtbx import adopt_init_args
 from itertools import count
-from cStringIO import StringIO
+from six.moves import cStringIO as StringIO
 import sys
-try:
-  import cPickle as pickle
-except ImportError:
-  import pickle
+from six.moves import range
+from six.moves import zip
+from six.moves import cPickle as pickle
 
 def exercise_symmetry():
   cs = crystal.symmetry(
@@ -25,10 +24,11 @@ def exercise_symmetry():
   assert not show_diff(cspc, """\
 crystal.symmetry(
 *$  unit_cell=(12.548, 12.548, 20.789, 90, 90, 120),
-*$  space_group_symbol="P 63/m m c")""")
+*$  space_group_symbol="P 63/m m c"
+*$)""")
   cspc = cs.as_py_code()
   cs2 = eval(cspc)
-  assert cs2.is_similar_symmetry(cs)
+  assert cs2.is_similar_symmetry(cs, 1e-8, 1e-8)
 
 def trial_structure(choice_of_coordinates=0):
   # zeolite framework type AFG
@@ -108,7 +108,7 @@ def exercise_direct_space_asu():
     cuts=[])
   assert asu.shape_vertices().size() == 0
   cuts = []
-  for i in xrange(3):
+  for i in range(3):
     n = [0,0,0]
     n[i] = -1
     cuts.append(crystal.direct_space_asu.float_cut_plane(n=n, c=i+1))
@@ -117,7 +117,7 @@ def exercise_direct_space_asu():
     cuts=cuts,
     is_inside_epsilon=1.e-6)
   assert asu.unit_cell().is_similar_to(unit_cell)
-  for i in xrange(3):
+  for i in range(3):
     n = [0,0,0]
     n[i] = -1
     assert approx_equal(asu.cuts()[i].n, n)
@@ -198,7 +198,7 @@ def exercise_direct_space_asu():
   o = matrix.sqr(asu_mappings.unit_cell().orthogonalization_matrix())
   f = matrix.sqr(asu_mappings.unit_cell().fractionalization_matrix())
   for i_seq,m_i_seq in enumerate(asu_mappings.mappings()):
-    for i_sym in xrange(len(m_i_seq)):
+    for i_sym in range(len(m_i_seq)):
       rt_mx = asu_mappings.get_rt_mx(i_seq, i_sym)
       assert asu_mappings.get_rt_mx(asu_mappings.mappings()[i_seq][i_sym]) \
           == rt_mx
@@ -392,7 +392,7 @@ def exercise_direct_space_asu():
   assert pair.is_active(minimal=False)
   assert not pair.is_active(minimal=True)
   for i_seq,m in enumerate(asu_mappings.mappings()):
-    for i_sym in xrange(len(m)):
+    for i_sym in range(len(m)):
       rt_mx = asu_mappings.get_rt_mx(i_seq=i_seq, i_sym=i_sym)
       i_sym_found = asu_mappings.find_i_sym(i_seq=i_seq, rt_mx=rt_mx)
       assert i_sym_found == i_sym
@@ -436,9 +436,9 @@ def check_pair_asu_table(asu_table, expected_asu_pairs):
       for j_sym_group in j_sym_groups:
         for j_sym in j_sym_group:
           if (0 or "--verbose" in sys.argv[1:] or expected_asu_pairs is None):
-            print str([i_seq, j_seq, j_sym]) + ","
+            print(str([i_seq, j_seq, j_sym]) + ",")
           if (expected_asu_pairs is not None):
-            assert [i_seq, j_seq, j_sym] == expected_asu_pairs[ip.next()]
+            assert [i_seq, j_seq, j_sym] == expected_asu_pairs[next(ip)]
 
 def exercise_pair_tables():
   d = crystal.pair_sym_dict()
@@ -717,11 +717,11 @@ Si(2)
       for j_seq,rt_mx_list in sym_dict.items():
         for rt_mx in rt_mx_list:
           while 1:
-            expected = expected_sym_pairs[ip.next()]
+            expected = expected_sym_pairs[next(ip)]
             if (not (skip_j_seq_less_than_i_seq and expected[1]<expected[0])):
               break
           if (0 or "--verbose" in sys.argv[1:]):
-            print str([i_seq, j_seq, str(rt_mx)]) + ","
+            print(str([i_seq, j_seq, str(rt_mx)]) + ",")
           assert [i_seq, j_seq, str(rt_mx)] == expected
     asu_table = crystal.pair_asu_table(asu_mappings=asu_mappings)
     assert asu_table.add_pair_sym_table(sym_table=sym_table) is asu_table
@@ -771,7 +771,31 @@ Si(2)
         assert energies.u_i.size() == 0
         assert energies.u_j.size() == 0
         assert energies.r_ij.size() == 0
-    for i_trial in xrange(5):
+    # A pair contributes only when both atoms are selected: deselecting
+    # atom 2 is the same as removing it from the structure.
+    structure_2 = structure.select(flex.bool([True, True, False]))
+    asu_table_2 = crystal.pair_asu_table(
+      asu_mappings=structure_2.asu_mappings(buffer_thickness=3.5))
+    asu_table_2.add_all_pairs(distance_cutoff=3.5)
+    sym_table_2 = asu_table_2.extract_pair_sym_table(
+      skip_j_seq_less_than_i_seq=skip_j_seq_less_than_i_seq)
+    adp_energies_2 = adp_iso_local_sphere_restraints_energies_functor(
+      pair_sym_table=sym_table_2,
+      orthogonalization_matrix
+        =structure_2.unit_cell().orthogonalization_matrix(),
+      sites_frac=structure_2.sites_frac())
+    energies_2 = adp_energies_2(u_isos=u_isos[:2], compute_gradients=True)
+    energies = adp_energies(
+      u_isos=u_isos,
+      compute_gradients=True,
+      selection=flex.bool([True, True, False]))
+    assert energies_2.number_of_restraints > 0
+    assert energies.number_of_restraints == energies_2.number_of_restraints, (
+      energies.number_of_restraints, energies_2.number_of_restraints)
+    assert approx_equal(energies.residual_sum, energies_2.residual_sum)
+    assert approx_equal(energies.gradients[:2], energies_2.gradients)
+    assert approx_equal(energies.gradients[2], 0)
+    for i_trial in range(5):
       u_isos = u_isos.select(flex.random_permutation(size=u_isos.size()))
       for distance_power in [0.3, 0.8, 1, 1.7]:
         for average_power in [0.4, 0.9, 1, 1.5]:
@@ -1109,7 +1133,7 @@ i_seq: 4
     -x,-y+1,z
 """
   out = StringIO()
-  for i_seq in xrange(5):
+  for i_seq in range(5):
     sym_table.proxy_select(flex.size_t([i_seq])).show(f=out)
   assert out.getvalue() == """\
 i_seq: 0
@@ -1166,7 +1190,7 @@ i_seq: 2
   sym_table = crystal.pair_sym_table(5)
   sym_table[0].setdefault(2)
   sym_table[3].setdefault(3)
-  assert [sym_table.is_paired(i_seq=i_seq) for i_seq in xrange(5)] \
+  assert [sym_table.is_paired(i_seq=i_seq) for i_seq in range(5)] \
       == [True, False, True, True, False]
   #
   asu_mappings = structure.asu_mappings(buffer_thickness=2*3.5)
@@ -1231,7 +1255,7 @@ def exercise_fix_for_missed_interaction_inside_asu():
   gen = crystal.neighbors_fast_pair_generator(asu_mappings,
                                               distance_cutoff=3.5,
                                               minimal=True)
-  pair = gen.next()
+  pair = next(gen)
   pair_asu_table.add_pair(pair)
   pair_sym_table = pair_asu_table.extract_pair_sym_table()
   result = []
@@ -1269,7 +1293,7 @@ def exercise_all_bonds_from_inside_asu():
   for i_seq, sym_dict in enumerate(sym_table):
     for j_seq, rt_mx_list in sym_dict.items():
       for rt_mx in rt_mx_list:
-        expected = expected_sym_pairs[ip.next()]
+        expected = expected_sym_pairs[next(ip)]
         assert [i_seq, j_seq, str(rt_mx)] == expected
 
   xs = xray.structure(
@@ -1290,7 +1314,7 @@ def exercise_all_bonds_from_inside_asu():
   gen = crystal.neighbors_fast_pair_generator(asu_mappings,
                                               distance_cutoff=3.5,
                                               minimal=True)
-  pair = gen.next()
+  pair = next(gen)
   pair_asu_table.add_pair(pair)
 
   pair_sym_table = pair_asu_table.extract_pair_sym_table(
@@ -1331,14 +1355,17 @@ class adp_iso_local_sphere_restraints_energies_functor(object):
         distance_power=0.7,
         average_power=0.5,
         compute_gradients=False,
-        collect=False):
+        collect=False,
+        selection=None):
     sel = flex.bool(u_isos.size(),True)
+    if (selection is None):
+      selection = sel
     return crystal.adp_iso_local_sphere_restraints_energies(
       pair_sym_table=self.pair_sym_table,
       orthogonalization_matrix=self.orthogonalization_matrix,
       sites_frac=self.sites_frac,
       u_isos=u_isos,
-      selection = sel,
+      selection = selection,
       use_u_iso = sel,
       grad_u_iso= sel,
       sphere_radius=sphere_radius,
@@ -1354,7 +1381,7 @@ class adp_iso_local_sphere_restraints_energies_functor(object):
         average_power=0.5,
         eps=1.e-6):
     gs = flex.double()
-    for i_u in xrange(u_isos.size()):
+    for i_u in range(u_isos.size()):
       rs = []
       for signed_eps in [eps,-eps]:
         u_isos_eps = u_isos.deep_copy()
@@ -1404,17 +1431,17 @@ def exercise_coordination_sequences_shell_asu_tables():
   check_pair_asu_table(shell_asu_tables[0], expected_asu_pairs)
   s = StringIO()
   structure.show_distances(pair_asu_table=shell_asu_tables[1], out=s)
-  print >> s
+  print(file=s)
   s1_sym_table = shell_asu_tables[1].extract_pair_sym_table(
     skip_j_seq_less_than_i_seq=False)
   s1_asu_table = crystal.pair_asu_table(asu_mappings=asu_mappings)
   s1_asu_table.add_pair_sym_table(sym_table=s1_sym_table)
   structure.show_distances(pair_asu_table=s1_asu_table, out=s)
-  print >> s
+  print(file=s)
   s = s.getvalue().replace("-0.0000", " 0.0000")
-  if (hashlib.md5(s).hexdigest() != "f5c02727352d26dc36762de0834199fd"):
+  if (hashlib.md5(s.encode("ascii")).hexdigest() != "f5c02727352d26dc36762de0834199fd"):
     sys.stderr.write(s)
-    print "New hexdigest:", hashlib.md5(s).hexdigest()
+    print("New hexdigest:", hashlib.md5(s.encode("ascii")).hexdigest())
     raise AssertionError("Unexpected show_distances() output.")
 
 def exercise_ext_symmetry():
@@ -1475,10 +1502,10 @@ i_seq: 1
     j_syms: [0]
 """
   assert not show_diff(out.getvalue(), expected_out)
-  assert incremental_pairs.cubicle_size_counts().items() == [(0,239), (1,6)]
+  assert list(incremental_pairs.cubicle_size_counts().items()) == [(0,239), (1,6)]
   site_symmetry_table = incremental_pairs.asu_mappings().site_symmetry_table()
   sites_cart = sps.unit_cell().orthogonalize(sites_frac=sites_frac)
-  for i_pass in xrange(4):
+  for i_pass in range(4):
     ipv = sps.incremental_pairs(distance_cutoff=2)
     if   (i_pass == 0):
       ipv.process_sites_frac(original_sites=sites_frac)
@@ -1516,7 +1543,7 @@ i_seq: 1
   assert am.site_symmetry_table().indices().size() == 1
   #
   site = (0.7,0.3,0.1)
-  for i_trial in xrange(10):
+  for i_trial in range(10):
     assert site_cluster_analysis.process_site_frac(original_site=site)
     assert am.mappings().size() == 2
     assert am.site_symmetry_table().indices().size() == 2
@@ -1524,7 +1551,7 @@ i_seq: 1
     assert am.mappings().size() == 1
     assert am.site_symmetry_table().indices().size() == 1
   try: site_cluster_analysis.discard_last()
-  except RuntimeError, e:
+  except RuntimeError as e:
     assert str(e) == """\
 site_cluster_analysis::discard_last() failure. Potential problems are:
   - discard_last() called twice
@@ -1601,7 +1628,7 @@ def exercise_cubicles_max_memory():
   if (1 and mm < 333333*666666*999999):
     sites_cart.append((1.e6,2.e6,3.e6))
     try: fast_pair_generator_init()
-    except RuntimeError, e:
+    except RuntimeError as e:
       assert str(e).startswith("Excessive number of cubicles:")
     else: raise Exception_expected
     sites_cart.pop_back()
@@ -1609,7 +1636,7 @@ def exercise_cubicles_max_memory():
     crystal.cubicles_max_memory_allocation_set(number_of_bytes=3*6*9)
     sites_cart.append((10,20,30))
     try: fast_pair_generator_init()
-    except RuntimeError, e:
+    except RuntimeError as e:
       assert not show_diff(str(e), """\
 Estimated memory allocation for cubicles exceeds max_number_of_bytes:
   This may be due to unreasonable parameters:
@@ -1648,6 +1675,75 @@ def exercise_asu_mappings():
 
       for( c_o, c_r ) in zip( site_o.mapped_site(), site_r.mapped_site() ):
         assert approx_equal( c_o, c_r, 1E-7 )
+
+def exercise_pairs_within():
+  def listed(pairs):
+    return sorted((i, j, rt.as_xyz(), round(d, 6)) for i, j, rt, d in pairs)
+  # P 1, a = 5: site 1 is 3.8 A from site 0 in the asymmetric unit and its
+  # mate one cell along a is 1.2 A from it; site 2 is 1.3 A from site 0
+  cs = crystal.symmetry(unit_cell=(5, 10, 10, 90, 90, 90),
+                        space_group_symbol="P 1")
+  sites = flex.vec3_double([(1, 5, 5), (4.8, 5, 5), (1, 6.3, 5)])
+  assert listed(crystal.pairs_within(sites, 1.5, cs)) == [
+    (0, 1, "x-1,y,z", 1.2), (0, 2, "x,y,z", 1.3),
+    (1, 0, "x+1,y,z", 1.2), (2, 0, "x,y,z", 1.3)]
+  # first site restricted
+  assert listed(crystal.pairs_within(sites, 1.5, cs, i_seqs=[1])) == [
+    (1, 0, "x+1,y,z", 1.2)]
+  assert listed(crystal.pairs_within(sites, 1.5, cs, i_seqs=[0, 2])) == [
+    (0, 1, "x-1,y,z", 1.2), (0, 2, "x,y,z", 1.3), (2, 0, "x,y,z", 1.3)]
+  assert crystal.pairs_within(sites, 1.5, cs, i_seqs=[]) == []
+  # no symmetry: the asymmetric unit only
+  for no_cs in (None, crystal.symmetry(unit_cell=None, space_group=None)):
+    assert listed(crystal.pairs_within(sites, 1.5, no_cs)) == [
+      (0, 2, "x,y,z", 1.3), (2, 0, "x,y,z", 1.3)]
+  assert crystal.pairs_within(sites, 1.0, cs) == []
+  assert crystal.pairs_within(flex.vec3_double(), 1.5, cs) == []
+  # a rotational mate: the inversion of site 1 is 0.2 A from site 0
+  cs = crystal.symmetry(unit_cell=(5, 10, 10, 90, 90, 90),
+                        space_group_symbol="P -1")
+  sites = flex.vec3_double([(1, 5.3, 5.2), (-1.2, -5.3, -5.2)])
+  assert listed(crystal.pairs_within(sites, 1.5, cs)) == [
+    (0, 1, "-x,-y,-z", 0.2), (1, 0, "-x,-y,-z", 0.2)]
+  # a site near a special position is listed with its own mate; on it,
+  # the mates are one site
+  sites = flex.vec3_double([(0.3, 0, 0)])
+  assert listed(crystal.pairs_within(sites, 1.5, cs)) == [
+    (0, 0, "-x,-y,-z", 0.6)]
+  sites = flex.vec3_double([(0, 0, 0)])
+  assert crystal.pairs_within(sites, 1.5, cs) == []
+  # a 2-fold along b through the origin. Site 0 on or close to the axis, site 1
+  # 2.32 A away: both mates of site 1, 4.64 A apart, are neighbours of site 0
+  cs = crystal.symmetry(unit_cell=(30, 30, 30, 90, 90, 90),
+                        space_group_symbol="P 1 2 1")
+  for off, d1, d2 in ((0, 2.32, 2.32), (0.1, 2.22, 2.42), (0.2, 2.12, 2.52)):
+    sites = flex.vec3_double([(off, 5, 0), (2.32, 5, 0)])
+    pairs = [p for p in listed(crystal.pairs_within(sites, 2.6, cs, i_seqs=[0]))
+             if p[1] == 1]
+    assert pairs == [(0, 1, "-x,y,-z", round(d2, 6)),
+                     (0, 1, "x,y,z", round(d1, 6))], (off, pairs)
+    # off the axis, both mates of site 0 are neighbours of site 1 too
+    if off > 0:
+      pairs = listed(crystal.pairs_within(sites, 2.6, cs, i_seqs=[1]))
+      assert pairs == [(1, 0, "-x,y,-z", round(d2, 6)),
+                       (1, 0, "x,y,z", round(d1, 6))], (off, pairs)
+  # a site on the axis: its mates coincide and are listed once, with the
+  # identity; from it, both mates of the other site
+  sites = flex.vec3_double([(2.32, 5, 0), (0, 5, 0)])
+  assert listed(crystal.pairs_within(sites, 2.6, cs)) == [
+    (0, 1, "x,y,z", 2.32),
+    (1, 0, "-x,y,-z", 2.32), (1, 0, "x,y,z", 2.32)]
+  # close to the axis, not on it: two positions
+  sites = flex.vec3_double([(2.32, 5, 0), (0.1, 5, 0)])
+  assert listed(crystal.pairs_within(sites, 2.6, cs, i_seqs=[0])) == [
+    (0, 1, "-x,y,-z", 2.42), (0, 1, "x,y,z", 2.22)]
+  # a site's own mates on either side, a 2_1 screw: rt_mx and its inverse
+  cs = crystal.symmetry(unit_cell=(10, 8, 10, 90, 90, 90),
+                        space_group_symbol="P 1 21 1")
+  sites = flex.vec3_double([(0.5, 0, 0)])
+  pairs = crystal.pairs_within(sites, 4.5, cs)
+  assert sorted(p[2].as_xyz() for p in pairs) == [
+    "-x,y+1/2,-z", "-x,y-1/2,-z"], pairs
 
 def exercise_pair_sym_table_pickling():
   # Test pickling of pair_asu_table in cctbx_project\cctbx\crystal\pair_tables_bpl.cpp
@@ -1689,7 +1785,8 @@ def run():
   exercise_cubicles_max_memory()
   exercise_asu_mappings()
   exercise_pair_sym_table_pickling()
-  print "OK"
+  exercise_pairs_within()
+  print("OK")
 
 if (__name__ == "__main__"):
   run()

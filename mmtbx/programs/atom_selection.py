@@ -1,13 +1,13 @@
-from __future__ import division, print_function
+"""Tool for selecting some atoms and optionally
+  write out them as a PDB file"""
+from __future__ import absolute_import, division, print_function
 
 from libtbx.program_template import ProgramTemplate
-from libtbx.str_utils import show_string
 from libtbx.utils import plural_s
 from cctbx.array_family import flex
 from cctbx import crystal, uctbx, xray
-import mmtbx.model
-import iotbx.pdb
 from libtbx.utils import Sorry
+from cctbx.maptbx.box import shift_and_box_model
 
 class Program(ProgramTemplate):
 
@@ -56,7 +56,7 @@ Usage examples:
     all_bsel = flex.bool(atoms.size(), False)
     for selection_string in self.params.atom_selection_program.inselection:
       print("Selecting '%s'" % selection_string, file=self.logger)
-      isel = model.iselection(selstr=selection_string)
+      isel = model.iselection(string=selection_string)
       all_bsel.set_selected(isel, True)
       if self.params.atom_selection_program.write_pdb_file is None:
         print("  %d atom%s selected" % plural_s(isel.size()), file=self.logger)
@@ -64,7 +64,11 @@ Usage examples:
           print ("    %s" % atom.format_atom_record(), file=self.logger)
     print("", file=self.logger)
     if self.params.atom_selection_program.write_pdb_file is not None:
-      print ("Writing file:", show_string(self.params.atom_selection_program.write_pdb_file),file=self.logger)
+      if not model.crystal_symmetry() or \
+        (not model.crystal_symmetry().unit_cell()):
+        model = shift_and_box_model(model, shift_model=False)
+      # select() carries the SS annotation over, pruned of elements that
+      # lost a residue
       selected_model = model.select(all_bsel)
       if self.params.atom_selection_program.cryst1_replacement_buffer_layer is not None:
         box = uctbx.non_crystallographic_unit_cell_with_the_sites_in_its_center(
@@ -75,10 +79,10 @@ Usage examples:
         xrs_box = selected_model.get_xray_structure().replace_sites_frac(box.sites_frac())
         xray_structure_box = xray.structure(sp, xrs_box.scatterers())
         selected_model.set_xray_structure(xray_structure_box)
-      pdb_str = selected_model.model_as_pdb()
-      f = open(self.params.atom_selection_program.write_pdb_file, 'w')
-      f.write(pdb_str)
-      f.close()
+      written_fname = self.data_manager.write_model_file(
+          model_str=selected_model,
+          filename=self.params.atom_selection_program.write_pdb_file)
+      print("Wrote file: %s" % written_fname, file=self.logger)
       print("", file=self.logger)
 
   # ---------------------------------------------------------------------------

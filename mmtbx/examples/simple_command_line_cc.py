@@ -7,16 +7,16 @@ setting PROCESS_PDB_FILE=True, but this also requires the CCP4 monomer
 library.
 """
 
-from __future__ import division
+from __future__ import absolute_import, division, print_function
 import mmtbx.command_line
 import sys
 
 PROCESS_PDB_FILE = False
 
-def master_phil () :
+def master_phil():
   return mmtbx.command_line.generic_simple_input_phil()
 
-def run (args, out=sys.stdout) :
+def run(args, out=sys.stdout):
   # this wrapper loads the data and flags (or raises an error if additional
   # input is needed), reads the PDB file, optionally processes the geometry,
   # and creates an fmodel object using the data, flags, and xray.structure
@@ -40,7 +40,7 @@ def run (args, out=sys.stdout) :
   assert (len(f_calc.indices()) == len(f_obs.indices()))
   from scitbx.array_family import flex
   cc = flex.linear_correlation(f_obs.data(), f_calc.data()).coefficient()
-  print >> out, "CC(obs-calc): %.3f" % cc
+  print("CC(obs-calc): %.3f" % cc, file=out)
 
-if (__name__ == "__main__") :
+if (__name__ == "__main__"):
   run(sys.argv[1:])

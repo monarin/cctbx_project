@@ -1,8 +1,8 @@
-from __future__ import division
-from mmtbx.secondary_structure import build as ssb
+from __future__ import absolute_import, division, print_function
+from mmtbx.secondary_structure.build import ss_idealization as ssb
 import iotbx.pdb
 import mmtbx.model
-from cStringIO import StringIO
+from six.moves import cStringIO as StringIO
 from scitbx.math import superpose
 from libtbx.test_utils import approx_equal
 
@@ -14,7 +14,7 @@ apply coordinates to another using NCS.
 """
 
 
-# taken from phenix_regression/refinement/ncs/tst_ncs_0.py
+# taken from phenix_regression/refinement/tst_189.py
 pdb_str = """\
 CRYST1   34.917   22.246   44.017  90.00  90.00  90.00 P 1
 SCALE1      0.028639  0.000000  0.000000        0.00000
@@ -252,14 +252,15 @@ def exercise():
   pdb_int_params = mmtbx.model.manager.get_default_pdb_interpretation_params()
   pdb_int_params.pdb_interpretation.ncs_search.enabled=True
   model = mmtbx.model.manager(
-    model_input = pdb_inp,
-    pdb_interpretation_params=pdb_int_params,
-    build_grm = True)
+    model_input = pdb_inp)
+  model.process(pdb_interpretation_params=pdb_int_params,
+    make_restraints=True)
   model.setup_ncs_constraints_groups()
   log = StringIO()
   rm = ssb.substitute_ss(
       model,
       log=log)
+  rm.run()
   # with open("res.pdb", 'w') as f:
     # f.write(model.model_as_pdb())
 
@@ -268,9 +269,11 @@ def exercise():
   for d in dif:
     assert approx_equal(d, (0,0,0), eps=0.005)
   log_cont = log.getvalue()
-  assert log_cont.find("skipping, not in NCS master") > 0
-  # print log_cont
-  print "OK"
+  # print("===========================")
+  # print (log_cont)
+  # print("===========================")
+  assert log_cont.find("1 element(s) were skipped because they are in NCS copies") > 0
+  print("OK")
 
 
 if (__name__ == "__main__"):

@@ -1,7 +1,7 @@
 # -*- coding: utf-8; py-indent-offset: 2 -*-
-from __future__ import division
+from __future__ import absolute_import, division, print_function
 
-def exercise () :
+def exercise():
   from mmtbx.ions import server as s
   import iotbx.pdb.hierarchy
   import iotbx.pdb
@@ -76,7 +76,7 @@ def exercise () :
     assert s.get_element(resn) == "O"
     assert s.get_charge(resn) == -2
 
-  print "OK"
+  print("OK")
 
-if (__name__ == "__main__") :
+if (__name__ == "__main__"):
   exercise()

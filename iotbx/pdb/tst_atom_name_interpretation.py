@@ -1,6 +1,7 @@
-from __future__ import division
+"""Test atom_name interpretation"""
+from __future__ import absolute_import, division, print_function
 from iotbx.pdb.atom_name_interpretation import interpreters
-from cStringIO import StringIO
+from six.moves import cStringIO as StringIO
 from libtbx.test_utils import show_diff
 
 def exercise():
@@ -12,7 +13,7 @@ def exercise():
   assert not show_diff(s.getvalue(), """\
 >unexpected atom names: "X"
 >multiple matches: expected pattern=C  names="C", "C"
->mutually exclusive: 1hB 3hB
+>mutually exclusive: 3hB 1hB
 """)
 
   ala_names = ["N", "CA", "C", "O", "CB"]
@@ -26,7 +27,7 @@ def exercise():
   assert ala_h.missing_atom_names(ignore_hydrogen=False) == set(())
 
 
-  print "OK"
+  print("OK")
 
 if (__name__ == "__main__"):
   exercise()

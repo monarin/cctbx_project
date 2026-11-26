@@ -1,6 +1,39 @@
-from __future__ import division
+from __future__ import absolute_import, division, print_function
+
+import io
 import os
 op = os.path
+
+import re
+import tokenize
+
+# Finds flake8-style ignore directives
+# Taken from flake8 source code
+RE_FLAKE8 = re.compile(
+    r"# noqa(?::[\s]?(?P<codes>([A-Z][0-9]+(?:[,\s]+)?)+))?",
+    re.IGNORECASE,
+)
+# re for flake8 to split a string on spaces, commas
+COMMA_SEPARATED_LIST_RE = re.compile(r"[,\s]")
+
+def _lines_inside_string_literals(py_lines):
+  # Returns the 1-indexed line numbers that are fully inside a multi-line
+  # string literal. Example-code shown inside a module docstring would
+  # otherwise be misparsed as real `from X import Y` statements.
+  skip = set()
+  source = "\n".join(py_lines)
+  try:
+    tokens = tokenize.generate_tokens(io.StringIO(source).readline)
+    for tok in tokens:
+      if tok.type != tokenize.STRING:
+        continue
+      start_row, end_row = tok.start[0], tok.end[0]
+      if end_row > start_row:
+        for row in range(start_row + 1, end_row):
+          skip.add(row)
+  except (tokenize.TokenizeError, IndentationError, SyntaxError):
+    pass
+  return skip
 
 def inspect(py_lines):
   imports_to_ignore = set([
@@ -8,9 +41,12 @@ def inspect(py_lines):
     "import libtbx.forward_compatibility",
     "  import libtbx.start_print_trace",
     "    import libtbx.callbacks"])
+  skip_lines = _lines_inside_string_literals(py_lines)
   combined_lines = []
   block = []
-  for line in py_lines:
+  for lineno, line in enumerate(py_lines, start=1):
+    if (lineno in skip_lines):
+      continue
     if (line in imports_to_ignore):
       continue
     l = line.strip()
@@ -34,8 +70,30 @@ def inspect(py_lines):
         continue
       if (l.endswith(" # special import")):
         continue
+      # Look for a flake8-style noqa line
+      noqa = RE_FLAKE8.search(l)
+      if noqa:
+        if not noqa.group("codes"):
+          # We have a blanket noqa
+          continue
+        # Split the codes, find if we are ignoring F401
+        codes = [x.strip() for x in COMMA_SEPARATED_LIST_RE.split(noqa.group("codes"))]
+        if "F401" in codes:
+          continue
+        # Not a valid ignore, but still have a comment - remove from the
+        # import string so that we process correctly
+        l = l[:noqa.start()].strip()
       flds = split()
     elif (l.startswith("from ")):
+      if (l.endswith(" # import dependency")):
+        continue
+      if (l.endswith(" # implicit import")):
+        continue
+      if (l.endswith(" # special import")):
+        continue
+      # from _ import _ handling is rather broken, don't try to flake8 properly
+      if "noqa" in l:
+        continue
       if (l.startswith("from __future__ ")):
         continue
       flds = split()
@@ -73,6 +131,7 @@ def inspect(py_lines):
         i = j+1
   idc = "_0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
   imported_names = set(imported_names_dict.keys())
+  imported_names.discard("(")
   used_names = set()
   for l in non_import_lines:
     filtered = []
@@ -83,17 +142,19 @@ def inspect(py_lines):
     flds = "".join(filtered).split()
     used_names.update(imported_names.intersection(flds))
   unused_names = list(imported_names - used_names)
-  def cmp_input_order(a, b):
-    return cmp(*(imported_names_dict[a], imported_names_dict[b]))
-  unused_names.sort(cmp_input_order)
+  unused_names.sort(key=lambda element: imported_names_dict[element])  # keeps import order
   return unused_names
 
 def show_unused_imports(file_name):
-  unused_imports = inspect(
-    py_lines=open(file_name).read().splitlines())
-  if (len(unused_imports) != 0):
-    print "%s: %s" % (file_name, ", ".join(unused_imports))
-    print
+  try:
+    unused_imports = inspect(
+      py_lines=open(file_name).read().splitlines())
+    if (len(unused_imports) != 0):
+      print("%s: %s" % (file_name, ", ".join(unused_imports)))
+      print()
+  except Exception as e:
+    print('Could not parse file {}, possibly invalid character'.format(file_name))
+    unused_imports = ['Failed to parse file']
   return unused_imports
 
 def walk_func(counter, dirname, names):
@@ -111,18 +172,19 @@ def run(args):
   counter = [0]
   for arg in args:
     if (op.isdir(arg)):
-      op.walk(arg, walk_func, counter)
+      for root, dirs, files in os.walk(arg):
+        walk_func(counter, root, files)
     elif (op.isfile(arg)):
       if (len(show_unused_imports(file_name=arg)) != 0):
         counter[0] += 1
   if (counter[0] != 0):
-    print """\
+    print("""\
 HINT:
   To suppress flagging of unused imports follow these examples:
     import scitbx.array_family.flex # import dependency
     import something.related # implicit import
     import wingdbstub # special import
-"""
+""")
     return (1)
   return (0)
 

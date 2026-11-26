@@ -1,9 +1,8 @@
 
 # LIBTBX_SET_DISPATCHER_NAME cctbx.visualize_r_factors
 # LIBTBX_PRE_DISPATCHER_INCLUDE_SH export PHENIX_GUI_ENVIRONMENT=1
-# LIBTBX_PRE_DISPATCHER_INCLUDE_SH export BOOST_ADAPTBX_FPE_DEFAULT=1
 
-from __future__ import division
+from __future__ import absolute_import, division, print_function
 from crys3d.hklview.frames import *
 from cctbx.miller.display import master_phil
 from wxtbx import icons
@@ -24,7 +23,7 @@ class RfactorFrame (HKLViewFrame) :
       from scitbx.array_family import flex
       try :
         hkl_file = any_reflection_file(file_name)
-      except Exception, e :
+      except Exception as e :
         raise Sorry(str(e))
       arrays = hkl_file.as_miller_arrays(merge_equivalents=True)
       f_obs = f_model = None

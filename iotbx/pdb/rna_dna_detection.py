@@ -1,4 +1,5 @@
-from __future__ import division
+"""Tools for detection of RNA vs DNA"""
+from __future__ import absolute_import, division, print_function
 from scitbx import matrix
 from libtbx import slots_getstate_setstate
 
@@ -89,9 +90,11 @@ class atom_name_analysis(slots_getstate_setstate):
     else:
       return
     if (tab_offs == 2 and O.c2_o2 == "C2* O2*"):
-      O.sub_classification = ""
+      O.sub_classification = "v2"
+    elif (tab_offs == 2 and O.c2_o2 == "C2' O2'"):
+      O.sub_classification = '_mixed'
     elif (tab_offs == 0 and O.c2_o2 == "C2' O2'"):
-      O.sub_classification = "v3"
+      O.sub_classification = ""
     else:
       return
     for required_atom in O.required_atoms:
@@ -99,9 +102,9 @@ class atom_name_analysis(slots_getstate_setstate):
     O.have_all_required_atoms = True
 
   def bond_distance_ideal_by_bond_atom_names(O):
-    if (O.sub_classification == "v3"):
-      return bond_distance_ideal_by_bond_atom_names_v3
-    return bond_distance_ideal_by_bond_atom_names_v2
+    if (O.sub_classification == "v2"):
+      return bond_distance_ideal_by_bond_atom_names_v2
+    return bond_distance_ideal_by_bond_atom_names_v3
 
 def classification(atom_dict, bond_list):
   O = atom_name_analysis(atom_dict=atom_dict)
@@ -158,7 +161,7 @@ class residue_analysis(slots_getstate_setstate):
       O.deoxy_ribo_atom_dict[key] = atom
       del O.atom_dict[key]
     O.p_atom = None
-    for key in O.atom_dict.keys():
+    for key in list(O.atom_dict.keys()):
       if (key.startswith("P")):
         if (key == "P"):
           O.p_atom = O.atom_dict[key]
@@ -182,7 +185,7 @@ class residue_analysis(slots_getstate_setstate):
     if (O.o2p_atom is not None):
       del O.atom_dict["O2'"]
     O.h_atoms = {}
-    for key in O.atom_dict.keys():
+    for key in list(O.atom_dict.keys()):
       if (len(key) == 0):
         O.problems.append("blank_name")
         continue
@@ -193,7 +196,7 @@ class residue_analysis(slots_getstate_setstate):
         O.h_atoms[key] = O.atom_dict[key]
         del O.atom_dict[key]
     O.c1p_outbound_candidates = {}
-    for key in O.atom_dict.keys():
+    for key in list(O.atom_dict.keys()):
       if (key.find("'") >= 0):
         if key == "N2'":
           O.deoxy_ribo_atom_dict[key] = atom

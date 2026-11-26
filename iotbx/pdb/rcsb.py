@@ -1,4 +1,5 @@
-from __future__ import division
+"""Tools for working with RCSB API"""
+from __future__ import absolute_import, division, print_function
 
 from iotbx.pdb.web_service_api import FTPService
 from iotbx.pdb.download import openurl, urlopener, gzip_encoding
@@ -59,7 +60,7 @@ class Redirections(object):
   def __init__(self):
 
     stream = openurl(
-      url = "ftp://ftp.wwpdb.org/pub/pdb/data/status/obsolete.dat",
+      url = "https://files.wwpdb.org/pub/pdb/data/status/obsolete.dat",
       )
 
     chain_redirection_for = parse_pdb_redirections( lineiter = stream )

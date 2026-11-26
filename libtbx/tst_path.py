@@ -1,4 +1,5 @@
-from __future__ import division
+from __future__ import absolute_import, division, print_function
+from six.moves import range
 def exercise_posix_relpath(f, enable_abspath_if_through_root):
   # based on .test_relpath() in Python-2.7.2/Lib/test/test_posixpath.py
   import os
@@ -102,14 +103,16 @@ def exercise_move_old_create_new_directory():
   import os
   mocnd("tmp_mocnd")
   assert len(os.listdir("tmp_mocnd")) == 0
-  for i in xrange(3):
+  for i in range(3):
     mocnd("tmp_mocnd/a")
   assert sorted(os.listdir("tmp_mocnd")) == ["a", "a_001", "a_002"]
-  open("tmp_mocnd/a_23", "w")
+  f = open("tmp_mocnd/a_23", "w")
+  f.close()
   mocnd("tmp_mocnd/a")
   assert sorted(os.listdir("tmp_mocnd")) == [
     "a", "a_001", "a_002", "a_024", "a_23"]
-  open("tmp_mocnd/a_log", "w")
+  f = open("tmp_mocnd/a_log", "w")
+  f.close()
   mocnd("tmp_mocnd/a")
   assert sorted(os.listdir("tmp_mocnd")) == [
     "a", "a_001", "a_002", "a_024", "a_025", "a_23", "a_log"]
@@ -120,27 +123,34 @@ def exercise_move_old_create_new_directory():
   assert sorted(os.listdir("tmp_mocnd")) == [
     "a", "a_001", "a_002", "a_024", "a_025", "a_23", "a_log", "b", "b1"]
 
-def exercise_cleanup () :
+def exercise_cleanup():
   from libtbx.path import clean_out_directory
-  from cStringIO import StringIO
+  from six.moves import cStringIO as StringIO
   import shutil
   import os
-  if os.path.isdir("tmp_libtbx_path_cleanup") :
+  if os.path.isdir("tmp_libtbx_path_cleanup"):
     shutil.rmtree("tmp_libtbx_path_cleanup")
   os.mkdir("tmp_libtbx_path_cleanup")
   os.chdir("tmp_libtbx_path_cleanup")
   os.makedirs("AutoSol_run_1_/TEMP0")
   os.makedirs("AutoBuild_run_2_/TEMP0")
   os.makedirs("AutoBuild_run_2_/resolve_1.ccp4")
-  open("AutoBuild_run_2_/TEMP0/model.pdb", "w").write("END\n")
+  with open("AutoBuild_run_2_/TEMP0/model.pdb", "w") as f:
+    f.write("END\n")
   os.makedirs("Refine_3/.comm")
-  open("Refine_3/refine_3.geo", "w").write("\n")
-  open("Refine_3/refine_3.kin", "w").write("\n")
-  open("Refine_3/refine_3_2fofc.ccp4", "w").write("\n")
-  open("Refine_3/refine_3_fofc.xplor", "w").write("\n")
-  open("probe.txt", "w").write("\n")
+  with open("Refine_3/refine_3.geo", "w") as f:
+    f.write("\n")
+  with open("Refine_3/refine_3.kin", "w") as f:
+    f.write("\n")
+  with open("Refine_3/refine_3_2fofc.ccp4", "w") as f:
+    f.write("\n")
+  with open("Refine_3/refine_3_fofc.xplor", "w") as f:
+    f.write("\n")
+  with open("probe.txt", "w") as f:
+    f.write("\n")
   os.mkdir("FFT_4")
-  open("FFT_4/refine_3_2fofc.ccp4", "w").write("\n")
+  with open("FFT_4/refine_3_2fofc.ccp4", "w") as f:
+    f.write("\n")
   c_o_d = clean_out_directory(".")
   out = StringIO()
   c_o_d.show(out=out)
@@ -158,18 +168,77 @@ The following 5 files will be deleted:
 0.0 KB of disk space will be freed.
 """), out.getvalue()
 
+def exercise_symlinks_in_relocatable_path():
+  import os
+  import tempfile
+  from libtbx.path import abs_real_norm, absolute_path, relocatable_path
+
+  cwd = abs_real_norm(os.getcwd())  # ensure no symbolic links
+
+  with tempfile.NamedTemporaryFile(dir=cwd) as f:
+
+    original = f.name
+    link = os.path.join(cwd, 'abc')
+    os.symlink(original, link)
+
+    # symbolic link is resolved
+    l = relocatable_path(absolute_path(cwd), link)
+    assert abs(l) == original
+
+    # symbolic link is kept
+    l = relocatable_path(absolute_path(cwd), link, resolve_symlinks=False)
+    assert abs(l) == link
+
+def exercise_relocatable_path_ordering():
+  """
+  relocatable_path must be sortable (libtbx.refresh sorts include files).
+  """
+  import os
+  from libtbx.path import absolute_path, relocatable_path
+  anchor = absolute_path(os.getcwd())
+  b = relocatable_path(anchor, "dispatcher_include_b.sh")
+  a = relocatable_path(anchor, "dispatcher_include_a.sh")
+  c = relocatable_path(anchor, "dispatcher_include_c.sh")
+  # ordering follows the absolute path
+  assert a < b
+  assert not (b < a)
+  assert b > a
+  assert not (a < a)
+  paths = [b, c, a]
+  paths.sort()
+  assert [p.basename() for p in paths] == [
+    "dispatcher_include_a.sh",
+    "dispatcher_include_b.sh",
+    "dispatcher_include_c.sh"]
+  assert sorted([c, a, b])[0] is a
+  assert min(b, c, a) is a
+  # paths on different anchors still order by absolute path
+  # (os.path.abspath(os.sep) gives the drive root on Windows; a bare
+  # os.sep is not absolute there on Python >= 3.13)
+  other = relocatable_path(absolute_path(os.path.abspath(os.sep)), "zzz")
+  assert (a < other) == (abs(a) < abs(other))
+  # comparing against a non-path raises TypeError, not AttributeError
+  try:
+    a < "dispatcher_include_a.sh"
+  except TypeError:
+    pass
+  else:
+    raise AssertionError("expected TypeError comparing path with str")
+
 def run(args):
   assert len(args) == 0
   exercise_relpath()
+  exercise_relocatable_path_ordering()
   exercise_move_old_create_new_directory()
   from libtbx.path import random_new_directory_name
   assert len(random_new_directory_name()) == len("tmp_dir_00000000")
   import os
   if (os.name == "nt") : # FIXME
-    print "skipping directory cleanup test on Windows"
+    print("skipping directory cleanup and symbolic link tests on Windows")
   else :
     exercise_cleanup()
-  print "OK"
+    exercise_symlinks_in_relocatable_path()
+  print("OK")
 
 if (__name__ == "__main__"):
   import sys

@@ -1,5 +1,5 @@
-from __future__ import division
-import time, os
+from __future__ import absolute_import, division, print_function
+import time, os, random
 import iotbx.pdb
 import mmtbx.utils
 from mmtbx import monomer_library
@@ -9,9 +9,13 @@ from mmtbx.geometry_restraints import reference
 from iotbx import reflection_file_reader
 import libtbx.load_env
 
+#if (1):
+#  random.seed(0)
+#  flex.set_random_seed(0)
+
 def ccp4_map(crystal_symmetry, file_name, map_data):
-  from iotbx import ccp4_map
-  ccp4_map.write_ccp4_map(
+  from iotbx import mrcfile
+  mrcfile.write_ccp4_map(
       file_name=file_name,
       unit_cell=crystal_symmetry.unit_cell(),
       space_group=crystal_symmetry.space_group(),
@@ -33,7 +37,7 @@ def run(prefix="tst_00"):
   ph_poor.atoms().reset_i_seq()
   xrs_poor = pdb_inp.xray_structure_simple()
   # Initialize states accumulator
-  states = mmtbx.utils.states(pdb_hierarchy=ph_poor, xray_structure=xrs_poor)
+  states = mmtbx.utils.states(pdb_hierarchy=ph_poor)
   states.add(sites_cart = xrs_poor.sites_cart())
   # Compute target map
   mas = reflection_file_reader.any_reflection_file(file_name =
@@ -92,10 +96,13 @@ def run(prefix="tst_00"):
     map_data                = target_map_data,
     restraints_manager      = restraints_manager,
     states                  = states)
-  print "Time: %6.4f"%(time.time()-t0)
+  print("Time: %6.4f"%(time.time()-t0))
   ear.pdb_hierarchy.write_pdb_file(file_name="%s_refined.pdb"%prefix)
   states.write(file_name="%s_refined_all_states.pdb"%prefix)
 
 if (__name__ == "__main__"):
+  rs = 3292014
+  random.seed(rs)
+  flex.set_random_seed(rs)
   run()
-  print "OK"
+  print("OK")

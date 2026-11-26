@@ -1,0 +1,183 @@
+from __future__ import absolute_import, division, print_function
+import time
+from mmtbx.hydrogens.tst_add_hydrogen_1 import compare_models
+
+
+def run():
+  test_000()
+  test_001()
+
+# ------------------------------------------------------------------------------
+
+def test_000():
+  '''
+    8b0x: NA 1MG not in GeoStd but in CCD
+    renamed 1_G: 1MG is in GeoStd since 2026-09. 1_G classifies as 'other',
+    not modified_rna_dna, which turns the unrestrained methyl by 10 deg.
+    No HOP2: the 1_G phosphate bridges to U 746 (phosphodiester).
+    Methyl HM11-13: sites and names at their CCD torsions (period 1, one per
+    H; residual < 0.6 deg); reduce2 names the propeller by those torsions
+    (A62b). Before, the names were 120-130 deg off.
+    PSU 748: GeoStd's v3 names since 2026-11-25 (H1' ... H5''; HO2* is still
+    its name there). H5' and H5'' are named as in U and 1_G now (before,
+    H5*1 and H5*2 the other way round); H2' and H3' at the new entry's angles
+    (0.16 and 0.10 A from the old sites). H1' and H4' still sit on C2' and
+    C3' (the entry has no angles for them).
+  '''
+  compare_models(pdb_str = pdb_str_000)
+
+# ------------------------------------------------------------------------------
+
+def test_001():
+  '''
+    8b0x : AA I_S not in GeoStd but in CCD
+    The I_S backbone amide H is placed in the peptide plane (planar amide);
+    its CCD ideal angles around N do not sum to 360, but the planarity
+    restraint is honored during riding-H parameterization.
+  '''
+  compare_models(pdb_str = pdb_str_001)
+
+# ------------------------------------------------------------------------------
+
+pdb_str_000 = '''
+REMARK 8b0x Nucleic acid not in GeoStd but in CCD
+CRYST1   28.431   20.721   26.994  90.00  90.00  90.00 P 1
+ATOM      1  P     U a 746     190.791 173.749 228.202  1.00 24.18           P
+ATOM      2  OP1   U a 746     189.406 173.905 228.644  1.00 29.62           O
+ATOM      3  OP2   U a 746     191.624 174.946 228.072  1.00 28.77           O
+ATOM      4  O5'   U a 746     191.522 172.813 229.253  1.00 27.47           O
+ATOM      5  C5'   U a 746     191.045 171.511 229.537  1.00 15.66           C
+ATOM      6  C4'   U a 746     192.035 170.736 230.368  1.00 17.08           C
+ATOM      7  O4'   U a 746     193.318 170.677 229.695  1.00 30.54           O
+ATOM      8  C3'   U a 746     192.364 171.328 231.727  1.00 18.32           C
+ATOM      9  O3'   U a 746     191.389 171.026 232.704  1.00 24.12           O
+ATOM     10  C2'   U a 746     193.726 170.723 232.029  1.00 19.11           C
+ATOM     11  O2'   U a 746     193.595 169.388 232.475  1.00 29.64           O
+ATOM     12  C1'   U a 746     194.362 170.693 230.643  1.00 16.50           C
+ATOM     13  N1    U a 746     195.226 171.868 230.396  1.00 17.24           N
+ATOM     14  C2    U a 746     196.463 171.871 230.996  1.00 15.21           C
+ATOM     15  O2    U a 746     196.846 170.979 231.708  1.00 30.13           O
+ATOM     16  N3    U a 746     197.237 172.962 230.753  1.00 16.77           N
+ATOM     17  C4    U a 746     196.891 174.027 229.969  1.00 13.48           C
+ATOM     18  O4    U a 746     197.676 174.943 229.829  1.00 22.26           O
+ATOM     19  C5    U a 746     195.597 173.961 229.386  1.00 11.37           C
+ATOM     20  C6    U a 746     194.827 172.906 229.603  1.00 11.42           C
+ATOM     21  H5'   U a 746     190.892 171.040 228.703  1.00 15.66           H
+ATOM     22 H5''   U a 746     190.207 171.578 230.021  1.00 15.66           H
+ATOM     23  H4'   U a 746     191.704 169.832 230.484  1.00 17.08           H
+ATOM     24  H3'   U a 746     192.451 172.290 231.644  1.00 18.32           H
+ATOM     25  H2'   U a 746     194.231 171.285 232.637  1.00 19.11           H
+ATOM     26 HO2'   U a 746     193.894 168.872 231.884  1.00 29.64           H
+ATOM     27  H1'   U a 746     194.893 169.887 230.546  1.00 16.50           H
+ATOM     28  H5    U a 746     195.291 174.658 228.852  1.00 11.37           H
+ATOM     29  H3    U a 746     198.012 172.984 231.125  1.00 16.77           H
+ATOM     30  H6    U a 746     193.988 172.871 229.203  1.00 11.42           H
+HETATM   31  P   1_G a 747     190.966 172.094 233.822  1.00 27.14           P
+HETATM   32  OP1 1_G a 747     189.932 171.442 234.683  1.00 29.99           O
+HETATM   33  OP2 1_G a 747     190.694 173.406 233.189  1.00 28.21           O
+HETATM   34  O5' 1_G a 747     192.284 172.337 234.672  1.00 32.67           O
+HETATM   35  C5' 1_G a 747     192.898 171.307 235.426  1.00 18.81           C
+HETATM   36  C4' 1_G a 747     194.258 171.737 235.913  1.00 17.75           C
+HETATM   37  O4' 1_G a 747     195.172 171.868 234.789  1.00 26.40           O
+HETATM   38  C3' 1_G a 747     194.324 173.085 236.621  1.00 16.28           C
+HETATM   39  O3' 1_G a 747     194.002 172.984 237.995  1.00 33.38           O
+HETATM   40  C2' 1_G a 747     195.757 173.518 236.363  1.00 20.77           C
+HETATM   41  O2' 1_G a 747     196.639 172.805 237.211  1.00 27.89           O
+HETATM   42  C1' 1_G a 747     195.952 173.027 234.932  1.00 16.90           C
+HETATM   43  N9  1_G a 747     195.477 174.003 233.938  1.00 19.63           N
+HETATM   44  C8  1_G a 747     194.387 174.350 233.254  1.00 15.76           C
+HETATM   45  N7  1_G a 747     194.681 175.398 232.479  1.00 21.92           N
+HETATM   46  C5  1_G a 747     195.946 175.695 232.679  1.00 11.83           C
+HETATM   47  C6  1_G a 747     196.811 176.791 232.068  1.00 14.99           C
+HETATM   48  O6  1_G a 747     196.378 177.540 231.277  1.00 30.56           O
+HETATM   49  N1  1_G a 747     198.165 176.902 232.458  1.00 19.56           N
+HETATM   50  C2  1_G a 747     198.717 175.994 233.414  1.00 13.58           C
+HETATM   51  N2  1_G a 747     200.098 176.122 233.810  1.00 17.42           N
+HETATM   52  N3  1_G a 747     197.883 174.951 233.990  1.00 19.17           N
+HETATM   53  C4  1_G a 747     196.462 174.828 233.594  1.00 13.16           C
+HETATM   54  CM1 1_G a 747     198.992 177.952 231.864  1.00 15.85           C
+HETATM   55  H5' 1_G a 747     192.994 170.520 234.868  1.00 18.81           H
+HETATM   56 H5'' 1_G a 747     192.338 171.096 236.190  1.00 18.81           H
+HETATM   57  H4' 1_G a 747     194.606 171.058 236.513  1.00 17.75           H
+HETATM   58  H3' 1_G a 747     193.720 173.710 236.191  1.00 16.28           H
+HETATM   59  H2' 1_G a 747     195.879 174.478 236.435  1.00 20.77           H
+HETATM   60 HO2' 1_G a 747     196.427 172.999 238.000  1.00 27.89           H
+HETATM   61  H1' 1_G a 747     196.890 172.835 234.779  1.00 16.90           H
+HETATM   62  H8  1_G a 747     193.558 173.932 233.307  1.00 15.76           H
+HETATM   63 HM11 1_G a 747     199.264 178.579 232.553  1.00 15.85           H
+HETATM   64 HM12 1_G a 747     199.779 177.554 231.460  1.00 15.85           H
+HETATM   65 HM13 1_G a 747     198.482 178.420 231.185  1.00 15.85           H
+HETATM   66 HN21 1_G a 747     200.453 175.538 234.332  1.00 17.42           H
+HETATM   67 HN22 1_G a 747     200.569 176.783 233.525  1.00 17.42           H
+HETATM   70  P   PSU a 748     192.982 174.005 238.688  1.00 29.88           P
+HETATM   71  OP1 PSU a 748     192.917 173.694 240.110  1.00 34.23           O
+HETATM   72  OP2 PSU a 748     191.757 174.123 237.896  1.00 35.52           O
+HETATM   73  O5' PSU a 748     193.729 175.400 238.657  1.00 25.22           O
+HETATM   74  C5' PSU a 748     195.005 175.546 239.249  1.00 17.99           C
+HETATM   75  C4' PSU a 748     195.584 176.910 239.005  1.00 21.55           C
+HETATM   76  O4' PSU a 748     195.746 177.109 237.575  1.00 34.60           O
+HETATM   77  C3' PSU a 748     194.742 178.084 239.521  1.00 26.03           C
+HETATM   78  O3' PSU a 748     195.599 179.009 240.187  1.00 39.51           O
+HETATM   79  C2' PSU a 748     194.189 178.720 238.242  1.00 32.03           C
+HETATM   80  O2' PSU a 748     193.979 180.109 238.329  1.00 35.69           O
+HETATM   81  C1' PSU a 748     195.274 178.385 237.220  1.00 27.56           C
+HETATM   82  N1  PSU a 748     193.111 178.258 234.111  1.00 22.52           N
+HETATM   83  C2  PSU a 748     193.900 178.923 233.205  1.00 20.88           C
+HETATM   84  O2  PSU a 748     193.538 179.095 232.055  1.00 37.00           O
+HETATM   85  N3  PSU a 748     195.120 179.401 233.588  1.00 24.70           N
+HETATM   86  C4  PSU a 748     195.551 179.219 234.874  1.00 24.43           C
+HETATM   87  O4  PSU a 748     196.644 179.656 235.189  1.00 39.49           O
+HETATM   88  C5  PSU a 748     194.773 178.535 235.795  1.00 22.87           C
+HETATM   89  C6  PSU a 748     193.535 178.073 235.382  1.00 24.03           C
+HETATM   90  H4' PSU a 748     194.894 177.655 239.402  1.00 21.55           H
+HETATM   91  H3' PSU a 748     193.925 177.731 240.151  1.00 26.03           H
+HETATM   92  H2' PSU a 748     193.270 178.204 237.964  1.00 32.03           H
+HETATM   93 HO2* PSU a 748     194.584 180.563 237.706  1.00 35.69           H
+HETATM   94  H1' PSU a 748     194.430 178.602 237.875  1.00 27.56           H
+HETATM   95 H5'' PSU a 748     194.924 175.377 240.323  1.00 17.99           H
+HETATM   96  H5' PSU a 748     195.678 174.792 238.841  1.00 17.99           H
+HETATM   97  H6  PSU a 748     192.892 177.552 236.092  1.00 24.03           H
+HETATM   98  HN1 PSU a 748     192.182 177.894 233.818  1.00 22.52           H
+HETATM   99  HN3 PSU a 748     195.721 179.903 232.903  1.00 24.70           H
+'''
+
+pdb_str_001 = '''
+REMARK 8b0x : AA IAS not in GeoStd but in CCD
+REMARK renamed IAS to I_S with special code that will never be in the geostd
+CRYST1   23.974   19.428   18.316  90.00  90.00  90.00 P 1
+ATOM      1  N   HIS K 118     259.542 213.935 173.314  1.00 42.87           N
+ATOM      2  CA  HIS K 118     260.103 212.912 172.395  1.00 40.58           C
+ATOM      3  C   HIS K 118     259.160 211.702 172.368  1.00 45.38           C
+ATOM      4  O   HIS K 118     259.567 210.597 172.705  1.00 50.69           O
+ATOM      5  CB  HIS K 118     261.533 212.538 172.779  1.00 41.45           C
+ATOM      6  CG  HIS K 118     262.509 213.642 172.507  1.00 45.81           C
+ATOM      7  ND1 HIS K 118     262.162 214.806 171.870  1.00 46.16           N
+ATOM      8  CD2 HIS K 118     263.832 213.736 172.814  1.00 42.53           C
+ATOM      9  CE1 HIS K 118     263.231 215.590 171.781  1.00 44.04           C
+ATOM     10  NE2 HIS K 118     264.276 214.947 172.363  1.00 44.79           N
+ATOM     11  H   HIS K 118     259.797 214.738 173.141  1.00 42.87           H
+ATOM     12  HA  HIS K 118     260.174 213.260 171.493  1.00 40.58           H
+ATOM     13  HB2 HIS K 118     261.563 212.336 173.727  1.00 41.45           H
+ATOM     14  HB3 HIS K 118     261.806 211.762 172.265  1.00 41.45           H
+ATOM     15  HD1 HIS K 118     261.377 214.998 171.575  1.00 46.16           H
+ATOM     16  HD2 HIS K 118     264.341 213.093 173.251  1.00 42.53           H
+ATOM     17  HE1 HIS K 118     263.259 216.433 171.388  1.00 44.04           H
+ATOM     18  HE2 HIS K 118     265.078 215.249 172.435  1.00 44.79           H
+HETATM   19  N   I_S K 119     257.964 211.947 171.869  1.00 44.51           N
+HETATM   20  CA  I_S K 119     256.995 210.879 171.523  1.00 47.09           C
+HETATM   21  C   I_S K 119     255.993 211.448 170.505  1.00 52.64           C
+HETATM   22  O   I_S K 119     255.168 210.666 170.043  1.00 53.29           O
+HETATM   23  CB  I_S K 119     256.323 210.322 172.779  1.00 42.46           C
+HETATM   24  CG  I_S K 119     255.676 211.385 173.653  1.00 44.06           C
+HETATM   25  OD1 I_S K 119     255.162 212.373 173.118  1.00 43.83           O
+HETATM   26  OXT I_S K 119     256.063 212.654 170.241  1.00 50.48           O
+HETATM   27  H   I_S K 119     257.640 212.726 171.701  1.00 44.51           H
+HETATM   28  HA  I_S K 119     257.449 210.125 171.115  1.00 47.09           H
+HETATM   29  HB2 I_S K 119     255.637 209.693 172.506  1.00 42.46           H
+HETATM   30  HB3 I_S K 119     256.994 209.861 173.306  1.00 42.46           H
+'''
+
+if (__name__ == "__main__"):
+  t0 = time.time()
+  run()
+  print("OK. Time: %8.3f"%(time.time()-t0))

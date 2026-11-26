@@ -1,4 +1,5 @@
-from __future__ import division
+from __future__ import absolute_import, division, print_function
+from six.moves import range
 import math
 
 """radius is taken to be d_star, or 1/resolution limit in units of distance"""
@@ -55,7 +56,7 @@ class simplex_integration:
     Nsteps = 100
     dz = R/Nsteps
     weighted_sum = 0.0
-    for iz in xrange(Nsteps):
+    for iz in range(Nsteps):
       z = (2*iz+1)*R/(2.*Nsteps)
       if z > V:  # area element is part of segment S
         chord_length = 2. * math.sqrt(R*R - z*z)
@@ -82,8 +83,8 @@ def v_coordinate(R,K):
 def print_table():
   wavelength = 1.0 # Angstrom
   K = 1./wavelength
-  print "R     K      Vsph  Vewld     D      S      V    Xroid  Vobs   o/s    S/V  Xroid/R"
-  for x in xrange(1,21):
+  print("R     K      Vsph  Vewld     D      S      V    Xroid  Vobs   o/s    S/V  Xroid/R")
+  for x in range(1,21):
     radius = 0.1 * x # inverse Angstroms
     Vsph = sphere_volume(radius) # reciprocal space volume out to inverse resolution == radius
     Vewld= vol_of_Ewald_sphere_solid_of_revolution(wavelength) # reciprocal space volume
@@ -94,17 +95,18 @@ def print_table():
     centroid = simplex_integration(D,S,radius,K,V).centroid
     Vobs2 = sphere_volume_minus_missing_cone(radius,wavelength)# actual reciprocal space volume
            # observed (inside Ewald sphere torus of rotation & inside resolution-limit)
-    print "%5.3f %5.3f %6.3f %6.3f %6.3f %6.3f %6.3f %6.3f %6.3f %6.3f %6.3f %6.3f"%(
-      radius,1./wavelength,Vsph,Vewld,D,S,V,centroid,Vobs2,Vobs2/Vsph,S/V,centroid/radius)
-  print "At the R=2K limit, expected Vewld/Vsph ratio is [3*pi/16]=%6.3f, found %6.3f"%(
-    (3.*math.pi/16.),Vewld/Vsph)
-  print "At the R=2K limit, expected area D is [pi*K^2]=%6.3f, found %6.3f"%(
-    (K*K*math.pi),D)
-  print "At the R=0 limit, expected S/V==pi and centroid/R = 4/(3*pi) = 0.4244 [from mathworld.wolfram.com]"
+    print("%5.3f %5.3f %6.3f %6.3f %6.3f %6.3f %6.3f %6.3f %6.3f %6.3f %6.3f %6.3f"%(
+      radius,1./wavelength,Vsph,Vewld,D,S,V,centroid,Vobs2,Vobs2/Vsph,S/V,centroid/radius))
+  print("At the R=2K limit, expected Vewld/Vsph ratio is [3*pi/16]=%6.3f, found %6.3f"%(
+    (3.*math.pi/16.),Vewld/Vsph))
+  print("At the R=2K limit, expected area D is [pi*K^2]=%6.3f, found %6.3f"%(
+    (K*K*math.pi),D))
+  print("At the R=0 limit, expected S/V==pi and centroid/R = 4/(3*pi) = 0.4244 [from mathworld.wolfram.com]")
 
 def test_formulae():
-  import sys,cStringIO
-  F = cStringIO.StringIO()
+  import sys
+  from six.moves import cStringIO as StringIO
+  F = StringIO()
   sys.stdout = F
   print_table()
   result = F.getvalue()
@@ -139,4 +141,4 @@ At the R=0 limit, expected S/V==pi and centroid/R = 4/(3*pi) = 0.4244 [from math
 
 if __name__=="__main__":
   test_formulae()
-  print "OK"
+  print("OK")

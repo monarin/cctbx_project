@@ -1,4 +1,3 @@
-
 """
 Library of convenience functions for working with models and reflection data.
 This contains a number of routines used in phenix.refine and related programs,
@@ -10,7 +9,7 @@ wraps much of the functionality in :py:mod:`mmtbx.utils` while hiding the
 messy details.
 """
 
-from __future__ import division
+from __future__ import absolute_import, division, print_function
 from mmtbx.scaling import twin_analyses
 from cctbx import miller
 from cctbx import crystal
@@ -23,7 +22,7 @@ import iotbx.phil
 from iotbx import reflection_file_utils
 from iotbx.pdb import xray_structure
 from iotbx import pdb
-from cStringIO import StringIO
+from six.moves import cStringIO as StringIO
 from cctbx import adptbx
 from mmtbx import monomer_library
 import mmtbx.monomer_library.server
@@ -34,17 +33,18 @@ from iotbx import cif
 from libtbx import str_utils
 from libtbx.str_utils import show_string
 from libtbx import adopt_init_args
+from libtbx import easy_run
 import random, sys, os
 from libtbx.test_utils import approx_equal
 from mmtbx.refinement import print_statistics
 from mmtbx.twinning import twin_f_model
 import mmtbx.bulk_solvent.bulk_solvent_and_scaling as bss
 import mmtbx.f_model
-import mmtbx.restraints
+import mmtbx.restraints # import dependency
 import mmtbx.tls.tools
 from mmtbx.scaling import outlier_rejection
 import mmtbx.command_line.fmodel
-from cctbx import french_wilson
+import mmtbx.programs.fmodel
 import libtbx.callbacks # import dependency
 from libtbx.math_utils import ifloor, iceil
 from cctbx import maptbx
@@ -54,740 +54,25 @@ from iotbx.cns.miller_array import crystal_symmetry_as_cns_comments
 from iotbx.file_reader import any_file
 from mmtbx.rotamer.rotamer_eval import RotamerEval
 
-import boost.python
-utils_ext = boost.python.import_ext("mmtbx_utils_ext")
+import boost_adaptbx.boost.python as bp
+from six.moves import zip
+from six.moves import range
+utils_ext = bp.import_ext("mmtbx_utils_ext")
 from mmtbx_utils_ext import *
 
-import boost.python
+import boost_adaptbx.boost.python as bp
 from mmtbx import bulk_solvent
-ext = boost.python.import_ext("mmtbx_f_model_ext")
+ext = bp.import_ext("mmtbx_f_model_ext")
 
 import mmtbx.rotamer
 
-def miller_array_symmetry_safety_check(miller_array,
-                                       data_description,
-                                       working_point_group,
-                                       symmetry_safety_check,
-                                       log):
-  msg = miller_array.crystal_symmetry_is_compatible_with_symmetry_from_file(
-    working_point_group = working_point_group).format_error_message(
-      data_description = data_description)
-  if(msg is not None):
-     if(symmetry_safety_check == "warning"):
-        print >> log, "*" * 79
-        print >> log, "WARNING:", msg
-        print >> log, "*" * 79
-     else:
-        raise Sorry(msg + """
-  The program inspects all inputs to determine the working crystal
-  symmetry (unit cell & space group).
-  Please check the working crystal symmetry shown above. If it is
-  not correct, use the --unit_cell, --space_group, or --symmetry
-  option to specify the correct unit cell parameters and space group
-  symbol.
-  If the working crystal symmetry is in fact correct, disable this
-  error by adding
-    refinement.input.symmetry_safety_check=warning
-  to the command line arguments.
-""")
-
-def explain_how_to_generate_array_of_r_free_flags(log, flags_parameter_scope):
-  part1 = """\
-If previously used R-free flags are available run this command again
-with the name of the file containing the original flags as an
-additional input. If the structure was never refined before, or if the
-original R-free flags are unrecoverable, run this command again with
-the additional definition:
-
-"""
-  part3 = """
-
-If the structure was refined previously using different R-free flags,
-the values for R-free will become meaningful only after many cycles of
-refinement.
-"""
-  print >> log, part1 + flags_parameter_scope+""".generate=True""" + part3
-
-data_and_flags_str_part1 = """\
-  file_name = None
-    .type=path
-    .short_caption=Reflections file
-    .style = bold input_file file_type:hkl noauto process_hkl \
-      child:fobs:labels child:d_min:high_resolution \
-      child:d_max:low_resolution child:rfree_file:r_free_flags.file_name
-    .expert_level = 0
-  labels = None
-    .type=strings
-    .input_size = 160
-    .short_caption = Data labels
-    .style = bold renderer:draw_fobs_label_widget noauto \
-      OnChange:auto_update_label_choice child:d_min:high_resolution \
-      child:d_max:low_resolution parent:file_name:file_name
-    .expert_level = 0
-  high_resolution = None
-    .type=float
-    .input_size = 80
-    .style = bold renderer:draw_resolution_widget noauto
-    .expert_level = 0
-  low_resolution = None
-    .type=float
-    .input_size = 80
-    .style = bold renderer:draw_resolution_widget noauto
-    .expert_level = 0
-  outliers_rejection = True
-    .type=bool
-    .short_caption = Reject outliers
-    .help = Remove "basic wilson outliers", "extreme wilson outliers", and \
-              "beamstop shadow outliers"
-    .expert_level = 0
-  french_wilson_scale = True
-    .type=bool
-    .short_caption = use French-Wilson method to handle negative intensities
-  french_wilson
-  {
-     include scope cctbx.french_wilson.master_phil
-  }
-  sigma_fobs_rejection_criterion = None
-    .type=float
-    .short_caption = Sigma(Fobs) rejection criterion
-    .expert_level = 0
-  sigma_iobs_rejection_criterion = None
-    .type=float
-    .short_caption = Sigma(Iobs) rejection criterion
-    .expert_level = 0
-"""
-
-data_and_flags_str_part2 = """\
-  file_name = None
-    .type=path
-    .short_caption=File with R(free) flags
-    .help = This is normally the same as the file containing Fobs and is \
-      usually selected automatically.
-    .input_size = 200
-    .style = noauto input_file file_type:hkl process_hkl child:rfree:label
-    .expert_level = 0
-  label = None
-    .type=str
-    .short_caption = R-free label
-    .input_size = 160
-    .style = bold renderer:draw_rfree_label_widget noauto \
-             OnChange:update_rfree_flag_value
-    .expert_level = 0
-  test_flag_value = None
-    .type=int
-    .help = This value is usually selected automatically - do not change \
-      unless you really know what you're doing!
-    .style = noauto
-    .expert_level = 0
-  ignore_r_free_flags = False
-    .type=bool
-    .short_caption = Ignore R-free flags
-    .help = Use all reflections in refinement (work and test)
-    .expert_level=0
-"""
-
-data_and_flags_str = """\
-  %s
-  ignore_all_zeros = True
-    .type=bool
-    .short_caption = Ignore all-zero arrays
-    .expert_level = 1
-  force_anomalous_flag_to_be_equal_to = None
-    .type=bool
-    .short_caption = Use anomalous data
-    .style = tribool
-    .expert_level = 1
-  convert_to_non_anomalous_if_ratio_pairs_lone_less_than_threshold=0.5
-    .type = float
-    .expert_level = 2
-  r_free_flags
-    .expert_level=0
-    .style = box auto_align
-    .caption = This information will be extracted automatically if possible. \
-      If no test set is present in the reflections file, one can be generated \
-      automatically, or you can use the reflection file editor to combine an \
-      existing set with your X-ray or neutron data.
-  {
-    %s
-    disable_suitability_test = False
-      .type=bool
-      .expert_level = 2
-    ignore_pdb_hexdigest = False
-      .type=bool
-      .short_caption = Ignore PDB hexdigest sanity check
-      .help=If True, disables safety check based on MD5 hexdigests stored in \
-            PDB files produced by previous runs.
-      .expert_level=2
-    generate = False
-      .type=bool
-      .short_caption = Generate new R-free flags
-      .help = Generate R-free flags (if not available in input files)
-    %s
-  }
-""" % (data_and_flags_str_part1,
-       data_and_flags_str_part2,
-       miller.generate_r_free_params_str)
-
-xray_data_str = """\
-xray_data
-  .help=Scope of X-ray data and free-R flags
-  .style = scrolled auto_align
-{
-  %s
-}
-"""%data_and_flags_str
-
-neutron_data_str = """\
-neutron_data
-  .help=Scope of neutron data and neutron free-R flags
-  .style = scrolled auto_align
-{
-  ignore_xn_free_r_mismatch = False
-    .type = bool
-    .expert_level=2
-    .short_caption = Ignore Xray/neutron R-free flags set mismatch
-  %s
-}
-
-"""%data_and_flags_str
-
-def data_and_flags_master_params(master_scope_name=None):
-  if(master_scope_name is not None):
-    p = """\
-%s
-{
-%s
-}
-"""
-    return iotbx.phil.parse(p%(master_scope_name, data_and_flags_str), process_includes=True)
-  else:
-    return iotbx.phil.parse(data_and_flags_str, process_includes=True)
-
-class determine_data_and_flags(object):
-  """
-  Encapsulates logic for extracting experimental amplitudes and R-free flags
-  from the given input file(s).  This expects that the standard parameter block
-  is being used.  Determination of appropriate data labels will be as automatic
-  as possible, or will give clear feedback when ambiguity exists.  If not
-  found in the inputs, the R-free flags can be created if desired.
-  """
-  def __init__(self, reflection_file_server,
-                     parameters = None,
-                     data_parameter_scope = "",
-                     flags_parameter_scope = "",
-                     data_description = None,
-                     working_point_group = None,
-                     symmetry_safety_check = None,
-                     remark_r_free_flags_md5_hexdigest = None,
-                     extract_r_free_flags = True,
-                     keep_going = False,
-                     log = None,
-                     prefer_anomalous = None,
-                     force_non_anomalous = False):
-    adopt_init_args(self, locals())
-    if(self.parameters is None):
-      self.parameters = data_and_flags_master_params().extract()
-    self.intensity_flag = False
-    self.f_obs = None
-    self.r_free_flags = None
-    self.test_flag_value = None
-    self.r_free_flags_md5_hexdigest = None
-    if(data_description is not None):
-      print_statistics.make_header(data_description, out = log)
-    self.raw_data = self.extract_data()
-    data_info = self.raw_data.info()
-    self.f_obs = self.data_as_f_obs(f_obs = self.raw_data)
-    self.f_obs.set_info(data_info)
-    if(extract_r_free_flags):
-      self.raw_flags = self.extract_flags(data = self.raw_data)
-      if(self.raw_flags is not None):
-        flags_info = self.raw_flags.info()
-    if(extract_r_free_flags and self.raw_flags is not None):
-      self.get_r_free_flags()
-      self.r_free_flags.set_info(flags_info)
-
-  def get_r_free_flags(self):
-    self.r_free_flags,self.test_flag_value,self.r_free_flags_md5_hexdigest =\
-      self.flags_as_r_free_flags(f_obs = self.f_obs, r_free_flags =
-      self.raw_flags)
-    self.r_free_flags.set_info(self.raw_flags.info())
-
-  def extract_data(self):
-    data = self.reflection_file_server.get_xray_data(
-      file_name        = self.parameters.file_name,
-      labels           = self.parameters.labels,
-      ignore_all_zeros = self.parameters.ignore_all_zeros,
-      parameter_scope  = self.data_parameter_scope,
-      prefer_anomalous = self.prefer_anomalous)
-    self.parameters.file_name = data.info().source
-    self.parameters.labels = [data.info().label_string()]
-    if(data.is_xray_intensity_array()):
-      print >> self.log, "I-obs:"
-      self.intensity_flag = True
-    else:
-      print >> self.log, "F-obs:"
-    print >> self.log, " ", data.info()
-    if([self.data_description, self.working_point_group,
-       self.symmetry_safety_check].count(None) == 0):
-      miller_array_symmetry_safety_check(
-        miller_array          = data,
-        data_description      = self.data_description,
-        working_point_group   = self.working_point_group,
-        symmetry_safety_check = self.symmetry_safety_check,
-        log                   = self.log)
-      print >> self.log
-    info = data.info()
-    processed = data.eliminate_sys_absent(log = self.log)
-    if(processed is not data):
-      info = info.customized_copy(systematic_absences_eliminated = True)
-    if(not processed.is_unique_set_under_symmetry()):
-      if(data.is_xray_intensity_array()):
-        print >> self.log, "Merging symmetry-equivalent intensities:"
-      else:
-        print >> self.log, "Merging symmetry-equivalent amplitudes:"
-      merged = processed.merge_equivalents()
-      merged.show_summary(out = self.log, prefix="  ")
-      print >> self.log
-      processed = merged.array()
-      info = info.customized_copy(merged=True)
-    if (self.force_non_anomalous) :
-      processed = processed.average_bijvoet_mates()
-    return processed.set_info(info)
-
-  def extract_flags(self, data, data_description = "R-free flags"):
-    r_free_flags, test_flag_value = None, None
-    params = self.parameters.r_free_flags
-    if(not self.parameters.r_free_flags.generate):
-      try:
-        r_free_flags, test_flag_value = \
-          self.reflection_file_server.get_r_free_flags(
-            file_name                = params.file_name,
-            label                    = params.label,
-            test_flag_value          = params.test_flag_value,
-            disable_suitability_test = params.disable_suitability_test,
-            parameter_scope          = self.flags_parameter_scope)
-      except reflection_file_utils.Sorry_No_array_of_the_required_type, e:
-        if(self.parameters.r_free_flags.generate is not None):
-          explain_how_to_generate_array_of_r_free_flags(log = self.log,
-            flags_parameter_scope = self.flags_parameter_scope)
-          if(self.keep_going): return None
-          raise Sorry("Please try again.")
-        r_free_flags, test_flag_value = None, None
-      else:
-        params.file_name = r_free_flags.info().source
-        params.label = r_free_flags.info().label_string()
-        params.test_flag_value = test_flag_value
-        print >> self.log, data_description+":"
-        print >> self.log, " ", r_free_flags.info()
-        if([self.working_point_group,
-           self.symmetry_safety_check].count(None) == 0):
-          miller_array_symmetry_safety_check(
-            miller_array          = r_free_flags,
-            data_description      = data_description,
-            working_point_group   = self.working_point_group,
-            symmetry_safety_check = self.symmetry_safety_check,
-            log                   = self.log)
-          print >> self.log
-        info = r_free_flags.info()
-        processed = r_free_flags.eliminate_sys_absent(log = self.log)
-        if(processed is not r_free_flags):
-          info = info.customized_copy(systematic_absences_eliminated = True)
-        if(not processed.is_unique_set_under_symmetry()):
-           print >> self.log, \
-             "Checking symmetry-equivalent R-free flags for consistency:",
-           try:
-             merged = processed.merge_equivalents()
-           except RuntimeError, e:
-             print >> self.log
-             error_message = str(e)
-             expected_error_message = "cctbx Error: merge_equivalents_exact: "
-             assert error_message.startswith(expected_error_message)
-             raise Sorry("Incompatible symmetry-equivalent R-free flags: %s" %
-               error_message[len(expected_error_message):])
-           else:
-             print >> self.log, "OK"
-             print >> self.log
-           processed = merged.array()
-           info = info.customized_copy(merged=True)
-           del merged
-        if (self.force_non_anomalous) :
-          processed = processed.average_bijvoet_mates()
-        r_free_flags = processed.set_info(info)
-    if(r_free_flags is None):
-      if ((params.fraction is None) or
-          (params.lattice_symmetry_max_delta is None) or
-          (params.use_lattice_symmetry is None)) :
-        raise Sorry("No R-free flags are available, but one or more "+
-          "parameters required to generate new flags is undefined.")
-      print >> self.log, "Generating a new array of R-free flags."
-      print >> self.log
-      libtbx.call_back(message="warn",
-        data="PHENIX will generate a new array of R-free flags.  Please "+
-          "check to make sure that the input data do not already contain "+
-          "an R-free set; if one is present, you should cancel this job and "+
-          "disable generation of new flags.  If the program you are running "+
-          "outputs an MTZ file, you should be sure to use that file in all "+
-          "future refinements.")
-      r_free_flags = data.generate_r_free_flags(
-        fraction                   = params.fraction,
-        max_free                   = params.max_free,
-        lattice_symmetry_max_delta = params.lattice_symmetry_max_delta,
-        use_lattice_symmetry       = params.use_lattice_symmetry,
-        use_dataman_shells         = params.use_dataman_shells,
-        n_shells                   = params.n_shells
-        ).set_info(miller.array_info(labels = ["R-free-flags"]))
-      params.label = r_free_flags.info().label_string()
-      params.test_flag_value = 1
-    # check if anomalous pairs are sound
-    if(r_free_flags is not None):
-      r_free_flags.deep_copy().as_non_anomalous_array()
-    return r_free_flags
-
-  def data_as_f_obs(self, f_obs):
-    """
-    Convert input data array to amplitudes, adjusting the data type and
-    applying additional filters if necessary.
-
-    :param f_obs: selected input data
-    :returns: :py:class:`cctbx.miller.array` of real numbers with observation
-      type set to amplitudes
-    """
-    if(not f_obs.sigmas_are_sensible()):
-      f_obs = f_obs.customized_copy(
-        indices=f_obs.indices(),
-        data=f_obs.data(),
-        sigmas=None).set_observation_type(f_obs)
-    # Delete F(0,0,0) if present
-    sel = f_obs.indices()==(0,0,0)
-    if(sel.count(True)>0):
-      print >> self.log, "F(0,0,0) will be removed."
-      f_obs = f_obs.select(~sel)
-    #
-    d_min = f_obs.d_min()
-    if(d_min < 0.25): # XXX what is the equivalent for neutrons ???
-      raise Sorry("Resolution of data is too high: %-6.4f A"%d_min)
-    f_obs.show_comprehensive_summary(f = self.log)
-    f_obs_data_size = f_obs.data().size()
-    print >> self.log
-    if(f_obs.is_complex_array()): f_obs = abs(f_obs)
-    f_obs_fw = None
-    if(f_obs.is_xray_intensity_array()):
-      if(self.parameters.french_wilson_scale) :
-        f_obs_fw = french_wilson.french_wilson_scale(
-          miller_array=f_obs,
-          params=self.parameters.french_wilson,
-          sigma_iobs_rejection_criterion=\
-            self.parameters.sigma_iobs_rejection_criterion,
-          log=self.log)
-        if f_obs_fw is not None:
-          f_obs = f_obs_fw
-      if (not self.parameters.french_wilson_scale or f_obs_fw is None) :
-        selection_by_isigma = self._apply_sigma_cutoff(
-          f_obs   = f_obs,
-          n       = self.parameters.sigma_iobs_rejection_criterion,
-          message = "Number of reflections with |Iobs|/sigma(Iobs) < %5.2f: %d")
-        if(selection_by_isigma is not None):
-          f_obs = f_obs.select(selection_by_isigma)
-        f_obs = f_obs.f_sq_as_f()
-      print >> self.log, \
-        "Intensities converted to amplitudes for use in refinement."
-      print >> self.log
-    #
-    sigmas = f_obs.sigmas()
-    if(sigmas is not None):
-      selection  = sigmas > 0
-      selection &= f_obs.data()>=0
-      n_both_zero = selection.count(False)
-      if(n_both_zero>0):
-        print >> self.log, \
-          "Number of pairs (Fobs,sigma)=(0,0) is %s. They will be removed"%\
-          n_both_zero
-        f_obs = f_obs.select(selection)
-    #
-    f_obs.set_observation_type_xray_amplitude()
-    f_obs = f_obs.map_to_asu()
-    selection = f_obs.all_selection()
-    if(self.parameters.low_resolution is not None):
-      selection &= f_obs.d_spacings().data() <= self.parameters.low_resolution
-    if(self.parameters.high_resolution is not None):
-      selection &= f_obs.d_spacings().data() >= self.parameters.high_resolution
-    selection_positive = f_obs.data() >= 0
-    print >> self.log, \
-      "Number of F-obs in resolution range:                  ", \
-      selection.count(True)
-    print >> self.log, \
-      "Number of F-obs<0 (these reflections will be rejected):", \
-      selection_positive.count(False)
-    selection_zero = f_obs.data() == 0
-    print >> self.log, \
-      "Number of F-obs=0 (these reflections will be used in refinement):", \
-      selection_zero.count(True)
-    selection &= selection_positive
-    selection_by_fsigma = self._apply_sigma_cutoff(
-      f_obs   = f_obs,
-      n       = self.parameters.sigma_fobs_rejection_criterion,
-      message = "Number of reflections with |Fobs|/sigma(Fobs) < %5.2f: %d")
-    if(selection_by_fsigma is not None): selection &= selection_by_fsigma
-    selection &= f_obs.d_star_sq().data() > 0
-    f_obs = f_obs.select(selection)
-    rr = f_obs.resolution_range()
-    print >> self.log, "Refinement resolution range: d_max = %8.4f" % rr[0]
-    print >> self.log, "                             d_min = %8.4f" % rr[1]
-    print >> self.log
-    if(f_obs.indices().size() == 0):
-      raise Sorry(
-        "No data left after applying resolution limits and sigma cutoff.")
-    if(self.parameters.force_anomalous_flag_to_be_equal_to is not None):
-      if(not self.parameters.force_anomalous_flag_to_be_equal_to):
-        print >> self.log, "force_anomalous_flag_to_be_equal_to=False"
-        if(f_obs.anomalous_flag()):
-          print >> self.log, "Reducing data to non-anomalous array."
-          merged = f_obs.as_non_anomalous_array().merge_equivalents()
-          merged.show_summary(out = self.log, prefix="  ")
-          f_obs = merged.array().set_observation_type( f_obs )
-          del merged
-          print >> self.log
-      elif(not f_obs.anomalous_flag()):
-        print >> self.log, "force_anomalous_flag_to_be_equal_to=True"
-        print >> self.log, "Generating Bijvoet mates of X-ray data."
-        observation_type = f_obs.observation_type()
-        f_obs = f_obs.generate_bijvoet_mates()
-        f_obs.set_observation_type(observation_type)
-        print >> self.log
-    else:
-      f_obs = f_obs.convert_to_non_anomalous_if_ratio_pairs_lone_less_than(
-        threshold=self.parameters.
-          convert_to_non_anomalous_if_ratio_pairs_lone_less_than_threshold)
-    if(f_obs_data_size != f_obs.data().size()):
-      print >> self.log, "\nFobs statistics after all cutoffs applied:\n"
-      f_obs.show_comprehensive_summary(f = self.log)
-    return f_obs
-
-  def _apply_sigma_cutoff(self, f_obs, n, message):
-    selection = None
-    if(f_obs.sigmas() is not None):
-      sigma_cutoff = n
-      if(sigma_cutoff is not None and sigma_cutoff > 0):
-        selection_by_sigma = f_obs.data() > f_obs.sigmas()*sigma_cutoff
-        print >> self.log, message % (sigma_cutoff,
-          selection_by_sigma.count(False))
-        selection = selection_by_sigma
-    return selection
-
-  def flags_as_r_free_flags(self,
-        f_obs,
-        r_free_flags,
-        missing_show_max_lines=10):
-    test_flag_value = self.parameters.r_free_flags.test_flag_value
-    if (test_flag_value is None) :
-      raise Sorry(("PHENIX could not determine an appropriate test flag "+
-        "for the data with label(s) '%s'.  This may happen if they are all "+
-        "a single value; please check the file to make sure the flags are "+
-        "suitable for use.") % self.parameters.r_free_flags.label)
-    r_free_flags.show_comprehensive_summary(f = self.log)
-    print >> self.log
-    print >> self.log, "Test (R-free flags) flag value:", test_flag_value
-    print >> self.log
-    if (isinstance(r_free_flags.data(), flex.bool)):
-      r_free_flags = r_free_flags.array(
-        data = r_free_flags.data() == bool(test_flag_value))
-    else:
-      r_free_flags = r_free_flags.array(
-        data = r_free_flags.data() == test_flag_value)
-    r_free_flags_md5_hexdigest = \
-      r_free_flags.map_to_asu().sort(by_value="packed_indices").data() \
-        .md5().hexdigest()
-    if(self.remark_r_free_flags_md5_hexdigest is not None):
-      self.verify_r_free_flags_md5_hexdigest(
-        ignore_pdb_hexdigest = self.parameters.r_free_flags.ignore_pdb_hexdigest,
-        current              = r_free_flags_md5_hexdigest,
-        records              = self.remark_r_free_flags_md5_hexdigest)
-    if(not f_obs.anomalous_flag()):
-      if(r_free_flags.anomalous_flag()):
-        print >> self.log, "Reducing R-free flags to non-anomalous array."
-        r_free_flags = r_free_flags.average_bijvoet_mates()
-        print >> self.log
-    elif(not r_free_flags.anomalous_flag()):
-       print >> self.log, "Generating Bijvoet mates of R-free flags."
-       r_free_flags = r_free_flags.generate_bijvoet_mates()
-       print >> self.log
-    r_free_flags = r_free_flags.map_to_asu().common_set(f_obs)
-    n_missing_r_free_flags = f_obs.indices().size() \
-      - r_free_flags.indices().size()
-    if(n_missing_r_free_flags != 0):
-      msg = [
-        "R-free flags not compatible with F-obs array:"
-        " missing flag for %d F-obs selected for refinement"
-          % n_missing_r_free_flags]
-      if (missing_show_max_lines is not None and missing_show_max_lines <= 0):
-        msg[0] += "."
-      else:
-        msg[0] += ":"
-        lone = f_obs.lone_set(other=r_free_flags)
-        if (missing_show_max_lines is None):
-          n_not_shown = 0
-        else:
-          n_not_shown = lone.indices().size() - missing_show_max_lines
-          if (n_not_shown > missing_show_max_lines * 0.5):
-            lone = lone[:missing_show_max_lines]
-          else:
-            n_not_shown = 0
-        if (lone.sigmas() is None):
-          msg.append("    h   k   l   data")
-          for hkl,f in zip(lone.indices(), lone.data()):
-            msg.append("  %3d %3d %3d" % hkl + "   %.6g" % f)
-        else:
-          msg.append("    h   k   l   data  sigmas")
-          for hkl,f,s in zip(lone.indices(), lone.data(), lone.sigmas()):
-            msg.append("  %3d %3d %3d" % hkl + "   %.6g  %.6g" % (f,s))
-        if (n_not_shown != 0):
-          msg.append("    ... (remaining %d not shown)" % n_not_shown)
-      raise Sorry("\n".join(msg))
-    r_free_flags.show_r_free_flags_info(out = self.log, prefix="")
-    return r_free_flags, test_flag_value, r_free_flags_md5_hexdigest
-
-  def verify_r_free_flags_md5_hexdigest(self,
-        ignore_pdb_hexdigest,
-        current,
-        records):
-    from_file = set()
-    for record in records:
-      flds = record.split()
-      if (len(flds) == 3):
-        from_file.add(flds[2])
-    if (len(from_file) > 1):
-      raise Sorry(
-        "Multiple conflicting REMARK r_free_flags.md5.hexdigest records"
-        " found in the input PDB file.")
-    if (len(from_file) == 1 and current not in from_file):
-      log = self.log
-      for i in xrange(2): print >> log, "*"*79
-      if (ignore_pdb_hexdigest):
-        print >> log
-        print >> log, " ".join(["WARNING"]*9)
-      print >> log, """
-The MD5 checksum for the R-free flags array summarized above is:
-  %s
-
-The corresponding MD5 checksum in the PDB file summarized above is:
-  %s
-
-These checksums should be identical but are in fact different. This is
-because the R-free flags used at previous stages of refinement are
-different from the R-free flags summarized above. As a consequence,
-the values for R-free could be biased and misleading.
-
-However, there is no problem if the R-free flags were just extended to
-a higher resolution, or if some reflections with no data or that are
-not part of the R-free set have been added or removed.""" % (
-  current, sorted(from_file)[0]),
-      if (not ignore_pdb_hexdigest):
-        print >> log, """\
-In this case,
-simply remove the
-
-  REMARK r_free_flags.md5.hexdigest %s
-
-record from the input PDB file to proceed with the refinement.""" % (
-  sorted(from_file)[0]),
-      print >> log, """
-
-Otherwise it is best to recover the previously used R-free flags
-and use them consistently throughout the refinement of the model.
-Run this command again with the name of the file containing the
-original flags as an additional input.
-"""
-      if (not ignore_pdb_hexdigest):
-        print >> log, """\
-If the original R-free flags are unrecoverable, remove the REMARK
-record as indicated above. In this case the values for R-free will
-become meaningful only after many cycles of refinement.
-"""
-      else:
-        print >> log, """\
-If the original R-free flags are unrecoverable, the values for R-free
-will become meaningful only after many cycles of refinement.
-"""
-      for i in xrange(2): print >> log, "*"*79
-      print >> log
-      if (not ignore_pdb_hexdigest):
-        if ("PHENIX_GUI_ENVIRONMENT" in os.environ) :
-          log.flush()
-          raise Sorry("This model appears to have previously been refined "+
-            "against a different set of R-free flags.  Please resolve the "+
-            "mismatch; additional information and instructions are available "+
-            "at the end of the log output.")
-        else :
-          raise Sorry("Please resolve the R-free flags mismatch.")
-
-map_coefficents_params_str = """\
+map_coefficients_params_str = """\
   file_name=None
     .type=path
     .short_caption=Map coefficients file
   labels=None
     .type=strings
 """
-
-experimental_phases_params_str = """\
-  file_name=None
-    .type=path
-    .short_caption=Experimental phase file
-    .style = bold input_file file_type:hkl process_hkl child:hl_coeffs:labels
-  labels=None
-    .type=strings
-    .input_size = 160
-    .short_caption = Phase labels
-    .style = renderer:draw_hl_label_widget bold
-"""
-
-experimental_phases_params = iotbx.phil.parse(
-  input_string=experimental_phases_params_str)
-
-def determine_experimental_phases(reflection_file_server,
-                                  parameters,
-                                  log,
-                                  parameter_scope,
-                                  working_point_group,
-                                  symmetry_safety_check,
-                                  ignore_all_zeros = True):
-  """
-  Extract experimental phases from the given inputs if possible.  Returns None
-  if not found.
-  """
-  try:
-    experimental_phases = \
-      reflection_file_server.get_experimental_phases(
-        file_name        = parameters.file_name,
-        labels           = parameters.labels,
-        ignore_all_zeros = ignore_all_zeros,
-        parameter_scope  = parameter_scope)
-  except reflection_file_utils.Sorry_No_array_of_the_required_type:
-    experimental_phases = None
-  else:
-    parameters.file_name = experimental_phases.info().source
-    parameters.labels = [experimental_phases.info().label_string()]
-    print >> log, "Experimental phases:"
-    print >> log, " ", experimental_phases.info()
-    miller_array_symmetry_safety_check(
-      miller_array          = experimental_phases,
-      data_description      = "Experimental phases",
-      working_point_group   = working_point_group,
-      symmetry_safety_check = symmetry_safety_check,
-      log                   = log)
-    print >> log
-    info = experimental_phases.info()
-    processed = experimental_phases.eliminate_sys_absent(log = log)
-    if(processed is not experimental_phases):
-       info = info.customized_copy(systematic_absences_eliminated = True)
-    if(not processed.is_unique_set_under_symmetry()):
-       print >> log, \
-         "Merging symmetry-equivalent Hendrickson-Lattman coefficients:"
-       merged = processed.merge_equivalents()
-       merged.show_summary(out = log, prefix="  ")
-       print >> log
-       processed = merged.array()
-       info = info.customized_copy(merged = True)
-    return processed.set_info(info)
 
 pdb_params = iotbx.phil.parse("""\
   file_name=None
@@ -801,7 +86,7 @@ pdb_params = iotbx.phil.parse("""\
       file_type_default
 """)
 
-def find_overlapping_selections (selections, selection_strings) :
+def find_overlapping_selections(selections, selection_strings):
   """
   Given a list of atom selections (:py:class:`scitbx.array_family.flex.bool`
   arrays) and corresponding selection strings, inspect the selections to
@@ -809,18 +94,11 @@ def find_overlapping_selections (selections, selection_strings) :
   of selection strings found to overlap, or None if all selections are unique.
   """
   assert (len(selections) == len(selection_strings))
-  for i_sel in range(len(selections) - 1) :
-    selection1 = selections[i_sel]
-    for j_sel in range(i_sel + 1, len(selections)) :
+  for i_sel, selection1 in enumerate(selections[:-1]):
+    for j_sel in range(i_sel + 1, len(selections)):
       selection2 = selections[j_sel]
-      if (isinstance(selection1, flex.bool)) :
-        joint_sel = selection1 & selection2
-        if (joint_sel.count(True) > 0) :
-          return (selection_strings[i_sel], selection_strings[j_sel])
-      else :
-        intersection = selection1.intersection(selection2)
-        if (len(intersection) > 0) :
-          return (selection_strings[i_sel], selection_strings[j_sel])
+      if ((selection1 & selection2).count(True) > 0):
+        return (selection_strings[i_sel], selection_strings[j_sel])
   return None
 
 def get_atom_selections(
@@ -862,7 +140,7 @@ def get_atom_selections(
                   or scat_types[i_seq] in ["H", "D"]):
                 rg_i_seqs.append(atom.i_seq)
           if (len(rg_i_seqs) != 0):
-            selections.append(flex.size_t(rg_i_seqs))
+            selections.append(flex.bool(model.get_number_of_atoms(), flex.size_t(rg_i_seqs)))
   elif(ss_size != 1 or n_none == 0 and not one_group_per_residue):
     for selection_string in selection_strings:
       selections.append(atom_selection(model             = model,
@@ -871,23 +149,14 @@ def get_atom_selections(
   else:
     raise Sorry('Ambiguous selection.')
   if(len(selections)>1):
-    if(not isinstance(selections[0], flex.bool)):
-      tmp = flex.bool(model.get_number_of_atoms(), selections[0]).as_int()
-    else:
-      tmp = selections[0].deep_copy().as_int()
-    for k_, tmp_s in enumerate(selections[1:]):
-      k = k_ + 1 # XXX Python 2.5 workaround
-      if(not isinstance(tmp_s, flex.bool)):
-        tmp = tmp + flex.bool(model.get_number_of_atoms(),tmp_s).as_int()
-      else:
-        tmp = tmp + tmp_s.as_int()
+    tmp = selections[0].deep_copy().as_int()
+    for tmp_s in selections[1:]:
+      tmp = tmp + tmp_s.as_int()
     if(flex.max(tmp)>1):
       sel1, sel2 = find_overlapping_selections(selections, selection_strings)
-      if (parameter_name is not None) :
-        raise Sorry("One or more overlapping selections for %s:\n%s\n%s" %
-          (parameter_name, sel1, sel2))
-      else :
-        raise Sorry("One or more overlapping selections:\n%s\n%s" %(sel1,sel2))
+      pn = "for " + parameter_name if parameter_name else ""
+      raise Sorry("One or more overlapping selections %s:\n%s\n%s" %
+        (pn, sel1, sel2))
   #
   if(iselection):
     for i_seq, selection in enumerate(selections):
@@ -901,13 +170,13 @@ def get_atom_selections(
       else:
         s0.extend(s)
     selections = s0
-    if (iselection) :
+    if (iselection):
       selections = selections.select(flex.sort_permutation(selections))
   return selections
 
 def atom_selection(model, string, allow_empty_selection = False):
   result = model.selection(
-    selstr=string,
+    string=string,
     optional=(allow_empty_selection is not None))
   if (result is None):
     return None
@@ -919,14 +188,14 @@ def atom_selection(model, string, allow_empty_selection = False):
   return result
 
 def print_programs_start_header(log, text):
-  print >> log
+  print(file=log)
   host_and_user().show(out= log)
-  print >> log, date_and_time()
-  print >> log
-  print >> log, "-"*79
-  print >> log, text
-  print >> log, "-"*79
-  print >> log
+  print(date_and_time(), file=log)
+  print(file=log)
+  print("-"*79, file=log)
+  print(text, file=log)
+  print("-"*79, file=log)
+  print(file=log)
 
 def set_log(args, out=sys.stdout, replace_stderr=True):
   log = multi_out()
@@ -935,7 +204,7 @@ def set_log(args, out=sys.stdout, replace_stderr=True):
   string_buffer = StringIO()
   string_buffer_plots = StringIO()
   log.register(label="log_buffer", file_object=string_buffer)
-  if (replace_stderr) :
+  if (replace_stderr):
     sys.stderr = log
   return log
 
@@ -945,8 +214,7 @@ def print_header(line, out=None):
 def get_atom_selection(pdb_file_name, selection_string, iselection = False):
   import mmtbx.model
   model = mmtbx.model.manager(
-      model_input = iotbx.pdb.input(file_name=pdb_file_name),
-      process_input = True)
+      model_input = iotbx.pdb.input(file_name=pdb_file_name))
   result = get_atom_selections(
     model             = model,
     selection_strings = [selection_string],
@@ -997,8 +265,6 @@ class process_pdb_file_srv(object):
         use_neutron_distances=use_neutron_distances,
         )
     else: self.ener_lib = ener_lib
-    if(self.log is None): self.log = sys.stdout
-    if(self.log == False): self.log = None
 
   def process_pdb_files(self, pdb_file_names = None, raw_records = None,
                         pdb_inp=None,
@@ -1040,7 +306,7 @@ class process_pdb_file_srv(object):
                                   lines       = flex.std_string(raw_records))
         if(self.crystal_symmetry is None):
           self.crystal_symmetry = pdb_inp.crystal_symmetry()
-      except ValueError, e :
+      except ValueError as e :
         raise Sorry("PDB format error:\n%s" % str(e))
     if pdb_inp is not None and pdb_inp.atoms().size() == 0:
       msg = ["No atomic coordinates found in PDB files:"]
@@ -1097,30 +363,30 @@ class process_pdb_file_srv(object):
       ignore_unknown_scattering_types=False,
       ignore_unknown_nonbonded_energy_types=ignore_unknown_nonbonded_energy_types)
     if (msg is not None):
-  #     if (self.stop_for_unknowns is not None) :
+  #     if (self.stop_for_unknowns is not None):
   #       msg += """
   # Alternatively, to continue despite this problem use:
   #   stop_for_unknowns=False"""
       raise Sorry(msg)
     if (self.log):
-      print >> self.log
+      print(file=self.log)
     return processed_pdb_file, pdb_inp
 
   def _process_monomer_cif_files(self):
-    all = []
+    all_cif_objects = []
     index_dict = {}
     if(self.cif_parameters is not None):
       for file_name in self.cif_parameters.file_name:
         file_name = libtbx.path.canonical_path(file_name=file_name)
-        index_dict[file_name] = len(all)
-        all.append((file_name,None))
+        index_dict[file_name] = len(all_cif_objects)
+        all_cif_objects.append((file_name,None))
     for file_name,cif_object in self.cif_objects:
       file_name = libtbx.path.canonical_path(file_name=file_name)
-      index_dict[file_name] = len(all)
-      all.append((file_name,cif_object))
-    unique_indices = index_dict.values()
+      index_dict[file_name] = len(all_cif_objects)
+      all_cif_objects.append((file_name,cif_object))
+    unique_indices = list(index_dict.values())
     unique_indices.sort()
-    unique = flex.select(sequence=all, permutation=unique_indices)
+    unique = flex.select(sequence=all_cif_objects, permutation=unique_indices)
     if(self.cif_parameters is not None): del self.cif_parameters.file_name[:]
     for file_name,cif_object in unique:
       if(cif_object is None):
@@ -1160,25 +426,6 @@ def remove_selections(selection, other, size):
       result.append(new_group)
   return result
 
-def combine_hd_exchangable(hierarchy):
-  result = []
-  for model in hierarchy.models():
-    for chain in model.chains():
-      for residue_group in chain.residue_groups():
-        for i_gr1, atom_group_1 in enumerate(residue_group.atom_groups()):
-          for i_gr2, atom_group_2 in enumerate(residue_group.atom_groups()):
-            if(atom_group_1.altloc != atom_group_2.altloc and i_gr2 > i_gr1):
-              for atom1 in atom_group_1.atoms():
-                e1 = atom1.element.strip()
-                n1 = atom1.name.strip()[1:]
-                for atom2 in atom_group_2.atoms():
-                  e2 = atom2.element.strip()
-                  n2 = atom2.name.strip()[1:]
-                  if(e1 in ["H","D"] and e2 in ["H","D"] and e1 != e2 and
-                     n1 == n2):
-                    result.append([[int(atom1.i_seq)], [int(atom2.i_seq)]])
-  return result
-
 def assert_xray_structures_equal(
       x1,
       x2,
@@ -1188,7 +435,9 @@ def assert_xray_structures_equal(
       occupancies = True,
       elements = True,
       scattering_types = True,
-      eps = 1.e-6):
+      eps = 1.e-6,
+      eps_occ = None):
+  if(eps_occ is None): eps_occ = eps
   assert x1.scatterers().size() == x2.scatterers().size()
   cs1 = x1.crystal_symmetry()
   cs2 = x2.crystal_symmetry()
@@ -1204,7 +453,7 @@ def assert_xray_structures_equal(
                         x2.extract_u_iso_or_u_equiv(), eps)
   if(occupancies):
     assert approx_equal(x1.scatterers().extract_occupancies(),
-                        x2.scatterers().extract_occupancies(), eps)
+                        x2.scatterers().extract_occupancies(), eps_occ)
   if(elements):
     sct1 = x1.scatterers().extract_scattering_types()
     sct2 = x2.scatterers().extract_scattering_types()
@@ -1304,58 +553,8 @@ def assert_water_is_consistent(model):
       assert doh >0.35 and doh < 1.45, doh
 
 # MARKED_FOR_DELETION_OLEG
-# Reason: Another custom-build method to 'quickly' get more or less
-# correct xray structure(s). Should be handled by mmtbx.model.
-# Used in:
-# mmtbx/refinement/ensemble_refinement/__init__.py
-class xray_structures_from_processed_pdb_file(object):
-
-  def __init__(self, processed_pdb_file, scattering_table, d_min, log = None):
-    self.xray_structures = []
-    self.model_selections = []
-    self.neutron_scattering_dict = None
-    self.xray_scattering_dict = None
-    self.xray_structure_all = \
-        processed_pdb_file.xray_structure(show_summary = False)
-    # XXX ad hoc manipulation
-    for sc in self.xray_structure_all.scatterers():
-      lbl=sc.label.split()
-      if("IAS" in lbl and sc.scattering_type=="?" and lbl[1].startswith("IS")):
-        sc.scattering_type = lbl[1]
-    #
-    if(self.xray_structure_all is None):
-      raise Sorry("Cannot extract xray_structure.")
-    if(self.xray_structure_all.scatterers().size()==0):
-      raise Sorry("Empty xray_structure.")
-    all_chain_proxies = processed_pdb_file.all_chain_proxies
-    self.xray_scattering_dict, self.neutron_scattering_dict = \
-      setup_scattering_dictionaries(
-        scattering_table  = scattering_table,
-        all_chain_proxies = all_chain_proxies,
-        xray_structure    = self.xray_structure_all,
-        d_min             = d_min,
-        log               = log)
-    model_indices = all_chain_proxies.pdb_inp.model_indices()
-    if(len(model_indices)>1):
-       model_indices_padded = flex.size_t([0])
-       model_indices_padded.extend(model_indices)
-       ranges = []
-       for i, v in enumerate(model_indices_padded):
-         try: ranges.append([model_indices_padded[i],
-                             model_indices_padded[i+1]])
-         except IndexError: pass
-       for ran in ranges:
-         sel = flex.size_t(range(ran[0],ran[1]))
-         self.model_selections.append(sel)
-         self.xray_structures.append(self.xray_structure_all.select(sel))
-    else:
-      self.model_selections.append(
-        flex.size_t(xrange(self.xray_structure_all.scatterers().size())) )
-      self.xray_structures.append(self.xray_structure_all)
-# END_MARKED_FOR_DELETION_OLEG
-
-# MARKED_FOR_DELETION_OLEG
 # Reason: Moved to mmtbx.model.manager
+# used in cctbx_project/mmtbx/command_line/maps.py
 def setup_scattering_dictionaries(scattering_table,
                                   xray_structure,
                                   d_min,
@@ -1387,13 +586,15 @@ def setup_scattering_dictionaries(scattering_table,
     try :
       neutron_scattering_dict = \
         xray_structure.switch_to_neutron_scattering_dictionary()
-    except ValueError, e :
+    except ValueError as e :
       raise Sorry("Error setting up neutron scattering dictionary: %s"%str(e))
     if(log is not None):
       print_statistics.make_sub_header(
         "Neutron scattering dictionary", out = log)
       xray_structure.scattering_type_registry().show(out = log)
     xray_structure.scattering_type_registry_params.table = "neutron"
+  # Record d_min as well as the "n_gaussian" table depends d_min.
+  xray_structure.set_scattering_table(scattering_table, d_min = d_min)
   if(all_chain_proxies is not None):
     scattering_type_registry = all_chain_proxies.scattering_type_registry
     if(scattering_type_registry.n_unknown_type_symbols() > 0):
@@ -1408,12 +609,63 @@ def setup_scattering_dictionaries(scattering_table,
           " the scattering type.\n"
         "    - Provide custom monomer definitions for the affected residues.")
     if(log is not None):
-      print >> log
+      print(file=log)
   return xray_scattering_dict, neutron_scattering_dict
 # END_MARKED_FOR_DELETION_OLEG
 
+def fmodel_manager2(
+  f_obs,
+  r_free_flags,
+  abcd,
+  xray_structure,
+  twin_law,
+  ignore_r_free_flags,
+  mask_params,
+  sf_accuracy_params,
+  mtz_object=None,
+  data_type=None):
+  """
+  This makes a basic fmodel manager.
+  alpha_beta_params, sf_and_grads_accuracy_params, mask_params, tNCS epsilons,
+  target_name should be set separately if needed.
+  """
+  if(r_free_flags is None or ignore_r_free_flags):
+    r_free_flags = f_obs.array(data = flex.bool(f_obs.data().size(), False))
+  if(twin_law is None):
+    fmodel = mmtbx.f_model.manager(
+      f_obs          = f_obs,
+      r_free_flags   = r_free_flags,
+      abcd           = abcd,
+      mask_params    = mask_params,
+      sf_and_grads_accuracy_params = sf_accuracy_params,
+      xray_structure = xray_structure,
+      origin         = mtz_object,
+      data_type      = data_type)
+  else:
+    from cctbx import sgtbx
+    twin_law_xyz = sgtbx.rt_mx(symbol=twin_law, r_den=12, t_den=144)
+    twin_params = twin_f_model.master_params.extract()
+    fmodel = twin_f_model.twin_model_manager(
+      f_obs          = f_obs,
+      r_free_flags   = r_free_flags,
+      xray_structure = xray_structure,
+      twin_law       = twin_law_xyz,
+      twin_law_str   = twin_law,
+      detwin_mode    = twin_params.detwin.mode,
+      map_types      = twin_params.detwin.map_types,
+      sf_and_grads_accuracy_params = sf_accuracy_params,
+      origin         = mtz_object,
+      mask_params    = mask_params,
+      data_type      = data_type)
+    fmodel.twin = twin_law
+  return fmodel
+
+# XXX
+# XXX PVA: DELETE LATER !
+# XXX
 def fmodel_manager(
       f_obs,
+      i_obs                         = None,
       xray_structure                = None,
       r_free_flags                  = None,
       f_mask                        = None,
@@ -1426,8 +678,8 @@ def fmodel_manager(
       epsilons                      = None,
       use_f_model_scaled            = False,
       twin_law                      = None,
-      detwin_mode                   = None,
-      detwin_map_types              = None,
+      #detwin_mode                   = None,
+      #detwin_map_types              = None,
       alpha_beta_params             = None,
       sf_and_grads_accuracy_params  = mmtbx.f_model.sf_and_grads_accuracy_master_params.extract(),
       mask_params                   = None,
@@ -1445,6 +697,7 @@ def fmodel_manager(
       mask_params                  = mask_params,
       target_name                  = target_name,
       f_obs                        = f_obs,
+      i_obs                        = i_obs,
       f_mask                       = f_mask,
       f_calc                       = f_calc,
       abcd                         = hl_coeff,
@@ -1454,6 +707,7 @@ def fmodel_manager(
   else:
     from cctbx import sgtbx
     twin_law_xyz = sgtbx.rt_mx(symbol=twin_law, r_den=12, t_den=144)
+    twin_params = twin_f_model.master_params.extract()
     fmodel = twin_f_model.twin_model_manager(
       f_obs                        = f_obs,
       f_mask                       = f_mask,
@@ -1464,8 +718,8 @@ def fmodel_manager(
       twin_law                     = twin_law_xyz,
       twin_law_str                 = twin_law,
       mask_params                  = mask_params,
-      detwin_mode                  = detwin_mode,
-      map_types                    = detwin_map_types)
+      detwin_mode                  = twin_params.detwin.mode,
+      map_types                    = twin_params.detwin.map_types)
     fmodel.twin = twin_law
   return fmodel
 
@@ -1483,7 +737,14 @@ def fmodel_simple(f_obs,
                   outliers_rejection       = True,
                   bulk_solvent_correction  = True,
                   anisotropic_scaling      = True,
-                  log                      = None):
+                  log                      = None,
+                  mosaic                   = False,
+                  squeeze                  = False,
+                  water_selection          = None):
+  """
+  squeeze, water_selection: see mmtbx.f_model.manager.update_all_scales. Used
+  for one model without twinning only.
+  """
   if(r_free_flags is None):
     r_free_flags = f_obs.customized_copy(
       data = flex.bool(f_obs.data().size(), False))
@@ -1510,7 +771,8 @@ def fmodel_simple(f_obs,
       mask_params    = mask_params,
       twin_law       = None)
     fmodel.update_all_scales(params = bss_params, log = log,
-        optimize_mask=optimize_mask, remove_outliers=outliers_rejection)
+        optimize_mask=optimize_mask, remove_outliers=outliers_rejection,
+        mosaic=mosaic, squeeze=squeeze, water_selection=water_selection)
     r_work = fmodel.r_work()
     for twin_law in twin_laws:
       if(twin_law is not None):
@@ -1590,11 +852,21 @@ def pdb_inp_from_multiple_files(pdb_files, log):
   try:
     pdb_inp = iotbx.pdb.input(source_info = None,
                               lines       = flex.std_string(raw_records))
-  except ValueError, e :
+  except ValueError as e :
     raise Sorry("Model format (PDB or mmCIF) error:\n%s" % str(e))
   return pdb_inp
 
 class process_command_line_args(object):
+  """Sort arguments into PHIL parameters and model, reflection, map and
+  restraint files, and find their consensus crystal symmetry.
+
+  Legacy: do not use in new code. New programs subclass
+  libtbx.program_template.ProgramTemplate, run through
+  iotbx.cli_parser.run_program, and read files with
+  iotbx.data_manager.DataManager. Arguments that are neither a file
+  nor key=value, and parameters whose value contains "=", are ignored
+  without an error.
+  """
   def __init__(self,
                args,
                cmd_cs=None,
@@ -1685,7 +957,7 @@ class process_command_line_args(object):
       if(master_params is not None and is_parameter):
         try:
           params = parameter_interpreter.process(arg = arg)
-        except Sorry, e:
+        except Sorry as e:
           if(not os.path.isfile(arg)):
             if("=" in arg): raise
             raise Sorry("File not found: %s" % show_string(arg))
@@ -1697,11 +969,11 @@ class process_command_line_args(object):
         sources=parsed_params+command_line_params,
         track_unused_definitions=True)
       if(len(unused_definitions)):
-        print >> self.log, "Unused parameter definitions:"
+        print("Unused parameter definitions:", file=self.log)
         for obj_loc in unused_definitions:
-          print >> self.log, " ", str(obj_loc)
-        print >> self.log, "*"*79
-        print >> self.log
+          print(" ", str(obj_loc), file=self.log)
+        print("*"*79, file=self.log)
+        print(file=self.log)
         raise Sorry("Unused parameter definitions.")
     else:
       assert len(command_line_params) == 0
@@ -1721,8 +993,8 @@ class process_command_line_args(object):
       else:
         raise e
 
-  def get_reflection_file_server (self) :
-    if (self.reflection_file_server is None) :
+  def get_reflection_file_server(self):
+    if (self.reflection_file_server is None):
       reflection_file_server = reflection_file_utils.reflection_file_server(
         crystal_symmetry=self.crystal_symmetry,
         force_symmetry=True,
@@ -1747,8 +1019,6 @@ def extract_tls_and_u_total_from_pdb(
   f_obs = f_obs.select(selection)
   r_free_flags = r_free_flags.select(selection)
   bss_params = bss.master_params.extract()
-  bss_params.k_sol_b_sol_grid_search=False
-  bss_params.number_of_macro_cycles=1
   r_work = 999.
   i_best = None
   for i, xrs in enumerate([xrs_1, xrs_2]):
@@ -1804,7 +1074,7 @@ class guess_observation_type(object):
       if(dtype=="N"):
         try:
           xrs.switch_to_neutron_scattering_dictionary()
-        except Exception, e:
+        except Exception as e:
           err = str(e)
       if(err is None):
         f_calc = f_obs.structure_factors_from_scatterers(
@@ -1831,10 +1101,10 @@ class guess_observation_type(object):
         results.append([dtype,ftype,False,1.e9])
         results.append([dtype,ftype,False,1.e9])
     #
-    print "All scores (stage 1):"
+    print("All scores (stage 1):")
     for r in results:
       st_r = " ".join(["%6s"%str(r_) for r_ in r])
-      print st_r
+      print(st_r)
     #
     results_x = []
     results_n = []
@@ -1855,11 +1125,11 @@ class guess_observation_type(object):
         self.result = result_best_x
       else:
         self.result = ["X", self.label, None, None]
-    if(len(self.result)==0): print "Answer: %s"%self.label
+    if(len(self.result)==0): print("Answer: %s"%self.label)
     elif([self.result[2], self.result[3]].count(None)==2):
-      print "Answer: %s_%s"%(self.result[1], self.result[0])
+      print("Answer: %s_%s"%(self.result[1], self.result[0]))
     else:
-      print "Answer: %s"%" ".join(["%6s"%str(r_) for r_ in self.result])
+      print("Answer: %s"%" ".join(["%6s"%str(r_) for r_ in self.result]))
 
   def find_best(self, results):
     r_best = 1.e+9
@@ -1905,7 +1175,7 @@ class guess_observation_type(object):
   def get_r_factor(self, f_obs, f_calc, scattering_table, xray_structure,
         twin_switch_tolerance, skip_twin_detection):
     r_free_flags = f_obs.array(data = flex.bool(f_obs.data().size(), False))
-    for trial in xrange(3):
+    for trial in range(3):
       result = outlier_rejection.outlier_manager(
         miller_obs   = f_obs,
         r_free_flags = r_free_flags,
@@ -1923,13 +1193,6 @@ class guess_observation_type(object):
       twin_laws = twin_analyses.get_twin_laws(miller_array=f_obs)
       twin_laws.append(None)
     params = bss.master_params.extract()
-    params.k_sol_grid_search_min = 0.0
-    params.k_sol_grid_search_max = 0.35
-    params.k_sol_step = 0.35
-    params.b_sol_grid_search_min = 0.0
-    params.b_sol_grid_search_max = 91.
-    params.b_sol_step = 45.
-    params.target = "ls_wunit_k1"
     fmodel = fmodel_simple(
       f_obs                    = f_obs,
       scattering_table         = scattering_table,
@@ -1954,17 +1217,24 @@ class fmodel_from_xray_structure(object):
                      twin_fraction = None,
                      target = "ml",
                      out = None,
-                     merge_r_free_flags = None):
+                     merge_r_free_flags = None,
+                     use_custom_scattering_dictionary = False):
     if(out is None): out = sys.stdout
     self.add_sigmas = add_sigmas
     if(params is None):
-      params = mmtbx.command_line.fmodel.\
-        fmodel_from_xray_structure_master_params.extract()
+      params = mmtbx.programs.fmodel.master_phil.extract()
     if(r_free_flags_fraction is None):
       if(params.r_free_flags_fraction is not None):
         r_free_flags_fraction = params.r_free_flags_fraction
       else:
         r_free_flags_fraction = 0.1
+
+    new_scattering_dictionary = None
+    if use_custom_scattering_dictionary:
+      from cctbx.eltbx import read_custom_scattering_dict
+      new_scattering_dictionary = read_custom_scattering_dict.run(
+        filename = params.custom_scattering_factors, log = out)
+
     if(f_obs is None):
       hr = None
       try: hr = params.high_resolution
@@ -1974,6 +1244,11 @@ class fmodel_from_xray_structure(object):
       else:
         xray_structure.scattering_type_registry(
           table = params.scattering_table, d_min = hr)
+      if(new_scattering_dictionary):
+        xray_structure.scattering_type_registry(
+            custom_dict = new_scattering_dictionary)
+        xray_structure.scattering_type_registry().show(out = out)
+
       if(hr is None): self.Sorry_high_resolution_is_not_defined()
       f_obs = xray_structure.structure_factors(d_min = hr).f_calc()
       sfga = params.structure_factors_accuracy
@@ -1986,7 +1261,8 @@ class fmodel_from_xray_structure(object):
          u_base                       = sfga.u_base,
          b_base                       = sfga.b_base,
          wing_cutoff                  = sfga.wing_cutoff,
-         exp_table_one_over_step_size = sfga.exp_table_one_over_step_size
+         exp_table_one_over_step_size = sfga.exp_table_one_over_step_size,
+         extra_params                 = sfga.extra
          ).f_calc()
       lr = None
       try: lr = params.low_resolution
@@ -2002,7 +1278,12 @@ class fmodel_from_xray_structure(object):
       except Exception: lr = None
       f_obs = f_obs.resolution_filter(d_max = lr, d_min = hr)
       if(params.scattering_table == "neutron"):
-        xray_structure.switch_to_neutron_scattering_dictionary()
+        if(new_scattering_dictionary):
+          xray_structure.scattering_type_registry(
+            custom_dict = new_scattering_dictionary)
+          xray_structure.scattering_type_registry().show(out = out)
+        else:
+          xray_structure.switch_to_neutron_scattering_dictionary()
       else:
         xray_structure.scattering_type_registry(
           table = params.scattering_table, d_min = f_obs.d_min())
@@ -2031,7 +1312,7 @@ class fmodel_from_xray_structure(object):
             data = f_model.data()
             fr = f_model.data()*params.add_random_error_to_amplitudes_percent/100.
             ri = flex.double()
-            for trial in xrange(data.size()):
+            for trial in range(data.size()):
               r = random.randint(0,1)
               if(r == 0): r = -1
               ri.append(r)
@@ -2048,7 +1329,7 @@ class fmodel_from_xray_structure(object):
       self.f_model._sigmas = sigmas
     if(params.r_free_flags_fraction is not None):
       self.r_free_flags = fmodel.r_free_flags()
-      if merge_r_free_flags and self.r_free_flags.anomalous_flag() :
+      if merge_r_free_flags and self.r_free_flags.anomalous_flag():
         self.r_free_flags = self.r_free_flags.average_bijvoet_mates()
 
   def Sorry_high_resolution_is_not_defined(self):
@@ -2063,13 +1344,13 @@ class fmodel_from_xray_structure(object):
       ofo = open(file_name, "w")
       crystal_symmetry_as_cns_comments(
         crystal_symmetry=self.f_model, out=ofo)
-      print >> ofo, "NREFlections=%d" % self.f_model.indices().size()
-      print >> ofo, "ANOMalous=%s" % {0: "FALSE"}.get(
-        int(self.f_model.anomalous_flag()), "TRUE")
+      print("NREFlections=%d" % self.f_model.indices().size(), file=ofo)
+      print("ANOMalous=%s" % {0: "FALSE"}.get(
+        int(self.f_model.anomalous_flag()), "TRUE"), file=ofo)
       for n_t in [("%s"%op.label, "%s"%op.type.upper())]:
-        print >> ofo, "DECLare NAME=%s DOMAin=RECIprocal TYPE=%s END"%n_t
+        print("DECLare NAME=%s DOMAin=RECIprocal TYPE=%s END"%n_t, file=ofo)
       if(self.params.r_free_flags_fraction is not None):
-        print >> ofo, "DECLare NAME=TEST DOMAin=RECIprocal TYPE=INTeger END"
+        print("DECLare NAME=TEST DOMAin=RECIprocal TYPE=INTeger END", file=ofo)
       if(op.type == "complex"):
         arrays = [
           self.f_model.indices(), flex.abs(self.f_model.data()),
@@ -2078,12 +1359,12 @@ class fmodel_from_xray_structure(object):
           arrays.append(self.r_free_flags.data())
         for values in zip(*arrays):
           if(self.params.r_free_flags_fraction is None):
-            print >> ofo, "INDE %d %d %d" % values[0],
-            print >> ofo, " %s= %.6g %.6g" % (op.label, values[1],values[2])
+            print("INDE %d %d %d" % values[0], end=' ', file=ofo)
+            print(" %s= %.6g %.6g" % (op.label, values[1],values[2]), file=ofo)
           else:
-            print >> ofo, "INDE %d %d %d" % values[0],
-            print >> ofo, " %s= %.6g %.6g TEST=%d" % (op.label, values[1],
-              values[2], values[3])
+            print("INDE %d %d %d" % values[0], end=' ', file=ofo)
+            print(" %s= %.6g %.6g TEST=%d" % (op.label, values[1],
+              values[2], values[3]), file=ofo)
       else:
         arrays = [
           self.f_model.indices(), self.f_model.data()]
@@ -2091,14 +1372,14 @@ class fmodel_from_xray_structure(object):
           arrays.append(self.r_free_flags.data())
         for values in zip(*arrays):
           if(self.params.r_free_flags_fraction is None):
-            print >> ofo, "INDE %d %d %d" % values[0],
-            print >> ofo, " %s= %.6g" % (op.label, values[1])
+            print("INDE %d %d %d" % values[0], end=' ', file=ofo)
+            print(" %s= %.6g" % (op.label, values[1]), file=ofo)
           else:
-            print >> ofo, "INDE %d %d %d" % values[0],
-            print >> ofo, " %s= %.6g TEST=%d" % (op.label, values[1],values[2])
+            print("INDE %d %d %d" % values[0], end=' ', file=ofo)
+            print(" %s= %.6g TEST=%d" % (op.label, values[1],values[2]), file=ofo)
     else:
       output_array = self.f_model
-      if (obs_type == "intensities") :
+      if (obs_type == "intensities"):
         output_array = output_array.f_as_f_sq()
         output_array.set_observation_type_xray_intensity()
       mtz_dataset= output_array.as_mtz_dataset(column_root_label="%s"%op.label)
@@ -2207,7 +1488,7 @@ def equivalent_sigma_from_cumulative_histogram_match(
   assert size_1 == size_2
   #
   fmt = "%5.2f %6.2f %6.2f"
-  if(verbose): print flex.min(map_1), flex.min(map_2)
+  if(verbose): print(flex.min(map_1), flex.min(map_2))
   start = max(-tail_cutoff*100,int(min(flex.min(map_1), flex.min(map_2)))*100)
   end   = min(tail_cutoff*100+step,int(max(flex.max(map_1), flex.max(map_2)))*100)
   sigmas = flex.double()
@@ -2216,12 +1497,12 @@ def equivalent_sigma_from_cumulative_histogram_match(
   for sig in [i/100. for i in range(start,end,step)]:
     s_a = (map_1>=sig).count(True)*100./size_1
     s_o = (map_2>=sig).count(True)*100./size_2
-    if(verbose): print fmt % (sig, s_o, s_a)
+    if(verbose): print(fmt % (sig, s_o, s_a))
     sigmas.append(sig)
     c_1.append(s_a)
     c_2.append(s_o)
   #
-  if(verbose): print
+  if(verbose): print()
   #
   s = flex.sort_permutation(flex.abs(sigmas-sigma_1))
   tmp1 = c_1.select(s)[0]
@@ -2229,46 +1510,9 @@ def equivalent_sigma_from_cumulative_histogram_match(
   tmp1 = c_2.select(s)[0]
   tmp2 = sigmas.select(s)[0]
   #
-  if(verbose): print tmp1, tmp2
+  if(verbose): print(tmp1, tmp2)
   #
   return tmp2
-
-def optimize_h(fmodel, mon_lib_srv, pdb_hierarchy=None, model=None, log=None,
-      verbose=True):
-  assert [pdb_hierarchy, model].count(None)==1
-  if(log is None): log = sys.stdout
-  if(fmodel.xray_structure.hd_selection().count(True)==0): return
-  if(verbose):
-    print >> log
-    print >> log, "Optimizing scattering from H..."
-    print >> log, "  before optimization: r_work=%6.4f r_free=%6.4f"%(
-    fmodel.r_work(), fmodel.r_free())
-  if(model is not None):
-    assert_xray_structures_equal(
-      x1 = fmodel.xray_structure,
-      x2 = model.get_xray_structure())
-    model.reset_occupancies_for_hydrogens()
-  if(model is not None): pdb_hierarchy = model.get_hierarchy()
-  import mmtbx.hydrogens
-  rmh_sel = mmtbx.hydrogens.rotatable(pdb_hierarchy = pdb_hierarchy,
-    mon_lib_srv=mon_lib_srv, restraints_manager=model.restraints_manager)
-  # XXX inefficient
-  rmh_sel_i_seqs = flex.size_t()
-  for i in rmh_sel:
-    for ii in i[1]:
-      rmh_sel_i_seqs.append(ii)
-  fmodel.xray_structure.set_occupancies(value = 0, selection = rmh_sel_i_seqs)
-  fmodel.update_f_hydrogens(log=log)
-  if(model is not None):
-    model.set_xray_structure(fmodel.xray_structure)
-  fmodel.xray_structure.set_occupancies(value = 0,
-    selection = fmodel.xray_structure.hd_selection())
-  if(model is not None):
-    model.set_xray_structure(fmodel.xray_structure)
-  if(verbose):
-    print >> log, "  after optimization:  r_work=%6.4f r_free=%6.4f"%(
-      fmodel.r_work(), fmodel.r_free())
-  #
 
 class set_map_to_value(object):
   def __init__(self, map_data, xray_structure, atom_radius, value):
@@ -2307,9 +1551,15 @@ class set_map_to_value(object):
       standard_deviation = -1)
 
 class shift_origin(object):
-  def __init__(self, map_data, pdb_hierarchy=None, xray_structure=None,
-                     crystal_symmetry=None, ncs_object=None):
+  def __init__(self, map_data=None, pdb_hierarchy=None, xray_structure=None,
+                     crystal_symmetry=None, ncs_object=None,
+                     origin_grid_units=None,
+                     n_xyz=None,
+                     ):
+    # Optionally supply n_xyz and origin_grid_units instead of map_data
+
     assert [pdb_hierarchy, xray_structure].count(None)==1
+    sites_cart=None
     if(pdb_hierarchy is not None):
       assert crystal_symmetry is not None
       sites_cart = pdb_hierarchy.atoms().extract_xyz()
@@ -2329,7 +1579,9 @@ class shift_origin(object):
       map_data         = self.map_data,
       ncs_object       = self.ncs_object,
       sites_cart       = sites_cart,
-      crystal_symmetry = crystal_symmetry)
+      crystal_symmetry = crystal_symmetry,
+      origin_grid_units=origin_grid_units,
+      n_xyz            =n_xyz)
     self.map_data       = soin.map_data
     self.ncs_object     = soin.ncs_object
     self.shift_cart     = soin.shift_cart
@@ -2354,12 +1606,14 @@ class shift_origin(object):
 
   def write_model_file(self, file_name):
     assert self.pdb_hierarchy is not None
-    self.pdb_hierarchy.write_pdb_file(file_name=file_name,
+    self.pdb_hierarchy.write_pdb_or_mmcif_file(
+      target_format='pdb',
+      target_filename=file_name,
       crystal_symmetry=self.crystal_symmetry)
 
   def write_map_file(self, file_name):
-    from iotbx import ccp4_map
-    ccp4_map.write_ccp4_map(
+    from iotbx import mrcfile
+    mrcfile.write_ccp4_map(
       file_name=file_name,
       unit_cell=self.crystal_symmetry.unit_cell(),
       space_group=self.crystal_symmetry.space_group(),
@@ -2370,104 +1624,40 @@ class shift_origin(object):
 
 class extract_box_around_model_and_map(object):
   def __init__(self,
-               xray_structure, # safe to pass here, does not change
-               map_data,
-               box_cushion,
-               selection=None,
-               density_select=None,
-               threshold=None,
-               get_half_height_width=None,
-               soft_mask=False,
-               soft_mask_radius=None,
-               mask_atoms=False,
-               mask_atoms_atom_radius=3.0,
-               value_outside_atoms=None,
-               keep_map_size=False,
-               restrict_map_size=False,
-               lower_bounds=None,
-               upper_bounds=None,
-               extract_unique=None,
-               sequence=None,
-               chain_type=None,
-               solvent_content=None,
-               resolution=None,
-               molecular_mass=None,
-               ncs_object=None,
-               symmetry=None,
+               xray_structure=None, # safe to pass here, does not change
+               map_data=None,
+               box_cushion=None,
                    ):
     adopt_init_args(self, locals())
+
+
     cs = xray_structure.crystal_symmetry()
+    origin_as_input=self.map_data.origin()
     soo = shift_origin(map_data=self.map_data,
-      xray_structure=self.xray_structure,
-      ncs_object=self.ncs_object)
+      xray_structure=self.xray_structure,)
     self.map_data = soo.map_data
-    self.ncs_object = soo.ncs_object
     self.crystal_symmetry = soo.crystal_symmetry
     self.shift_cart = soo.shift_cart
-    if(selection is None):
-      xray_structure_selected = soo.xray_structure.deep_copy_scatterers()
-    else:
-      xray_structure_selected = soo.xray_structure.select(selection=selection)
+    xray_structure_selected = soo.xray_structure.deep_copy_scatterers()
     cushion = flex.double(cs.unit_cell().fractionalize((box_cushion,)*3))
 
-    if (extract_unique): # extracts just au density (not everything in the
-      #   box). Map is superimposed on self.map_data. We are going to use this
-      # box_map_data but everything else we will set with lower_bounds and
-      # upper_bounds
-      from scitbx.matrix import col
-      extract_unique_map_data,extract_unique_crystal_symmetry=\
-         self.get_map_from_segment_and_split()
-      lower_bounds=extract_unique_map_data.origin()
-      upper_bounds=tuple(
-        col(extract_unique_map_data.focus())-col((1,1,1)))
-      # shift the map so it is in the same position as the box map will be in
-      extract_unique_map_data.reshape(flex.grid(extract_unique_map_data.all()))
+    self.pdb_outside_box_msg=""
+    frac_min = xray_structure_selected.sites_frac().min()
+    frac_max = xray_structure_selected.sites_frac().max()
+    frac_max = list(flex.double(frac_max)+cushion)
+    frac_min = list(flex.double(frac_min)-cushion)
 
-      # Now box map is going to extract the same volume, but not the same
-      #  contents because extract_unique keeps just the density for the
-      #  molecule, not the surroundings.  We are going to replace the
-      #  map_box density with extract_unique_map_data below.
-
-    if (keep_map_size):  # do not change anything...keep entire map
-      self.pdb_outside_box_msg=""
-      frac_min = [0.,0.,0.]
-      frac_max = [1.,1.,1.]
-      for kk in xrange(3):
-        frac_min[kk]=max(0.,frac_min[kk])
-        frac_max[kk]=min(1.-1./map_data.all()[kk], frac_max[kk])
-    elif(density_select):
-      frac_min,frac_max=self.select_box(
-        threshold = threshold, xrs = xray_structure_selected,
-        get_half_height_width=get_half_height_width)
-      frac_max = list(flex.double(frac_max)+cushion)
-      frac_min = list(flex.double(frac_min)-cushion)
-      for kk in xrange(3):
-        frac_min[kk]=max(0.,frac_min[kk])
-        frac_max[kk]=min(1.-1./map_data.all()[kk], frac_max[kk])
-    else:
-      self.pdb_outside_box_msg=""
-      frac_min = xray_structure_selected.sites_frac().min()
-      frac_max = xray_structure_selected.sites_frac().max()
-      frac_max = list(flex.double(frac_max)+cushion)
-      frac_min = list(flex.double(frac_min)-cushion)
     na = self.map_data.all()
-    if lower_bounds and upper_bounds:
-      self.gridding_first=lower_bounds
-      self.gridding_last=upper_bounds
-    else:
-      self.gridding_first=[ifloor(f*n) for f,n in zip(frac_min,na)]
-      self.gridding_last =[iceil(f*n) for f,n in zip(frac_max,na)]
-      if restrict_map_size:
-        self.gridding_first=[max(0,g) for g in self.gridding_first]
-        self.gridding_last=[min(n,g) for n,g in zip(na,self.gridding_last)]
+    self.gridding_first=[ifloor(f*n) for f,n in zip(frac_min,na)]
+    self.gridding_last =[iceil(f*n) for f,n in zip(frac_max,na)]
     self.map_box = self.cut_and_copy_map(map_data=self.map_data)
     secondary_shift_frac = [
-      -self.map_box.origin()[i]/self.map_data.all()[i] for i in xrange(3)]
+      -self.map_box.origin()[i]/self.map_data.all()[i] for i in range(3)]
     secondary_shift_cart = cs.unit_cell().orthogonalize(secondary_shift_frac)
     if(self.shift_cart is None):
       self.shift_cart = secondary_shift_cart
     else:
-      self.shift_cart = [self.shift_cart[i]+secondary_shift_cart[i] for i in xrange(3)]
+      self.shift_cart = [self.shift_cart[i]+secondary_shift_cart[i] for i in range(3)]
     self.map_box.reshape(flex.grid(self.map_box.all()))
     # shrink unit cell to match the box
     p = cs.unit_cell().parameters()
@@ -2479,20 +1669,6 @@ class extract_box_around_model_and_map(object):
     self.box_crystal_symmetry = crystal.symmetry(
       unit_cell=new_unit_cell_box, space_group="P1")
 
-    if extract_unique: # use extract_unique_map_data in place of map_box
-      assert extract_unique_map_data.origin()==self.map_box.origin()
-      assert extract_unique_map_data.all()==self.map_box.all()
-      assert extract_unique_crystal_symmetry.is_similar_symmetry(
-         self.box_crystal_symmetry)
-      self.map_box=extract_unique_map_data
-
-    # Shift ncs_object to match the box
-    if self.ncs_object:
-      self.ncs_object=self.ncs_object.coordinate_offset(
-         secondary_shift_cart)
-    else:
-      self.ncs_object=None
-
     sp = crystal.special_position_settings(self.box_crystal_symmetry)
     # new xray_structure in the box
     sites_frac_new = xray_structure_selected.sites_frac()+secondary_shift_frac
@@ -2502,35 +1678,16 @@ class extract_box_around_model_and_map(object):
     xray_structure_box = xray_structure_box.replace_sites_frac(sites_frac)
     self.xray_structure_box = xray.structure(
        sp,xray_structure_box.scatterers())
-    if(mask_atoms):
-      import boost.python
-      cctbx_maptbx_ext = boost.python.import_ext("cctbx_maptbx_ext")
-      radii = flex.double(
-        self.xray_structure_box.sites_frac().size(), mask_atoms_atom_radius)
-      mask = cctbx_maptbx_ext.mask(
-        sites_frac                  = self.xray_structure_box.sites_frac(),
-        unit_cell                   = self.xray_structure_box.unit_cell(),
-        n_real                      = self.map_box.all(),
-        mask_value_inside_molecule  = 1,
-        mask_value_outside_molecule = 0,
-        radii                       = radii)
-      if(soft_mask):
-        # make the mask a soft mask
-        maptbx.unpad_in_place(map=mask)
-        mask = maptbx.smooth_map(
-          map              = mask,
-          crystal_symmetry = cs,
-          rad_smooth       = soft_mask_radius)
-      self.map_box = self.map_box*mask
-      if(value_outside_atoms is not None):
-        assert not soft_mask
-        assert value_outside_atoms=='mean'
-        #  make mean outside==mean inside
-        one_d=self.map_box.as_1d()
-        n_zero=mask.count(0)
-        n_tot=mask.size()
-        mean_in_box=one_d.min_max_mean().mean*n_tot/(n_tot-n_zero)
-        self.map_box=self.map_box+(1-mask)*mean_in_box
+    # Just for transition:
+    from iotbx.map_manager import map_manager
+    map_box_as_map_manager=map_manager(
+      map_data=self.map_box,
+      unit_cell_grid=self.map_box.all(),
+      unit_cell_crystal_symmetry=self.xray_structure_box.crystal_symmetry(),
+      wrapping = False) # boxed map is never ok to wrap
+
+  def get_solvent_content(self):
+    return self.solvent_content
 
   def get_original_cs(self):
     return self.xray_structure.crystal_symmetry()
@@ -2548,207 +1705,86 @@ class extract_box_around_model_and_map(object):
   def cut_and_copy_map(self,map_data=None):
     return maptbx.copy(map_data,self.gridding_first, self.gridding_last)
 
-  def get_map_from_segment_and_split(self):
-    from cctbx.maptbx.segment_and_split_map import run as segment_and_split_map
-    # NOTE: calling with shifted map data and ncs_object
-    #    (origin shifted to 0,0,0)
-    assert self.map_data.origin()==(0,0,0)
-    args=[]
-    #ZZZargs.append("write_files=False")
-    args.append("add_neighbors=False") # XXX perhaps allow user to set this
-    args.append("save_box_map_ncs_au=True")
-    args.append("density_select=False")
-    args.append("solvent_content=%s" %(self.solvent_content))
-    args.append("resolution=%s" %(self.resolution))
-    args.append("auto_sharpen=False")
-    if self.chain_type:
-      args.append("chain_type=%s" %self.chain_type)
-    if self.sequence:
-      args.append("sequence=%s" %self.sequence)
-    if self.molecular_mass:
-      args.append("molecular_mass=%s" %self.molecular_mass)
-    if self.symmetry:
-      args.append("symmetry=%s" %self.symmetry)
-    # import params from s&s here and set them.  set write_files=false etc.
+  def box_map_coefficients_as_fft_map(self, d_min, resolution_factor):
+    box_map_coeffs = self.box_map_coefficients(d_min = d_min)
+    fft_map = box_map_coeffs.fft_map(resolution_factor=resolution_factor)
+    fft_map.apply_sigma_scaling()
+    return fft_map
 
-    ncs_group_obj,remainder_ncs_group_obj,tracking_data =\
-      segment_and_split_map(args,
-          map_data=self.map_data,
-          crystal_symmetry=self.crystal_symmetry,
-          ncs_obj=self.ncs_object)
-    ncs_au_map_data=tracking_data.box_map_ncs_au_map_data
-    ncs_au_crystal_symmetry=tracking_data.box_map_ncs_au_crystal_symmetry
-    return ncs_au_map_data,ncs_au_crystal_symmetry
+  def apply_mask_inplace(self, atom_radius):
+    assert self.map_box.origin() == (0,0,0)
+    import boost_adaptbx.boost.python as bp
+    cctbx_maptbx_ext = bp.import_ext("cctbx_maptbx_ext")
+    radii = flex.double(self.xray_structure_box.scatterers().size(),atom_radius)
+    mask = cctbx_maptbx_ext.mask(
+      sites_frac                  = self.xray_structure_box.sites_frac(),
+      unit_cell                   = self.box_crystal_symmetry.unit_cell(),
+      n_real                      = self.map_box.all(),
+      mask_value_inside_molecule  = 1,
+      mask_value_outside_molecule = 0,
+      radii                       = radii)
+    self.map_box = self.map_box * mask
 
-  def select_box(self,threshold,xrs=None,get_half_height_width=None):
-    # Select box where data are positive (> threshold*max)
-    map_data=self.map_data
-    origin=list(map_data.origin())
-    assert origin==[0,0,0]
-    all=list(map_data.all())
-    # Get max value vs x,y,z
-    value_list=flex.double()
-    for i in xrange(0,all[0]):
-      new_map_data = maptbx.copy(map_data,
-         tuple((i,0,0)),
-         tuple((i,all[1],all[2]))
-       )
-      value_list.append(new_map_data.as_1d().as_double().min_max_mean().max)
-    ii=0
-    for z in value_list:
-      ii+=1
-    x_min,x_max=self.get_range(value_list,threshold=threshold,
-      get_half_height_width=get_half_height_width)
+  def map_coefficients(self, d_min, resolution_factor, file_name="box.mtz",
+     scale_max=None,
+     shift_back=None):
+    box_map_coeffs = self.box_map_coefficients(d_min = d_min,
+      shift_back=shift_back)
+    if scale_max is not None:
+      box_map_coeffs = box_map_coeffs.apply_scaling(target_max=scale_max)
+    if(file_name is not None):
+      mtz_dataset = box_map_coeffs.as_mtz_dataset(column_root_label="BoxMap")
+      mtz_object = mtz_dataset.mtz_object()
+      mtz_object.write(file_name = file_name)
+    return box_map_coeffs
 
-    value_list=flex.double()
-    for j in xrange(0,all[1]):
-      new_map_data = maptbx.copy(map_data,
-         tuple((0,j,0)),
-         tuple((all[0],j,all[2]))
-       )
-      value_list.append(new_map_data.as_1d().as_double().min_max_mean().max)
-    y_min,y_max=self.get_range(value_list,threshold=threshold,
-      get_half_height_width=get_half_height_width)
+  def box_map_coefficients(self, d_min, shift_back=None):
+    from scitbx import fftpack
+    fft = fftpack.real_to_complex_3d([i for i in self.map_box.all()])
+    map_box = maptbx.copy(
+      self.map_box, flex.grid(fft.m_real()).set_focus(self.map_box.focus()))
+    map_box.reshape(flex.grid(fft.m_real()).set_focus(fft.n_real()))
+    map_box = fft.forward(map_box)
+    cs = self.xray_structure_box.crystal_symmetry()
+    box_structure_factors = maptbx.structure_factors.from_map(
+      unit_cell=cs.unit_cell(),
+      space_group_type=cs.space_group().type(),
+      anomalous_flag=False,
+      d_min=d_min,
+      complex_map=map_box,
+      conjugate_flag=True,
+      discard_indices_affected_by_aliasing=True)
+    n = map_box.all()[0] * map_box.all()[1] * map_box.all()[2]
+    box_map_coeffs = miller.set(
+      crystal_symmetry=cs,
+      anomalous_flag=False,
+      indices=box_structure_factors.miller_indices(),
+      ).array(data=box_structure_factors.data()/n)
 
-    value_list=flex.double()
-    for k in xrange(0,all[2]):
-      new_map_data = maptbx.copy(map_data,
-         tuple((0,0,k)),
-         tuple((all[0],all[1],k))
-       )
-      value_list.append(new_map_data.as_1d().as_double().min_max_mean().max)
-    z_min,z_max=self.get_range(value_list,threshold=threshold,
-      get_half_height_width=get_half_height_width)
+    if shift_back:  # apply phase shift to map coefficients for origin shift
+       box_map_coeffs=self.shift_map_coeffs_back(box_map_coeffs)
 
-    frac_min=(x_min,y_min,z_min)
-    frac_max=(x_max,y_max,z_max)
+    return box_map_coeffs
 
-    self.pdb_outside_box_msg=""
-    if xrs is not None and xrs.sites_frac().size()>0:
-      # warn if outside box chosen
-      c_min= xrs.sites_frac().min()
-      c_max= xrs.sites_frac().max()
-      if c_min[0]<frac_min[0] or \
-         c_min[1]<frac_min[1] or \
-         c_min[2]<frac_min[2] or \
-         c_max[0]>frac_max[0] or \
-         c_max[1]>frac_max[1] or \
-         c_max[2]>frac_max[2]:
-       cs=xrs.crystal_symmetry()
-       self.pdb_outside_box_msg="""
-NOTE: Output model is not contained in box.
-Range for model: %7.1f  %7.1f  %7.1f   to %7.1f  %7.1f  %7.1f
-Range for box:   %7.1f  %7.1f  %7.1f   to %7.1f  %7.1f  %7.1f""" %(
-     cs.unit_cell().orthogonalize(c_min)+
-     cs.unit_cell().orthogonalize(c_max)+
-     cs.unit_cell().orthogonalize(frac_min)+
-     cs.unit_cell().orthogonalize(frac_max))
-    return frac_min,frac_max
-
-  def get_range(self, value_list, threshold=None, ignore_ends=True,
-     keep_near_ends_frac=0.02, half_height_width=2., get_half_height_width=None,
-     cutoff_ratio=4,ratio_max=0.5):
-    # ignore ends allows ignoring the first and last points which may be off
-    # if get_half_height_width, find width at half max hieght, go
-    #  half_height_width times this width out in either direction, use that as
-    #  baseline instead of full cell. Don't do it if the height at this point
-    #  is over cutoff_ratio times threshold above original baseline.
-    if get_half_height_width:
-      z_min,z_max=self.get_range(value_list,threshold=0.5,
-        ignore_ends=ignore_ends,keep_near_ends_frac=keep_near_ends_frac,
-        get_half_height_width=False)
-      z_mid=0.5*(z_min+z_max)
-      z_width=0.5*(z_max-z_min)
-      z_low=z_mid-2*z_width
-      z_high=z_mid+2*z_width
-      if ignore_ends:
-        i_max=value_list.size()-2
-        i_min=1
-      else:
-        i_max=value_list.size()-1
-        i_min=0
-
-      i_low= max(i_min,min(i_max,int(0.5+z_low* value_list.size())))
-      i_high=max(i_min,min(i_max,int(0.5+z_high*value_list.size())))
-      min_value=value_list.min_max_mean().min
-      max_value=value_list.min_max_mean().max
-      ratio_low=(value_list[i_low]-min_value)/max(
-         1.e-10,(max_value-min_value))
-      ratio_high=(value_list[i_high]-min_value)/max(
-         1.e-10,(max_value-min_value))
-      if ratio_low <= cutoff_ratio*threshold and ratio_low >0 \
-           and ratio_low<ratio_max\
-           and ratio_high <= cutoff_ratio*threshold and ratio_high > 0 \
-           and ratio_high < ratio_max:
-        ratio=min(ratio_low,ratio_high)
-        z_min,z_max=self.get_range(
-          value_list,threshold=threshold+ratio,
-          ignore_ends=ignore_ends,keep_near_ends_frac=keep_near_ends_frac,
-          get_half_height_width=False)
-        return z_min,z_max
-      else:
-        z_min,z_max=self.get_range(value_list,threshold=threshold,
-          ignore_ends=ignore_ends,keep_near_ends_frac=keep_near_ends_frac,
-          get_half_height_width=False)
-        return z_min,z_max
-
-    if threshold is None: threshold=0
-    n_tot=value_list.size()
-    assert n_tot>0
-    min_value=value_list.min_max_mean().min
-    max_value=value_list.min_max_mean().max
-    cutoff=min_value+(max_value-min_value)*threshold
-    if ignore_ends:
-      i_off=1
-    else:
-      i_off=0
-    i_low=None
-    for i in xrange(i_off,n_tot-i_off):
-      if value_list[i]>cutoff:
-        i_low=max(i_off,i-1)
-        break
-    i_high=None
-    for i in xrange(i_off,n_tot-i_off):
-      ii=n_tot-1-i
-      if value_list[ii]>cutoff:
-        i_high=min(n_tot-1-i_off,ii+1)
-        break
-    if i_low is None or i_high is None:
-      raise Sorry("Cannot auto-select region...please supply PDB file")
-    if i_low/n_tot<keep_near_ends_frac: i_low=0
-    if (n_tot-1-i_high)/n_tot<keep_near_ends_frac: i_high=n_tot-1
-    return i_low/n_tot,i_high/n_tot
-
-  def write_xplor_map(self, file_name="box.xplor",shift_back=None,
-      output_unit_cell_grid=None,
-      output_crystal_symmetry=None):
-
-    # write out xplor map on same grid as ccp4 map (0 to focus-1)
-    from scitbx.matrix import col
-    if shift_back:
-      map_data=self.shift_map_back(self.map_box)
-    else:
-      map_data=self.map_box
-
-    if output_unit_cell_grid is None:
-     output_unit_cell_grid=map_data.all()
-
-    if output_crystal_symmetry is None:
-      output_crystal_symmetry=self.xray_structure_box.crystal_symmetry()
-
-    gridding = iotbx.xplor.map.gridding(
-        n     = output_unit_cell_grid,
-        first = map_data.origin(),
-        last  = tuple(col(map_data.focus())-col((1,1,1))))
-
-
+  def write_xplor_map(self, file_name):
+    unit_cell = self.xray_structure.unit_cell()
+    sites_frac = self.xray_structure.sites_frac()
+    frac_max = sites_frac.max()
+    frac_min = sites_frac.min()
+    frac_max = list(flex.double(frac_max))
+    frac_min = list(flex.double(frac_min))
+    n_real = self.map_data.all()
+    gridding_first=[ifloor(f*n) for f,n in zip(frac_min,n_real)]
+    gridding_last=[iceil(f*n) for f,n in zip(frac_max,n_real)]
+    gridding = iotbx.xplor.map.gridding(n = self.map_data.focus(),
+      first = gridding_first, last = gridding_last)
     iotbx.xplor.map.writer(
       file_name          = file_name,
-      is_p1_cell         = None, # XXX temporary flag allowing any cell
-      title_lines        = ['Map in box',],
-      unit_cell          = output_crystal_symmetry.unit_cell(),
+      is_p1_cell         = True,
+      title_lines        = [' None',],
+      unit_cell          = unit_cell,
       gridding           = gridding,
-      data               = map_data.as_double(),
+      data               = self.map_data,
       average            = -1,
       standard_deviation = -1)
 
@@ -2789,6 +1825,7 @@ Range for box:   %7.1f  %7.1f  %7.1f   to %7.1f  %7.1f  %7.1f""" %(
           self.box_crystal_symmetry.unit_cell().fractionalize(
           -col(self.shift_cart)), deg=False)
 
+
   def shift_map_back(self,map_data):
     # Shift map from map_box cell to original coordinate system
     #  Note this map only applies in the region of the map_box cell (the
@@ -2800,78 +1837,6 @@ Range for box:   %7.1f  %7.1f  %7.1f   to %7.1f  %7.1f  %7.1f""" %(
     shifted_map_data = map_data.deep_copy()
     shifted_map_data.resize(flex.grid(new_origin,new_all))
     return shifted_map_data
-
-  def write_ccp4_map(self, file_name="box.ccp4",shift_back=False,
-      output_unit_cell_grid=None,
-      output_crystal_symmetry=None):
-
-    # If output_unit_cell_grid is specified, then write this out
-    #  instead of the size of the actual available map (self.map_box.all())
-
-    from iotbx import ccp4_map
-    assert tuple(self.map_box.origin())==(0,0,0)
-    if shift_back:
-      map_data=self.shift_map_back(self.map_box)
-    else:
-      map_data = self.map_box
-
-    # Adjust the crystal_symmetry to match the output grid as well
-    if output_crystal_symmetry is None:
-      output_crystal_symmetry=self.xray_structure_box.crystal_symmetry()
-    if output_unit_cell_grid is None:
-      output_unit_cell_grid=map_data.all()
-    ccp4_map.write_ccp4_map(
-      file_name      = file_name,
-      unit_cell      = output_crystal_symmetry.unit_cell(),
-      space_group    = output_crystal_symmetry.space_group(),
-      unit_cell_grid = output_unit_cell_grid,
-      map_data       = map_data,
-      labels=flex.std_string([" "]))
-
-  def box_map_coefficients_as_fft_map(self, d_min, resolution_factor):
-    box_map_coeffs = self.box_map_coefficients(d_min = d_min)
-    fft_map = box_map_coeffs.fft_map(resolution_factor=resolution_factor)
-    fft_map.apply_sigma_scaling()
-    return fft_map
-
-  def map_coefficients(self, d_min, resolution_factor, file_name="box.mtz",
-     shift_back=None):
-    box_map_coeffs = self.box_map_coefficients(d_min = d_min,
-      shift_back=shift_back)
-    if(file_name is not None):
-      mtz_dataset = box_map_coeffs.as_mtz_dataset(column_root_label="BoxMap")
-      mtz_object = mtz_dataset.mtz_object()
-      mtz_object.write(file_name = file_name)
-    return box_map_coeffs
-
-  def box_map_coefficients(self, d_min, shift_back=None):
-    from scitbx import fftpack
-    fft = fftpack.real_to_complex_3d([i for i in self.map_box.all()])
-    map_box = maptbx.copy(
-      self.map_box, flex.grid(fft.m_real()).set_focus(self.map_box.focus()))
-    map_box.reshape(flex.grid(fft.m_real()).set_focus(fft.n_real()))
-    map_box = fft.forward(map_box)
-    cs = self.xray_structure_box.crystal_symmetry()
-    box_structure_factors = maptbx.structure_factors.from_map(
-      unit_cell=cs.unit_cell(),
-      space_group_type=cs.space_group().type(),
-      anomalous_flag=False,
-      d_min=d_min,
-      complex_map=map_box,
-      conjugate_flag=True,
-      discard_indices_affected_by_aliasing=True)
-    n = map_box.all()[0] * map_box.all()[1] * map_box.all()[2]
-    box_map_coeffs = miller.set(
-      crystal_symmetry=cs,
-      anomalous_flag=False,
-      indices=box_structure_factors.miller_indices(),
-      ).array(data=box_structure_factors.data()/n)
-
-    if shift_back:  # apply phase shift to map coefficients for origin shift
-       box_map_coeffs=self.shift_map_coeffs_back(box_map_coeffs)
-
-    return box_map_coeffs
-
 
 class experimental_data_target_and_gradients(object):
   def __init__(self, fmodel, alpha_beta=None):
@@ -2902,19 +1867,19 @@ class experimental_data_target_and_gradients(object):
 
   def show(self, log=None):
     if(log is None): log = sys.stdout
-    print >> log, "Target type and value: %s %-15.6f" %(self.fmodel.target_name,
-      self.target())
-    print >> log, "r_work=%6.4f r_free=%6.4f" % (self.fmodel.r_work(),
-      self.fmodel.r_free())
+    print("Target type and value: %s %-15.6f" %(self.fmodel.target_name,
+      self.target()), file=log)
+    print("r_work=%6.4f r_free=%6.4f" % (self.fmodel.r_work(),
+      self.fmodel.r_free()), file=log)
     go = self.grad_occ()
     gs = self.grad_sites_cart()
     sites_cart = self.fmodel.xray_structure.sites_cart()
-    print >> log, "                                          Gradients"
-    print >> log, "                sites_cart   occ   b_iso      occ                 sites_cart"
+    print("                                          Gradients", file=log)
+    print("                sites_cart   occ   b_iso      occ                 sites_cart", file=log)
     fmt="%8.3f %8.3f %8.3f %5.2f %7.2f %8.4f %8.4f %8.4f %8.4f"
     for i, sc in enumerate(self.fmodel.xray_structure.scatterers()):
-      print >> log, fmt%(sites_cart[i][0], sites_cart[i][1], sites_cart[i][2],
-        sc.occupancy,adptbx.u_as_b(sc.u_iso), go[i], gs[i][0],gs[i][1],gs[i][2])
+      print(fmt%(sites_cart[i][0], sites_cart[i][1], sites_cart[i][2],
+        sc.occupancy,adptbx.u_as_b(sc.u_iso), go[i], gs[i][0],gs[i][1],gs[i][2]), file=log)
 
   def group_occupancy_grads(
         self,
@@ -2964,16 +1929,25 @@ class states(object):
     self.counter = counter
     self.root = iotbx.pdb.hierarchy.root()
     self.sites_carts = []
+    self.add(hierarchy = pdb_hierarchy)
 
-  def add(self, sites_cart):
-    self.sites_carts.append(sites_cart)
+  def add(self, sites_cart=None, hierarchy=None):
+    if(sites_cart is not None):
+      self.sites_carts.append(sites_cart)
     ph = self.pdb_hierarchy.deep_copy()
     if(self.xray_structure is not None):
-      xrs = self.xray_structure.replace_sites_cart(new_sites = sites_cart)
+      if(sites_cart is not None):
+        xrs = self.xray_structure.replace_sites_cart(new_sites = sites_cart)
+      else:
+        xrs = self.xray_structure.replace_sites_cart(
+          new_sites = ph.atoms().extract_xyz())
       ph.adopt_xray_structure(xrs)
-    else:
+    elif(sites_cart is not None):
       ph.atoms().set_xyz(sites_cart)
-    models = ph.models()
+    if(hierarchy is None):
+      models = ph.models()
+    else:
+      models = hierarchy.deep_copy().models()
     md = models[0].detached_copy()
     md.id = str(self.counter)
     self.root.append_model(md)
@@ -2986,8 +1960,9 @@ class states(object):
     if([crystal_symmetry,self.xray_structure].count(None)==0):
       assert crystal_symmetry.is_similar_symmetry(
         self.xray_structure.crystal_symmetry())
-    self.root.write_pdb_file(
-      file_name        = file_name,
+    self.root.write_pdb_or_mmcif_file(
+      target_format='pdb',
+      target_filename = file_name,
       crystal_symmetry = crystal_symmetry)
 
 class f_000(object):
@@ -3001,8 +1976,10 @@ class f_000(object):
       f_000 += xray_structure.f_000()
       if(solvent_fraction is None):
         import mmtbx.masks
+        mp = mmtbx.masks.mask_master_params.extract()
+        mp.step=0.25
         solvent_fraction = mmtbx.masks.asu_mask(xray_structure=xray_structure,
-          d_min=1).asu_mask.contact_surface_fraction
+          mask_params = mp).asu_mask.contact_surface_fraction
     if(solvent_fraction is not None):
       f_000 += solvent_fraction*unit_cell_volume*mean_solvent_density
     if(f_000 == 0):
@@ -3015,6 +1992,7 @@ def check_and_set_crystal_symmetry(
       map_inps=[],
       miller_arrays=[],
       crystal_symmetry=None,
+      ignore_symmetry_conflicts=False,
       absolute_angle_tolerance =1.e-2,
       absolute_length_tolerance=1.e-2):
   # XXX This should go into a central place
@@ -3034,13 +2012,13 @@ def check_and_set_crystal_symmetry(
     from_coordinate_files     = [m.crystal_symmetry() for m in models],
     from_reflection_files     = [m.crystal_symmetry() for m in
                                  map_inps+miller_arrays],
-    enforce_similarity        = True,
+    enforce_similarity        = not ignore_symmetry_conflicts,
     absolute_angle_tolerance  = absolute_angle_tolerance,
     absolute_length_tolerance = absolute_length_tolerance)
   for model in models:
     cs = model.crystal_symmetry()
     if(cs is None or cs.is_empty()):
-      model.set_crystal_symmetry_if_undefined(crystal_symmetry)
+      model.set_crystal_symmetry(crystal_symmetry)
   if(len(map_inps)>1):
     m0 = map_inps[0].map_data()
     for m in map_inps[1:]:
@@ -3048,7 +2026,7 @@ def check_and_set_crystal_symmetry(
       maptbx.assert_same_gridding(map_1=m0, map_2=m.map_data())
   return crystal_symmetry
 
-class detect_hydrogen_nomenclature_problem (object) :
+class detect_hydrogen_nomenclature_problem(object):
   """
   This allows us to avoid the following problems:
   1) a bug in automatic linking which deletes the monomer library definition
@@ -3063,7 +2041,7 @@ class detect_hydrogen_nomenclature_problem (object) :
   n_hydrogen: number of hydrogens missing geometry restraints
   n_other: number of non-hydrogen atoms missing geometry restraints
   """
-  def __init__ (self, pdb_file, cif_files=()) :
+  def __init__(self, pdb_file, cif_files=()):
     args = [ pdb_file, ] + list(cif_files)
     import mmtbx.monomer_library.server
     mon_lib_srv = mmtbx.monomer_library.server.server()
@@ -3083,56 +2061,72 @@ class detect_hydrogen_nomenclature_problem (object) :
     self.n_asn_hd22 = 0
     self.n_hydrogen = 0
     self.n_other = 0
-    if (nb_reg.n_unknown_type_symbols() > 0) :
+    if (nb_reg.n_unknown_type_symbols() > 0):
       unknown_atoms = nb_reg.get_unknown_atoms(pdb_atoms)
       for atom in unknown_atoms :
-        print atom.quote()
+        print(atom.quote())
         labels = atom.fetch_labels()
-        if (atom.name == "HD22") and (labels.resname == "ASN") :
+        if (atom.name == "HD22") and (labels.resname == "ASN"):
           self.n_asn_hd22 += 1
           self.bad_hydrogens.append(atom.id_str())
-        elif (atom.element.strip() == "H") :
+        elif (atom.element.strip() == "H"):
           self.n_hydrogen += 1
           self.bad_hydrogens.append(atom.id_str())
         else :
           self.n_other += 1
 
-# MARKED_FOR_DELETION_OLEG
-# REASON: moved to be classmethod of mmtbx.model.manager.from_sites_cart()
-def model_from_sites_cart(sites_cart,
-    atom_name='CA',
-    resname='GLY',
-    chain_id='A',
-    b_iso=30.,
-    occ=1.,
-    scatterer='C',
-    crystal_symmetry=None):
-  assert sites_cart is not None
-  hierarchy = iotbx.pdb.hierarchy.root()
-  m = iotbx.pdb.hierarchy.model()
-  c = iotbx.pdb.hierarchy.chain()
-  c.id=chain_id
-  hierarchy.append_model(m)
-  m.append_chain(c)
-  count=0
-  for sc in sites_cart:
-    count+=1
-    rg=iotbx.pdb.hierarchy.residue_group()
-    c.append_residue_group(rg)
-    ag=iotbx.pdb.hierarchy.atom_group()
-    rg.append_atom_group(ag)
-    a=iotbx.pdb.hierarchy.atom()
-    ag.append_atom(a)
-    rg.resseq=str(count)
-    ag.resname=resname
-    a.set_b(b_iso)
-    a.set_element(scatterer)
-    a.set_occ(occ)
-    a.set_name(atom_name)
-    a.set_xyz(sc)
-    a.set_serial(count)
+class run_reduce_with_timeout(easy_run.fully_buffered):
+  def __init__(self,
+      stdin_lines,
+      parameters = "",
+      file_name=None,
+      override_auto_timeout_with=None,
+      join_stdout_stderr=False,
+      stdout_splitlines=True,
+      bufsize=-1):
+    assert [stdin_lines, file_name].count(None) == 1
+    if stdin_lines is not None and parameters.split()[-1] != '-':
+      raise Sorry(" - should appear at the end of parameters when using stdin_lines mode.")
 
-  from mmtbx.model import manager
-  return mmtbx.model.manager(model_input = None, pdb_hierarchy=hierarchy,
-     crystal_symmetry=crystal_symmetry)
-# END_MARKED_FOR_DELETION_OLEG
+    # Verify that we're not trying to run on an mMCIF file.
+    if file_name is not None:
+      if ".cif".lower() in file_name.lower():
+        raise Sorry("Reduce cannot read mmCIF files. Please convert to PDB format or use mmtbx.reduce2.")
+    else:
+      if "data_" == stdin_lines[0:5]:
+        raise Sorry("Reduce cannot read mmCIF files. Please convert to PDB format or use mmtbx.reduce2.")
+
+    size_bytes = len(stdin_lines) if stdin_lines is not None else 0
+    command_to_run="molprobity.reduce "
+    if file_name is not None:
+      assert os.path.isfile(file_name), 'no file_name : %s' % file_name
+      size_bytes = os.path.getsize(file_name)
+      command_to_run += '"%s"' % file_name + " "
+    command_to_run += parameters
+    size_in_mb = size_bytes / 1024 / 1024
+
+    expected_runtime = 200
+    if override_auto_timeout_with is not None:
+      expected_runtime = override_auto_timeout_with
+    else:
+      # temp, estimate on number/size of stdin_lines, maybe include parameters
+      # into consideration
+      if size_in_mb > 30:
+        # here 2 is my rough estimate, 3 is extra just in case.
+        # For 200Mb of a structure this will allow 10 minutes, where in one occasion
+        # it took 3m30s.
+        expected_runtime = size_in_mb * 2 * 2
+    # print "expected_runtime", expected_runtime
+    # now run parent init
+    super(run_reduce_with_timeout, self).__init__(
+        command=command_to_run,
+        timeout=expected_runtime,
+        stdin_lines=stdin_lines,
+        join_stdout_stderr=join_stdout_stderr,
+        stdout_splitlines=stdout_splitlines,
+        bufsize=bufsize)
+
+  def as_pdb_hierarchy(self):
+    return pdb.input(
+      source_info = "from_reduce",
+      lines       = '\n'.join(self.stdout_lines)).construct_hierarchy()

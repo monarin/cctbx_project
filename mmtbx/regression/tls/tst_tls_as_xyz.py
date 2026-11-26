@@ -1,4 +1,4 @@
-from __future__ import division
+from __future__ import absolute_import, division, print_function
 from scitbx.array_family import flex
 from libtbx import easy_run
 import iotbx.pdb
@@ -161,12 +161,12 @@ END
 
 def run(file_name = "tst_tls_as_xyz.pdb"):
   of = open(file_name,"w")
-  print >> of, pdb_str
+  print(pdb_str, file=of)
   of.close()
   uc = iotbx.pdb.input(file_name=file_name).crystal_symmetry().unit_cell()
   #for n in range(10,100,10)+range(100,1000,100)+range(1000,10001,1000)+[15000,20000]:
   for n in [1000,]:
-    easy_run.call("phenix.tls_as_xyz %s n_models=%s > tst_tls_as_xyz.log"%(
+    assert not easy_run.call("phenix.tls_as_xyz %s n_models=%s > tst_tls_as_xyz.log"%(
       file_name,str(n)))
     for i in [0,1]:
       u1 = iotbx.pdb.input(file_name=
@@ -180,7 +180,7 @@ def run(file_name = "tst_tls_as_xyz.pdb"):
     cc = flex.linear_correlation(x=u1, y=u2).coefficient()
     r = flex.sum(flex.abs(flex.abs(u1)-flex.abs(u2)))/\
         flex.sum(flex.abs(flex.abs(u1)+flex.abs(u2)))*2
-    print "%5d %6.4f %6.4f"%(n, cc, r)
+    print("%5d %6.4f %6.4f"%(n, cc, r))
   assert cc>0.99, cc
   assert r<0.06, r
 

@@ -1,16 +1,17 @@
-from __future__ import division
+from __future__ import absolute_import, division, print_function
+from six.moves import range
 # LIBTBX_SET_DISPATCHER_NAME cctbx.xfel.plot_uc_cloud_from_experiments
 # LIBTBX_PRE_DISPATCHER_INCLUDE_SH export PHENIX_GUI_ENVIRONMENT=1
-# LIBTBX_PRE_DISPATCHER_INCLUDE_SH export BOOST_ADAPTBX_FPE_DEFAULT=1
 
+from dials.util import show_mail_on_error
 from libtbx.phil import parse
 
 help_message = """
-Plot a cloud of unit cell dimensions from stills. Provide either a combined_experiments.json
-file or a specify individual .json files on the command line. To generate an overlay of
+Plot a cloud of unit cell dimensions from stills. Provide either a combined.expt
+file or a specify individual .expt files on the command line. To generate an overlay of
 multiple plots (similar to grouping by run tag in the XFEL GUI), provide multiple
-combined_experiments.json files named as ${tag}_combined_experiments*.json and set
-extract_tags to True in the phil scope.
+combined.expt files named as ${tag}_combined_*.expt and set extract_tags to True in
+the phil scope.
 """
 
 phil_str = """
@@ -20,9 +21,12 @@ phil_str = """
   ranges = None
     .type = floats(6)
     .help = Lower and upper bounds for the ranges to display for each of the a, b and c axes
+  angle_ranges = None
+    .type = floats(6)
+    .help = Lower and upper bounds for the ranges to display for each of the cell angles
   extract_tags = False
     .type = bool
-    .help = Extract tags from the names of multiple combined_experiments.json filenames and use
+    .help = Extract tags from the names of multiple combined.expt filenames and use
     .help = these tags to label multiple groups of experiments.
   combine_all_input = False
     .type = bool
@@ -35,6 +39,11 @@ phil_str = """
     .type = bool
     .help = If True, write a list of cells such that gnuplot can read them. Start gnuplot then use \
             splot "uccloud.dat".
+  output.image_file = None
+    .type = str
+  scale = *linear log
+    .type = choice
+    .help = Z-axis scale for 2d histograms
 """
 phil_scope = parse(phil_str)
 
@@ -43,7 +52,7 @@ class Script(object):
 
   def __init__(self):
     '''Initialise the script.'''
-    from dials.util.options import OptionParser
+    from dials.util.options import ArgumentParser
     import libtbx.load_env
 
     # The script usage
@@ -53,7 +62,7 @@ class Script(object):
     self.reference_detector = None
 
     # Create the parser
-    self.parser = OptionParser(
+    self.parser = ArgumentParser(
       usage=usage,
       phil=phil_scope,
       read_experiments=True,
@@ -81,7 +90,7 @@ class Script(object):
     experiments_list = [e.data for e in params.input.experiments]
     if params.extract_tags:
       import os
-      experiments_tags = [os.path.basename(f.filename).split("_combined_experiments")[0] for f in params.input.experiments]
+      experiments_tags = [os.path.splitext(os.path.basename(f.filename))[0] for f in params.input.experiments]
       info_list = []
       for experiments in experiments_list:
         infos = []
@@ -92,7 +101,7 @@ class Script(object):
             gnuplot.write("% 3.10f % 3.10f % 3.10f\n"%(info['a'], info['b'], info['c']))
         info_list.append(infos)
     else:
-      experiments_tags = [str(i) for i in xrange(len(experiments_list))]
+      experiments_tags = [str(i) for i in range(len(experiments_list))]
       info_list = []
       for experiments in experiments_list:
         infos = []
@@ -110,19 +119,20 @@ class Script(object):
       gnuplot.close()
 
     import xfel.ui.components.xfel_gui_plotter as pltr
-    plotter = pltr.PopUpCharts()
+    interactive = params.output.image_file is None
+    plotter = pltr.PopUpCharts(interactive=interactive)
     plotter.plot_uc_histogram(
       info_list=info_list,
       legend_list=experiments_tags,
       iqr_ratio = params.iqr_ratio,
       ranges = params.ranges,
-      title = params.title)
+      angle_ranges = params.angle_ranges,
+      title = params.title,
+      image_fname = params.output.image_file,
+      hist_scale = params.scale)
     plotter.plt.show()
 
 if __name__ == '__main__':
-  from dials.util import halraiser
-  try:
+  with show_mail_on_error():
     script = Script()
     script.run()
-  except Exception as e:
-    halraiser(e)

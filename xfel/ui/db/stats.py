@@ -1,5 +1,7 @@
-from __future__ import division
+from __future__ import absolute_import, division, print_function
+from six.moves import range
 from scitbx.array_family import flex
+from collections import namedtuple
 
 class Stats(object):
   def __init__(self, app, trial, tags = None, isigi_cutoff = None, tag_selection_mode="union", selected_runs = None, selected_rungroup = None):
@@ -62,23 +64,24 @@ class Stats(object):
                JOIN `%s_event` evt ON evt.id = ie.event_id
                JOIN `%s_run` run ON run.id = evt.run_id
                JOIN `%s_rungroup` rg ON rg.id = evt.rungroup_id
-               JOIN `%s_trial` trial ON trial.id = evt.trial_id
+               JOIN `%s_trial_rungroup` t_rg ON t_rg.rungroup_id = rg.id
+               JOIN `%s_trial` trial ON trial.id = t_rg.trial_id AND trial.id = evt.trial_id
                WHERE run.id IN %s
                      AND cell_bin.avg_intensity > 0
                      AND trial.id = %d
                      AND rg.active = True
                      """ % (
-      tag, tag, tag, tag, tag, tag, tag, tag, tag, tag, tag, runs_str, self.trial.id)
+      tag, tag, tag, tag, tag, tag, tag, tag, tag, tag, tag, tag, runs_str, self.trial.id)
 
     if self.isigi_cutoff is not None and self.isigi_cutoff >= 0:
       query += " AND cell_bin.avg_i_sigi >= %f"%self.isigi_cutoff
-    query += " GROUP BY bin.id"
+    query += " GROUP BY cell.id, bin.id"
 
     results = self.app.execute_query(query).fetchall()
     if len(results) == 0:
       return []
     cell_ids = set([str(r[0]) for r in results])
-    from experiment import Cell
+    from .experiment import Cell
     cells = self.app.get_all_x(Cell, 'cell', where = "WHERE id IN (%s)"%", ".join(cell_ids))
     self.app.link_cell_bins(cells)
 
@@ -94,11 +97,14 @@ class Stats(object):
     return cells
 
 class HitrateStats(object):
-  def __init__(self, app, run_number, trial_number, rungroup_id, d_min = None, i_sigi_cutoff = 1, raw_data_sampling = 1):
+  def __init__(self, app, run_number, trial_number, rungroup_id, d_min = None, i_sigi_cutoff = 1, raw_data_sampling = 1,
+               run = None, trial = None, rungroup = None):
+    """ A caller that already holds the run, trial and rungroup objects can
+        pass them to skip looking them up by number again. """
     self.app = app
-    self.run = app.get_run(run_number = run_number)
-    self.trial = app.get_trial(trial_number = trial_number)
-    self.rungroup = app.get_rungroup(rungroup_id = rungroup_id)
+    self.run = run if run is not None else app.get_run(run_number = run_number)
+    self.trial = trial if trial is not None else app.get_trial(trial_number = trial_number)
+    self.rungroup = rungroup if rungroup is not None else app.get_rungroup(rungroup_id = rungroup_id)
     self.d_min = d_min
     self.i_sigi_cutoff = i_sigi_cutoff
     self.sampling = raw_data_sampling
@@ -108,10 +114,6 @@ class HitrateStats(object):
     from xfel.ui.components.timeit import duration
     #import time
     #t1 = time.time()
-    run_numbers = [r.run for r in self.trial.runs]
-    assert self.run.run in run_numbers
-    rungroup_ids = [rg.id for rg in self.trial.rungroups]
-    assert self.rungroup.id in rungroup_ids
     if len(self.trial.isoforms) > 0:
       cells = [isoform.cell for isoform in self.trial.isoforms]
     else:
@@ -126,7 +128,7 @@ class HitrateStats(object):
         min_bin_index = d_mins.index(min(d_mins))
       else:
         d_maxes = [float(b.d_max) for b in bins]
-        qualified_bin_indices = [i for i in xrange(len(bins)) if d_maxes[i] >= self.d_min and d_mins[i] <= self.d_min]
+        qualified_bin_indices = [i for i in range(len(bins)) if d_maxes[i] >= self.d_min and d_mins[i] <= self.d_min]
         if len(qualified_bin_indices) == 0: continue
         min_bin_index = qualified_bin_indices[0]
       high_res_bin_ids.append(str(bins[min_bin_index].id))
@@ -135,44 +137,55 @@ class HitrateStats(object):
     two_theta_low = flex.double()
     two_theta_high = flex.double()
     tag = self.app.params.experiment_tag
-    timestamps = flex.double()
+    timestamps, timestamps_s = flex.double(), []
     n_strong = flex.int()
     n_lattices = flex.int()
+    wavelengths = flex.double()
     if len(high_res_bin_ids) > 0:
 
       # Get the stats in one query.
-      query = """SELECT event.timestamp, event.n_strong, MIN(bin.d_min), event.two_theta_low, event.two_theta_high, COUNT(crystal.id)
+      query = """SELECT event.timestamp, event.n_strong, MIN(bin.d_min), event.two_theta_low, event.two_theta_high, COUNT(DISTINCT crystal.id), AVG(beam.wavelength)
                  FROM `%s_event` event
                  JOIN `%s_imageset_event` is_e ON is_e.event_id = event.id
                  JOIN `%s_imageset` imgset ON imgset.id = is_e.imageset_id
                  JOIN `%s_experiment` exp ON exp.imageset_id = imgset.id
                  JOIN `%s_crystal` crystal ON crystal.id = exp.crystal_id
+                 JOIN `%s_beam` beam ON beam.id = exp.beam_id
                  JOIN `%s_cell` cell ON cell.id = crystal.cell_id
                  JOIN `%s_bin` bin ON bin.cell_id = cell.id
                  JOIN `%s_cell_bin` cb ON cb.bin_id = bin.id AND cb.crystal_id = crystal.id
                  WHERE event.trial_id = %d AND event.run_id = %d AND event.rungroup_id = %d AND
                        cb.avg_i_sigi >= %f
                  GROUP BY event.id
-              """ % (tag, tag, tag, tag, tag, tag, tag, tag, self.trial.id, self.run.id, self.rungroup.id, self.i_sigi_cutoff)
+              """ % (tag, tag, tag, tag, tag, tag, tag, tag, tag, self.trial.id, self.run.id, self.rungroup.id, self.i_sigi_cutoff)
       cursor = self.app.execute_query(query)
       sample = -1
       for row in cursor.fetchall():
-        ts, n_s, d_min, tt_low, tt_high, n_xtal = row
+        sample += 1
+        if sample % self.sampling != 0:
+          continue
+        ts, n_s, d_min, tt_low, tt_high, n_xtal, wave = row
         try:
           d_min = float(d_min)
         except ValueError:
           d_min = None
-        rts = reverse_timestamp(ts)
-        rts = rts[0] + (rts[1]/1000)
-        sample += 1
-        if sample % self.sampling != 0:
-          continue
-        timestamps.append(rts)
+        try:
+          rts = reverse_timestamp(ts)
+          timestamps.append(rts[0] + (rts[1]/1000))
+        except ValueError:
+          try:
+            timestamps.append(float(ts))
+          except ValueError:
+            timestamps_s.append(ts)
         n_strong.append(n_s)
         two_theta_low.append(tt_low or -1)
         two_theta_high.append(tt_high or -1)
         resolutions.append(d_min or 0)
         n_lattices.append(n_xtal or 0)
+        wavelengths.append(wave or 0)
+
+    # only get results that are strings or ints, not a mix of both
+    assert not (len(timestamps) > 0 and len(timestamps_s) > 0)
 
     # This left join query finds the events with no imageset, meaning they failed to index
     query = """SELECT event.timestamp, event.n_strong, event.two_theta_low, event.two_theta_high
@@ -185,25 +198,189 @@ class HitrateStats(object):
     cursor = self.app.execute_query(query)
     for row in cursor.fetchall():
       ts, n_s, tt_low, tt_high = row
-      rts = reverse_timestamp(ts)
-      timestamps.append(rts[0] + (rts[1]/1000))
+      try:
+        rts = reverse_timestamp(ts)
+        timestamps.append(rts[0] + (rts[1]/1000))
+      except ValueError:
+        try:
+          rts = float(ts)
+          timestamps.append(rts)
+        except ValueError:
+          timestamps_s.append(ts)
       n_strong.append(n_s)
       two_theta_low.append(tt_low or -1)
       two_theta_high.append(tt_high or -1)
       resolutions.append(0)
       n_lattices.append(0)
+      wavelengths.append(0)
 
-    order = flex.sort_permutation(timestamps)
-    timestamps = timestamps.select(order)
+    # This left join query finds the events with no imageset, meaning they failed to index
+    query = """SELECT event.timestamp, event.n_strong, event.two_theta_low, event.two_theta_high, beam.wavelength
+               FROM `%s_event` event
+               JOIN `%s_imageset_event` is_e ON is_e.event_id = event.id
+               JOIN `%s_imageset` imgset ON imgset.id = is_e.imageset_id
+               JOIN `%s_experiment` exp ON exp.imageset_id = imgset.id
+               JOIN `%s_beam` beam ON beam.id = exp.beam_id
+               WHERE exp.crystal_id IS NULL AND
+                     event.trial_id = %d AND event.run_id = %d AND event.rungroup_id = %d
+            """ % (tag, tag, tag, tag, tag, self.trial.id, self.run.id, self.rungroup.id)
+    cursor = self.app.execute_query(query)
+    for row in cursor.fetchall():
+      ts, n_s, tt_low, tt_high, wave = row
+      try:
+        rts = reverse_timestamp(ts)
+        timestamps.append(rts[0] + (rts[1]/1000))
+      except ValueError:
+        try:
+          rts = float(ts)
+          timestamps.append(rts)
+        except ValueError:
+          timestamps_s.append(ts)
+      n_strong.append(n_s)
+      two_theta_low.append(tt_low or -1)
+      two_theta_high.append(tt_high or -1)
+      resolutions.append(0)
+      n_lattices.append(0)
+      wavelengths.append(wave)
+
+
+    if len(timestamps_s) > 0:
+      timestamps = flex.double([i[0] for i in sorted(enumerate(timestamps_s), key=lambda x:x[1])])
+      order = flex.size_t([i for i in timestamps.iround()])
+      timestamps = flex.sorted(timestamps)
+    else:
+      order = flex.sort_permutation(timestamps)
+      timestamps = timestamps.select(order)
     n_strong = n_strong.select(order)
     two_theta_low = two_theta_low.select(order)
     two_theta_high = two_theta_high.select(order)
     resolutions = resolutions.select(order)
     n_lattices = n_lattices.select(order)
+    wavelengths = wavelengths.select(order)
 
     #t2 = time.time()
     #print "HitrateStats took %s" % duration(t1, t2)
-    return timestamps, two_theta_low, two_theta_high, n_strong, resolutions, n_lattices
+    return timestamps, two_theta_low, two_theta_high, n_strong, resolutions, n_lattices, wavelengths
+
+RunSummary = namedtuple("RunSummary", ["run", "rungroup_id", "n_frames", "n_hits", "n_drop_hits",
+                                       "n_indexed", "n_lattices", "n_high_quality",
+                                       "first_timestamp", "last_timestamp"])
+
+class RunSummaryStats(object):
+  # Above this many runs, query the whole trial and keep the wanted rows.
+  # The planner drives a filtered query from the run index with a lookup
+  # per event, measured at 0.13 ms per event on a 6M-event trial, but a
+  # whole-trial query from a scan of the crystal index at 0.02 to 0.04 ms.
+  whole_trial_above = 20
+  """ Per-run counts for a trial, computed in the database by one aggregate
+      query instead of fetching every image: frames, hits, drop hits, indexed
+      images, lattices, high quality images and the first and last timestamp.
+      The definitions are those of HitrateStats and the run stats plot: a hit
+      has n_strong_cutoff strong spots; a drop hit has a high to low two theta
+      radial average ratio of at least ratio_cutoff (see drop_hit_selection in
+      run_stats_plotter); a high quality image has a lattice with a resolution
+      bin reaching d_min at i_sigi_cutoff (see high_quality_selection).
+
+      A run whose job has finished never changes, so it is queried once and
+      then served from a cache; runs still processing are queried on every
+      call, all in one query. A whole trial's first pass costs minutes on a
+      big database, so a caller can limit how many uncached runs each call
+      queries and fill in progressively. """
+
+  def __init__(self, app, trial, n_strong_cutoff=16, ratio_cutoff=1, d_min=2.0, i_sigi_cutoff=1):
+    self.app = app
+    self.trial = trial
+    self.n_strong_cutoff = n_strong_cutoff
+    self.ratio_cutoff = ratio_cutoff
+    self.d_min = d_min
+    self.i_sigi_cutoff = i_sigi_cutoff
+    self.finished = {} # (run name, rungroup id) -> RunSummary
+    self.pending = 0 # uncached runs the last call left for a later one
+
+  def __call__(self, run_statuses, max_query=None):
+    """ run_statuses: {(run name, rungroup id): job status}. Returns
+        {(run name, rungroup id): RunSummary} for those runs; a run with no
+        events gets zero counts. With max_query, at most that many uncached
+        runs are queried, in the order given; the rest map to None and are
+        counted in self.pending for the next call. """
+    from xfel.ui.db.job import finished_job_statuses
+    to_query = [key for key in run_statuses if key not in self.finished]
+    if max_query is not None:
+      self.pending = max(0, len(to_query) - max_query)
+      to_query = to_query[:max_query]
+    else:
+      self.pending = 0
+    if not to_query:
+      fresh = {}
+    elif len(to_query) > self.whole_trial_above:
+      fresh = self.query()
+    else:
+      fresh = self.query([run for run, rungroup_id in to_query])
+    summaries = {}
+    for key in run_statuses:
+      if key in self.finished:
+        summary = self.finished[key]
+      elif key in to_query:
+        summary = fresh.get(key) or self.empty(*key)
+        if run_statuses[key] in finished_job_statuses:
+          self.finished[key] = summary
+      else:
+        summary = None
+      summaries[key] = summary
+    return summaries
+
+  @staticmethod
+  def empty(run, rungroup_id):
+    return RunSummary(run, rungroup_id, 0, 0, 0, 0, 0, 0, None, None)
+
+  def query(self, runs=None):
+    """ One query: {(run name, rungroup id): RunSummary} for every run of
+        the trial with events, or only for the named runs. """
+    tag = self.app.params.experiment_tag
+    where = "WHERE ev.trial_id = %d" % self.trial.id
+    if runs is not None:
+      if len(runs) == 0:
+        return {}
+      where += " AND run.run IN (%s)" % ", ".join("'%s'" % run.replace("'", "''") for run in set(runs))
+    # A comparison is 1 or 0 in MySQL, so SUM of a condition counts the rows
+    # satisfying it. The subquery is one row per indexed event of the wanted
+    # runs; unindexed events have no row, and a two theta value may be NULL
+    # when it was not computed, so every term is IFNULLed to 0, else a run
+    # with no indexed images or no two theta values sums to NULL.
+    query = """SELECT run.run, ev.rungroup_id, COUNT(*),
+                      SUM(ev.n_strong >= %(n_strong)d),
+                      SUM(IFNULL(IF(ev.two_theta_low <= 0 OR ev.two_theta_high < 0, 0,
+                                    ev.two_theta_high / ev.two_theta_low) >= %(ratio)f, 0)),
+                      SUM(IFNULL(x.n_lattices > 0, 0)),
+                      SUM(IFNULL(x.n_lattices, 0)),
+                      SUM(IFNULL(x.high_quality, 0)),
+                      MIN(ev.timestamp), MAX(ev.timestamp)
+               FROM `%(tag)s_event` ev
+               JOIN `%(tag)s_run` run ON run.id = ev.run_id
+               LEFT JOIN (
+                 SELECT is_e.event_id, COUNT(DISTINCT crystal.id) AS n_lattices,
+                        MAX(bin.d_min <= %(d_min)f AND cb.avg_i_sigi >= %(i_sigi)f) AS high_quality
+                 FROM `%(tag)s_event` ev
+                 JOIN `%(tag)s_run` run ON run.id = ev.run_id
+                 JOIN `%(tag)s_imageset_event` is_e ON is_e.event_id = ev.id
+                 JOIN `%(tag)s_imageset` imgset ON imgset.id = is_e.imageset_id
+                 JOIN `%(tag)s_experiment` exp ON exp.imageset_id = imgset.id
+                 JOIN `%(tag)s_crystal` crystal ON crystal.id = exp.crystal_id
+                 LEFT JOIN `%(tag)s_cell_bin` cb ON cb.crystal_id = crystal.id
+                 LEFT JOIN `%(tag)s_bin` bin ON bin.id = cb.bin_id
+                 %(where)s
+                 GROUP BY is_e.event_id
+               ) x ON x.event_id = ev.id
+               %(where)s
+               GROUP BY ev.run_id, ev.rungroup_id
+            """ % dict(tag=tag, where=where, n_strong=self.n_strong_cutoff, ratio=self.ratio_cutoff,
+                     d_min=self.d_min, i_sigi=self.i_sigi_cutoff)
+    summaries = {}
+    for row in self.app.execute_query(query).fetchall():
+      run, rungroup_id = row[0], row[1]
+      counts = [int(v or 0) for v in row[2:8]]
+      summaries[(run, rungroup_id)] = RunSummary(run, rungroup_id, *(counts + [row[8], row[9]]))
+    return summaries
 
 class SpotfinderStats(object):
   def __init__(self, app, run_number, trial_number, rungroup_id, raw_data_sampling = 1):
@@ -258,8 +435,11 @@ class SpotfinderStats(object):
       sample = -1
       for row in cursor.fetchall():
         b_id, xtal_id, ts, n_s = row
-        rts = reverse_timestamp(ts)
-        rts = rts[0] + (rts[1]/1000)
+        try:
+          rts = reverse_timestamp(ts)
+          rts = rts[0] + (rts[1]/1000)
+        except ValueError:
+          rts = float(ts)
         if xtal_id not in xtal_ids:
           sample += 1
           if sample % self.sampling != 0:
@@ -279,8 +459,12 @@ class SpotfinderStats(object):
     cursor = self.app.execute_query(query)
     for row in cursor.fetchall():
       ts, n_s = row
-      rts = reverse_timestamp(ts)
-      timestamps.append(rts[0] + (rts[1]/1000))
+      try:
+        rts = reverse_timestamp(ts)
+        timestamps.append(rts[0] + (rts[1]/1000))
+      except ValueError:
+        rts = float(ts)
+        timestamps.append(rts)
       n_strong.append(n_s)
 
     order = flex.sort_permutation(timestamps)

@@ -74,6 +74,23 @@ namespace {
     }
   }
 
+  void
+  rotate_uij_and_clear_sigmas(
+    af::const_ref<atom> const& atoms,
+    scitbx::mat3<double> const& r_cart)
+  {
+    if ((r_cart - scitbx::mat3<double>(1)).max_abs() <= 1e-4) return;
+    for (unsigned i = 0; i < atoms.size(); i++) {
+      // Atoms without U hold all -1, which rotation would turn into a bogus U.
+      if (atoms[i].uij_is_defined()) {
+        atoms[i].data->uij = cctbx::adptbx::c_u_c_transpose(
+          r_cart, atoms[i].data->uij);
+      }
+      atoms[i].data->sigxyz = vec3(0, 0, 0);
+      atoms[i].siguij_erase();
+    }
+  }
+
 } // namespace <anonymous>
 
   void
@@ -106,6 +123,7 @@ namespace {
 #endif
       .def("extract_fp", extract_fp)
       .def("extract_fdp", extract_fdp)
+      .def("extract_resolution", extract_resolution)
       .def("extract_hetero", extract_hetero)
       .def("extract_element", extract_element, (arg("strip")=false))
       .def("extract_i_seq", extract_i_seq)
@@ -122,6 +140,7 @@ namespace {
 #endif
       .def("set_fp", set_fp, (arg("new_fp")), return_self<>())
       .def("set_fdp", set_fdp, (arg("new_fdp")), return_self<>())
+      .def("set_resolution", set_resolution, (arg("new_resolution")), return_self<>())
       .def("reset_serial", reset_serial, (arg("first_value")=1))
       .def("set_chemical_element_simple_if_necessary",
         set_chemical_element_simple_if_necessary, (
@@ -139,7 +158,9 @@ namespace {
         arg("throw_runtime_error_if_duplicate_keys")=true))
       .def("set_adps_from_scatterers", set_adps_from_scatterers, (
         arg("scatterers"),
-        arg("unit_cell")));
+        arg("unit_cell")))
+      .def("rotate_uij_and_clear_sigmas", rotate_uij_and_clear_sigmas, (
+        arg("r_cart")));
     ;
   }
 

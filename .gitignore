@@ -8,9 +8,18 @@ __pycache__/
 .pytest_cache
 .known-python3-violations.log
 
+# Claude
+.claude
+
+# Superpowers plugin: specs/plans, brainstorm and SDD workspaces, worktrees
+/docs
+.superpowers
+.worktrees
+
 # Text editor files
 *~
 *.swp
+.vscode
 
 # Mac nonsense
 .DS_Store
@@ -19,6 +28,17 @@ __pycache__/
 .git-notifier*
 git-notifier.log
 .gitversion
+
+# Ignores examples from cctbx website
+cctbx_website/examples
+
+# Ignore cctbx version files
+cctbx_version*
+setup.py
+
+# Ignore .yml files created by conda-devenv
+cctbx.yml
+cctbxlite.yml
 
 # Ignores copied over from subversion:
 cctbx/dev
@@ -53,3 +73,12 @@ scitbx/array_family/detail/operator_functors.h
 scitbx/array_family/detail/std_imports.h
 sphinx/build
 xfel/clustering/test_cluster.py
+mmtbx/suitename/test/
+mmtbx/suitename/suitename.stderr.log
+mmtbx/suitename/assist/
+mmtbx/suitename/*.show.txt
+
+*sublime*
+
+# Local Claude AI guidance files (not for shared use)
+*/CLAUDE.md

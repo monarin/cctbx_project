@@ -1,12 +1,15 @@
-from __future__ import division, print_function
-
 '''
 Functionality for handling citations
 '''
+from __future__ import absolute_import, division, print_function
 
 import importlib
 import os
 import string
+import sys
+import unicodedata
+
+from operator import attrgetter
 
 import libtbx.load_env
 import libtbx.phil
@@ -95,7 +98,7 @@ for journal in journals.journal:
     journals_db[name] = journal
 
 # =============================================================================
-def format_citation (article) :
+def format_citation(article):
   authors = article.authors
   author_list = authors.split(", ")
   if len(author_list) == 1 :
@@ -105,9 +108,9 @@ def format_citation (article) :
   output = "%s." % authors
   if article.year is not None :     output += " (%d)" % article.year
   title = article.title
-  if (title is not None) :
+  if (title is not None):
     title = title.strip()
-    if (not title.endswith(".")) :
+    if (not title.endswith(".")):
       title += "."
     output += " %s" % title
   if article.journal is not None :  output += " %s" % article.journal
@@ -125,7 +128,7 @@ def format_citation (article) :
   return output
 
 # -----------------------------------------------------------------------------
-def author_list_with_periods (authors, initials_first=False) :
+def author_list_with_periods(authors, initials_first=False):
   author_list = authors.split(", ")
   authors_formatted = []
   for author in author_list :
@@ -136,7 +139,7 @@ def author_list_with_periods (authors, initials_first=False) :
       initials = names[-1]
       new_initials = ""
       for letter in initials :
-        if letter in string.letters :
+        if letter in string.ascii_letters :
           new_initials += ("%s." % letter)
         else : # usually '-'
           new_initials += letter
@@ -148,7 +151,7 @@ def author_list_with_periods (authors, initials_first=False) :
   return authors_formatted
 
 # -----------------------------------------------------------------------------
-def format_citation_cell (article) :
+def format_citation_cell(article):
   author_list = author_list_with_periods(article.authors)
   if len(author_list) == 1 :
     authors_out = author_list[0]
@@ -157,9 +160,9 @@ def format_citation_cell (article) :
   output = "%s" % authors_out # XXX no extra period at end!
   if article.year is not None :     output += " (%d)." % article.year
   title = article.title
-  if (title is not None) :
+  if (title is not None):
     title = title.strip()
-    if (not title.endswith(".")) :
+    if (not title.endswith(".")):
       title += "."
     output += " %s" % title
   if article.journal is not None :  output += " %s" % article.journal
@@ -177,7 +180,7 @@ def format_citation_cell (article) :
   return output
 
 # -----------------------------------------------------------------------------
-def format_citation_iucr (article) :
+def format_citation_iucr(article):
   author_list = author_list_with_periods(article.authors)
   if len(author_list) == 1 :
     authors_out = author_list[0]
@@ -248,8 +251,8 @@ def format_citation_doc(article_id):
   return output
 
 # -----------------------------------------------------------------------------
-def format_citation_html (article) :
-  if (article.journal is None) :
+def format_citation_html(article):
+  if (article.journal is None):
     raise ValueError("Missing journal name for '%s'." % article.article_id)
   author_list = author_list_with_periods(article.authors, initials_first=True)
   if len(author_list) == 1 :
@@ -257,7 +260,7 @@ def format_citation_html (article) :
   else :
     authors_out = ", ".join(author_list[:-1]) + ", and %s" % author_list[-1]
   title = article.title.strip()
-  if (not title.endswith(".")) :
+  if (not title.endswith(".")):
     title += "."
   output = "<b>%s</b> %s. " % (title, authors_out)
   if 'Acta Cryst.' in article.journal:
@@ -266,26 +269,97 @@ def format_citation_html (article) :
   else:
     journal_ref = "<i>%s</i>" % article.journal
     journal_section = None
-  if (article.volume is not None) :
+  if (article.volume is not None):
     if journal_section is not None:
       journal_ref += " %s<b>%s</b>" %(journal_section, article.volume)
     else:
       journal_ref += " <b>%s</b>" % article.volume
-  if (article.pages is not None) :
+  if (article.pages is not None):
     journal_ref += ", %s" % article.pages
-  if (article.year is not None) :
+  if (article.year is not None):
     journal_ref += " (%s)" % article.year
-  if (article.url is not None) :
+  if (article.url is not None):
     output += """<a href="%s">%s</a>.""" % (article.url, journal_ref)
-  elif (article.doi_id is not None) :
+  elif (article.doi_id is not None):
     output += """<a href="https://doi.org/%s">%s</a>.""" % (article.doi_id,
       journal_ref)
-  elif (article.pmid is not None) :
+  elif (article.pmid is not None):
     output += """<a href="http://www.ncbi.nlm.nih.gov/pubmed/%s">%s</a>.""" % \
       (article.pmid, journal_ref)
   else :
     output += " %s." % journal_ref
   return output
+
+# -----------------------------------------------------------------------------
+# Punctuation that NFKD does not reduce to ASCII; map explicitly so it is
+# transliterated (not deleted, and not turned into '?') on a narrow codec.
+_ascii_punct_map = {
+  u'\u2010':'-', u'\u2011':'-', u'\u2012':'-', u'\u2013':'-', u'\u2014':'-',
+  u'\u2018':"'", u'\u2019':"'", u'\u201c':'"', u'\u201d':'"', u'\u2026':'...',
+}
+
+def _downgrade_char(ch):
+  m = _ascii_punct_map.get(ch)
+  if m is not None:
+    return m
+  base = u''.join(
+    c for c in unicodedata.normalize('NFKD', ch) if not unicodedata.combining(c))
+  if base and base.isascii():
+    return base
+  return '?'
+
+def citation_text_for_stream(text, out=None):
+  """Return citation *text* suitable for direct output to stream *out*.
+
+  Policy (citation display only; this transliteration is lossy and is NOT a
+  general-purpose text utility):
+    * If out is None, inspect sys.stdout (that is where print(file=None) goes).
+    * If the destination exposes no .encoding, treat it as an unconstrained
+      Unicode sink (e.g. io.StringIO) and return *text* unchanged. Files that
+      ultimately receive this text should be opened with encoding='utf-8'; this
+      helper does not second-guess an encoding-free sink.
+    * If the destination has a codec and *text* is not strictly encodable in it,
+      transliterate ONLY the characters that codec cannot encode to a close
+      ASCII form (diacritics stripped via NFKD; typographic punctuation mapped;
+      otherwise '?'). Characters the codec supports are kept verbatim.
+
+  Encodability is evaluated with STRICT codec semantics regardless of the
+  stream's configured 'errors' handler, so the result is readable ASCII
+  (e.g. 'Bunkoczi') rather than a codec replacement form. For valid str input
+  and a valid codec name this raises no encoding-conversion exception; it does
+  NOT suppress errors from the destination stream's own write(), and an invalid
+  out.encoding (LookupError) is allowed to surface as a defect.
+  """
+  if text is None:
+    return None
+  if not isinstance(text, str):
+    raise TypeError("text must be str or None")
+  if out is None:
+    out = sys.stdout
+  encoding = getattr(out, 'encoding', None)
+  if not encoding:
+    return text                      # unconstrained Unicode sink (e.g. StringIO)
+  try:
+    text.encode(encoding)
+    return text                      # fast path: fully encodable, do nothing
+  except UnicodeEncodeError:
+    pass
+  # A LookupError here means out.encoding is an invalid codec name -- a defective
+  # stream, not a locale-compatibility condition; let it surface rather than
+  # silently returning possibly-unwritable text.
+  out_chars = []
+  for ch in text:
+    try:
+      ch.encode(encoding)
+      out_chars.append(ch)           # keep characters the codec supports
+    except UnicodeEncodeError:
+      out_chars.append(_downgrade_char(ch))
+  result = u''.join(out_chars)
+  # Intentional: the transliterated result must encode in the target codec.
+  # If this ever raises, it is a defect in _downgrade_char and should surface
+  # in tests rather than be silently swallowed.
+  result.encode(encoding)
+  return result
 
 # -----------------------------------------------------------------------------
 def show_citation(article, out=None, max_width=79, format='default'):
@@ -295,63 +369,20 @@ def show_citation(article, out=None, max_width=79, format='default'):
     output = format_citation_iucr(article)
   elif format == 'cell' :
     output = format_citation_cell(article)
+  output = citation_text_for_stream(output, out)
   if max_width is None or max_width < 1 :
     print(to_unicode(output), file=out)
   else :
-    for line in str_utils.line_breaker(output, max_width) :
+    for line in str_utils.line_breaker(output, max_width):
       print(to_unicode(line), file=out)
   print(to_unicode(''), file=out)
 
 def show_citations(articles, out=None, max_width=79, sort_by_name=True,
                    format='default'):
-  if (sort_by_name):
-    articles.sort(lambda x, y: cmp(x.authors, y.authors))
+  if (sort_by_name): # sort in place
+    articles.sort(key=attrgetter('authors'))
   for article in articles:
     show_citation(article, out, max_width, format)
-
-# -----------------------------------------------------------------------------
-def citations_as_cif_block(articles, cif_block=None):
-  import iotbx.cif.model
-  if cif_block is None:
-    cif_block = iotbx.cif.model.block()
-  def replace_none_with_question_mark(s):
-    if s is None: return '?'
-    return s
-  citation_loop = iotbx.cif.model.loop(header=(
-    '_citation.id', '_citation.title', '_citation.journal_abbrev',
-    '_citation.journal_volume', '_citation.page_first', '_citation.page_last',
-    '_citation.year', '_citation.journal_id_ASTM', '_citation.journal_id_ISSN',
-    '_citation.journal_id_CSD'))
-  for article in articles:
-    if article.pages is None:
-      first_page, last_page = "?", "?"
-    else:
-      pages = article.pages.split('-')
-      first_page = pages[0]
-      if len(pages) == 1:
-        last_page = '?'
-      else:
-        assert len(pages) == 2
-        last_page = pages[1]
-    journal = journals_db.get(article.journal)
-    assert journal is not None
-    citation_loop.add_row(
-      {'_citation.id': article.article_id,
-       '_citation.title': article.title,
-       '_citation.journal_abbrev': journal.abbrev_CAS,
-       '_citation.journal_volume': article.volume,
-       '_citation.page_first': first_page,
-       '_citation.page_last': last_page,
-       '_citation.year': article.year,
-       '_citation.journal_id_ASTM':
-         replace_none_with_question_mark(journal.id_ASTM),
-       '_citation.journal_id_ISSN':
-         replace_none_with_question_mark(journal.id_ISSN),
-       '_citation.journal_id_CSD':
-         replace_none_with_question_mark(journal.id_CSD),
-       })
-  cif_block.add_loop(citation_loop)
-  return cif_block
 
 # =============================================================================
 # end

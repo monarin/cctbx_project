@@ -1,4 +1,4 @@
-from __future__ import division
+from __future__ import absolute_import, division, print_function
 import mmtbx.monomer_library.pdb_interpretation
 import iotbx.mtz
 from cctbx.array_family import flex
@@ -196,9 +196,11 @@ def exercise(d_min = 1.0, resolution_factor=0.2):
   fc_refined = f_calc_answer.structure_factors_from_scatterers(
     xray_structure = xrs_refined).f_calc()
   assert r_factor(f_calc_answer, fc_poor) > 0.45
-  assert r_factor(f_calc_answer, fc_refined) < 0.08
+  # 0.0797 before and 0.0803 after the table of exponents used to compute
+  # structure factors with FFT got interpolated
+  assert r_factor(f_calc_answer, fc_refined) < 0.09
 
 if(__name__ == "__main__"):
   t0 = time.time()
   exercise()
-  print "Time: %6.4f"%(time.time()-t0)
+  print("Time: %6.4f"%(time.time()-t0))

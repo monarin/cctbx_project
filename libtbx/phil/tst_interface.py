@@ -1,13 +1,13 @@
 
-from __future__ import division
+from __future__ import absolute_import, division, print_function
 from libtbx.test_utils import show_diff, Exception_expected
 from libtbx.phil import interface
 import libtbx.load_env
 import libtbx.phil
-from cStringIO import StringIO
+from six.moves import cStringIO as StringIO
 import sys
 
-def exercise () :
+def exercise():
   master_phil = libtbx.phil.parse("""
 refinement {
   input {
@@ -182,16 +182,16 @@ opt2 = *two_fofc fofc
 """)
   try :
     libtbx.phil.interface.validate_choice_captions(master_phil)
-  except AssertionError, e :
+  except AssertionError as e :
     assert (str(e) == "my_options.opt2")
   else :
     raise Exception_expected
 
 # XXX sorry about the cross-import here, but I really need to test this on
 # something large and complex
-def exercise_2 (verbose=False) :
+def exercise_2(verbose=False):
   if (not libtbx.env.has_module(name="phenix")):
-    print "phenix module not available: skipping advanced tests"
+    print("phenix module not available: skipping advanced tests")
     return
   from phenix.refinement import runtime
   import iotbx.phil
@@ -225,6 +225,9 @@ refinement.pdb_interpretation.secondary_structure.protein {
 """
 
   master_phil = runtime.master_phil()
+  for phil_object in master_phil.objects:
+    if phil_object.name == 'data_manager':
+      master_phil.objects.remove(phil_object)
   i = interface.index(master_phil=master_phil,
     parse=iotbx.phil.parse)
   t1 = time()
@@ -244,27 +247,28 @@ refinement.pdb_interpretation.secondary_structure.protein {
   params2 = scope.extract()
   assert (params2.protein.helix[0].selection == "chain B and resseq 10:20")
   if verbose :
-    print "Merge with global fetch: %6.1fms" % ((t2-t1) * 1000)
-    print "Merge with local fetch:  %6.1fms" % ((t4-t3) * 1000)
+    print("Merge with global fetch: %6.1fms" % ((t2-t1) * 1000))
+    print("Merge with local fetch:  %6.1fms" % ((t4-t3) * 1000))
   i.merge_phil(phil_string="""
-refinement.input.pdb.file_name = protein.pdb
-refinement.input.pdb.file_name = ligand.pdb
-refinement.input.xray_data.file_name = data.mtz
-refinement.input.monomers.file_name = ligand.cif
+refinement.gui.migration.refinement.input.pdb.file_name = protein.pdb
+refinement.gui.migration.refinement.input.pdb.file_name = ligand.pdb
+refinement.gui.migration.refinement.input.monomers.file_name = ligand.cif
 refinement.output.job_title = Test refinement run
 """)
   names = i.search_phil_text("CIF")
   assert (set(names) == {
     'refinement.output.write_model_cif_file',
     'refinement.output.write_reflection_cif_file',
-    'refinement.input.monomers.file_name',}
+    'refinement.gui.migration.refinement.input.monomers.file_name',}
 )
 
-  assert (i.get_input_files() == [
-    ('protein.pdb', 'Input model', 'refinement.input.pdb.file_name'),
-    ('ligand.pdb', 'Input model', 'refinement.input.pdb.file_name'),
-    ('data.mtz', 'Reflections file', 'refinement.input.xray_data.file_name'),
-    ('ligand.cif', 'Restraints (CIF)', 'refinement.input.monomers.file_name')])
+  expected_result = [
+    ('protein.pdb', 'Input model (X-ray)', 'refinement.gui.migration.refinement.input.pdb.file_name'),
+    ('ligand.pdb', 'Input model (X-ray)', 'refinement.gui.migration.refinement.input.pdb.file_name'),
+    ('ligand.cif', 'Restraints (CIF)', 'refinement.gui.migration.refinement.input.monomers.file_name')]
+  for f in i.get_input_files():
+    assert f in expected_result
+  assert len(i.get_input_files()) == len(expected_result)
   assert (i.get_job_title() == "Test refinement run")
   #
   # .style processing
@@ -275,31 +279,35 @@ refinement.output.job_title = Test refinement run
   #  'refinement.refine.adp.group', 'refinement.refine.adp.tls',
   #  'refinement.refine.occupancies', 'refinement.refine.anomalous_scatterers'])
   assert (style.file_type is None)
-  style = i.get_scope_style("refinement.input.xray_data.file_name")
+  style = i.get_scope_style("refinement.gui.migration.refinement.input.xray_data.file_name")
   assert (style.get_list("file_type") == ["hkl"])
   assert (style.get_child_params() == {'fobs': 'labels',
     'd_max': 'low_resolution', 'd_min': 'high_resolution',
     'rfree_file': 'r_free_flags.file_name'})
-  assert i.is_list_type("refinement.input.xray_data.labels")
-  style = i.get_scope_style("refinement.input.xray_data.labels")
+  assert i.is_list_type("refinement.gui.migration.refinement.input.xray_data.labels")
+  style = i.get_scope_style("refinement.gui.migration.refinement.input.xray_data.labels")
   assert (style.get_parent_params() == {"file_name" : "file_name"})
   file_map = i.get_file_type_map("pdb")
-  assert (file_map.get_multiple_params() == \
-    ['refinement.input.pdb.file_name',
-     'refinement.reference_model.file'])
-  assert (file_map.get_default_param() == "refinement.input.pdb.file_name")
+  expected_result = ['refinement.gui.migration.refinement.input.pdb.file_name',
+                     'refinement.gui.migration.refinement.input.pdb.electron_file_name',
+                     'refinement.gui.migration.refinement.input.pdb.neutron_file_name',
+                     'refinement.reference_model.file']
+  for p in file_map.get_multiple_params():
+    assert p in expected_result, (p, expected_result)
+  assert len(file_map.get_multiple_params()) == len(expected_result)
+  assert (file_map.get_default_param() == "refinement.gui.migration.refinement.input.pdb.file_name")
   file_map = i.get_file_type_map("hkl")
-  assert (file_map.get_overall_max_count() == 5)
+  assert (file_map.get_overall_max_count() == 7)
   assert (len(file_map.get_multiple_params()) == 0)
-  assert (file_map.get_max_count("refinement.input.xray_data.file_name") == 1)
+  assert (file_map.get_max_count("refinement.gui.migration.refinement.input.xray_data.file_name") == 1)
   menu = i.get_menu_db()
   assert (len(menu.get_items()) > 15) # XXX ballpark (currently 17)
   submenu = menu.get_submenu("Atom_selections")
   assert (str(submenu.get_items()[0]) == "refinement.refine.sites")
 
-def exercise_3 () :
+def exercise_3():
   if (not libtbx.env.has_module(name="phaser")):
-    print "phaser module not available: skipping advanced tests"
+    print("phaser module not available: skipping advanced tests")
     return
   import iotbx.phil
   import phaser.phenix_interface
@@ -469,6 +477,6 @@ if __name__ == "__main__" :
   exercise_2(verbose=("-v" in sys.argv[1:] or "--verbose" in sys.argv[1:]))
   exercise_3()
   exercise_adopt_phil()
-  print "OK"
+  print("OK")
 
 #---end

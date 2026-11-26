@@ -1,7 +1,8 @@
-from __future__ import division
+from __future__ import absolute_import, division, print_function
 import iotbx.phil
 from cctbx import crystal
-from mmtbx.refinement import rigid_body
+from iotbx.pdb import resseq_encode, resseq_decode
+import iotbx.pdb
 from cctbx.array_family import flex
 from libtbx.utils import Sorry
 import random
@@ -9,10 +10,8 @@ import scitbx.matrix
 import sys
 import scitbx.rigid_body
 from libtbx import group_args
-import mmtbx.monomer_library.server
 import mmtbx.utils
 
-mon_lib_srv = mmtbx.monomer_library.server.server()
 
 master_params_str = """\
 modify
@@ -33,13 +32,19 @@ keep = None
   .style = bold noauto
 put_into_box_with_buffer = None
   .type = float
-  .help = Move molecule into center of box.
+  .help = Move molecule into center of box
 selection = None
   .type = atom_selection
   .help = Selection for atoms to be modified
   .short_caption = Modify atom selection
   .input_size=400
   .style = bold noauto
+flip_symmetric_amino_acids = False
+  .type = bool
+  .short_caption = Flip symmetric amino acid side chains
+  .help = Flip symmetric amino acid side chains. Runs after rotate_about_axis, \
+          adp, sites and occupancies: their atom selections refer to the input \
+          names.
 adp
   .help = Scope of options to modify ADP of selected atoms
   .multiple = True
@@ -174,6 +179,20 @@ always_keep_one_conformer = False
   .help = Modifies behavior of remove_alt_confs so that residues with no \
     conformer labeled blank or A are not deleted.  Silent if remove_alt_confs \
     is False.
+keep_occupancy = False
+  .type = bool
+  .help = Do not reset occupancy to 1 after removing altlocs
+altloc_to_keep = None
+  .type = str
+  .help = Modifies behavior of remove_alt_confs so that the altloc identifier \
+            to keep in addition to blank is this one (instead of 'A'). \
+            Silent if remove_alt_confs is False.
+  .short_caption = Conformer to keep
+average_alt_confs = False
+  .type = bool
+  .help = Averages the coordinates of altloc atoms with 1.0 angstrom.
+  .short_caption = Average alternate conformers
+  .style = noauto
 set_chemical_element_simple_if_necessary = None
   .type = bool
   .short_caption = Guess element field if necessary
@@ -221,6 +240,9 @@ set_charge
   charge = None
     .type = int(value_max=7,value_min=-3)
 }
+neutralize_scatterers = False
+  .type = bool
+  .short_caption = Neutralize all atoms in the model
 remove_fraction = None
   .short_caption = Remove atoms randomly (fraction)
   .type = float
@@ -232,6 +254,12 @@ move_waters_last = False
   .short_caption = Move waters to end of model
   .help = Transfer waters to the end of the model.  Addresses some \
     limitations of water picking in phenix.refine.
+renumber_and_move_waters = False
+  .type = bool
+  .short_caption = Renumber and move waters to end of chains
+  .help = Transfer waters to the end of respective chains. Renumber them \
+    so that numbering starts at the nearest 100 after the last non-water \
+    in the chain.
 }
 """
 
@@ -241,12 +269,20 @@ def master_params():
 class modify(object):
   def __init__(self, model, params, log = None):
     self.log = log
+    self.params = params
     self.model = model
+    self._neutralize_scatterers()
+    model_was_processed = self.model.processed()
+    had_restraints = self.model.restraints_manager_available()
+    if not model.crystal_symmetry() or not model.crystal_symmetry().unit_cell():
+      # Make it up
+      from cctbx.maptbx.box import shift_and_box_model
+      model = shift_and_box_model(model, shift_model=False)
+
     self.pdb_hierarchy = model.get_hierarchy()
     self.crystal_symmetry = model.crystal_symmetry()
     if(self.log is None): self.log = sys.stdout
     self.xray_structure = model.get_xray_structure()
-    self.params = params
     asc = self.pdb_hierarchy.atom_selection_cache(
         special_position_settings=crystal.special_position_settings(
             crystal_symmetry = self.crystal_symmetry))
@@ -262,6 +298,9 @@ class modify(object):
     self._process_adp()
     self._process_sites()
     self._process_occupancies()
+    # after every edit that selects atoms: they all see the input names
+    if(self.params.flip_symmetric_amino_acids):
+      self._flip_symmetric_amino_acids()
     self._put_in_box()
     self._change_of_basis()
     # Up to this point we are done with self.xray_structure
@@ -269,15 +308,15 @@ class modify(object):
     self.pdb_hierarchy = self.model.get_hierarchy()
     # Now only manipulations that use self.pdb_hierarchy are done
 ### segID manipulations
-    if (params.set_seg_id_to_chain_id) :
-      if (params.clear_seg_id) :
+    if (params.set_seg_id_to_chain_id):
+      if (params.clear_seg_id):
         raise Sorry("Parameter conflict - set_seg_id_to_chain_id=True and "+
           "clear_seg_id=True.  Please choose only one of these options.")
-      for atom in self.pdb_hierarchy.atoms() :
+      for atom in self.pdb_hierarchy.atoms():
         labels = atom.fetch_labels()
         atom.segid = "%-4s" % labels.chain_id
-    elif (params.clear_seg_id) :
-      for atom in self.pdb_hierarchy.atoms() :
+    elif (params.clear_seg_id):
+      for atom in self.pdb_hierarchy.atoms():
         atom.segid = "    "
     if(self.params.set_chemical_element_simple_if_necessary or
        self.params.rename_chain_id.old_id or
@@ -288,7 +327,9 @@ class modify(object):
        self.params.truncate_to_polyala or
        self.params.truncate_to_polygly or
        self.params.remove_alt_confs or
+       self.params.average_alt_confs or
        self.params.move_waters_last or
+       self.params.renumber_and_move_waters or
        self.params.remove_fraction or
        self.params.keep or
        self.params.remove):
@@ -302,23 +343,19 @@ class modify(object):
       self._truncate_to_poly_ala()
       self._truncate_to_poly_gly()
       self._remove_alt_confs()
+      self._average_alt_confs()
       self._move_waters()
+      self._renumber_and_move_waters()
       self._remove_atoms()
       self._apply_keep_remove()
-      # Here goes really nasty hack. Never repeat it.
-      # It is here because I don't have clear idea about how to handle
-      # such dramatic changes in number of atoms etc that just was performed
-      # for hierarchy.
+      # Here we basically unset everything and reprocess if
+      # model was processed in the beginning.
       self.pdb_hierarchy.reset_atom_i_seqs()
       self.pdb_hierarchy.atoms_reset_serial()
       self.model._pdb_hierarchy = self.pdb_hierarchy
-      self.model._xray_structure = self.pdb_hierarchy.extract_xray_structure(
-          crystal_symmetry=self.model.crystal_symmetry())
-      self.model._update_atom_selection_cache()
-      self.model._update_has_hd()
-      self.model._update_pdb_atoms()
-
-
+      self.model.reset_after_changing_hierarchy()
+      if model_was_processed:
+        self.model.process(make_restraints=had_restraints)
 
   def _apply_keep_remove(self):
     cn = [self.params.remove, self.params.keep].count(None)
@@ -330,34 +367,80 @@ class modify(object):
         special_position_settings=crystal.special_position_settings(
             crystal_symmetry = self.crystal_symmetry))
       sel = ~asc.selection(self.params.remove)
-      self.pdb_hierarchy = self.pdb_hierarchy.select(sel)
+      self.pdb_hierarchy = self.pdb_hierarchy.select(sel, copy_atoms=True)
       s2 = self.pdb_hierarchy.atoms_size()
-      print >> self.log, "Size before:", s1, "size after:", s2
+      print("Size before:", s1, "size after:", s2, file=self.log)
     if(self.params.keep is not None):
       asc = self.pdb_hierarchy.atom_selection_cache(
         special_position_settings=crystal.special_position_settings(
             crystal_symmetry = self.crystal_symmetry))
       sel = asc.selection(self.params.keep)
-      self.pdb_hierarchy = self.pdb_hierarchy.select(sel)
+      self.pdb_hierarchy = self.pdb_hierarchy.select(sel, copy_atoms=True)
       s2 = self.pdb_hierarchy.atoms_size()
-      print >> self.log, "Size before:", s1, "size after:", s2
+      print("Size before:", s1, "size after:", s2, file=self.log)
 
   def _change_of_basis(self):
     if(self.params.change_of_basis is not None):
-      print >> self.log, "Applying change-of-basis operator '%s'" % \
-        self.params.change_of_basis
+      print("Applying change-of-basis operator '%s'" % \
+        self.params.change_of_basis, file=self.log)
       from cctbx import sgtbx
       cb_op = sgtbx.change_of_basis_op(self.params.change_of_basis)
       self.xray_structure = self.xray_structure.change_basis(cb_op)
       self.pdb_hierarchy.atoms().set_xyz(self.xray_structure.sites_cart())
-      print >> self.log, "New symmetry:"
+      print("New symmetry:", file=self.log)
       self.xray_structure.crystal_symmetry().show_summary(f=self.log, prefix="  ")
       self.crystal_symmetry = self.xray_structure.crystal_symmetry()
 
+  def _renumber_and_move_waters(self):
+    def next_hundred(num):
+      if num % 100 == 0:
+        return num + 100
+      return ((num // 100) + 1) * 100
+    if not self.params.renumber_and_move_waters:
+      return
+    if (len(self.pdb_hierarchy.models()) > 1):
+      raise Sorry("Renumbering and reorganizing water molecules is "+
+        "not supported for multi-MODEL structures.")
+    print("Renumbering and reorganizing waters", file=self.log)
+    new_h = iotbx.pdb.hierarchy.root()
+    mm = iotbx.pdb.hierarchy.model()
+    new_h.append_model(mm)
+    # make chain dict 'chain id': [chains]:
+    chain_dict = {}
+    for c in self.pdb_hierarchy.only_model().chains():
+      if c.id not in chain_dict:
+        chain_dict[c.id] = [c]
+      else:
+        chain_dict[c.id].append(c)
+    for c_id, chain_list in chain_dict.items():
+      largest_nonwater_resseq = max(
+          [resseq_decode(list(c.residue_groups())[-1].resseq) for c in chain_list if not c.is_water()],
+          default=1)
+      # now merge all water chains to a new one, while adding non-water to new h
+      cc = iotbx.pdb.hierarchy.chain()
+      cc.id = c_id
+      for c in chain_list:
+        if not c.is_water():
+          # adding to new h
+          mm.append_chain(c.detached_copy())
+        else:
+          for rg in c.residue_groups():
+            cc.append_residue_group(rg.detached_copy())
+      # renumber waters in cc:
+      curent_resseq = next_hundred(largest_nonwater_resseq)
+      for rg in cc.residue_groups():
+        rg.resseq = resseq_encode(curent_resseq)
+        curent_resseq += 1
+      if cc.residue_groups_size() > 0:
+        mm.append_chain(cc)
+    new_h.reset_atom_i_seqs()
+    new_h.atoms_reset_serial()
+    self.pdb_hierarchy = new_h
+
   def _move_waters(self):
     if(self.params.move_waters_last):
-      print >> self.log, "Moving waters to end of model"
-      if (len(self.pdb_hierarchy.models()) > 1) :
+      print("Moving waters to end of model", file=self.log)
+      if (len(self.pdb_hierarchy.models()) > 1):
         raise Sorry("Rearranging water molecules is not supported for "+
           "multi-MODEL structures.")
       sel_cache = self.pdb_hierarchy.atom_selection_cache(
@@ -365,36 +448,42 @@ class modify(object):
             crystal_symmetry = self.crystal_symmetry))
       water_sel = sel_cache.selection("resname HOH or resname WAT") # BAD XXX
       n_waters = water_sel.count(True)
-      if (n_waters == 0) :
-        print >> self.log, "No waters found, skipping"
+      if (n_waters == 0):
+        print("No waters found, skipping", file=self.log)
       else :
-        print >> self.log, "%d atoms will be moved." % n_waters
-        hierarchy_water = self.pdb_hierarchy.select(water_sel)
-        hierarchy_non_water = self.pdb_hierarchy.select(~water_sel)
-        for chain in hierarchy_water.only_model().chains() :
+        print("%d atoms will be moved." % n_waters, file=self.log)
+        hierarchy_water = self.pdb_hierarchy.select(water_sel, copy_atoms=True)
+        hierarchy_non_water = self.pdb_hierarchy.select(~water_sel, copy_atoms=True)
+        for chain in hierarchy_water.only_model().chains():
           hierarchy_non_water.only_model().append_chain(chain.detached_copy())
         self.pdb_hierarchy = hierarchy_non_water # does this work?
 
   def _remove_alt_confs(self):
     if(self.params.remove_alt_confs):
-      print >> self.log, "Remove altlocs"
-      always_keep_one_conformer = self.params.always_keep_one_conformer
+      print("Remove altlocs", file=self.log)
       self.pdb_hierarchy.remove_alt_confs(
-        always_keep_one_conformer = self.params.always_keep_one_conformer)
+        always_keep_one_conformer = self.params.always_keep_one_conformer,
+        altloc_to_keep = self.params.altloc_to_keep,
+        keep_occupancy = self.params.keep_occupancy)
+
+  def _average_alt_confs(self):
+    if(self.params.average_alt_confs):
+      print("Average altlocs", file=self.log)
+      self.pdb_hierarchy.average_alt_confs()
 
   def _truncate_to_poly_gly(self):
     if(self.params.truncate_to_polygly):
-      print >> self.log, "Truncate to poly-gly"
+      print("Truncate to poly-gly", file=self.log)
       self.pdb_hierarchy.truncate_to_poly_gly()
 
   def _truncate_to_poly_ala(self):
     if(self.params.truncate_to_polyala):
-      print >> self.log, "Truncate to poly-ala"
+      print("Truncate to poly-ala", file=self.log)
       self.pdb_hierarchy.truncate_to_poly_ala()
 
   def _set_atomic_charge(self):
     if(self.params.set_charge.charge_selection is not None):
-      print >> self.log, "Setting atomic charge"
+      print("Setting atomic charge", file=self.log)
       selection = self.params.set_charge.charge_selection
       charge    = self.params.set_charge.charge
       sel_cache = self.pdb_hierarchy.atom_selection_cache(
@@ -405,61 +494,61 @@ class modify(object):
 
   def _convert_met_to_semet(self):
     if(self.params.convert_met_to_semet):
-      print >> self.log, "Convert MET->MSE"
+      print("Convert MET->MSE", file=self.log)
       self.pdb_hierarchy.convert_met_to_semet()
 
   def _convert_semet_to_met(self):
-    if(self.params.convert_semet_to_met) :
-      print >> self.log, "Convert MSE->MET"
+    if(self.params.convert_semet_to_met):
+      print("Convert MSE->MET", file=self.log)
       self.pdb_hierarchy.convert_semet_to_met()
 
   def _renumber_residues(self):
     if((self.params.increment_resseq) or
        (self.params.renumber_residues)):
-      print >> self.log, "Re-numbering residues"
+      print("Re-numbering residues", file=self.log)
       renumber_from  = self.params.increment_resseq
       atom_selection = self.params.selection
       pdb_hierarchy  = self.pdb_hierarchy
       selected_i_seqs = None
-      if (atom_selection is not None) :
+      if (atom_selection is not None):
         sel_cache = pdb_hierarchy.atom_selection_cache(
         special_position_settings=crystal.special_position_settings(
             crystal_symmetry = self.crystal_symmetry))
         selected_i_seqs = sel_cache.selection(atom_selection).iselection()
       for model in pdb_hierarchy.models():
         for chain in model.chains():
-          if (selected_i_seqs is not None) :
+          if (selected_i_seqs is not None):
             chain_i_seqs = chain.atoms().extract_i_seq()
             intersection = selected_i_seqs.intersection(chain_i_seqs)
-            if (len(intersection) == 0) :
+            if (len(intersection) == 0):
               continue
-            elif (len(intersection) != len(chain_i_seqs)) :
-              print >> self.log, "Warning: chain '%s' is only partially selected (%d out of %d) - will not renumber." % (chain.id, len(intersection), len(chain_i_seqs))
+            elif (len(intersection) != len(chain_i_seqs)):
+              print("Warning: chain '%s' is only partially selected (%d out of %d) - will not renumber." % (chain.id, len(intersection), len(chain_i_seqs)), file=self.log)
               continue
-          if (renumber_from is None) :
+          if (renumber_from is None):
             counter = 1
             for rg in chain.residue_groups():
-              rg.resseq=counter
+              rg.resseq=resseq_encode(counter)
               counter += 1
           else :
-            for rg in chain.residue_groups() :
+            for rg in chain.residue_groups():
               resseq = rg.resseq_as_int()
               resseq += renumber_from
-              rg.resseq = "%4d" % resseq
+              rg.resseq = resseq_encode(resseq)
 
   def _rename_chain_id(self):
     if([self.params.rename_chain_id.old_id,
        self.params.rename_chain_id.new_id].count(None)==0):
-      print >> self.log, "Rename chain id"
-      print >> self.log, "old_id= '%s'"%self.params.rename_chain_id.old_id
-      print >> self.log, "new_id= '%s'"%self.params.rename_chain_id.new_id
+      print("Rename chain id", file=self.log)
+      print("old_id= '%s'"%self.params.rename_chain_id.old_id, file=self.log)
+      print("new_id= '%s'"%self.params.rename_chain_id.new_id, file=self.log)
       self.pdb_hierarchy.rename_chain_id(
         old_id = self.params.rename_chain_id.old_id,
         new_id = self.params.rename_chain_id.new_id)
 
   def _set_chemical_element_simple_if_necessary(self):
     if(self.params.set_chemical_element_simple_if_necessary):
-      print >> self.log, "Set chemical element"
+      print("Set chemical element", file=self.log)
       self.pdb_hierarchy.atoms().set_chemical_element_simple_if_necessary()
 
   def _remove_atoms(self):
@@ -475,8 +564,8 @@ class modify(object):
       self.xray_structure.replace_scatterers(result.scatterers())
 
   def _print_action(self, text, selection):
-    print >> self.log, "%s: selected atoms: %s" % (
-      text, selection.format_summary())
+    print("%s: selected atoms: %s" % (
+      text, selection.format_summary()), file=self.log)
 
   def _process_adp(self):
     for adp in self.params.adp:
@@ -555,6 +644,26 @@ class modify(object):
         rotate=sites.rotate,
         euler_angle_convention=sites.euler_angle_convention)
 
+  def _flip_symmetric_amino_acids(self):
+    # Scatterers hold edits the hierarchy lacks (rotations, ADP, sites,
+    # occupancies): same swaps there, every other value stays.
+    atoms = self.pdb_hierarchy.atoms()
+    # what the decision uses: the sites and the occupancies that weigh them
+    atoms.set_xyz(self.xray_structure.sites_cart())
+    atoms.set_occ(self.xray_structure.scatterers().extract_occupancies())
+    atoms.reset_i_seq()
+    swapped_pairs = []
+    self.pdb_hierarchy.flip_symmetric_amino_acids(swapped_pairs=swapped_pairs)
+    scatterers = self.xray_structure.scatterers()
+    for atom1, atom2 in swapped_pairs:
+      sc1 = scatterers[atom1.i_seq]
+      sc2 = scatterers[atom2.i_seq]
+      old = sc1.customized_copy()
+      for attr in ["site", "occupancy", "u_iso", "u_star", "flags", "fp",
+                   "fdp"]:
+        setattr(sc1, attr, getattr(sc2, attr))
+        setattr(sc2, attr, getattr(old, attr))
+
   def _switch_rotamers(self, selection, mode):
     if(mode is None): return
     self._print_action(
@@ -603,7 +712,7 @@ class modify(object):
         selection = selection.indices)
 
   def _process_occupancies(self):
-    def check_if_already_modified() :
+    def check_if_already_modified():
       if(self.top_selection): return
       if (self._occupancies_modified):
         raise Sorry("Can't modify occupancies (already modified).")
@@ -641,11 +750,8 @@ class modify(object):
         for a in raap.axis.split():
           axis.append(float(a))
       except Exception:
-        sel = utils.get_atom_selections(
-          iselection=False,
-          all_chain_proxies=self.all_chain_proxies,
-          selection_strings=raap.axis,
-          xray_structure=self.xray_structure)[0]
+        asc = self.pdb_hierarchy.atom_selection_cache()
+        sel = asc.selection(raap.axis)
         axis = [i for i in sites_cart.select(sel).as_double()]
       if(len(axis)!=6):
         raise Sorry("Bad selection rotate_about_axis.axis: %s"%str(raap.axis))
@@ -653,18 +759,18 @@ class modify(object):
       p2 = scitbx.matrix.col(axis[3:])
       raa = p1.rt_for_rotation_around_axis_through(
         point=p2, angle=raap.angle, deg=True)
-      #
-      sel = utils.get_atom_selections(
-          iselection=False,
-          all_chain_proxies=self.all_chain_proxies,
-          selection_strings=raap.atom_selection,
-          xray_structure=self.xray_structure)[0]
+      asc = self.pdb_hierarchy.atom_selection_cache()
+      sel = asc.selection(raap.atom_selection)
       if(sel.count(True)==0):
         raise Sorry(
           "Empty selection rotate_about_axis.selection: %s"%str(raap.atom_selection))
       sites_cart_rotated = raa * sites_cart.select(sel)
       self.xray_structure.set_sites_cart(
         sites_cart.set_selected(sel, sites_cart_rotated))
+
+  def _neutralize_scatterers(self):
+    if self.params.neutralize_scatterers:
+      self.model.neutralize_scatterers()
 
   def get_results(self):
     return group_args(

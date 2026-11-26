@@ -1,4 +1,4 @@
-from __future__ import division
+from __future__ import absolute_import, division, print_function
 # Hardware specific code that makes use of the abstract definitions in
 # module detector
 
@@ -103,7 +103,7 @@ if __name__ == '__main__':
 
     # require XDS configuration file, e.g. xparm-uc1-2.xds
     if len(sys.argv) != 2:
-        raise RuntimeError, '%s configuration-file' % sys.argv[0]
+        raise RuntimeError('%s configuration-file' % sys.argv[0])
 
     configuration_file = sys.argv[1]
 
@@ -118,4 +118,4 @@ if __name__ == '__main__':
     intersection = ((s.lim1[1] - s.lim1[0]) / 2., (s.lim2[1] - s.lim2[0]) / 2.)
 
     assert approx_equal(d.mm_to_px(intersection), (d.npx_fast() / 2, d.npx_slow() / 2))
-    print "OK"
+    print("OK")

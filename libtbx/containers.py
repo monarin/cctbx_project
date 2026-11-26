@@ -1,10 +1,13 @@
-from __future__ import absolute_import, division
+from __future__ import absolute_import, division, print_function
 
 import collections
-MutableSet = collections.MutableSet
-OrderedDict = collections.OrderedDict
+from collections import OrderedDict  # special import
+try:
+  from collections.abc import MutableSet
+except ImportError:
+  from collections import MutableSet
 
-class OrderedSet(collections.MutableSet):
+class OrderedSet(MutableSet):
   """
   http://code.activestate.com/recipes/576694/ rev9
   recommended replacement: https://pypi.python.org/pypi/orderedset
@@ -99,8 +102,10 @@ class deque_template(object):
       self._set_proxy.add(item)
     return self
 
-  def __nonzero__(self):
+  def __bool__(self):
     return bool(self._list_proxy)
+
+  __nonzero__ = __bool__
 
   def __contains__(self, item):
     return item in self._set_proxy

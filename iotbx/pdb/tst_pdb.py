@@ -1,7 +1,9 @@
-from __future__ import division
+"""Extensive tests for working with models"""
+from __future__ import absolute_import, division, print_function
 from iotbx import pdb
 import iotbx.pdb.cryst1_interpretation
 import iotbx.pdb.remark_290_interpretation
+from iotbx.pdb.experiment_type import experiment_type
 from cctbx import crystal
 from cctbx import sgtbx
 from cctbx.development import random_structure
@@ -10,8 +12,10 @@ import scitbx.math
 from libtbx.test_utils import approx_equal, show_diff
 from libtbx.utils import format_cpu_times
 import libtbx.load_env
-from cStringIO import StringIO
+from six.moves import cStringIO as StringIO
 import sys, os
+from six.moves import range
+from six.moves import zip
 op = os.path
 import iotbx.mtrix_biomt
 
@@ -45,10 +49,10 @@ def exercise_validate_sequence():
   test_sequence = 'abcdefghijklmnopqrstuvwxyz'
   a = validate_sequence(test_sequence,protein=True,strict_protein=True,
                         nucleic_acid=False)
-  assert (len(a) == 6)
+  assert (len(a) == 3)
   a = validate_sequence(test_sequence,protein=True,strict_protein=False,
                         nucleic_acid=False)
-  assert (len(a) == 2)
+  assert (len(a) == 1)
   a = validate_sequence(test_sequence,
                         nucleic_acid=True,strict_nucleic_acid=True,
                         protein=False)
@@ -60,7 +64,7 @@ def exercise_validate_sequence():
   a = validate_sequence(test_sequence,
                         protein=True,strict_protein=True,
                         nucleic_acid=True,strict_nucleic_acid=True)
-  assert (len(a) == 5)
+  assert (len(a) == 3)
 
 def exercise_records():
   r = pdb.records.header(pdb_str="""\
@@ -74,6 +78,14 @@ EXPDTA    X-RAY DIFFRACTION""")
   assert r.continuation == "  "
   assert r.technique == "X-RAY DIFFRACTION" + " " * 43
   assert r.keywords == ["X-RAY DIFFRACTION"]
+  r = pdb.records.expdta(pdb_str="""\
+EXPDTA    ELECTRON MICROSCOPY""")
+  assert r.keywords == ["ELECTRON MICROSCOPY"]
+  assert not experiment_type(r.keywords).is_electron_diffraction()
+  for technique in ("ELECTRON CRYSTALLOGRAPHY", "ELECTRON DIFFRACTION"):
+    r = pdb.records.expdta(pdb_str=f"EXPDTA    {technique}")
+    assert r.keywords == [technique]
+    assert experiment_type(r.keywords).is_electron_diffraction()
   #
   r = pdb.records.remark_002(pdb_str="""\
 REMARK   2 RESOLUTION. 0.89 ANGSTROMS.""")
@@ -191,7 +203,8 @@ def exercise_combine_unique_pdb_files():
                       ("tmp3", "1\t"),
                       ("tmp4", " \t2"),
                       ("tmp5", "1  ")]:
-    open(file_name, "w").write(s)
+    with open(file_name, "w") as f:
+      f.write(s)
   for file_names in [[], ["tmp1"], ["tmp1", "tmp2"]]:
     c = pdb.combine_unique_pdb_files(file_names=file_names)
     assert len(c.file_name_registry) == len(file_names)
@@ -267,12 +280,12 @@ INFO: PDB file name appears 2 times: "tmp4"
 INFO: PDB file name appears 2 times: "tmp5"
   2 repeated file names ignored.
 INFO: PDB files with identical content:
-  "tmp2"
-  "tmp4"
-INFO: PDB files with identical content:
   "tmp1"
   "tmp3"
   "tmp5"
+INFO: PDB files with identical content:
+  "tmp2"
+  "tmp4"
 3 files with repeated content ignored.
 
 """)
@@ -479,13 +492,13 @@ def exercise_format_fasta(regression_pdb, coverage=0.1):
          'FSDIISELDMFGIVKIRIINRGRAGGVKKYALVEDKEKVLRALNET'],
         ['> chain " C" conformer ""',
          'TGTAAATTTCCTACGTTTCATCTGAAAATCTAGAGATTTTCAGATGAAACGTAGGAAATTTACATC'],
-         None]
+         None], '%s' % fasta
       assert is_protein == [True, True, False, False]
       assert is_na == [False, False, True, False]
       looking_for.remove(node)
   if (len(looking_for) != 0):
-    print "WARNING: exercise_format_fasta(): some input files missing:", \
-      looking_for
+    print("WARNING: exercise_format_fasta(): some input files missing:", \
+      looking_for)
 
 def exercise_xray_structure(use_u_aniso, verbose=0):
   structure = random_structure.xray_structure(
@@ -628,18 +641,19 @@ REMARK 350   BIOMT3   4  0.309017  0.809017  0.500000        0.00000
   assert approx_equal(mtrix_info.t[1], [0.10000,0.02000,0.00300])
   assert mtrix_info.serial_number == [1, 2, 3, 4]
 
-def exercise_header_misc (regression_pdb) :
+def exercise_header_misc(regression_pdb):
   pdb_inp = pdb.input(file_name=op.join(regression_pdb, "pdb1a1q.ent"))
   wavelength = pdb_inp.extract_wavelength()
   assert approx_equal(wavelength, 0.995)
   expt_type = pdb_inp.get_experiment_type()
-  assert (expt_type == 'X-RAY DIFFRACTION')
+  assert ("%s" % expt_type == 'X-RAY DIFFRACTION')
+  assert expt_type.is_xray()
 
 def dump_pdb(file_name, sites_cart, crystal_symmetry=None):
   f = open(file_name, "w")
   if (crystal_symmetry is not None):
-    print >> f, iotbx.pdb.format_cryst1_record(
-      crystal_symmetry=crystal_symmetry)
+    print(iotbx.pdb.format_cryst1_record(
+      crystal_symmetry=crystal_symmetry), file=f)
   for i,site in enumerate(sites_cart):
     a = iotbx.pdb.hierarchy.atom_with_labels()
     a.serial = i+1
@@ -648,12 +662,12 @@ def dump_pdb(file_name, sites_cart, crystal_symmetry=None):
     a.resseq = 1
     a.xyz = site
     a.occ = 1
-    print >> f, a.format_atom_record_group()
-  print >> f, "END"
+    print(a.format_atom_record_group(), file=f)
+  print("END", file=f)
   f.close()
 
 def write_icosahedron():
-  for level in xrange(3):
+  for level in range(3):
     icosahedron = scitbx.math.icosahedron(level=level)
     scale = 1.5/icosahedron.next_neighbors_distance()
     dump_pdb(
@@ -673,7 +687,7 @@ ATOM   4  CG  LYS 109  27.664   2.793  16.091  1.00 20.00      B
   f.write(bad_pdb_string)
   f.close()
   try: pdb_inp = pdb.input(file_name=f.name, source_info=None)
-  except ValueError, e:
+  except ValueError as e:
     err_message = str(e)
     assert bad_pdb_string.splitlines()[0] in err_message
   else: raise Exception_expected
@@ -707,10 +721,20 @@ ATOM  60  CA . VAL  C   26  ?  -12.16900  22.54800  -4.78000  1.000   8.45988  C
   f.write(bad_cif_loop_string)
   f.close()
   try: pdb_inp = pdb.input(file_name=f.name, source_info=None)
-  except iotbx.cif.CifParserError, e:
+  except iotbx.cif.CifParserError as e:
     err_message = str(e)
-    assert err_message == \
-           "Wrong number of data items for loop containing _atom_site.group_PDB"
+    # Both wordings accepted so the test stays valid regardless of
+    # which parser iotbx.cif.reader uses underneath. Both messages
+    # name the offending loop's first tag so users can grep for it.
+    # - ucif raises at model-build time;
+    # - xcif raises at parse time and prefixes "<source>:line:col: ".
+    accepted = (
+      "Wrong number of data items for loop containing _atom_site.group_PDB",
+      "loop containing tag '_atom_site.group_PDB' has 57 values, "
+        "not a multiple of its 18 tags",
+    )
+    assert any(err_message == m or err_message.endswith(": " + m)
+               for m in accepted), "got: %r" % err_message
   else: raise Exception_expected
 
 def exercise_extract_authors():
@@ -772,9 +796,104 @@ AUTHOR   2 JEYABALAN,C.A.SCHIFFER
   ['KING.M.N', 'A.E.NALIVAIKA', 'B.P.WIGERNICK', 'PRABU-JEYABALAN',
    'A.C.SCHIFFER']
 
+def exercise_missing_atoms():
+  pdb_str = """
+CRYST1   31.395   16.417   23.217  90.00  90.00  90.00 P 1
+SCALE1      0.031852  0.000000  0.000000        0.00000
+SCALE2      0.000000  0.060912  0.000000        0.00000
+SCALE3      0.000000  0.000000  0.043072        0.00000
+ATOM      1  N   GLN A   1      17.191   7.640  11.852  1.00 10.38           N
+ATOM      2  CA  GLN A   1      18.307   8.180  12.621  1.00 11.39           C
+ATOM      3  C   GLN A   1      19.631   7.587  12.153  1.00 11.52           C
+ATOM      4  O   GLN A   1      19.805   6.365  12.035  1.00 12.05           O
+ATOM      5  CB  GLN A   1      18.093   8.002  14.128  1.00 11.96           C
+ATOM      6  CG  GLN A   1      16.866   8.769  14.628  1.00 10.81           C
+remark ATOM      7  CD  GLN A   1      16.381   8.233  15.935  1.00 13.10           C
+ATOM      8  OE1 GLN A   1      15.811   7.144  15.983  1.00 10.65           O
+ATOM      9  NE2 GLN A   1      16.586   9.006  17.020  1.00 12.30           N
+ATOM     10  H1  GLN A   1      17.464   7.449  11.027  1.00 10.38           H
+remark ATOM     11  H2  GLN A   1      16.891   6.900  12.244  1.00 10.38           H
+ATOM     12  H3  GLN A   1      16.537   8.242  11.816  1.00 10.38           H
+ATOM     13  HA  GLN A   1      18.358   9.137  12.474  1.00 11.39           H
+ATOM     14  HB2 GLN A   1      18.872   8.333  14.602  1.00 11.96           H
+ATOM     15  HB3 GLN A   1      17.962   7.061  14.322  1.00 11.96           H
+remark ATOM     16  HG2 GLN A   1      17.098   9.703  14.748  1.00 10.81           H
+ATOM     17  HG3 GLN A   1      16.150   8.686  13.979  1.00 10.81           H
+ATOM     18 HE21 GLN A   1      16.324   8.739  17.794  1.00 12.30           H
+ATOM     19 HE22 GLN A   1      16.979   9.767  16.938  1.00 12.30           H
+ATOM     20  N   ASN A   2      20.551   8.483  11.837  1.00 11.99           N
+remark ATOM     21  CA  ASN A   2      21.868   8.129  11.299  1.00 12.30           C
+ATOM     22  C   ASN A   2      22.891   8.580  12.305  1.00 13.40           C
+ATOM     23  O   ASN A   2      23.256   9.762  12.355  1.00 13.92           O
+ATOM     24  CB  ASN A   2      22.102   8.835   9.974  1.00 12.13           C
+ATOM     25  CG  ASN A   2      20.998   8.554   8.984  1.00 12.77           C
+ATOM     26  OD1 ASN A   2      20.835   7.423   8.532  1.00 14.27           O
+ATOM     27  ND2 ASN A   2      20.232   9.566   8.660  1.00 10.07           N
+ATOM     28  H   ASN A   2      20.440   9.331  11.925  1.00 11.99           H
+ATOM     29  HA  ASN A   2      21.943   7.176  11.133  1.00 12.30           H
+ATOM     30  HB2 ASN A   2      22.138   9.793  10.124  1.00 12.13           H
+ATOM     31  HB3 ASN A   2      22.939   8.527   9.591  1.00 12.13           H
+ATOM     32 HD21 ASN A   2      19.589   9.456   8.100  1.00 10.07           H
+ATOM     33 HD22 ASN A   2      20.372  10.340   9.008  1.00 10.07           H
+ATOM     34  N   TYR A   3      23.329   7.636  13.128  1.00 14.70           N
+ATOM     35  CA  TYR A   3      24.196   7.963  14.280  1.00 15.18           C
+ATOM     36  C   TYR A   3      25.640   8.150  13.866  1.00 15.91           C
+ATOM     37  O   TYR A   3      26.078   7.630  12.836  1.00 15.76           O
+ATOM     38  CB  TYR A   3      24.098   6.884  15.350  1.00 15.35           C
+ATOM     39  CG  TYR A   3      22.702   6.748  15.883  1.00 14.45           C
+ATOM     40  CD1 TYR A   3      22.247   7.575  16.901  1.00 14.80           C
+ATOM     41  CD2 TYR A   3      21.808   5.840  15.308  1.00 15.68           C
+ATOM     42  CE1 TYR A   3      20.941   7.468  17.397  1.00 14.33           C
+ATOM     43  CE2 TYR A   3      20.517   5.725  15.777  1.00 13.46           C
+ATOM     44  CZ  TYR A   3      20.084   6.548  16.812  1.00 15.09           C
+ATOM     45  OH  TYR A   3      18.803   6.408  17.272  1.00 14.39           O
+ATOM     46  OXT TYR A   3      26.395   8.818  14.593  1.00 17.49           O
+ATOM     47  H   TYR A   3      23.145   6.799  13.051  1.00 14.70           H
+remark ATOM     48  HA  TYR A   3      23.890   8.801  14.661  1.00 15.18           H
+ATOM     49  HB2 TYR A   3      24.684   7.113  16.088  1.00 15.35           H
+ATOM     50  HB3 TYR A   3      24.362   6.032  14.969  1.00 15.35           H
+ATOM     51  HD1 TYR A   3      22.820   8.213  17.261  1.00 14.80           H
+ATOM     52  HD2 TYR A   3      22.088   5.306  14.600  1.00 15.68           H
+ATOM     53  HE1 TYR A   3      20.655   8.002  18.103  1.00 14.33           H
+ATOM     54  HE2 TYR A   3      19.938   5.100  15.403  1.00 13.46           H
+ATOM     55  HH  TYR A   3      18.433   7.160  17.325  1.00 14.39           H
+TER
+END
+"""
+  try:
+    import mmtbx.monomer_library.server
+    mon_lib_srv = mmtbx.monomer_library.server.server()
+  except: # intentional
+    print("Can not initialize monomer_library, skipping test.")
+    return
+  pdb_inp = iotbx.pdb.input(source_info=None, lines=pdb_str)
+  h = pdb_inp.construct_hierarchy()
+  for m in h.models():
+    for c in m.chains():
+      for r in c.residues():
+        r1 = r.missing_atoms(mon_lib_srv=mon_lib_srv, mode="all")
+        r2 = r.missing_atoms(mon_lib_srv=mon_lib_srv, mode="non_h")
+        r3 = r.missing_atoms(mon_lib_srv=mon_lib_srv, mode="h_only")
+        if int(r.resseq)==1:
+          assert r1 == ['HG2', 'CD', "H2"]
+          assert r2 == ['CD']
+          r3.sort()
+          r3_ = ['H2', 'HG2']
+          r3_.sort()
+          assert r3 == r3_, r3
+        elif int(r.resseq)==2:
+          r1 == ['CA']
+          r2 == ['CA']
+          r3 == []
+        elif int(r.resseq)==3:
+          assert r1 == ['HA']
+          assert r2 == []
+          assert r3 == ['HA']
+        else: assert 0
 
 def run():
   verbose = "--verbose" in sys.argv[1:]
+  exercise_missing_atoms()
   exercise_extract_authors()
   exercise_pdb_input_error_handling()
   exercise_systematic_chain_ids()
@@ -792,7 +911,7 @@ def run():
     relative_path="phenix_regression/pdb",
     test=op.isdir)
   if (regression_pdb is None):
-    print "Skipping some tests: phenix_regression/pdb not available"
+    print("Skipping some tests: phenix_regression/pdb not available")
   else:
     exercise_format_fasta(regression_pdb=regression_pdb)
     exercise_merge_files_and_check_for_overlap(regression_pdb=regression_pdb)
@@ -803,7 +922,7 @@ def run():
   for use_u_aniso in (False, True):
     exercise_xray_structure(use_u_aniso, verbose=verbose)
   write_icosahedron()
-  print format_cpu_times()
+  print(format_cpu_times())
 
 if (__name__ == "__main__"):
   run()

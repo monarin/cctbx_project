@@ -1,10 +1,10 @@
 
-from __future__ import division
+from __future__ import absolute_import, division, print_function
 from libtbx.utils import null_out
 from libtbx import easy_pickle
-from cStringIO import StringIO
+from six.moves import cStringIO as StringIO
 
-def run_validation (pdb_file, ignore_hd=True) :
+def run_validation(pdb_file, ignore_hd=True):
   from mmtbx.validation import restraints
   import mmtbx.command_line
   cmdline = mmtbx.command_line.load_model_and_data(
@@ -17,10 +17,11 @@ def run_validation (pdb_file, ignore_hd=True) :
     pdb_hierarchy=cmdline.pdb_hierarchy,
     xray_structure=cmdline.xray_structure,
     geometry_restraints_manager=cmdline.geometry,
+    reverse_sort=True,
     ignore_hd=ignore_hd)
   return validation
 
-def exercise_simple () :
+def exercise_simple():
   # extracted from 1lyz, with hydrogens from reduce
   pdb_in = """
 ATOM      1  N   LYS A   1       3.296   9.888  10.739  1.00  7.00           N
@@ -66,7 +67,8 @@ ATOM      0 HG23 VAL A   2       4.620  12.960   7.962  1.00  6.00           H
 END
 """
   pdb_file = "tst_validate_restraints_simple.pdb"
-  open(pdb_file, "w").write(pdb_in)
+  with open(pdb_file, "w") as f:
+    f.write(pdb_in)
   v1 = run_validation(pdb_file, ignore_hd=True)
   out1 = StringIO()
   v1.show(out=out1)
@@ -89,9 +91,9 @@ atoms                   ideal    model    delta   sigma  residual   deviation
   v2.show(out=out2)
   assert (out2.getvalue() != out1.getvalue())
   assert ("""\
+ A   1  LYS  N
+ A   1  LYS  CA
  A   1  LYS  HA        110.00    57.00    53.00  3.00e+00  3.12e+02  17.7*sigma
- A   2  VAL  N
- A   2  VAL  CA
 """ in "\n".join([ l.rstrip() for l in out2.getvalue().splitlines() ]))
   #
   # C-alpha-only model (from 3b5d)
@@ -107,9 +109,29 @@ ATOM      7  CA  LEU A  12     -10.023  -2.071 -17.056  1.00230.80           C
 ATOM      8  CA  ALA A  13      -7.313  -1.820 -14.420  1.00141.04           C
 """
   pdb_file = "tst_validate_restraints_calpha.pdb"
-  open(pdb_file, "w").write(pdb_raw)
+  with open(pdb_file, "w") as f:
+    f.write(pdb_raw)
   v1 = run_validation(pdb_file, ignore_hd=True)
 
-if (__name__ == "__main__") :
+def exercise_json_no_planarity_outliers():
+  """
+  as_JSON() for a restraint type without outliers must still report a
+  per-model summary with num_outliers = 0 (planarities raised KeyError).
+  1yjp has no planarity outliers; its 13 planes are 6 trans-peptide links,
+  3 Asn and 2 Gln side-chain amides, 1 Tyr ring and the C-terminal COO.
+  """
+  import json
+  from mmtbx.regression import model_1yjp
+  pdb_file = "tst_validate_restraints_json.pdb"
+  with open(pdb_file, "w") as f:
+    f.write(model_1yjp)
+  v = run_validation(pdb_file, ignore_hd=True)
+  planarities_json = json.loads(v.planarities.as_JSON())
+  assert planarities_json["flat_results"] == [], planarities_json["flat_results"]
+  assert planarities_json["summary_results"] == {
+    "": {"num_outliers": 0, "num_total": 13}}, planarities_json["summary_results"]
+
+if (__name__ == "__main__"):
   exercise_simple()
-  print "OK"
+  exercise_json_no_planarity_outliers()
+  print("OK")

@@ -1,4 +1,4 @@
-from __future__ import division
+from __future__ import absolute_import, division, print_function
 import iotbx.pdb
 from mmtbx.building import loop_idealization
 import mmtbx.model
@@ -99,9 +99,8 @@ HETATM 9823  O6  NAG A 501    -148.610-133.860-123.650  1.00105.75           O
 HETATM 9824  O7  NAG A 501    -143.325-131.114-129.200  1.00105.75           O
   """
   pdb_inp = iotbx.pdb.input(source_info=None, lines=tst_pdb_1)
-  model = mmtbx.model.manager(
-    pdb_inp,
-    build_grm=True)
+  model = mmtbx.model.manager(pdb_inp)
+  model.process(make_restraints=True)
   loop_ideal_params = loop_idealization.master_phil.extract()
   loop_ideal_params.loop_idealization.enabled=True
   loop_ideal_params.loop_idealization.variant_search_level=1
@@ -196,9 +195,8 @@ END
 """
   pdb_inp = iotbx.pdb.input(source_info=None, lines=tst_pdb_2)
   model = mmtbx.model.manager(
-      model_input = pdb_inp,
-      build_grm = True)
-
+      model_input = pdb_inp)
+  model.process(make_restraints=True)
   model.get_hierarchy().write_pdb_file("tst_loop_closure_2_start.pdb")
   assert model.get_hierarchy().atoms_size() == 73
   loop_ideal_params = loop_idealization.master_phil.extract()
@@ -218,9 +216,9 @@ END
 
 def exercise():
   exercise_ligand_after_chain()
-  print "OK"
+  print("OK")
   exercise_nonstd_residue()
-  print "OK"
+  print("OK")
 
 if (__name__ == "__main__"):
   exercise()

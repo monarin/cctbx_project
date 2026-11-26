@@ -27,7 +27,7 @@ That is:
 ...-9999
 ...map average and standard deviation
 """
-from __future__ import division
+from __future__ import absolute_import, division, print_function
 
 import iotbx.xplor.ext as ext
 from cctbx import miller
@@ -35,6 +35,8 @@ from cctbx import maptbx
 from cctbx import uctbx
 from cctbx.array_family import flex
 import sys
+from six.moves import range
+from six.moves import zip
 
 class gridding(object):
 
@@ -74,26 +76,26 @@ class gridding(object):
 class reader(object):
 
   def __init__(self, file_name, header_only=False):
-    f = open(file_name, "r")
-    f.readline()
-    self.title_lines = []
-    ntitle = int(f.readline().strip().split("!")[0])
-    self.title_lines=[]
-    for x in xrange(ntitle):
-      line = f.readline().rstrip()
-      self.title_lines.append(line)
-    line = f.readline()
-    values = [int(line[i:i+8]) for i in xrange(0,72,8)]
-    self.gridding = gridding(
-      n     = [values[i] for i in xrange(0,9,3)],
-      first = [values[i] for i in xrange(1,9,3)],
-      last  = [values[i] for i in xrange(2,9,3)])
-    line = f.readline()
-    params = [float(line[i:i+12]) for i in xrange(0,72,12)]
-    self.unit_cell = uctbx.unit_cell(params)
-    order = f.readline().strip()
-    assert order == "ZYX"
-    f.close()
+    with open(file_name, "r") as f:
+      f.readline()
+      self.title_lines = []
+      ntitle = int(f.readline().strip().split("!")[0])
+      self.title_lines=[]
+      for x in range(ntitle):
+        line = f.readline().rstrip()
+        self.title_lines.append(line)
+      line = f.readline()
+      values = [int(line[i:i+8]) for i in range(0,72,8)]
+      self.gridding = gridding(
+        n     = [values[i] for i in range(0,9,3)],
+        first = [values[i] for i in range(1,9,3)],
+        last  = [values[i] for i in range(2,9,3)])
+      line = f.readline()
+      params = [float(line[i:i+12]) for i in range(0,72,12)]
+      self.unit_cell = uctbx.unit_cell(params)
+      order = f.readline().strip()
+      assert order == "ZYX"
+
     if (header_only):
       self.data = None
       self.average = None
@@ -109,20 +111,20 @@ class reader(object):
 
   def show_summary(self, out=None, prefix=""):
     if (out is None): out = sys.stdout
-    print >> out, prefix+"Title lines:", len(self.title_lines)
+    print(prefix+"Title lines:", len(self.title_lines), file=out)
     for line in self.title_lines:
-      print >> out, prefix+"  "+line.rstrip()
+      print(prefix+"  "+line.rstrip(), file=out)
     g = self.gridding
-    print >> out, prefix+"Gridding:"
-    print >> out, prefix+"  n:    ", g.n
-    print >> out, prefix+"  first:", g.first
-    print >> out, prefix+"  last: ", g.last
-    print >> out, prefix+"Total number of data points:", self.data.size()
+    print(prefix+"Gridding:", file=out)
+    print(prefix+"  n:    ", g.n, file=out)
+    print(prefix+"  first:", g.first, file=out)
+    print(prefix+"  last: ", g.last, file=out)
+    print(prefix+"Total number of data points:", self.data.size(), file=out)
     stats = maptbx.statistics(self.data)
-    print >> out, prefix+"  min:   %.6g" % stats.min()
-    print >> out, prefix+"  max:   %.6g" % stats.max()
-    print >> out, prefix+"  mean:  %.6g" % stats.mean()
-    print >> out, prefix+"  sigma: %.6g" % stats.sigma()
+    print(prefix+"  min:   %.6g" % stats.min(), file=out)
+    print(prefix+"  max:   %.6g" % stats.max(), file=out)
+    print(prefix+"  mean:  %.6g" % stats.mean(), file=out)
+    print(prefix+"  sigma: %.6g" % stats.sigma(), file=out)
 
 def writer(file_name, title_lines, unit_cell, gridding,
            data, is_p1_cell=False,
@@ -131,13 +133,13 @@ def writer(file_name, title_lines, unit_cell, gridding,
   assert gridding.is_compatible_flex_grid(
     flex_grid=data.accessor(),
     is_p1_cell=is_p1_cell)
-  f = open(file_name, "wb")
-  f.write("\n")
-  f.write("%8d !NTITLE\n" % len(title_lines))
-  for line in title_lines:
-    f.write("%-264s\n" % line)
-  f.write("%s\n" % gridding.format_9i8())
-  f.close()
+  with open(file_name, "w") as f:
+    f.write("\n")
+    f.write("%8d !NTITLE\n" % len(title_lines))
+    for line in title_lines:
+      f.write("%-264s\n" % line)
+    f.write("%s\n" % gridding.format_9i8())
+
   if (is_p1_cell is None): # XXX temporary flag allowing any cell
     ext.map_writer(
       file_name=file_name,

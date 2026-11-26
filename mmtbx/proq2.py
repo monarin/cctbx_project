@@ -1,4 +1,6 @@
-from __future__ import division
+"""Interface to ProQ2 server"""
+
+from __future__ import absolute_import, division, print_function
 
 from HTMLParser import HTMLParser
 
@@ -55,7 +57,7 @@ def parse_submission_page(stream):
     if parser.job_folder is not None:
       return parser.job_folder
 
-  raise JobFolderParseError, "Could not find job folder text"
+  raise JobFolderParseError("Could not find job folder text")
 
 
 class Job(object):
@@ -69,7 +71,7 @@ class Job(object):
   def __init__(self, pdbstr, name):
 
     from iotbx.pdb import download
-    import urllib
+    from six.moves import urllib
 
     data_for = {
       "pdb": pdbstr,
@@ -81,7 +83,7 @@ class Job(object):
 
     stream = download.openurl(
       url = self.SERVERURL,
-      data = urllib.urlencode( data_for.items() ),
+      data = urllib.parse.urlencode( list(data_for.items()) ),
       )
     self.job_folder = parse_submission_page( stream = stream )
     stream.close()
@@ -105,11 +107,11 @@ if __name__ == "__main__":
     try:
       timeout = float( sys.argv[2] )
 
-    except ValueError, e:
-      print "Cannot interpret as number: %s (%s)" % ( sys.argv[2], e )
+    except ValueError as e:
+      print("Cannot interpret as number: %s (%s)" % ( sys.argv[2], e ))
 
   else:
-    print "Usage: %s PDBFILE <timeout = 600>" % sys.argv[0]
+    print("Usage: %s PDBFILE <timeout = 600>" % sys.argv[0])
     sys.exit( 1 )
 
   pdbstr = open( sys.argv[1] ).read()
@@ -119,13 +121,13 @@ if __name__ == "__main__":
   try:
     myjob = Job( pdbstr = pdbstr, name = "phenix.proq2" )
 
-  except JobFolderParseError, e:
+  except JobFolderParseError as e:
     sys.stdout.write( "failed\n" )
-    print "Unexpected response: cannot find job folder"
+    print("Unexpected response: cannot find job folder")
     sys.exit( 1 )
 
   sys.stdout.write( "done\n" )
-  print "Job folder:", myjob.job_folder
+  print("Job folder:", myjob.job_folder)
 
   sys.stdout.write( "Waiting for results" )
   sys.stdout.flush()
@@ -142,7 +144,7 @@ if __name__ == "__main__":
       callback = progress.streamprint( stream = sys.stdout, character = "." ),
       )
 
-  except progress.TimeoutError, e:
+  except progress.TimeoutError as e:
     sys.stdout.write( "%s\n" % e )
     sys.exit( 1 )
 
@@ -154,10 +156,10 @@ if __name__ == "__main__":
 
   import os.path
   output = "proq2-%s" % os.path.basename( sys.argv[1] )
-  print "Output:", output
+  print("Output:", output)
 
   with open( output, "w" ) as ofile:
     ofile.write( result )
     ofile.write( "\n" )
 
-  print "Done!"
+  print("Done!")

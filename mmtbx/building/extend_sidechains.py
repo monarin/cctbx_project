@@ -1,5 +1,5 @@
 
-from __future__ import division
+from __future__ import absolute_import, division, print_function
 from scitbx.matrix import col
 from libtbx.str_utils import make_sub_header
 from libtbx.utils import null_out
@@ -22,10 +22,10 @@ skip_rsr = False
   .type = bool
 """
 
-def correct_sequence (pdb_hierarchy,
+def correct_sequence(pdb_hierarchy,
     sequences,
     truncate_to_cbeta=False,
-    out=sys.stdout) :
+    out=sys.stdout):
   """
   Modify the sequence for the pdb hierarchy to match that of the aligned
   sequence.  This will remove incompatible atoms; the sidechains will still
@@ -47,48 +47,47 @@ def correct_sequence (pdb_hierarchy,
     sequences=sequences,
     log=out)
   for chain_seq in seq_validation.chains :
-    if (chain_seq.chain_type == mmtbx.validation.sequence.NUCLEIC_ACID) :
-      if (len(chain_seq.mismatch) > 0) :
-        print >> out, \
-          "  WARNING: will skip %d mismatches in nucleic acid chain '%s'" % \
-          chain_seq.chain_id
+    if (chain_seq.chain_type == mmtbx.validation.sequence.NUCLEIC_ACID):
+      if (len(chain_seq.mismatch) > 0):
+        print("  WARNING: will skip %d mismatches in nucleic acid chain '%s'" % \
+          chain_seq.chain_id, file=out)
   res_dict = idealized_aa.residue_dict()
   expected_names = {}
-  for resname in res_dict.keys() :
-    if (not "_h" in resname) :
+  for resname in res_dict.keys():
+    if (not "_h" in resname):
       ideal_res = res_dict[resname]
       expected_names[resname] = set([ a.name for a in ideal_res.atoms() ])
   n_changed = 0
-  for chain in pdb_hierarchy.only_model().chains() :
-    if (not chain.is_protein()) :
+  for chain in pdb_hierarchy.only_model().chains():
+    if (not chain.is_protein()):
       continue
     for chain_seq in seq_validation.chains :
-      if (chain.id == chain_seq.chain_id) and (len(chain_seq.mismatch) > 0) :
-        for residue_group in chain.residue_groups() :
+      if (chain.id == chain_seq.chain_id) and (len(chain_seq.mismatch) > 0):
+        for residue_group in chain.residue_groups():
           resid = residue_group.resid()
-          if (resid in chain_seq.mismatch) :
+          if (resid in chain_seq.mismatch):
             idx = chain_seq.mismatch.index(resid)
             new_code = chain_seq.actual_code[idx]
             new_resname = three_letter_given_one_letter.get(new_code)
-            if (new_resname is not None) :
+            if (new_resname is not None):
               expected_atoms = expected_names[new_resname.lower()]
-              if (truncate_to_cbeta) :
+              if (truncate_to_cbeta):
                 expected_atoms = expected_names["ala"]
-              for atom_group in residue_group.atom_groups() :
+              for atom_group in residue_group.atom_groups():
                 n_changed += 1
                 n_removed = 0
                 atom_group.resname = new_resname
-                for atom in atom_group.atoms() :
-                  if (not atom.name in expected_atoms) :
+                for atom in atom_group.atoms():
+                  if (not atom.name in expected_atoms):
                     atom_group.remove_atom(atom)
                     n_removed += 1
-              print >> out, "  chain '%s' %s %s --> %s (%d atoms removed)" % \
+              print("  chain '%s' %s %s --> %s (%d atoms removed)" % \
                 (chain.id, resid, residue_group.atom_groups()[0].resname,
-                 new_resname, n_removed)
+                 new_resname, n_removed), file=out)
   pdb_hierarchy.atoms().reset_i_seq()
   return n_changed
 
-class conformation_scorer (object) :
+class conformation_scorer(object):
   """
   Stand-in for the conformation scoring class in mmtbx.refinement.real_space;
   instead of calculating fit to the map, this simply uses the change in
@@ -96,43 +95,43 @@ class conformation_scorer (object) :
   superimpose the conformations for those atoms which are present in both the
   old and the new residues.
   """
-  def __init__ (self, old_residue, new_residue) :
+  def __init__(self, old_residue, new_residue):
     from scitbx.array_family import flex
     old_residue_atoms = old_residue.atoms()
     self.new_residue_atoms = new_residue.atoms()
     n_atoms = self.new_residue_atoms.size()
     self.new_residue_selection = flex.bool(n_atoms, False)
     self.selection_mappings = flex.size_t(n_atoms, 0)
-    for i_seq, old_atom in enumerate(old_residue_atoms) :
-      for j_seq, new_atom in enumerate(self.new_residue_atoms) :
-        if (old_atom.name == new_atom.name) :
+    for i_seq, old_atom in enumerate(old_residue_atoms):
+      for j_seq, new_atom in enumerate(self.new_residue_atoms):
+        if (old_atom.name == new_atom.name):
           self.new_residue_selection[j_seq] = True
           self.selection_mappings[j_seq] = i_seq
     self.sites_old = old_residue_atoms.extract_xyz()
     self.sites_cart = self.new_residue_atoms.extract_xyz()
     self.dist_min = None
 
-  def update (self, sites_cart, selection) :
+  def update(self, sites_cart, selection):
     first_i_seq = selection[0]
-    if (self.new_residue_selection[first_i_seq]) :
+    if (self.new_residue_selection[first_i_seq]):
       dist = abs(col(sites_cart[first_i_seq]) -
         col(self.sites_old[self.selection_mappings[first_i_seq]]))
-      if (dist < self.dist_min) :
+      if (dist < self.dist_min):
         self.sites_cart = sites_cart
         self.dist_min = dist
         return True
     return False
 
-  def reset (self, sites_cart, selection) :
+  def reset(self, sites_cart, selection):
     self.sites_cart = sites_cart
     first_i_seq = selection[0]
-    if (self.new_residue_selection[first_i_seq]) :
+    if (self.new_residue_selection[first_i_seq]):
       self.dist_min = abs(col(sites_cart[first_i_seq]) -
         col(self.sites_old[self.selection_mappings[first_i_seq]]))
     else :
-      self.dist_min = sys.maxint
+      self.dist_min = sys.maxsize
 
-  def apply_final (self) :
+  def apply_final(self):
     self.new_residue_atoms.set_xyz(self.sites_cart)
 
 def extend_residue(
@@ -195,7 +194,7 @@ def extend_protein_model(
       for residue in residue_group.atom_groups():
         i_seqs = residue.atoms().extract_i_seq()
         residue_sel = selection.select(i_seqs)
-        if(not residue.resname.lower() in ideal_dict.keys()): continue
+        if not residue.resname.lower() in ideal_dict: continue
         missing_atoms = rotamer_eval.eval_residue_completeness(
           residue          = residue,
           mon_lib_srv      = mon_lib_srv,
@@ -221,6 +220,17 @@ def extend_protein_model(
       residue          = new_residue,
       mon_lib_srv      = mon_lib_srv,
       ignore_hydrogens = False)
+    # Set occupancy of newly added non-H atoms to small number so they can be
+    # refined later automatically and also don't 'shock' the data terms by
+    # coming in in full occupancy!
+    anames_old = []
+    for a in residue.atoms():
+      anames_old.append(a.name)
+    for a in new_residue.atoms():
+      if a.element_is_hydrogen(): continue
+      if a.name in anames_old: continue
+      a.set_occ(0.1)
+    #
     #assert len(missing_atoms) == 0, missing_atoms
     rg = residue.parent()
     rg.remove_atom_group(residue)
@@ -229,7 +239,7 @@ def extend_protein_model(
   pdb_hierarchy.atoms().reset_serial()
   return len(partial_sidechains)
 
-def refit_residues (
+def refit_residues(
     pdb_hierarchy,
     cif_objects,
     fmodel,
@@ -237,7 +247,7 @@ def refit_residues (
     anneal=False,
     verbose=True,
     allow_modified_residues=False,
-    out=sys.stdout) :
+    out=sys.stdout):
   """
   Use real-space refinement tools to fit newly extended residues.
   """
@@ -249,7 +259,7 @@ def refit_residues (
   mon_lib_srv = mmtbx.monomer_library.server.server()
   rotamer_manager = rotamer_eval.RotamerEval()
   ppdb_out = box_out = out
-  if (not verbose) :
+  if (not verbose):
     ppdb_out = null_out()
     box_out = null_out()
   make_sub_header("Processing new model", out=ppdb_out)
@@ -258,7 +268,7 @@ def refit_residues (
     crystal_symmetry=fmodel.f_obs().crystal_symmetry(),
     cif_objects=cif_objects,
     out=ppdb_out)
-  print >> ppdb_out, ""
+  print("", file=ppdb_out)
   hierarchy = processed_pdb.all_chain_proxies.pdb_hierarchy
   xrs = processed_pdb.xray_structure()
   grm_geometry = processed_pdb.geometry_restraints_manager()
@@ -268,10 +278,10 @@ def refit_residues (
     exclude_free_r_reflections=True).fft_map(
       resolution_factor=0.25).apply_sigma_scaling().real_map_unpadded()
   unit_cell = xrs.unit_cell()
-  for chain in hierarchy.only_model().chains() :
+  for chain in hierarchy.only_model().chains():
     if (not chain.is_protein()) and (not allow_modified_residues) : continue
     residue_groups = chain.residue_groups()
-    for i_rg, residue_group in enumerate(residue_groups) :
+    for i_rg, residue_group in enumerate(residue_groups):
       prev_res = next_res = None
       atom_groups = residue_group.atom_groups()
       if (len(atom_groups) > 1) : continue
@@ -279,13 +289,13 @@ def refit_residues (
       atoms = residue.atoms()
       atoms.reset_tmp()
       segids = atoms.extract_segid()
-      if (segids.all_eq("XXXX")) :
+      if (segids.all_eq("XXXX")):
         sites_start = atoms.extract_xyz()
-        def get_two_fofc_mean (residue) :
+        def get_two_fofc_mean(residue):
           sum = 0
           n_atoms = 0
-          for atom in residue.atoms() :
-            if (not atom.element.strip() in ["H","D"]) :
+          for atom in residue.atoms():
+            if (not atom.element.strip() in ["H","D"]):
               site_frac = unit_cell.fractionalize(site_cart=atom.xyz)
               sum += target_map.eight_point_interpolation(site_frac)
               n_atoms += 1
@@ -308,26 +318,25 @@ def refit_residues (
         two_fofc_mean_end = get_two_fofc_mean(residue)
         sites_end = atoms.extract_xyz()
         flag = ""
-        if (two_fofc_mean_end > two_fofc_mean_start) :
+        if (two_fofc_mean_end > two_fofc_mean_start):
           flag = " <-- keep"
           xrs = refit.xray_structure
         else :
           atoms.set_xyz(sites_start)
           for atom in atoms :
             atom.tmp = 1
-        print >> out, \
-          "    residue '%s' : rmsd=%5.3f 2fofc_start=%5.3f 2fofc_end=%5.3f%s" \
+        print("    residue '%s' : rmsd=%5.3f 2fofc_start=%5.3f 2fofc_end=%5.3f%s" \
           % (residue.id_str(), sites_end.rms_difference(sites_start),
-            two_fofc_mean_start, two_fofc_mean_end, flag)
+            two_fofc_mean_start, two_fofc_mean_end, flag), file=out)
   return hierarchy, xrs
 
-class prefilter (object) :
+class prefilter(object):
   """
   Optional filter for excluding residues with poor backbone density from being
   extended.  This is done as a separate callback to enable the main rebuilding
   routine to be independent of data/maps.
   """
-  def __init__ (self, fmodel, out, backbone_min_sigma=1.0) :
+  def __init__(self, fmodel, out, backbone_min_sigma=1.0):
     target_map = fmodel.map_coefficients(
       map_type="2mFo-DFc",
       exclude_free_r_reflections=True).fft_map(
@@ -337,27 +346,27 @@ class prefilter (object) :
     self.out = out
     self.backbone_min_sigma = backbone_min_sigma
 
-  def __call__ (self, residue) :
+  def __call__(self, residue):
     atoms = residue.atoms()
     sigma_mean = n_bb = 0
     for atom in atoms :
-      if (atom.name.strip() in ["N","C","CA", "CB"]) :
+      if (atom.name.strip() in ["N","C","CA", "CB"]):
         site_frac = self.unit_cell.fractionalize(site_cart=atom.xyz)
         sigma_mean += self.map.eight_point_interpolation(site_frac)
         n_bb += 1
-    if (n_bb > 1) :
+    if (n_bb > 1):
       sigma_mean /= n_bb
-    if (sigma_mean < self.backbone_min_sigma) :
-      print >> self.out, "      *** poor backbone density, skipping"
+    if (sigma_mean < self.backbone_min_sigma):
+      print("      *** poor backbone density, skipping", file=self.out)
       return False
     return True
 
-class extend_and_refine (object) :
+class extend_and_refine(object):
   """
   Run the combined sidechain extension and real-space fitting, and optionally
   write final model and map coefficients.
   """
-  def __init__ (self,
+  def __init__(self,
       pdb_hierarchy,
       xray_structure,
       fmodel,
@@ -369,11 +378,11 @@ class extend_and_refine (object) :
       prefix=None,
       write_files=True,
       reset_segid=True,
-      verbose=True) :
-    if (write_files) :
+      verbose=True):
+    if (write_files):
       assert ((prefix is not None) or
               (not None in [output_model,output_map_coeffs]))
-    if (params.build_hydrogens is Auto) :
+    if (params.build_hydrogens is Auto):
       params.build_hydrogens = xray_structure.hd_selection().count(True) > 0
     make_sub_header("Filling in partial sidechains", out=out)
     prefilter_callback = prefilter(
@@ -384,8 +393,8 @@ class extend_and_refine (object) :
       pdb_hierarchy=pdb_hierarchy,
       add_hydrogens=params.build_hydrogens,
       mon_lib_srv = mmtbx.monomer_library.server.server())
-    print >> out, "  %d sidechains extended." % self.n_extended
-    if (self.n_extended > 0) and (not params.skip_rsr) :
+    print("  %d sidechains extended." % self.n_extended, file=out)
+    if (self.n_extended > 0) and (not params.skip_rsr):
       pdb_hierarchy, xray_structure = refit_residues(
         pdb_hierarchy=pdb_hierarchy,
         cif_objects=cif_objects,
@@ -403,17 +412,19 @@ class extend_and_refine (object) :
     self.n_new_atoms = n_atoms_end - n_atoms_start
     self.pdb_file = self.map_file = None
     if reset_segid :
-      for atom in pdb_hierarchy.atoms() :
+      for atom in pdb_hierarchy.atoms():
         atom.segid = ""
-    if (write_files) :
-      if (output_model is None) :
+    if (write_files):
+      if (output_model is None):
         output_model = prefix + "_extended.pdb"
       f = open(output_model, "w")
-      f.write(pdb_hierarchy.as_pdb_string(fmodel.xray_structure))
+      f.write(pdb_hierarchy.as_pdb_or_mmcif_string(
+         crystal_symmetry=fmodel.xray_structure.crystal_symmetry(),
+         target_format='pdb'))
       f.close()
       self.pdb_file = output_model
-      print >> out, "  wrote new model to %s" % output_model
-      if (output_map_coeffs is None) :
+      print("  wrote new model to %s" % output_model, file=out)
+      if (output_map_coeffs is None):
         output_map_coeffs = prefix + "_maps.mtz"
       from mmtbx.maps.utils import get_maps_from_fmodel
       import iotbx.map_tools
@@ -422,5 +433,5 @@ class extend_and_refine (object) :
         fwt_coeffs=two_fofc_map,
         delfwt_coeffs=fofc_map,
         file_name=output_map_coeffs)
-      print >> out, "  wrote map coefficients to %s" % output_map_coeffs
+      print("  wrote map coefficients to %s" % output_map_coeffs, file=out)
       self.map_file = output_map_coeffs

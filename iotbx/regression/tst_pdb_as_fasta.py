@@ -1,7 +1,7 @@
-from __future__ import division
+from __future__ import absolute_import, division, print_function
 from libtbx.test_utils import show_diff
 
-def exercise () :
+def exercise():
   from iotbx.command_line import pdb_as_fasta
   pdb_str = """\
 ATOM      2  CA  GLY A   3      -9.052   4.207   4.651  1.00 16.57           C
@@ -30,12 +30,15 @@ TER
 ATOM     90  O   HOH X   1       0.000   0.000   0.000  1.00 20.00           0
 END
 """
-  open("tst_pdb_as_fasta1.pdb", "w").write(pdb_str)
-  open("tst_pdb_as_fasta2.pdb", "w").write(pdb_str_2)
+  with open("tst_pdb_as_fasta1.pdb", "w") as f:
+    f.write(pdb_str)
+  with open("tst_pdb_as_fasta2.pdb", "w") as f:
+    f.write(pdb_str_2)
   params = pdb_as_fasta.master_phil.fetch().extract()
   params.pdb_as_fasta.file_name.extend(["tst_pdb_as_fasta1.pdb", "tst_pdb_as_fasta2.pdb"])
   of = pdb_as_fasta.run(params=params)
-  seq_in = open(of).read()
+  with open(of) as f:
+    seq_in = f.read()
   assert not show_diff(seq_in, """\
 >tst_pdb_as_fasta1 chain ' A'
 XXGNNQAGQNY
@@ -46,7 +49,8 @@ XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
 XXXXXXXXXXXXGAXXCU""")
   params.pdb_as_fasta.pad_missing_residues=False
   of = pdb_as_fasta.run(params=params)
-  seq_in = open(of).read()
+  with open(of) as f:
+    seq_in = f.read()
   assert not show_diff(seq_in, """\
 >tst_pdb_as_fasta1 chain ' A'
 GNNQAGQNY
@@ -56,7 +60,8 @@ GNMQ
 GACU""")
   params.pdb_as_fasta.include_insertion_residues = False
   of = pdb_as_fasta.run(params=params)
-  seq_in = open(of).read()
+  with open(of) as f:
+    seq_in = f.read()
   assert not show_diff(seq_in, """\
 >tst_pdb_as_fasta1 chain ' A'
 GNNQQNY
@@ -68,7 +73,8 @@ GACU""")
   params.pdb_as_fasta.include_insertion_residues = True
   params.pdb_as_fasta.ignore_missing_residues_at_start = True
   of = pdb_as_fasta.run(params=params)
-  seq_in = open(of).read()
+  with open(of) as f:
+    seq_in = f.read()
   assert not show_diff(seq_in, """\
 >tst_pdb_as_fasta1 chain ' A'
 GNNQAGQNY
@@ -77,6 +83,6 @@ GNMQ
 >tst_pdb_as_fasta2 chain 'BB'
 GAXXCU""")
 
-if (__name__ == "__main__") :
+if (__name__ == "__main__"):
   exercise()
-  print "OK"
+  print("OK")

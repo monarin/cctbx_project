@@ -1,12 +1,7 @@
-from __future__ import division
-import mmtbx.monomer_library.pdb_interpretation
-import iotbx.mtz
-from cctbx.array_family import flex
+from __future__ import absolute_import, division, print_function
 import time
-from mmtbx import monomer_library
 import mmtbx.refinement.real_space.fit_residues
-import scitbx.math
-import mmtbx.idealized_aa_residues.rotamer_manager
+import mmtbx.refinement.real_space
 
 pdb_answer = """\
 CRYST1   14.074   16.834   17.360  90.00  90.00  90.00 P 1
@@ -56,69 +51,46 @@ ATOM      9  CZ  ARG A  21       7.839   5.785  11.385  0.30 20.00           C
 ATOM     10  NH1 ARG A  21       6.546   5.811  11.088  0.30 20.00           N
 ATOM     11  NH2 ARG A  21       8.275   5.000  12.360  0.30 20.00           N
 TER
-ATOM      9  O   HOH B  21       8.776  10.791   4.311  1.00 55.00           O
-ATOM     10  O   HOH B  22       7.708  11.548   4.090  1.00 55.00           O
-ATOM     11  O   HOH B  23       9.698  10.663   3.367  1.00 55.00           O
+ATOM      9  O   HOH B  21       8.776  10.791   4.311  1.00  5.00           O
+ATOM     10  O   HOH B  22       7.708  11.548   4.090  1.00  5.00           O
+ATOM     11  O   HOH B  23       9.698  10.663   3.367  1.00  5.00           O
 TER
 END
 """
 
-def exercise(rotamer_manager, sin_cos_table, d_min = 1.0,
-             resolution_factor = 0.1):
-  # Fit one residue having weak side chain density. There is a blob nearby that
-  # overlaps with a plausible rotamer.
-  # Making B of HOH smaller will break the test, indicaing potential problem.
-  #
-  # answer PDB
-  pdb_inp = iotbx.pdb.input(source_info=None, lines=pdb_answer)
-  pdb_inp.write_pdb_file(file_name = "answer.pdb")
-  xrs_answer = pdb_inp.xray_structure_simple()
-  # answer map
-  pdb_inp = iotbx.pdb.input(source_info=None, lines=pdb_poor_for_map)
-  pdb_inp.write_pdb_file(file_name="for_map.pdb")
-  xrs_map = pdb_inp.xray_structure_simple()
-  f_calc = xrs_map.structure_factors(d_min = d_min).f_calc()
-  fft_map = f_calc.fft_map(resolution_factor=resolution_factor)
-  fft_map.apply_sigma_scaling()
-  target_map = fft_map.real_map_unpadded()
-  mtz_dataset = f_calc.as_mtz_dataset(column_root_label = "FCmap")
-  mtz_object = mtz_dataset.mtz_object()
-  mtz_object.write(file_name = "answer.mtz")
-  # poor
-  mon_lib_srv = monomer_library.server.server()
-  processed_pdb_file = monomer_library.pdb_interpretation.process(
-    mon_lib_srv              = mon_lib_srv,
-    ener_lib                 = monomer_library.server.ener_lib(),
-    raw_records              = flex.std_string(pdb_poor.splitlines()),
-    strict_conflict_handling = True,
-    force_symmetry           = True,
-    log                      = None)
-  pdb_hierarchy_poor = processed_pdb_file.all_chain_proxies.pdb_hierarchy
-  xrs_poor = processed_pdb_file.xray_structure()
-  sites_cart_poor = xrs_poor.sites_cart()
-  pdb_hierarchy_poor.write_pdb_file(file_name = "poor.pdb")
+def exercise(d_min = 1.0, resolution_factor = 0.1):
+  """
+  Fit one residue having weak side chain density. There is a blob nearby that
+  overlaps with a plausible rotamer.
+  """
+ #
+  t = mmtbx.refinement.real_space.setup_test(
+    pdb_answer        = pdb_answer,
+    pdb_poor          = pdb_poor,
+    i_pdb             = 0,
+    d_min             = d_min,
+    resolution_factor = resolution_factor,
+    residues          = ["ARG"],
+    pdb_for_map       = pdb_poor_for_map)
   #
   result = mmtbx.refinement.real_space.fit_residues.run(
-    pdb_hierarchy     = pdb_hierarchy_poor,
-    crystal_symmetry  = xrs_poor.crystal_symmetry(),
-    map_data          = target_map,
-    do_all            = True,
-    rotamer_manager   = rotamer_manager,
-    sin_cos_table     = sin_cos_table,
-    mon_lib_srv       = mon_lib_srv)
-  result.pdb_hierarchy.write_pdb_file(file_name = "refined.pdb")
-  dist = flex.max(flex.sqrt((xrs_answer.sites_cart() -
-    result.pdb_hierarchy.atoms().extract_xyz()).dot()))
-  #assert dist < 0.24, dist
-  print "Test disabled since current protocol cannot do what test asks for."
+    pdb_hierarchy     = t.ph_poor,
+    vdw_radii         = t.vdw,
+    crystal_symmetry  = t.crystal_symmetry,
+    map_data          = t.target_map,
+    backbone_sample   = True,
+    rotatable_hd      = t.rotatable_hd,
+    rotamer_manager   = t.rotamer_manager,
+    sin_cos_table     = t.sin_cos_table,
+    mon_lib_srv       = t.mon_lib_srv)
+  result.pdb_hierarchy.write_pdb_file(file_name = "refined_%s.pdb"%str(0))
+  #
+  mmtbx.refinement.real_space.check_sites_match(
+    ph_answer  = t.ph_answer,
+    ph_refined = result.pdb_hierarchy,
+    tol        = 0.15)
 
 if(__name__ == "__main__"):
   t0 = time.time()
-  # load rotamer manager
-  rotamer_manager = mmtbx.idealized_aa_residues.rotamer_manager.load()
-  # pre-compute sin and cos tables
-  sin_cos_table = scitbx.math.sin_cos_table(n=10000)
-  exercise(
-    rotamer_manager = rotamer_manager,
-    sin_cos_table   = sin_cos_table)
-  print "Time: %6.4f"%(time.time()-t0)
+  exercise()
+  print("Time: %6.4f"%(time.time()-t0))

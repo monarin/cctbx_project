@@ -1,4 +1,4 @@
-from __future__ import division
+from __future__ import absolute_import, division, print_function
 from cctbx.xray.structure_factors.manager import managed_calculation_base
 from cctbx.xray.structure_factors import global_counters
 from cctbx.xray import ext
@@ -6,13 +6,18 @@ from cctbx import miller
 from cctbx import maptbx
 from libtbx.utils import user_plus_sys_time
 from libtbx import introspection
+from libtbx.utils import Sorry
 
 class from_scatterers_fft(managed_calculation_base):
 
   def __init__(self, manager,
                      xray_structure,
                      miller_set,
-                     algorithm="fft"):
+                     algorithm="fft",
+                     extra_params=None):
+    scattering_type_registry = xray_structure.scattering_type_registry()
+    if (len(scattering_type_registry.unassigned_types()) > 0):
+      self.show_unknown_scatterers(registry = scattering_type_registry)
     time_all = user_plus_sys_time()
     managed_calculation_base.__init__(self,
       manager, xray_structure, miller_set, algorithm="fft")
@@ -22,16 +27,16 @@ class from_scatterers_fft(managed_calculation_base):
     sampled_density = ext.sampled_model_density(
       unit_cell=xray_structure.unit_cell(),
       scatterers=xray_structure.scatterers(),
-      scattering_type_registry=xray_structure.scattering_type_registry(),
+      scattering_type_registry=scattering_type_registry,
       fft_n_real=manager.rfft().n_real(),
       fft_m_real=manager.rfft().m_real(),
-      u_base=manager.u_base(),
       wing_cutoff=manager.wing_cutoff(),
       exp_table_one_over_step_size=manager.exp_table_one_over_step_size(),
       force_complex=manager.force_complex(),
       sampled_density_must_be_positive=
         manager.sampled_density_must_be_positive(),
-      tolerance_positive_definite=manager.tolerance_positive_definite())
+      tolerance_positive_definite=manager.tolerance_positive_definite(),
+      **manager.sampling_params())
     time_sampling = time_sampling.elapsed()
     time_fft = user_plus_sys_time()
     if (not sampled_density.anomalous_flag()):
@@ -66,3 +71,15 @@ class from_scatterers_fft(managed_calculation_base):
 
   def f_calc(self):
     return miller.array(self.miller_set(), self._f_calc_data)
+
+  def show_unknown_scatterers(self, registry):
+    msg = """The model contains atoms which are not in the scattering table "%s".
+    Unknown atom types:
+    %s \n
+    To overcome this problem:
+    - Double-check the scattering table
+    - Double-check the atom type (typo, charge, etc.)
+    - Let us know if none of the above applies (help@phenix-online.org).
+    """ % (registry.last_table(), ' '.join(str(x) for x in list(registry.unassigned_types())))
+    raise Sorry(msg)
+

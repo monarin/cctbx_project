@@ -1,4 +1,5 @@
-from __future__ import division
+from __future__ import absolute_import, division, print_function
+from six.moves import range
 import os, re
 from iotbx.detectors import ImageFactory, url_support
 from iotbx.detectors.beam_center_convention import convert_beam_instrument_to_imageblock
@@ -36,7 +37,7 @@ class FileName:
     self.base = fn
     self.cwd = dirname
   def fullpath(self):
-    if self.__dict__.has_key("full_url"):
+    if "full_url" in self.__dict__:
       return self.full_url
     return os.path.join(os.path.abspath(self.cwd),self.base)
   def isImageFileName(self):
@@ -86,7 +87,7 @@ class FileName:
       self.ext = d['ext']
       self.template = "%s_%s.%s"%(self.fileroot,self.otherstuff,self.ext)
       self.pattern = 0
-      if self.ext.lower() in FileName.exts: print self.template;return 1
+      if self.ext.lower() in FileName.exts: print(self.template);return 1
     if match2!=None:
       d = match2.groupdict()
       self.fileroot = d['fileroot']
@@ -180,18 +181,18 @@ class image_files:
   def frames(self,wedgelimit=None): # gives the frame numbers
     if wedgelimit == None:return [item.number for item in self.filenames.FN]
     import inspect
-    print "image_files.frames deprecated usage called by %s line %d; contact nksauter@lbl.gov"%(
+    print("image_files.frames deprecated usage called by %s line %d; contact nksauter@lbl.gov"%(
       inspect.currentframe().f_back.f_code.co_name,
-      inspect.currentframe().f_back.f_lineno)
+      inspect.currentframe().f_back.f_lineno))
     return [item.number for item in self.filenames.FN[0:wedgelimit]]
 
   def imageindex(self,indexnumber): # gives the actual image
-    for s in xrange(len(self.filenames.frames())):
+    for s in range(len(self.filenames.frames())):
       if self.filenames.frames()[s]==indexnumber:
         return self.images[s]
 
   def imagepath(self,indexnumber): #convenience function for finding filename
-    for s in xrange(len(self.filenames.frames())):
+    for s in range(len(self.filenames.frames())):
       if self.filenames.frames()[s]==indexnumber:
         return self.filenames()[s]
 
@@ -241,10 +242,10 @@ class spotfinder_image_files(H5_aware_image_files):
     self.acceptable_use_tests_basic()
 
   def acceptable_use_tests_basic(self):
-    if self.images[0].parameters.has_key('TWOTHETA'):
+    if 'TWOTHETA' in self.images[0].parameters:
       if abs(self.images[0].twotheta) < 0.02:  #round off to zero and
                                                #retain legacy behavior
-        for ik in xrange(len(self.images)):
+        for ik in range(len(self.images)):
           self.images[ik].parameters['TWOTHETA']=0.0
 
   def site_modifications(self,imageobject,filenameobject):
@@ -274,8 +275,8 @@ class spotfinder_image_files(H5_aware_image_files):
 
     if self.phil_params.autoindex_override_deltaphi != None:
         if self.verbose:
-          print "Overriding deltaphi not fully supported: contact authors"
-        print "Altering deltaphi",(filenameobject.number-1)*self.phil_params.autoindex_override_deltaphi
+          print("Overriding deltaphi not fully supported: contact authors")
+        print("Altering deltaphi",(filenameobject.number-1)*self.phil_params.autoindex_override_deltaphi)
         imageobject.parameters['OSC_RANGE']=self.phil_params.autoindex_override_deltaphi
         imageobject.parameters['OSC_START']=(filenameobject.number-1)*self.phil_params.autoindex_override_deltaphi
 
@@ -323,8 +324,8 @@ class spotfinder_image_files(H5_aware_image_files):
           convert_beam_instrument_to_imageblock(imageobject,
             beam_center_convention,force=True)
           if self.verbose:
-            print "Mar CCD image appears to have beam center %.2f %.2f in mm instead of pixels"%(
-            imageobject.beamx,imageobject.beamy)
+            print("Mar CCD image appears to have beam center %.2f %.2f in mm instead of pixels"%(
+            imageobject.beamx,imageobject.beamy))
 
 class Spotspickle_argument_module:  #almost verbatim copy from procedure.py
   def __init__(self,directory,framelist=[]):

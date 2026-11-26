@@ -1,10 +1,14 @@
-from __future__ import division
+from __future__ import absolute_import, division, print_function
 from mmtbx.validation import residue, validation, atom
-import iotbx.phil
 import os.path
 from libtbx import slots_getstate_setstate
 import numpy
-import sys
+import os, sys
+import collections
+import json
+from iotbx.pdb.hybrid_36 import hy36decode
+
+from mmtbx.conformation_dependent_library import generate_protein_fragments
 
 ################################################################################
 # omegalyze.py
@@ -19,66 +23,6 @@ import sys
 # parallel to interfacing with ramalyze code.
 #
 ################################################################################
-
-def get_master_phil():
-  return iotbx.phil.parse(input_string="""
-    model = None
-      .type = path
-      .help = "Model file (PDB or mmCIF)"
-    nontrans_only = True
-      .type = bool
-      .help = "Controls whether trans peptides are stored and printed"
-    text = True
-      .type = bool
-      .help = "Prints verbose, colon-delimited text output and summary"
-    kinemage = False
-      .type = bool
-      .help = "Prints kinemage markup for cis-peptides"
-    oneline = False
-      .type = bool
-      .help = "Prints oneline-style summary statistics"
-    help = False
-      .type = bool
-      .help = "Prints this help message if true"
-""", process_includes=True)
-
-usage_string = """
-phenix.omegalyze file.pdb [params.eff] [options ...]
-
-Options:
-
-  model=input_file      input PDB or mmCIF file
-  nontrans_only=True    only print nontrans residues (does not affect kinemage)
-  text=True          verbose colon-delimited text output (default)
-  kinemage=False        Create kinemage markup (overrides text output)
-  help = False          Prints this help message if true
-
-  text output is colon-delimited and follows the format:
-    residue:type:omega:conformation
-      'residue' is a unique residue identifier
-      'type' is either proline or general case
-      'omega' is the calculated omega dihedral for the peptide between this
-        residue and the preceeding residue
-      'conformation' is: cis for omega within 30 degrees of planar cis
-                         trans for omega within 30 degrees of planar trans
-                         twisted for omega not within 30 degrees of planar
-
-  SUMMARY statistics provide:
-    counts of cis prolines and twisted prolines relative to total prolines with
-      measurable omega dihedrals across all chains
-    counts of non-proline cis and twisted peptides relative to total non-proline
-      peptides with measurable omega dihedrals across all chains
-
-  Cis Prolines occur in ~5% of prolines (1 in 20) at high resolution
-  Non-Proline Cis residues occur in ~0.05% of residues (1 in 2000) and require
-    clear support from experimental data or homology.
-  Twisted peptides are even less frequent and are highly suspect without
-    high-resolution data.
-
-Example:
-
-  phenix.omegalyze model=1ubq.pdb kinemage=True
-"""
 
 #{{{ XXX Use these constants internally, not the strings
 OMEGA_GENERAL = 0
@@ -110,7 +54,7 @@ def single_offset(p1,p2,offset):
 
 class omega_result(residue):
   """
-  Result class for protein backbone omega angle analysis (phenix.omegalyze).
+  Result class for protein backbone omega angle analysis (molprobity.omegalyze).
   """
   __omega_attr__ = [
     "res_type",
@@ -122,7 +66,8 @@ class omega_result(residue):
     "prev_resseq",
     "prev_icode",
     "prev_resname",
-    "prev_altloc"
+    "prev_altloc",
+    "model_id"
   ]
   __slots__ = residue.__slots__ + __omega_attr__
 
@@ -156,6 +101,41 @@ class omega_result(residue):
   def format_old(self):
     return "%s to %s: %s :%s:%s:%s" % (self.prev_id_str(),self.id_str(), self.residue_type(),
       ('%.2f'%self.omega).rjust(7), self.omegalyze_type().ljust(8),self.highest_mc_b)
+
+  def as_JSON(self):
+    serializable_slots = [s for s in self.__slots__ if s != 'markup_atoms' and hasattr(self, s)]
+    slots_as_dict = ({s: getattr(self, s) for s in serializable_slots})
+    slots_as_dict["omega_type"] = omega_types[slots_as_dict["omega_type"]]
+    return json.dumps(slots_as_dict, indent=2)
+
+#{'': {'A': {'  41 ': {'': {'altloc': '',
+#                           'atom_selection': None,
+#                           'chain_id': 'A',
+#                           'highest_mc_b': 28.76,
+#                           'icode': ' ',
+#                           'is_nontrans': True,
+#                           'model_id': '',
+#                           'occupancy': None,
+#                           'omega': -14.27418253081719,
+#                           'omega_type': 'Cis',
+#                           'outlier': True,
+#                           'prev_altloc': '',
+#                           'prev_icode': ' ',
+#                           'prev_resname': 'PHE',
+#                           'prev_resseq': '  40',
+#                           'res_type': 1,
+#                           'resname': 'PRO',
+#                           'resseq': '  41',
+#                           'score': None,
+#                           'segid': None,
+#                           'xyz': [-9.124,
+#                                   3.291,
+#                                   40.391]}},
+
+  def as_hierarchical_JSON(self):
+    hierarchical_dict = {}
+    hierarchy_nest_list = ['model_id', 'chain_id', 'resid', 'altloc']
+    return json.dumps(self.nest_dict(hierarchy_nest_list, hierarchical_dict), indent=2)
 
   def as_kinemage(self, triangles=False, vectors=False):
     ca1,c,n,ca2  = self.markup_atoms[0].xyz, self.markup_atoms[1].xyz, self.markup_atoms[2].xyz, self.markup_atoms[3].xyz
@@ -277,6 +257,8 @@ class omegalyze(validation):
   Frontend for calculating omega angle statistics for a model.
   """
   __slots__ = validation.__slots__ + [
+    "residue_count_by_model",
+    "omega_count_by_model",
     "residue_count",
     "omega_count",
     "_outlier_i_seqs"
@@ -302,6 +284,8 @@ class omegalyze(validation):
     self.omega_count = [[0,0,0], [0,0,0]]
     #[OMEGA_GENERAL, OMEGA_PRO], then
     #[OMEGALYZE_TRANS, OMEGALYZE_CIS, OMEGALYZE_TWISTED]
+    self.residue_count_by_model = {}
+    self.omega_count_by_model = {}
 
     from mmtbx.validation import utils
     from scitbx.array_family import flex
@@ -313,113 +297,70 @@ class omegalyze(validation):
     use_segids = utils.use_segids_in_place_of_chainids(
       hierarchy=pdb_hierarchy)
 
-    prev_rezes, next_rezes = None, None
-    prev_resid = None
-    cur_resseq = None
-    next_resseq = None
-    for model in pdb_hierarchy.models():
-      for chain in model.chains():
-        prev_rezes, next_rezes = None, None
-        prev_resid = None
-        cur_resseq = None
-        next_resseq = None
-        if use_segids:
-          chain_id = utils.get_segid_as_chainid(chain=chain)
-        else:
-          chain_id = chain.id
-        residues = list(chain.residue_groups())
-        for i, residue_group in enumerate(residues):
-          # The reason I pass lists of atom_groups to get_phi and get_psi is to
-          # deal with the particular issue where some residues have an A alt
-          # conf that needs some atoms from a "" alt conf to get calculated
-          # correctly.  See 1jxt.pdb for examples.  This way I can search both
-          # the alt conf atoms and the "" atoms if necessary.
-          prev_atom_list, next_atom_list, atom_list = None, None, None
-          if cur_resseq is not None:
-            prev_rezes = rezes
-            prev_resseq = cur_resseq
-          rezes = construct_residues(residues[i])
-          cur_resseq = residue_group.resseq_as_int()
-          cur_icode = residue_group.icode.strip()
-          if (i > 0):
-            #check for insertion codes
-            if (cur_resseq == residues[i-1].resseq_as_int()) :
-              if (cur_icode == '') and (residues[i-1].icode.strip() == '') :
-                continue
-            elif (cur_resseq != (residues[i-1].resseq_as_int())+1):
-              continue
-          for atom_group in residue_group.atom_groups():
-            alt_conf = atom_group.altloc
-            if rezes is not None:
-              atom_list = rezes.get(alt_conf)
-            if prev_rezes is not None:
-              prev_atom_list = prev_rezes.get(alt_conf)
-              if (prev_atom_list is None):
-                prev_keys = sorted(prev_rezes.keys())
-                prev_atom_list = prev_rezes.get(prev_keys[0])
-            omega=get_omega(prev_atom_list, atom_list)
-            highest_mc_b = get_highest_mc_b(prev_atom_list, atom_list)
-            if omega is not None:
-              resname = atom_group.resname[0:3]
-              coords = get_center(atom_group)
-              if resname == "PRO":
-                res_type = OMEGA_PRO
-              else:
-                res_type = OMEGA_GENERAL
-              self.residue_count[res_type] += 1
-              omega_type = find_omega_type(omega)
-              is_nontrans = False
-              if omega_type == OMEGALYZE_CIS or omega_type == OMEGALYZE_TWISTED:
-                self.n_outliers += 1
-                is_nontrans = True
-              self.omega_count[res_type][omega_type] += 1
-              markup_atoms = [None, None, None, None] #for kinemage markup
-              if is_nontrans:
-                for a in prev_atom_list:
-                  if a is None: continue
-                  a_ = atom(pdb_atom=a)
-                  if a.name.strip() == "CA":
-                    markup_atoms[0] = kin_atom(
-                      id_str=a_.atom_group_id_str(),xyz=a_.xyz)
-                  elif a.name.strip() == "C":
-                    markup_atoms[1] = kin_atom(
-                      id_str=a_.atom_group_id_str(),xyz=a_.xyz)
-                for a in atom_list:
-                  if a is None: continue
-                  a_ = atom(pdb_atom=a)
-                  if a.name.strip() == "N":
-                    markup_atoms[2] = kin_atom(
-                      id_str=a_.atom_group_id_str(),xyz=a_.xyz)
-                  elif a.name.strip() == "CA":
-                    markup_atoms[3] = kin_atom(
-                      id_str=a_.atom_group_id_str(),xyz=a_.xyz)
-                #------------
-              #prevres=residues[i-1]
-              #find prev res identities for printing
-              prev_alts = []
-              prev_resnames = {}
-              for ag in residues[i-1].atom_groups():
-                prev_alts.append(ag.altloc)
-                prev_resnames[ag.altloc] = ag.resname
-              if alt_conf in prev_alts:
-                prev_altloc = alt_conf
-              else:
-                if len(prev_alts) > 1:
-                  prev_altloc = prev_alts[1]
-                else:
-                  prev_altloc = prev_alts[0]
-              prev_resname = prev_resnames[prev_altloc]
-              #done finding prev res identities
-              result = omega_result(
+    first_conf_altloc = None
+    prev_chain_id = None
+    for twores in generate_protein_fragments(
+        pdb_hierarchy,
+        length=2,
+        geometry=None,
+        include_non_standard_peptides=True,
+        include_d_amino_acids=True):
+      main_residue = twores[1] #this is the relevant residue for id-ing cis-Pro
+      conf_altloc = get_conformer_altloc(twores)
+      omega_atoms = get_omega_atoms(twores)
+      # omega_atoms is the list [CA1 C1 N2 CA2], with None for missing atoms
+      if None in omega_atoms:
+        continue
+      twores_altloc = local_altloc_from_atoms(omega_atoms)
+
+      model_id = twores[0].parent().parent().parent().id
+      if model_id not in self.residue_count_by_model:
+        self.residue_count_by_model[model_id] = [0,0]
+        self.omega_count_by_model[model_id] = [[0,0,0],[0,0,0]]
+      chain = main_residue.parent().parent()
+      if use_segids:
+        chain_id = utils.get_segid_as_chainid(chain=chain)
+      else:
+        chain_id = chain.id
+
+      if chain_id != prev_chain_id: #if we've moved to a new chain...
+        first_conf_altloc = conf_altloc #...reset reference altloc
+        prev_chain_id = chain_id
+      if (conf_altloc != first_conf_altloc) and twores_altloc == '':
+        #skip non-alternate residues unless this is the first time thru a chain
+        continue
+
+      omega = get_omega(omega_atoms)
+      if omega is None: continue
+      omega_type = find_omega_type(omega)
+      if omega_type == OMEGALYZE_TRANS:
+        is_nontrans = False
+      else:
+        is_nontrans = True
+        self.n_outliers += 1
+      if main_residue.resname == "PRO": res_type = OMEGA_PRO
+      else:                             res_type = OMEGA_GENERAL
+      self.residue_count[res_type] += 1
+      self.residue_count_by_model[model_id][res_type] += 1
+      self.omega_count[res_type][omega_type] += 1
+      self.omega_count_by_model[model_id][res_type][omega_type] += 1
+      highest_mc_b = get_highest_mc_b(twores[0].atoms(),twores[1].atoms())
+      coords = get_center(main_residue)
+      markup_atoms = []
+      for omega_atom in omega_atoms:
+        markup_atoms.append(kin_atom(omega_atom.parent().id_str(), omega_atom.xyz))
+
+      result = omega_result(
+                model_id=model_id,
                 chain_id=chain_id,
-                resseq=residue_group.resseq,
-                icode=residue_group.icode,
-                resname=atom_group.resname,
-                altloc=atom_group.altloc,
-                prev_resseq=residues[i-1].resseq,
-                prev_icode=residues[i-1].icode,
-                prev_resname=prev_resname,
-                prev_altloc=prev_altloc,
+                resseq=main_residue.resseq,
+                icode=main_residue.icode,
+                resname=main_residue.resname,
+                altloc=local_altloc_from_atoms(omega_atoms[2:]),
+                prev_resseq=twores[0].resseq,
+                prev_icode=twores[0].icode,
+                prev_resname=twores[0].resname,
+                prev_altloc=local_altloc_from_atoms(omega_atoms[0:2]),
                 segid=None,
                 omega=omega,
                 omega_type=omega_type,
@@ -429,12 +370,14 @@ class omegalyze(validation):
                 highest_mc_b=highest_mc_b,
                 xyz=coords,
                 markup_atoms=markup_atoms)
-              if is_nontrans or not nontrans_only: #(not nontrans_only or is_nontrans)
-                self.results.append(result)
-              if is_nontrans:
-                i_seqs = atom_group.atoms().extract_i_seq()
-                assert (not i_seqs.all_eq(0)) #This assert copied from ramalyze
-                self._outlier_i_seqs.extend(i_seqs)
+
+      if is_nontrans or not nontrans_only: #(not nontrans_only or is_nontrans)
+        self.results.append(result)
+      if is_nontrans:
+        i_seqs = main_residue.atoms().extract_i_seq()
+        assert (not i_seqs.all_eq(0)) #This assert copied from ramalyze
+        self._outlier_i_seqs.extend(i_seqs)
+    self.results.sort(key=lambda r: (r.model_id, r.chain_id, int(hy36decode(len(r.resseq), r.resseq)), r.icode, r.altloc))
 
   def _get_count_and_fraction(self, res_type, omega_type):
     total = self.residue_count[res_type]
@@ -492,19 +435,55 @@ class omegalyze(validation):
         data.append((result.chain_id, result.resid, result.resname, result.score, result.xyz))
     return data
 
+  def as_JSON(self, addon_json={}):
+    # self.chain_id, "%1s%s %4s%1s to %1s%s %s" % (self.prev_altloc, self.prev_resname, self.prev_resseq, self.prev_icode, self.altloc, self.resname, self.resid),
+    #         res_types[self.res_type], self.omega, omega_types[self.omega_type] ]
+    # keep names roughly the same
+    #check name in program template
+    # {model: {1: {chain: {A: {residue_group: {1A: results}}}}}}
+    if not addon_json:
+      addon_json = {}
+    addon_json["validation_type"] = "omegalyze"
+    data = addon_json
+    flat_results = []
+    hierarchical_results = {}
+    summary_results = {}
+    #hierarchical_results_dict = collections.defaultdict(dict)
+    #hierarchical_results_dict['model_id']['chain_id']['resseq+icode']['resname'] = 'result'
+    #print(hierarchical_results_dict)
+    for result in self.results:
+      flat_results.append(json.loads(result.as_JSON()))
+      hier_result = json.loads(result.as_hierarchical_JSON())
+      hierarchical_results = self.merge_dict(hierarchical_results, hier_result)
+
+    data['flat_results'] = flat_results
+    data['hierarchical_results'] = hierarchical_results
+    for model_id in self.residue_count_by_model.keys():
+      summary_results[model_id] = {
+        "num_cis_proline" : self.n_cis_proline_by_model(model_id),
+        "num_twisted_proline" : self.n_twisted_proline_by_model(model_id),
+        "num_proline" : self.n_proline_by_model(model_id),
+        "num_cis_general" : self.n_cis_general_by_model(model_id),
+        "num_twisted_general" : self.n_twisted_general_by_model(model_id),
+        "num_general" : self.n_general_by_model(model_id),
+      }
+    data['summary_results'] = summary_results
+
+    return json.dumps(data, indent=2)
+
   def show_summary(self, out=sys.stdout, prefix=""):
-    print >> out, prefix + 'SUMMARY: %i cis prolines out of %i PRO' % (
+    print(prefix + 'SUMMARY: %i cis prolines out of %i PRO' % (
       self.n_cis_proline(),
-      self.n_proline())
-    print >> out, prefix + 'SUMMARY: %i twisted prolines out of %i PRO' % (
+      self.n_proline()), file=out)
+    print(prefix + 'SUMMARY: %i twisted prolines out of %i PRO' % (
       self.n_twisted_proline(),
-      self.n_proline())
-    print >> out, prefix + 'SUMMARY: %i other cis residues out of %i nonPRO' % (
+      self.n_proline()), file=out)
+    print(prefix + 'SUMMARY: %i other cis residues out of %i nonPRO' % (
       self.n_cis_general(),
-      self.n_general())
-    print >> out, prefix + 'SUMMARY: %i other twisted residues out of %i nonPRO' % (
+      self.n_general()), file=out)
+    print(prefix + 'SUMMARY: %i other twisted residues out of %i nonPRO' % (
       self.n_twisted_general(),
-      self.n_general())
+      self.n_general()), file=out)
 
   def summary_only(self, out=sys.stdout, pdbid="pdbid"):
     out.write(os.path.basename(pdbid) + ":")
@@ -557,6 +536,24 @@ class omegalyze(validation):
   def n_twisted_general(self):
     return self.omega_count[OMEGA_GENERAL][OMEGALYZE_TWISTED]
 
+  def n_proline_by_model(self, model_id):
+    return self.residue_count_by_model[model_id][OMEGA_PRO]
+  def n_trans_proline_by_model(self, model_id):
+    return self.omega_count_by_model[model_id][OMEGA_PRO][OMEGALYZE_TRANS]
+  def n_cis_proline_by_model(self, model_id):
+    return self.omega_count_by_model[model_id][OMEGA_PRO][OMEGALYZE_CIS]
+  def n_twisted_proline_by_model(self, model_id):
+    return self.omega_count_by_model[model_id][OMEGA_PRO][OMEGALYZE_TWISTED]
+
+  def n_general_by_model(self, model_id):
+    return self.residue_count_by_model[model_id][OMEGA_GENERAL]
+  def n_trans_general_by_model(self, model_id):
+    return self.omega_count_by_model[model_id][OMEGA_GENERAL][OMEGALYZE_TRANS]
+  def n_cis_general_by_model(self, model_id):
+    return self.omega_count_by_model[model_id][OMEGA_GENERAL][OMEGALYZE_CIS]
+  def n_twisted_general_by_model(self, model_id):
+    return self.omega_count_by_model[model_id][OMEGA_GENERAL][OMEGALYZE_TWISTED]
+
 def write_header(writeto=sys.stdout):
   writeto.write("residue:omega:evaluation\n")
 
@@ -566,55 +563,12 @@ def find_omega_type(omega):
   else: omega_type = OMEGALYZE_TWISTED
   return omega_type
 
-#construct_residues was adpated from ramalyze.construct_complete_residues
-#main change invloved accepting incomplete residues, since complete ones were
-#  not necessary for calculation of omega
-#This required checks against None-valued atoms elsewhere in the code, but
-#  allows assessment of all models omega dihedrals
-def construct_residues(res_group):
-  if (res_group is not None):
-    complete_dict = {}
-    nit, ca, co, oxy = None, None, None, None
-    atom_groups = res_group.atom_groups()
-    reordered = []
-    # XXX always process blank-altloc atom group first
-    for ag in atom_groups :
-      if (ag.altloc == '') :
-        reordered.insert(0, ag)
-      else :
-        reordered.append(ag)
-    for ag in reordered :
-      changed = False
-      for atom in ag.atoms():
-        if (atom.name == " N  "): nit = atom
-        if (atom.name == " CA "): ca = atom
-        if (atom.name == " C  "): co = atom
-        if (atom.name == " O  "): oxy = atom
-        if (atom.name in [" N  ", " CA ", " C  ", " O  "]) :
-          changed = True
-      if (changed):
-        complete_dict[ag.altloc] = [nit, ca, co, oxy]
-    if len(complete_dict) > 0:
-      return complete_dict
-  return None
-
-def get_omega(prev_atoms, atoms):
-  import mmtbx.rotamer
-  prevCA, prevC, thisN, thisCA = None, None, None, None
-  if (prev_atoms is not None):
-    for atom in prev_atoms:
-      if atom is not None:
-        if (atom.name == " CA "): prevCA = atom
-        if (atom.name == " C  "): prevC = atom
-  if (atoms is not None):
-    for atom in atoms:
-      if atom is not None:
-        if (atom.name == " N  "): thisN = atom
-        if (atom.name == " CA "): thisCA = atom
-  if (prevCA is not None and prevC is not None and thisN is not None and thisCA is not None):
-    return mmtbx.rotamer.omega_from_atoms(prevCA, prevC, thisN, thisCA)
-  else:
+def get_omega(omega_atoms):
+  #omega_atoms = [CA1 C1 N2 CA2]
+  if None in omega_atoms:
     return None
+  import mmtbx.rotamer
+  return mmtbx.rotamer.omega_from_atoms(omega_atoms[0], omega_atoms[1], omega_atoms[2], omega_atoms[3])
 
 def get_highest_mc_b(prev_atoms, atoms):
   highest_mc_b = 0
@@ -636,29 +590,20 @@ def get_center(ag):
       return atom.xyz
   return ag.atoms().extract_xyz().mean()
 
-def run (args, out=sys.stdout, quiet=False) :
-  cmdline = iotbx.phil.process_command_line_with_files(
-    args=args,
-    master_phil=get_master_phil(),
-    pdb_file_def="model",
-    usage_string=usage_string)
-  params = cmdline.work.extract()
-  #if (params.model is None or params.help) :
-    #help printing is handled in iotbx.phil.process_command_line_with_files()
-  pdb_in = cmdline.get_file(params.model, force_type="pdb")
-  hierarchy = pdb_in.file_object.hierarchy
-  hierarchy.atoms().reset_i_seq()
-  result = omegalyze(
-    pdb_hierarchy=hierarchy,
-    nontrans_only=params.nontrans_only,
-    out=out,
-    quiet=quiet)
-  if params.kinemage:
-    print >> out, result.as_kinemage()
-  elif params.oneline:
-    result.summary_only(out=out, pdbid=params.model)
-  elif params.text:
-    result.show_old_output(out=out, verbose=True)
+def get_conformer_altloc(twores):
+  return twores[0].parent().altloc #go to conformer level
 
-if (__name__ == "__main__") :
-  run(sys.argv[1:])
+def local_altloc_from_atoms(atom_list):
+  for atom in atom_list:
+    if atom is not None:
+      altloc = atom.parent().altloc #go to atom_group level
+      if altloc != '':
+        return altloc
+  return ''
+
+def get_omega_atoms(twores):
+  atomlist = [twores[0].find_atom_by(name=" CA "),
+              twores[0].find_atom_by(name=" C  "),
+              twores[1].find_atom_by(name=" N  "),
+              twores[1].find_atom_by(name=" CA ")]
+  return atomlist

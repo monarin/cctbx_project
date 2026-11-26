@@ -1,9 +1,34 @@
 """ A library of object-oriented patterns """
-from __future__ import division
+from __future__ import absolute_import, division, print_function
 
-import new, weakref
+from builtins import object
 
-class injector:
+import sys
+import weakref
+from types import MethodType
+import six
+
+
+class meta_injector(type):
+
+  def __init__(cls, name, bases, namespace, **kwds):
+    for target_class in bases[1:]:
+      for name, attribute in namespace.items():
+        if name in ('__module__', '__doc__'):
+          continue
+        if sys.hexversion >= 0x03000000:
+          if name in ('__qualname__',):
+            continue
+        if sys.version_info.major == 3 and sys.version_info.minor >= 13:
+          if name in ('__firstlineno__', '__static_attributes__'):
+            continue
+        assert not hasattr(target_class, name), (
+          "class %s already has attribute '%s'"
+          % (target_class.__name__, name))
+        setattr(target_class, name, attribute)
+
+
+class injector(six.with_metaclass(meta_injector)):
   """ Injection of new methods into an existing class
 
   * synopsis *
@@ -36,15 +61,6 @@ class injector:
 
   A bit of metaclass trickery results in a cleaner syntax.
   """
-  class __metaclass__(type):
-    def __init__(cls, classname, bases, classdict):
-      for target_class in bases[1:]:
-        for name, attribute in classdict.items():
-          if name in ('__module__', '__doc__'): continue
-          assert not hasattr(target_class, name), (
-            "class %s already has attribute '%s'"
-            % (target_class.__name__, name))
-          setattr(target_class, name, attribute)
 
 
 class memoize(object):
@@ -85,7 +101,12 @@ class memoize_method(object):
       # It's always better to enable reference counting to collect
       # unreachable object as soon as they become so instead of relying
       # on a later gc collection.
-      func = new.instancemethod(self.meth, weakref.proxy(obj), type)
+      try:
+        # Python 2: 3 arguments
+        func = MethodType(self.meth, weakref.proxy(obj), type)
+      except TypeError:
+        # Python 3: 2 arguments
+        func = MethodType(self.meth, weakref.proxy(obj))
       memoized = memoize(func)
       setattr(obj, self.cache, memoized)
       return memoized
@@ -98,7 +119,7 @@ class null(object):
   def __getattr__(self, a): return self
   def __setattr__(self, a, v): return self
   def __delattr__(self, a): return self
-
+  def __getnewargs__(self):  return () # allow for pickling during multiprocessing
   def __call__(self, *args, **kwds): return self
 
   def __getitem__(self, i): return self
@@ -107,7 +128,7 @@ class null(object):
 
   def __repr__(self): return 'null()'
 
-  def __nonzero__(self): return False
+  def __bool__(self): return False
 
 
 class proxy(object):
@@ -182,4 +203,3 @@ class lazy_initialization(object):
   def __call__(self):
 
     return self.state( holder = self )
-

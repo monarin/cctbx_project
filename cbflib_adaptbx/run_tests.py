@@ -1,5 +1,5 @@
-from __future__ import division
-def run(args):
+from __future__ import absolute_import, division, print_function
+def tst_run(args=[]):
   assert len(args) == 0
   import libtbx.load_env
   import os
@@ -9,7 +9,7 @@ def run(args):
     path="examples/fit2d_data.cbf")
   assert op.isfile(cbf)
   from cbflib_adaptbx.command_line import dump
-  from cStringIO import StringIO
+  from six.moves import cStringIO as StringIO
   sio = StringIO()
   dump.process(file_name=cbf, out=sio)
   from libtbx.test_utils import show_diff
@@ -32,8 +32,19 @@ Number of blocks: 1
     Category name: array_data
 
 """ % cbf)
-  print "OK"
+  print("OK")
+
+# unstable test though should now be stable
+tst_list = [
+  tst_run,
+  "$D/exercise_compression.py"
+  ]
+
+def run():
+  build_dir = libtbx.env.under_build("cbflib_adaptbx")
+  dist_dir = libtbx.env.dist_path("cbflib_adaptbx")
+
+  test_utils.run_tests(build_dir, dist_dir, tst_list)
 
 if (__name__ == "__main__"):
-  import sys
-  run(args=sys.argv[1:])
+  run()

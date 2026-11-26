@@ -1,4 +1,4 @@
-from __future__ import division
+from __future__ import absolute_import, division, print_function
 
 import subprocess
 import time
@@ -18,7 +18,7 @@ def sge_single_evaluate(out, err):
       return True
 
     else:
-      raise errors.AbnormalExitError, "SGE error:\n%s" % err
+      raise errors.AbnormalExitError("SGE error:\n%s" % err)
 
   else:
     return False
@@ -46,12 +46,12 @@ def pbs_single_evaluate(out, err):
       return True
 
     else:
-      raise errors.AbnormalExitError, "PBS error:\n%s" % err
+      raise errors.AbnormalExitError("PBS error:\n%s" % err)
 
   state = PBS_EVAL_REGEX().search( out )
 
   if not state:
-    raise errors.ExtractionError, "Unexpected response from PBS: %r" % out
+    raise errors.ExtractionError("Unexpected response from PBS: %r" % out)
 
   return state.group(1) == "C"
 
@@ -69,12 +69,12 @@ def slurm_single_evaluate(out, err):
       return True
 
     else:
-      raise errors.AbnormalExitError, "Slurm error:\n%s" % err
+      raise errors.AbnormalExitError("Slurm error:\n%s" % err)
 
   state = out.strip()
 
   if state not in SLURM_CODES:
-    raise errors.ExtractionError, "Unexpected response from Slurm: %r" % out
+    raise errors.ExtractionError("Unexpected response from Slurm: %r" % out)
 
   return state == "CD"
 
@@ -96,12 +96,14 @@ class SinglePoller(object):
       process = subprocess.Popen(
         self.command + [ jobid ],
         stdout = subprocess.PIPE,
-        stderr = subprocess.PIPE
+        stderr = subprocess.PIPE,
+        encoding = "utf-8",
+        errors = "replace",
         )
 
-    except OSError, e:
+    except OSError as e:
       cmdline = " ".join( self.command + [ jobid ] )
-      raise errors.ExecutableError, "'%s': %s" % ( cmdline, e )
+      raise errors.ExecutableError("'%s': %s" % ( cmdline, e ))
 
     ( out, err ) = process.communicate()
 
@@ -161,11 +163,13 @@ class CentralPoller(object):
       process = subprocess.Popen(
         self.command,
         stdout = subprocess.PIPE,
-        stderr = subprocess.PIPE
+        stderr = subprocess.PIPE,
+        encoding = "utf-8",
+        errors = "replace",
         )
 
-    except OSError, e:
-      raise errors.ExecutableError, "'%s': %s" % ( " ".join( self.command ), e )
+    except OSError as e:
+      raise errors.ExecutableError("'%s': %s" % ( " ".join( self.command ), e ))
 
     ( out, err ) = process.communicate()
 
@@ -175,7 +179,7 @@ class CentralPoller(object):
         process.poll(),
         err,
         )
-      raise errors.AbnormalExitError, message
+      raise errors.AbnormalExitError(message)
 
     self.running.clear()
     self.completed.clear()
@@ -198,7 +202,7 @@ class CentralPoller(object):
       return True
 
     else:
-      raise ValueError, "Unknown job id"
+      raise ValueError("Unknown job id")
 
 
   def new_job_submitted(self, jobid):
@@ -279,7 +283,7 @@ def sge_xml_evaluate(out, running, completed):
 
 
 CONDOR_XML_OUTPUT_REGEX = util.get_lazy_initialized_regex(
-  pattern = "^.*?(?=<\?xml)",
+  pattern = r"^.*?(?=<\?xml)",
   flags = [ "DOTALL" ],
   )
 
@@ -336,7 +340,7 @@ def lsf_text_evaluate(out, running, completed):
     return
 
   if not LSF_CENTRAL_HEADER_REGEX().match( out ):
-    raise errors.ExtractionError, "Unexpected response from LSF: %r" % out
+    raise errors.ExtractionError("Unexpected response from LSF: %r" % out)
 
   regex = LSF_CENTRAL_JOBID_REGEX()
 
@@ -344,7 +348,7 @@ def lsf_text_evaluate(out, running, completed):
     match = regex.match( line )
 
     if not match:
-      raise errors.ExtractionError, "Unexpected response from LSF: %r" % out
+      raise errors.ExtractionError("Unexpected response from LSF: %r" % out)
 
     jobid = match.group( 1 )
     running.add( jobid )
@@ -362,7 +366,7 @@ def pbspro_text_evaluate(out, running, completed):
     return
 
   if not PBSPRO_CENTRAL_HEADER_REGEX().match( out ):
-    raise errors.ExtractionError, "Unexpected response from PBSPro: %r" % out
+    raise errors.ExtractionError("Unexpected response from PBSPro: %r" % out)
 
   regex = PBSPRO_CENTRAL_JOBID_REGEX()
 
@@ -370,7 +374,7 @@ def pbspro_text_evaluate(out, running, completed):
     match = regex.match( line )
 
     if not match:
-      raise errors.ExtractionError, "Unexpected response from PBSPro: %r" % out
+      raise errors.ExtractionError("Unexpected response from PBSPro: %r" % out)
 
     jobid = match.group( 1 )
     running.add( jobid )
@@ -383,7 +387,7 @@ def slurm_text_evaluate(out, running, completed):
     pieces = line.split()
 
     if len( pieces ) != 2:
-      raise errors.ExtractionError, "Unexpected response from Slurm: %r" % line
+      raise errors.ExtractionError("Unexpected response from Slurm: %r" % line)
 
     ( jobid, status ) = pieces
 

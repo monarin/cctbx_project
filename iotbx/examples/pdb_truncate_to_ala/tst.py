@@ -1,4 +1,4 @@
-from __future__ import division
+from __future__ import absolute_import, division, print_function
 import v0_getting_started
 import v1_loop_over_atoms
 import v2_simple
@@ -16,7 +16,7 @@ def run(args):
     test=os.path.isdir)
   if ("set" not in libtbx.forward_compatibility.__builtins__):
     libtbx.forward_compatibility.__builtins__["set"] = list
-  for file_name in ["crambin_pieces.pdb", "resname_mix.pdb"]:
+  for file_name in ["crambin_pieces.pdb", "resname_mix.pdb"]: # PDB OK
     file_path = os.path.join(tutorial_dir, file_name)
     if (   not os.path.isfile(file_name)
         or not is_same_file(file_names=[file_path, file_name])):
@@ -27,7 +27,7 @@ def run(args):
                v3_better,
                v4_with_bells_and_whistles]:
       vx.run(args=[file_name])
-  print "OK"
+  print("OK")
 
 if (__name__ == "__main__"):
   run(sys.argv[1:])

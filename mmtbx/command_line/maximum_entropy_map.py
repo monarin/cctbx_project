@@ -1,6 +1,7 @@
+"""Compute maximum entropy map from map coefficients"""
 # LIBTBX_SET_DISPATCHER_NAME phenix.maximum_entropy_map
 
-from __future__ import division
+from __future__ import absolute_import, division, print_function
 import mmtbx.utils
 import iotbx.phil
 from iotbx import reflection_file_utils
@@ -66,16 +67,16 @@ gui_output_dir = None
 include scope libtbx.phil.interface.tracking_params
 """
 
-def master_params () :
+def master_params():
   return iotbx.phil.parse(master_params_str, process_includes=True)
 
 def broadcast(m, log):
-  print >> log, "-"*79
-  print >> log, m
-  print >> log, "*"*len(m)
+  print("-"*79, file=log)
+  print(m, file=log)
+  print("*"*len(m), file=log)
 
 def format_usage_message(log):
-  print >> log, "-"*79
+  print("-"*79, file=log)
   msg = """\
 phenix.max_entropy_map: map modification using Maximum Entropy Method (MEM)
 
@@ -86,8 +87,8 @@ Usage examples:
 
 Feedback:
   PAfonine@lbl.gov or phenixbb@phenix-online.org"""
-  print >> log, msg
-  print >> log, "-"*79
+  print(msg, file=log)
+  print("-"*79, file=log)
 
 def run(args, log):
   timer = user_plus_sys_time()
@@ -104,7 +105,7 @@ def run(args, log):
   if(len(inputs.pdb_file_names)>0):
     broadcast(m="Input model", log = log)
     assert len(inputs.pdb_file_names) == 1
-    print >> log, "  file name:", inputs.pdb_file_names[0]
+    print("  file name:", inputs.pdb_file_names[0], file=log)
     xray_structure = iotbx.pdb.input(
       file_name = inputs.pdb_file_names[0]).xray_structure_simple()
     assert xray_structure is not None
@@ -142,9 +143,9 @@ def run(args, log):
       mean_solvent_density = params.mean_solvent_density)
     f_000 = f_000_obj.f_000
     solvent_fraction = f_000_obj.solvent_fraction
-  print >> log, "F(0,0,0): %12.6f"%f_000
+  print("F(0,0,0): %12.6f"%f_000, file=log)
   if(solvent_fraction is not None):
-    print >> log, "solvent_fraction: %6.4f" % solvent_fraction
+    print("solvent_fraction: %6.4f" % solvent_fraction, file=log)
   result = mem.run(
     f                       = map_coeffs,
     f_000                   = f_000,
@@ -164,33 +165,33 @@ def run(args, log):
   broadcast(m="Output MEM map coefficients", log = log)
   ind = max(0,reff[0].rfind("."))
   ofn = params.output_file_name
-  if (ofn is None) :
+  if (ofn is None):
     ofn = reff[0]+"_mem.mtz" if ind==0 else reff[0][:ind]+"_mem.mtz"
-  print >> log, "  Output file name:", ofn
+  print("  Output file name:", ofn, file=log)
   result.write_mtz_file(file_name = ofn,
     column_root_label=params.column_root_label,
     d_min=params.output_high_resolution)
   broadcast(m="All done", log=log)
   return os.path.abspath(ofn)
 
-class launcher (runtime_utils.target_with_save_result) :
-  def run (self) :
+class launcher(runtime_utils.target_with_save_result):
+  def run(self):
     os.mkdir(self.output_dir)
     os.chdir(self.output_dir)
     return run(args=list(self.args), log=sys.stdout)
 
-def validate_params (params) :
-  if (params.hkl_file_name is None) :
+def validate_params(params):
+  if (params.hkl_file_name is None):
     raise Sorry("Please specify an MTZ file containing map coefficients.")
-  elif (params.label is None) :
+  elif (params.label is None):
     raise Sorry("No column labels specified.")
-  if (params.resolution_factor > 0.5) :
+  if (params.resolution_factor > 0.5):
     raise Sorry("The grid resolution factor must be a decimal number <= 0.5.")
   return True
 
-def finish_job (result) :
+def finish_job(result):
   output_files, stats = [], []
-  if (result is not None) and (os.path.isfile(result)) :
+  if (result is not None) and (os.path.isfile(result)):
     output_files.append((result, "Maximum entropy map"))
   return output_files, stats
 
@@ -198,4 +199,5 @@ if(__name__ == "__main__"):
   timer = user_plus_sys_time()
   log = sys.stdout
   run(sys.argv[1:], log=log)
-  print >> log, "Total time: %-8.3f" % timer.elapsed()
+  print("Total time: %-8.3f" % timer.elapsed(), file=log)
+

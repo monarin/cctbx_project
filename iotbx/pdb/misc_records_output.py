@@ -1,9 +1,10 @@
+"""Obsolete method to store and output custom links"""
 # MARKED_FOR_DELETION_OLEG
 # Reason: sub-optimal approach to store and output custom links.
 # Proposal: use origin_id in bond proxies. Write a class capable of
 # taking GRM and hierarchy/labels to produce links in various formats.
 #
-from __future__ import division
+from __future__ import absolute_import, division, print_function
 def link_record_output(all_chain_proxies):
   outl = ""
   for key, item in all_chain_proxies.pdb_link_records.items():
@@ -32,7 +33,7 @@ def link_record_output(all_chain_proxies):
         def _format_link_atom(atom):
           altloc = atom.parent().altloc
           if not altloc: altloc=" "
-          return "%4s%s%3s %s%4s%s" % (
+          return "%4s%s%3s%2s%4s%s" % (
             atom.name,
             altloc,
             atom.parent().resname,

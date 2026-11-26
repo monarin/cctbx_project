@@ -1,4 +1,4 @@
-from __future__ import division
+from __future__ import absolute_import, division, print_function
 from cctbx import miller
 from cctbx import crystal
 from cctbx import sgtbx
@@ -21,21 +21,18 @@ from mmtbx import max_lik
 import mmtbx.f_model
 from libtbx import table_utils
 from libtbx.utils import Sorry, user_plus_sys_time
-from cStringIO import StringIO
+from six.moves import cStringIO as StringIO
 import sys, os, math
 import mmtbx.f_model
 from libtbx.str_utils import format_value
 from libtbx import Auto
-import mmtbx.bulk_solvent.bulk_solvent_and_scaling as bss
 import libtbx.path
 import mmtbx.refinement.targets
 import mmtbx.f_model.f_model_info
+from six.moves import zip
+from six.moves import range
 
 master_params =  iotbx.phil.parse("""
-  twin_law = None
-  .type=str
-  .input_size = 80
-  .style = bold noauto
   twin_target=*twin_lsq_f
   .type=choice
   detwin{
@@ -55,7 +52,6 @@ master_params =  iotbx.phil.parse("""
     }
   }
   """)
-
 
 class twin_fraction_object(object):
   """provides methods for derivatives and
@@ -95,7 +91,7 @@ class twin_fraction_object(object):
   def show(self,out=None):
     if out is None:
       out = sys.stdout
-    print >> out, "twin fraction: %4.3f" %( self.twin_fraction  )
+    print("twin fraction: %4.3f" %( self.twin_fraction  ), file=out)
 
 
 
@@ -247,19 +243,19 @@ class scaling_parameters_object(object):
   def show(self,out=None):
     if out is None:
       out=sys.stdout
-    print >> out
-    print >> out, "F-model scaling parameters"
-    print >> out, "k_overall : %5.2e"%(self.k_overall)
-    print >> out, "u_star    : %5.2e %5.2e %5.2e %5.2e %5.2e %5.2e"%(
+    print(file=out)
+    print("F-model scaling parameters", file=out)
+    print("k_overall : %5.2e"%(self.k_overall), file=out)
+    print("u_star    : %5.2e %5.2e %5.2e %5.2e %5.2e %5.2e"%(
       self.u_star[0], self.u_star[1], self.u_star[2],
-      self.u_star[3], self.u_star[4], self.u_star[5])
-    print >> out, "   (%i independent parameters)"%(self.n_u_indep)
-    print >> out, "k_sol     : %5.2e"%(self.k_sol)
-    print >> out, "u_sol     : %5.2e"%(self.u_sol)
-    print >> out, "    B_sol : %5.2f"%(self.u_sol*79.0)
-    print >> out, "k_part    : %5.2e"%(self.k_part)
-    print >> out, "u_part    : %5.2e"%(self.u_part)
-    print >> out
+      self.u_star[3], self.u_star[4], self.u_star[5]), file=out)
+    print("   (%i independent parameters)"%(self.n_u_indep), file=out)
+    print("k_sol     : %5.2e"%(self.k_sol), file=out)
+    print("u_sol     : %5.2e"%(self.u_sol), file=out)
+    print("    B_sol : %5.2f"%(self.u_sol*79.0), file=out)
+    print("k_part    : %5.2e"%(self.k_part), file=out)
+    print("u_part    : %5.2e"%(self.u_part), file=out)
+    print(file=out)
 
 
   def deep_copy(self):
@@ -308,6 +304,53 @@ class target_attributes(mmtbx.refinement.targets.target_attributes):
     self.twin = "amplitudes"
     self.pseudo_ml = False
 
+def flat_scaling_parameters(fmodel):
+  """
+  Flat bulk-solvent and scale parameters that describe the model of a
+  regular (per-bin scaled) fmodel as closely as possible.
+
+  The twin target works with k_overall * exp(-2 pi^2 h U* h) *
+  (F_calc + k_sol * exp(-b_sol * s^2/4) * F_mask), while fmodel carries
+  per-bin k_mask and per-reflection k_isotropic * k_anisotropic. The scaling
+  result of fmodel does not always report these parameters (for example
+  k_sol=0 and b_cart=0 with the scale folded into k_anisotropic), so they are
+  fitted here: k_sol, b_sol to the k_mask curve and k_overall, U* by linear
+  least squares to the logarithm of the per-reflection scale.
+
+  Parameters
+  ----------
+  fmodel : mmtbx.f_model.manager
+      Scaled fmodel (after update_all_scales).
+
+  Returns
+  -------
+  tuple
+      (k_sol, b_sol, b_cart, k_overall); b_cart is the Cartesian B tensor
+      equivalent to U*.
+  """
+  from scitbx import matrix
+  from cctbx import adptbx
+  k_sol, b_sol = fmodel.k_sol_b_sol_from_k_mask()
+  k_total = fmodel.k_isotropic() * fmodel.k_anisotropic() * \
+    fmodel.scale_k1_w_for_twin_targets()
+  sel = k_total > 0
+  y = flex.log(k_total.select(sel))
+  hkl = fmodel.f_obs().indices().select(sel)
+  h = flex.double([i[0] for i in hkl])
+  k = flex.double([i[1] for i in hkl])
+  l = flex.double([i[2] for i in hkl])
+  c = -2*math.pi**2
+  cols = [flex.double(y.size(), 1.0), c*h*h, c*k*k, c*l*l, 2*c*h*k, 2*c*h*l,
+    2*c*k*l]
+  n = len(cols)
+  a = [flex.sum(cols[i]*cols[j]) for i in range(n) for j in range(n)]
+  b = [flex.sum(cols[i]*y) for i in range(n)]
+  x = matrix.sqr(a).inverse() * matrix.col(b)
+  k_overall = math.exp(x[0])
+  b_cart = adptbx.u_as_b(adptbx.u_star_as_u_cart(
+    fmodel.f_obs().unit_cell(), tuple(x[1:7])))
+  return k_sol, b_sol, b_cart, k_overall
+
 class twin_model_manager(mmtbx.f_model.manager_mixin):
   def __init__(self,
                f_obs              = None,
@@ -327,8 +370,12 @@ class twin_model_manager(mmtbx.f_model.manager_mixin):
                max_bins           = 20,
                detwin_mode        = None,
                map_types          = None,
-               twin_target = master_params.extract().twin_target):
+               twin_target = master_params.extract().twin_target,
+               data_type=None,
+               origin=None):
     self.fmodel_ts1 = None
+    self._origin = origin
+    self._data_type = data_type
     self.f_obs_ = f_obs
     if(f_calc is not None): raise RuntimeError("Not implemented.")
     if(map_types is None):
@@ -368,9 +415,13 @@ class twin_model_manager(mmtbx.f_model.manager_mixin):
     self.map_types = map_types
 
     assert (self.twin_law is not None)
+
     f_obs = f_obs.map_to_asu()
+    r_free_flags = r_free_flags.map_to_asu()
+    f_obs, r_free_flags = f_obs.common_sets(r_free_flags)
     self.f_obs_ = f_obs
-    self.r_free_flags_ = r_free_flags.map_to_asu().common_set(f_obs)
+    self.r_free_flags_ = r_free_flags
+
     assert self.f_obs_.indices().all_eq( self.r_free_flags_.indices() )
 
     self.f_obs_w = f_obs.select( ~self.r_free_flags_.data() )
@@ -539,6 +590,12 @@ class twin_model_manager(mmtbx.f_model.manager_mixin):
     self.epsilons_w = self.f_obs_w.epsilons().data().as_double()
     self.epsilons_f = self.f_obs_f.epsilons().data().as_double()
 
+  def data_type(self):
+    return self._data_type
+
+  def origin(self):
+    return self._origin
+
   def f_obs(self):
     return self.f_obs_
 
@@ -548,7 +605,7 @@ class twin_model_manager(mmtbx.f_model.manager_mixin):
   def twin_test(self):
     return "yes"
 
-  def is_twin_fmodel_manager (self) :
+  def is_twin_fmodel_manager(self):
     return True
 
   def update_f_hydrogens(self, log): # XXX dummy function to conform with non-twin equivalent
@@ -569,14 +626,14 @@ class twin_model_manager(mmtbx.f_model.manager_mixin):
   def remove_outliers(self, show = False, log = None):
     if (show):
       if (log is None): log = sys.stdout
-      print >> log, """\
+      print("""\
 *****************************************************************
 NOT performing outlier rejection in twin refinement mode.
 If there are many outliers without twin refinement, the resulting
 reflection statistics may differ significantly (for example
 the percentage of R-free reflections).
 *****************************************************************
-"""
+""", file=log)
     return self
 
   def wilson_b(self, force_update = False):
@@ -590,30 +647,34 @@ the percentage of R-free reflections).
 
   def show_parameter_summary(self, manager=None):
     # print bulk solvent parameters
-    print >> self.out, "Usol           ", self.scaling_parameters.u_sol, self.data_core.usol()
-    print >> self.out, "Ksol           ", self.scaling_parameters.k_sol, self.data_core.ksol()
-    print >> self.out, "Koverall       ", self.scaling_parameters.k_overall, self.data_core.koverall()
-    print >> self.out, "Ustar          ", self.scaling_parameters.u_star, self.data_core.ustar()
-    print >> self.out, "Twin fraction  ", self.twin_fraction_object.twin_fraction, self.twin_fraction, self.target_evaluator.alpha()
-    print >> self.out, "mask step      ", self.mask_params.grid_step_factor
-    print >> self.out, "mask shift     ", self.mask_params.mean_shift_for_mask_update
-    print >> self.out, "mask trunk rad ", self.mask_params.shrink_truncation_radius
-    print >> self.out, "mask solv rad  ", self.mask_params.solvent_radius
+    print("Usol           ", self.scaling_parameters.u_sol, self.data_core.usol(), file=self.out)
+    print("Ksol           ", self.scaling_parameters.k_sol, self.data_core.ksol(), file=self.out)
+    print("Koverall       ", self.scaling_parameters.k_overall, self.data_core.koverall(), file=self.out)
+    print("Ustar          ", self.scaling_parameters.u_star, self.data_core.ustar(), file=self.out)
+    print("Twin fraction  ", self.twin_fraction_object.twin_fraction, self.twin_fraction, self.target_evaluator.alpha(), file=self.out)
+    print("mask step      ", self.mask_params.grid_step_factor, file=self.out)
+    print("mask shift     ", self.mask_params.mean_shift_for_mask_update, file=self.out)
+    print("mask trunk rad ", self.mask_params.shrink_truncation_radius, file=self.out)
+    print("mask solv rad  ", self.mask_params.solvent_radius, file=self.out)
 
     if manager is not None:
       x = self.f_model().data()
       y = manager.f_model().data()
-      print >> self.out, "Fmodel delta  " , flex.sum( flex.abs(x - y) )
+      print("Fmodel delta  " , flex.sum( flex.abs(x - y) ), file=self.out)
       x = self.f_calc().data()
       y = manager.f_calc().data()
-      print >> self.out, "Fatoms delta ", flex.sum( flex.abs(x - y) )
+      print("Fatoms delta ", flex.sum( flex.abs(x - y) ), file=self.out)
       x = self.f_mask_array.data()
       y = manager.f_mask_array.data()
-      print >> self.out, "Fmask delta  ", flex.sum( flex.abs(x - y) )
+      print("Fmask delta  ", flex.sum( flex.abs(x - y) ), file=self.out)
       x = flex.abs( self.bulk_solvent_mask().data - manager.bulk_solvent_mask().data )
-      print >> self.out, "Bit wise diff mask ", flex.sum( x )
+      print("Bit wise diff mask ", flex.sum( x ), file=self.out)
 
-
+  def is_taam(self):
+    """
+    Not implemented.
+    """
+    return False
 
   def deep_copy(self):
     new_object = twin_model_manager(
@@ -632,12 +693,13 @@ the percentage of R-free reflections).
       detwin_mode        = self.detwin_mode,
       map_types          = self.map_types,
       sf_and_grads_accuracy_params = self.sfg_params,
+      origin = self.origin()
       )
     new_object.twin_fraction_object.twin_fraction = float(self.twin_fraction_object.twin_fraction)
     new_object.twin_fraction = float(self.twin_fraction_object.twin_fraction)
     new_object.update()
     new_object.did_search = self.did_search
-    if (self.fmodel_ts1 is not None) :
+    if (self.fmodel_ts1 is not None):
       new_object.fmodel_ts1 = self.fmodel_ts1.deep_copy()
     return new_object
 
@@ -662,7 +724,8 @@ the percentage of R-free reflections).
       max_bins           = dc.max_bins,
       detwin_mode        = dc.detwin_mode,
       map_types          = dc.map_types,
-      sf_and_grads_accuracy_params = dc.sfg_params
+      sf_and_grads_accuracy_params = dc.sfg_params,
+      origin = dc.origin()
       )
 
     new_object.update()
@@ -688,7 +751,8 @@ the percentage of R-free reflections).
       max_bins           = dc.max_bins,
       detwin_mode        = dc.detwin_mode,
       map_types          = dc.map_types,
-      sf_and_grads_accuracy_params = dc.sfg_params
+      sf_and_grads_accuracy_params = dc.sfg_params,
+      origin = dc.origin()
       )
     new_object.did_search = self.did_search
     return new_object
@@ -753,15 +817,24 @@ the percentage of R-free reflections).
 
   def show(self, log=None, suffix=None, show_header=False):
     fmt = "r_work=%6.4f r_free=%6.4f twin_fraction=%4.2f twin_law=%s"
-    print >> log
-    print >> log, fmt%(self.r_work(), self.r_free(), self.twin_fraction,
-      self.twin_law_str)
+    print(file=log)
+    print(fmt%(self.r_work(), self.r_free(), self.twin_fraction,
+      self.twin_law_str), file=log)
 
   def update_all_scales(self, params=None, log=None, show=False,
                         optimize_mask=False, nproc=None, fast=False,
                         remove_outliers=False,refine_hd_scattering=False,
-                        apply_back_trace=False, update_f_part1=False):
+                        apply_back_trace=False, update_f_part1=False,
+                        mosaic=False, squeeze=False,
+                        water_selection=None):
+    # mosaic (mosaic bulk-solvent model): not available for twinned data
+    if(mosaic and log is not None):
+      print("mosaic: skipped (twinned data)", file=log)
+    # squeeze (mmtbx.bulk_solvent.squeeze): same
+    if(squeeze and log is not None):
+      print("squeeze: skipped (twinned data)", file=log)
     self.update_solvent_and_scale(log=log,
+      params=params,
       apply_back_trace=apply_back_trace,
       update_f_part1=update_f_part1)
 
@@ -789,18 +862,16 @@ the percentage of R-free reflections).
       b_cart         = self.b_cart(),
       twin_fraction  = self.twin_fraction)
     self.twin_set = self.fmodel_ts1.twin_set
-    #if(params is None):
-    #  params = bss.master_params.extract()
-    #params.k_sol_b_sol_grid_search = False # XXX too slow otherwise
-    #params.number_of_macro_cycles=1 # XXX too slow otherwise, let's see may be ok
-    result = self.fmodel_ts1.update_all_scales(fast=False, # XXX
+    # Twinned data: fmodel uses its twin protocol whatever the mode is.
+    result = self.fmodel_ts1.update_all_scales(
       params=params, log=log, apply_back_trace=apply_back_trace)
+    k_sol, b_sol, b_cart, k_overall = flat_scaling_parameters(self.fmodel_ts1)
     self.update_core(
-      k_sol = result.k_sol, # XXX not implemented (see above)
-      b_sol = result.b_sol,
+      k_sol = k_sol,
+      b_sol = b_sol,
       twin_fraction = self.fmodel_ts1.twin_fraction,
-      b_cart = result.b_cart,
-      k_overall = self.fmodel_ts1.scale_k1_w_for_twin_targets())
+      b_cart = b_cart,
+      k_overall = k_overall)
     self.mask_params = self.fmodel_ts1.mask_params
     self.arrays = self.fmodel_ts1.arrays
 
@@ -983,7 +1054,8 @@ the percentage of R-free reflections).
         b_base                       = self.sfg_params.b_base,
         wing_cutoff                  = self.sfg_params.wing_cutoff,
         exp_table_one_over_step_size =
-                        self.sfg_params.exp_table_one_over_step_size
+                        self.sfg_params.exp_table_one_over_step_size,
+        extra_params                 = self.sfg_params.extra
       )
     else:
       tmp = self.miller_set.structure_factors_from_scatterers(
@@ -1023,11 +1095,7 @@ the percentage of R-free reflections).
 
 
   def _get_step(self, update_f_ordered_solvent = False):
-    step = self.f_obs().d_min()/self.mask_params.grid_step_factor
-    if(step < 0.3): step = 0.3
-    step = min(0.8, step)
-    if(update_f_ordered_solvent): step = 0.3
-    return step
+    return self.mask_params.step
 
   def _update_f_mask_flag(self, xray_structure, mean_shift):
     if(self.xray_structure_mask_cache is None):
@@ -1050,7 +1118,7 @@ the percentage of R-free reflections).
     sites_cart_2 = self.xray_structure.sites_cart()
     atom_atom_distances = flex.sqrt((sites_cart_1 - sites_cart_2).dot())
     mean_shift_ = flex.mean(atom_atom_distances)
-    print >> self.out, "MEAN SHIFT: ", mean_shift_
+    print("MEAN SHIFT: ", mean_shift_, file=self.out)
 
 
   def update_xray_structure(self,
@@ -1087,7 +1155,8 @@ the percentage of R-free reflections).
            b_base                       = self.sfg_params.b_base,
            wing_cutoff                  = self.sfg_params.wing_cutoff,
            exp_table_one_over_step_size =
-                           self.sfg_params.exp_table_one_over_step_size).f_calc()
+                           self.sfg_params.exp_table_one_over_step_size,
+           extra_params                 = self.sfg_params.extra).f_calc()
        else:
          f_calc = self.miller_set.structure_factors_from_scatterers(
            xray_structure = self.xray_structure).f_calc()
@@ -1172,10 +1241,15 @@ the percentage of R-free reflections).
       n_bins = self.determine_n_bins(
         free_reflections_per_bin = free_reflections_per_bin,
         max_n_bins = max_number_of_bins)
-      self.f_obs_f.setup_binner(n_bins = n_bins)
-      self.f_obs_w.use_binning_of(self.f_obs_f)
+      self.f_obs().setup_binner(n_bins = n_bins)
+      self.f_obs_w.use_binning_of(self.f_obs())
+      self.f_obs_f.use_binning_of(self.f_obs())
       completeness = self.f_obs_w.completeness(use_binning=True).data
       for i_bin in self.f_obs_f.binner().range_used():
+        selection = flex.bool( self.f_obs().binner().bin_indices() == i_bin )
+        d_max,d_min = self.f_obs().select(selection).d_max_min()
+        d_range = "%7.2f - %7.2f"%(d_max,d_min)
+
         selection = flex.bool( self.f_obs_w.binner().bin_indices() == i_bin )
         #combine selection
         n_work = selection.count(True)
@@ -1199,9 +1273,7 @@ the percentage of R-free reflections).
 
         r_abs_work_f_bin.append(tmp_work)
         r_abs_free_f_bin.append(tmp_free)
-        d_max,d_min = self.f_obs_w.binner().bin_d_range( i_bin )
-        d_range = self.f_obs_w.binner().bin_legend(
-          i_bin=i_bin, show_bin_number=False, show_counts=False)
+        #d_max,d_min = self.f_obs().d_max_min()
 
         alpha_w, beta_w = self.alpha_beta_w()
         alpha_f, beta_f = self.alpha_beta_f()
@@ -1279,7 +1351,7 @@ the percentage of R-free reflections).
 
       if not rows:
         header = ("bin", "d_max", "d_min", "n_work", "r_work", "n_free", "r_free")
-        comments = """
+        comments = r"""
 Overall r values
 R Work : %4.3f
 R Free : %4.3f
@@ -1295,12 +1367,12 @@ tf is the twin fraction and Fo is an observed amplitude."""%(r_abs_work_f_overal
                                         separate_rows=False,
                                         prefix='| ',
                                         postfix=' |')
-        print >> self.out, "------------------------  R values ------------------------"
-        print >> self.out, "  twin law      : %s"%( sgtbx.change_of_basis_op( self.twin_law ).as_hkl() )
-        print >> self.out, "  twin fraction : %4.3f"%( self.twin_fraction_object.twin_fraction)
-        print >> self.out, table_txt
-        print >> self.out, "-----------------------------------------------------------"
-        print >> self.out
+        print("------------------------  R values ------------------------", file=self.out)
+        print("  twin law      : %s"%( sgtbx.change_of_basis_op( self.twin_law ).as_hkl() ), file=self.out)
+        print("  twin fraction : %4.3f"%( self.twin_fraction_object.twin_fraction), file=self.out)
+        print(table_txt, file=self.out)
+        print("-----------------------------------------------------------", file=self.out)
+        print(file=self.out)
         self.r_work_in_lowest_resolution_bin(show=True)
         self.r_overall_low_high(show=True)
       else:
@@ -1337,10 +1409,10 @@ tf is the twin fraction and Fo is an observed amplitude."""%(r_abs_work_f_overal
     if not show:
       return tmp_work
     else:
-      print >> self.out, "-----------------------------------------------------------"
-      print >> self.out, "  R-value for the %i lowest resolution reflections:"%(reflections_per_bin)
-      print >> self.out, "    %4.3f" %(self.r_work_in_lowest_resolution_bin(reflections_per_bin))
-      print >> self.out, "-----------------------------------------------------------"
+      print("-----------------------------------------------------------", file=self.out)
+      print("  R-value for the %i lowest resolution reflections:"%(reflections_per_bin), file=self.out)
+      print("    %4.3f" %(self.r_work_in_lowest_resolution_bin(reflections_per_bin)), file=self.out)
+      print("-----------------------------------------------------------", file=self.out)
 
 
   def r_overall_low_high(self, d = 6.0, show=False):
@@ -1375,30 +1447,30 @@ tf is the twin fraction and Fo is an observed amplitude."""%(r_abs_work_f_overal
     if not show:
       return r_work, r_work_l, r_work_h, n_low, n_high
     else:
-      print >> self.out, "----------------------------------------------------------"
-      print >> self.out, "Overall, low and high resolution R-work values"
-      print >> self.out
-      print >> self.out, "Limits: Overall: %6.2f -- %6.2f"%(d_max,d_min)
-      print >> self.out, "        Low    : %6.2f -- %6.2f"%(d_max,d)
-      print >> self.out, "        High   : %6.2f -- %6.2f"%(d,d_min)
-      print >> self.out
-      print >> self.out, "R values    : Overall    low    high"
-      print >> self.out, "              %6.3f   %6.3f  %6.3f"%(r_work,r_work_l,r_work_h)
-      print >> self.out, "Contributors:%7i  %7i %7i"%(n_low+n_high, n_low,n_high)
-      print >> self.out, "----------------------------------------------------------"
+      print("----------------------------------------------------------", file=self.out)
+      print("Overall, low and high resolution R-work values", file=self.out)
+      print(file=self.out)
+      print("Limits: Overall: %6.2f -- %6.2f"%(d_max,d_min), file=self.out)
+      print("        Low    : %6.2f -- %6.2f"%(d_max,d), file=self.out)
+      print("        High   : %6.2f -- %6.2f"%(d,d_min), file=self.out)
+      print(file=self.out)
+      print("R values    : Overall    low    high", file=self.out)
+      print("              %6.3f   %6.3f  %6.3f"%(r_work,r_work_l,r_work_h), file=self.out)
+      print("Contributors:%7i  %7i %7i"%(n_low+n_high, n_low,n_high), file=self.out)
+      print("----------------------------------------------------------", file=self.out)
 
 
 
   def twin_fraction_scan(self, n=10):
     """for each twin fraction, compute the target value and r value"""
-    print >> self.out
-    print >> self.out
-    print >> self.out, "------------------------ Twin fraction scan ----------------------"
-    print >> self.out
-    print >> self.out, " R-values and target values for various twin fractions are listed."
-    print >> self.out
+    print(file=self.out)
+    print(file=self.out)
+    print("------------------------ Twin fraction scan ----------------------", file=self.out)
+    print(file=self.out)
+    print(" R-values and target values for various twin fractions are listed.", file=self.out)
+    print(file=self.out)
     current_twin_fraction = twin_fraction_object(self.twin_fraction_object.twin_fraction)
-    trail_twin_fractions = list( flex.double( range(n+1) )/(2.0*n) )
+    trail_twin_fractions = flex.double( range(n+1) )/(2.0*n)
     rows = []
     for tf in trail_twin_fractions:
       tmp_twin_fraction = twin_fraction_object( tf )
@@ -1420,11 +1492,11 @@ tf is the twin fraction and Fo is an observed amplitude."""%(r_abs_work_f_overal
                                     separate_rows=False,
                                     prefix='| ',
                                     postfix=' |')
-    print >> self.out, table_txt
-    print >> self.out
-    print >> self.out,  "------------------------------------------------------------------"
-    print >> self.out
-    print >> self.out
+    print(table_txt, file=self.out)
+    print(file=self.out)
+    print("------------------------------------------------------------------", file=self.out)
+    print(file=self.out)
+    print(file=self.out)
     self.update_solvent_and_scale( twin_fraction_parameters =  current_twin_fraction )
 
 
@@ -1436,11 +1508,11 @@ tf is the twin fraction and Fo is an observed amplitude."""%(r_abs_work_f_overal
     else:
       tmp_f=self.free_target_evaluator.target( self.data_core.f_model() )/self.norma_sum_f_sq_f
     if print_it:
-      print >> self.out
-      print >> self.out, "----------------- Target values -----------------"
-      print >> self.out, "   working set  : %8.6e "%(tmp_w)
-      print >> self.out, "   free set     : %8.6e "%(tmp_f)
-      print >> self.out, "-------------------------------------------------"
+      print(file=self.out)
+      print("----------------- Target values -----------------", file=self.out)
+      print("   working set  : %8.6e "%(tmp_w), file=self.out)
+      print("   free set     : %8.6e "%(tmp_f), file=self.out)
+      print("-------------------------------------------------", file=self.out)
     else:
       return(tmp_w,tmp_f)
 
@@ -1464,7 +1536,7 @@ tf is the twin fraction and Fo is an observed amplitude."""%(r_abs_work_f_overal
 
     if mode == "algebraic":
       if  abs(self.twin_fraction_object.twin_fraction-0.5)<1e-3:
-        print >> self.out, "Automatic adjustment: detwinning mode set to proportional"
+        print("Automatic adjustment: detwinning mode set to proportional", file=self.out)
         # FIXME this seems appropriate but was not implemented - bug?
         #mode = "proportional"
 
@@ -1691,24 +1763,24 @@ tf is the twin fraction and Fo is an observed amplitude."""%(r_abs_work_f_overal
     return miller.array(miller_set = f_model,
                         data       = d_obs.data()-f_model.data()*f_model_scale)
 
-  def map_coefficients (self, **kwds) :
+  def map_coefficients(self, **kwds):
     emap = self.electron_density_map()
     return emap.map_coefficients(**kwds)
 
-  def _get_real_map (self, **kwds) :
+  def _get_real_map(self, **kwds):
     map_coeffs = self.map_coefficients(**kwds)
     return map_coeffs.fft_map(
       resolution_factor=0.25).apply_sigma_scaling().real_map_unpadded()
 
-  def two_fofc_map (self, **kwds) :
+  def two_fofc_map(self, **kwds):
     kwds['map_type'] = "2mFo-DFc"
     return self._get_real_map(**kwds)
 
-  def fofc_map (self, **kwds) :
+  def fofc_map(self, **kwds):
     kwds['map_type'] = "mFo-DFc"
     return self._get_real_map(**kwds)
 
-  def anomalous_map (self, **kwds) :
+  def anomalous_map(self, **kwds):
     if (not self.f_obs().anomalous_flag()) : return None
     kwds['map_type'] = "anom"
     return self._get_real_map(**kwds)
@@ -1722,11 +1794,11 @@ tf is the twin fraction and Fo is an observed amplitude."""%(r_abs_work_f_overal
                        isotropize=None,
                        ncs_average = None,
                        ):
-    if (map_type == "Fmodel") :
+    if (map_type == "Fmodel"):
       map_type = "Fc"
-    elif (map_type == "DFmodel") :
+    elif (map_type == "DFmodel"):
       map_type = "DFc"
-    if (map_type.lower().startswith("anom")) :
+    if (map_type.lower().startswith("anom")):
       map_type = "anom"
     supported_types = ("Fo-Fc", "Fobs-Fmodel",
                         "2mFo-DFc", "2mFobs-DFmodel",
@@ -1742,7 +1814,7 @@ tf is the twin fraction and Fo is an observed amplitude."""%(r_abs_work_f_overal
       raise Sorry(("Map type '%s' not supported for twinned structures. "+
         "Allowed types: %s.") % (map_type, ", ".join(supported_types)))
     # this is to modify default behavior of phenix.refine
-    if (map_type == "mFo-DFc") or (map_type == "mFobs-DFmodel") :
+    if (map_type == "mFo-DFc") or (map_type == "mFobs-DFmodel"):
       if self.map_types.fofc == "gradient":
         map_type = "gradient"
       if self.map_types.fofc == "m_gradient":
@@ -1750,7 +1822,7 @@ tf is the twin fraction and Fo is an observed amplitude."""%(r_abs_work_f_overal
       if self.map_types.fofc == "m_dtfo_d_fc":
         map_type = "m_dtfo_d_fc"
 
-    if (map_type == "2mFo-DFc") or (map_type=="2mFobs-DFmodel") :
+    if (map_type == "2mFo-DFc") or (map_type=="2mFobs-DFmodel"):
       if self.map_types.twofofc == "two_m_dtfo_d_fc":
         map_type = "two_m_dtfo_d_fc"
       if  self.map_types.twofofc == "two_dtfo_fc":
@@ -1765,8 +1837,8 @@ tf is the twin fraction and Fo is an observed amplitude."""%(r_abs_work_f_overal
       data = aniso_scale ).common_set( dt_f_obs )
     aniso_scale = aniso_scale.data()
 
-    if (map_type == "anom") :
-      if (not dt_f_obs.anomalous_flag()) :
+    if (map_type == "anom"):
+      if (not dt_f_obs.anomalous_flag()):
         return None
       anom_diff = dt_f_obs.anomalous_differences()
       tmp_f_model = tmp_f_model.average_bijvoet_mates()
@@ -1777,9 +1849,9 @@ tf is the twin fraction and Fo is an observed amplitude."""%(r_abs_work_f_overal
       return result
     elif map_type not in ["gradient","m_gradient"]:
       result = None
-      if (map_type == "Fc") :
+      if (map_type == "Fc"):
         result = tmp_f_model
-      elif (map_type == "DFc") :
+      elif (map_type == "DFc"):
         sigmaa_object = self.sigmaa_object(
           detwinned_data=dt_f_obs,
           f_model_data=tmp_f_model,
@@ -1790,7 +1862,7 @@ tf is the twin fraction and Fo is an observed amplitude."""%(r_abs_work_f_overal
         dt_f_obs, tmp_f_model = dt_f_obs.common_sets( tmp_f_model )
         result = tmp_f_model.customized_copy(
           data=tmp_f_model.data()*d.data())
-      elif (map_type == "mFo") :
+      elif (map_type == "mFo"):
         sigmaa_object = self.sigmaa_object(
           detwinned_data=dt_f_obs,
           f_model_data=tmp_f_model,
@@ -1801,7 +1873,7 @@ tf is the twin fraction and Fo is an observed amplitude."""%(r_abs_work_f_overal
         result = dt_f_obs.customized_copy(
           data=dt_f_obs.data()*m.data()).phase_transfer(
             phase_source=tmp_f_model)
-      elif (map_type in ["Fo-Fc", "Fobs-Fmodel"]) :
+      elif (map_type in ["Fo-Fc", "Fobs-Fmodel"]):
         if ([k,n]).count(None) > 0:
           raise Sorry("Map coefficient multipliers (k and n) must be provided to generate detwinned maps")
         result = self._map_coeff( f_obs         = dt_f_obs,
@@ -1902,7 +1974,7 @@ tf is the twin fraction and Fo is an observed amplitude."""%(r_abs_work_f_overal
                            sharp=None,
                            pdb_hierarchy=None,
                            merge_anomalous=None): # FIXME ignored
-        if (map_type in ["gradient", "m_gradient", "anom"]) :
+        if (map_type in ["gradient", "m_gradient", "anom"]):
           return self.fmodel.compute_map_coefficients(map_type=map_type)
         else :
           map_name_manager = mmtbx.map_names(map_name_string = map_type)
@@ -1924,7 +1996,7 @@ tf is the twin fraction and Fo is an observed amplitude."""%(r_abs_work_f_overal
           resolution_factor = self.resolution_factor
         if(symmetry_flags is None):
           symmetry_flags =  self.symmetry_flags
-        if (map_type in ["gradient", "m_gradient", "anom"]) :
+        if (map_type in ["gradient", "m_gradient", "anom"]):
           map_coefficients = self.fmodel.compute_map_coefficients(
             map_type=map_type)
         else :
@@ -2043,7 +2115,7 @@ tf is the twin fraction and Fo is an observed amplitude."""%(r_abs_work_f_overal
   def fft_vs_direct(self, reflections_per_bin = 250,
                           n_bins              = 0,
                           out                 = None):
-    print >> self.out, "Direct vs FFT comparison not yet implemented. "
+    print("Direct vs FFT comparison not yet implemented. ", file=self.out)
 
   def r_work_scale_k1_completeness_in_bins(self, reflections_per_bin = 500,
                                                  n_bins              = 0,
@@ -2058,7 +2130,7 @@ tf is the twin fraction and Fo is an observed amplitude."""%(r_abs_work_f_overal
     if(header is None): header = ""
     line_len = len("|-"+"|"+header)
     fill_len = 80-line_len-1
-    print >> out, "|-"+header+"-"*(fill_len)+"|"
+    print("|-"+header+"-"*(fill_len)+"|", file=out)
     k_sol = self.k_sol()
     b_sol = self.b_sol()
     u0,u1,u2,u3,u4,u5 = self.b_cart()
@@ -2072,14 +2144,14 @@ tf is the twin fraction and Fo is an observed amplitude."""%(r_abs_work_f_overal
     r_work = self.r_work()
     u_isos = self.xray_structure.extract_u_iso_or_u_equiv()
     b_iso_mean = flex.mean(u_isos * math.pi**2*8)
-    print >> out, "| k_sol=%5.2f b_sol=%7.2f target_w =%20.6f r_work=%7.4f" % \
-                  (k_sol, b_sol, target_w, r_work) + 5*p+"|"
-    print >> out, "| B(11,22,33,12,13,23)=%9.4f%9.4f%9.4f%9.4f%9.4f%9.4f |" % \
-                  (u0,u1,u2,u3,u4,u5)
-    print >> out, "| trace(B) = (B11 + B22 + B33)/3 = %-10.3f                                 |"%self.u_iso()
-    print >> out, "| mean alpha:%8.4f  number of alpha <= 0.0:%7d" % \
-                  (a_mean, a_zero)+25*p+"|"
-    print >> out, "|"+"-"*77+"|"
+    print("| k_sol=%5.2f b_sol=%7.2f target_w =%20.6f r_work=%7.4f" % \
+                  (k_sol, b_sol, target_w, r_work) + 5*p+"|", file=out)
+    print("| B(11,22,33,12,13,23)=%9.4f%9.4f%9.4f%9.4f%9.4f%9.4f |" % \
+                  (u0,u1,u2,u3,u4,u5), file=out)
+    print("| trace(B) = (B11 + B22 + B33)/3 = %-10.3f                                 |"%self.u_iso(), file=out)
+    print("| mean alpha:%8.4f  number of alpha <= 0.0:%7d" % \
+                  (a_mean, a_zero)+25*p+"|", file=out)
+    print("|"+"-"*77+"|", file=out)
     out.flush()
 
 
@@ -2097,8 +2169,8 @@ tf is the twin fraction and Fo is an observed amplitude."""%(r_abs_work_f_overal
     tl = header+line1+line2+line4+line3+line5
     line_len = len("|-"+"|"+tl)
     fill_len = 80-line_len-1
-    print >> out, "|-"+tl+"-"*(fill_len)+"|"
-    print >> out, "| "+"  "*38+"|"
+    print("|-"+tl+"-"*(fill_len)+"|", file=out)
+    print("| "+"  "*38+"|", file=out)
     r_work = n_as_s("%6.4f",self.r_work()    )
     r_free = n_as_s("%6.4f",self.r_free()    )
     scale  = n_as_s("%6.3f",self.scale_k1_w())
@@ -2117,31 +2189,31 @@ tf is the twin fraction and Fo is an observed amplitude."""%(r_abs_work_f_overal
            "   Bsol= "+b_sol+"   scale= "+scale
     np = 79 - (len(line) + 1)
     if(np < 0): np = 0
-    print >> out, line + p*np + "|"
-    print >> out, "| "+"  "*38+"|"
-    print >> out, "| overall anisotropic scale matrix (Cartesian basis):    "\
-                  "                     |"
+    print(line + p*np + "|", file=out)
+    print("| "+"  "*38+"|", file=out)
+    print("| overall anisotropic scale matrix (Cartesian basis):    "\
+                  "                     |", file=out)
     c = ","
     line4 = "| (B11,B22,B33,B12,B13,B23)= ("+b0+c+b1+c+b2+c+b3+c+b4+c+b5+")"
     np = 79 - (len(line4) + 1)
     line4 = line4 + " "*np + "|"
-    print >> out, line4
+    print(line4, file=out)
     line5 = "| (B11+B22+B33)/3 = "+b_iso
     np = 79 - (len(line5) + 1)
     line5 = line5 + " "*np + "|"
-    print >> out, line5
-    print >> out, "| "+"  "*38+"|"
+    print(line5, file=out)
+    print("| "+"  "*38+"|", file=out)
     line5_and_a_half = "| Twin law : %s     Twin fraction: %4.3f"%(self.twin_law.r().as_hkl(),self.twin_fraction_object.twin_fraction)
     np = 79 - (len(line5_and_a_half) + 1)
     line5_and_a_half = line5_and_a_half + " "*np + "|"
-    print >> out, line5_and_a_half
-    print >> out, "| "+"  "*38+"|"
+    print(line5_and_a_half, file=out)
+    print("| "+"  "*38+"|", file=out)
     line6="| Target ("+self.target_name+")= "+target_work+\
           " | ML estimate for coordinates error: "+err+" A"
     np = 79 - (len(line6) + 1)
     line6 = line6 + " "*np + "|"
-    print >> out, line6
-    print >> out, "|"+"-"*77+"|"
+    print(line6, file=out)
+    print("|"+"-"*77+"|", file=out)
     out.flush()
 
   def show_comprehensive(self,
@@ -2205,17 +2277,17 @@ tf is the twin fraction and Fo is an observed amplitude."""%(r_abs_work_f_overal
 
     if (format == "cns"):
       for line in warning:
-        print >> out, "{ %s%s }" % (line, " "*(width-len(line)))
-      print >> out, "{ %s }" % date_and_time()
+        print("{ %s%s }" % (line, " "*(width-len(line))), file=out)
+      print("{ %s }" % date_and_time(), file=out)
       if (file_name is not None):
-        print >> out, "{ file name: %s }" % os.path.basename(file_name)
-        print >> out, "{ directory: %s }" % os.path.dirname(file_name)
+        print("{ file name: %s }" % os.path.basename(file_name), file=out)
+        print("{ directory: %s }" % os.path.dirname(file_name), file=out)
       self.explain_members(out=out, prefix="{ ", suffix=" }")
       crystal_symmetry_as_cns_comments(
         crystal_symmetry=self.f_obs_, out=out)
-      print >> out, "NREFlection=%d" % self.f_obs_.indices().size()
-      print >> out, "ANOMalous=%s" % {0: "FALSE"}.get(
-        int(self.f_obs_.anomalous_flag()), "TRUE")
+      print("NREFlection=%d" % self.f_obs_.indices().size(), file=out)
+      print("ANOMalous=%s" % {0: "FALSE"}.get(
+        int(self.f_obs_.anomalous_flag()), "TRUE"), file=out)
       have_sigmas = self.f_obs_.sigmas() is not None
       for n_t in [("FOBS", "REAL"),
                   ("SIGFOBS", "REAL"),
@@ -2228,7 +2300,7 @@ tf is the twin fraction and Fo is an observed amplitude."""%(r_abs_work_f_overal
                   ("ALPHA", "REAL"),
                   ("BETA", "REAL")]:
         if (not have_sigmas and n_t[0] == "SIGFOBS"): continue
-        print >> out, "DECLare NAME=%s DOMAin=RECIprocal TYPE=%s END" % n_t
+        print("DECLare NAME=%s DOMAin=RECIprocal TYPE=%s END" % n_t, file=out)
       f_model            = self.f_model_scaled_with_k1()
       f_model_amplitudes = f_model.amplitudes().data()
       f_model_phases     = f_model.phases(deg=True).data()
@@ -2254,15 +2326,14 @@ tf is the twin fraction and Fo is an observed amplitude."""%(r_abs_work_f_overal
       else:
         i_r_free_flags = 3
       for values in zip(*arrays):
-        print >> out, "INDE %d %d %d" % values[0]
-        print >> out, " FOBS= %.6g" % values[1],
+        print("INDE %d %d %d" % values[0], file=out)
+        print(" FOBS= %.6g" % values[1], end=' ', file=out)
         if (have_sigmas):
-          print >> out, " SIGFOBS= %.6g" % values[2],
-        print >> out, \
-          " R_FREE_FLAGS= %d FMODEL= %.6g %.6g\n" \
+          print(" SIGFOBS= %.6g" % values[2], end=' ', file=out)
+        print(" R_FREE_FLAGS= %d FMODEL= %.6g %.6g\n" \
           " FCALC= %.6g %.6g FMASK= %.6g %.6g FBULK= %.6g %.6g\n" \
           " FB_CART= %.6g FOM= %.6g ALPHA= %.6g BETA= %.6g"  \
-            % values[i_r_free_flags:]
+            % values[i_r_free_flags:], file=out)
       if (file_name is not None):
         out.close()
 
@@ -2318,12 +2389,12 @@ tf is the twin fraction and Fo is an observed amplitude."""%(r_abs_work_f_overal
           "B_cart = (B11, B22, B33, B12, B13, B23)",
           "       = (%s)" % ", ".join(
             ["%.6g" % zero_if_almost_zero(v) for v in self.b_cart()])]:
-      print >> out, prefix + line + suffix
+      print(prefix + line + suffix, file=out)
 
-  def export_f_obs_flags_as_mtz (self,
+  def export_f_obs_flags_as_mtz(self,
       file_name,
       merge_anomalous=False,
-      include_hendrickson_lattman=True) :
+      include_hendrickson_lattman=True):
     """
     Dump all input data to an MTZ file using standard column labels.  This may
     be useful when running modules or programs that require an MTZ file as
@@ -2332,13 +2403,13 @@ tf is the twin fraction and Fo is an observed amplitude."""%(r_abs_work_f_overal
     f_obs = self.f_obs()
     flags = self.r_free_flags()
     hl_coeffs = self.hl_coeffs()
-    if (merge_anomalous) :
+    if (merge_anomalous):
       f_obs = f_obs.average_bijvoet_mates()
       flags = flags.average_bijvoet_mates()
-      if (hl_coeffs is not None) :
+      if (hl_coeffs is not None):
         hl_coeffs = hl_coeffs.average_bijvoet_mates()
     mtz_dataset = f_obs.as_mtz_dataset(column_root_label="F")
-    if (hl_coeffs is not None) and (include_hendrickson_lattman) :
+    if (hl_coeffs is not None) and (include_hendrickson_lattman):
       mtz_dataset.add_miller_array(hl_coeffs, column_root_label="HL")
     mtz_dataset.add_miller_array(flags, column_root_label="FreeR_flag")
     mtz_dataset.mtz_object().write(file_name)
@@ -2349,12 +2420,12 @@ tf is the twin fraction and Fo is an observed amplitude."""%(r_abs_work_f_overal
     part1 = "|-"+text
     part2 = "-|"
     n = 79 - len(part1+part2)
-    print >> out, part1 + "-"*n + part2
+    print(part1 + "-"*n + part2, file=out)
     part3 = "| target_work(%s"%self.target_name+") = %.6e  r_work = %6.4f  r_free = %6.4f"%\
                                 (self.target_w(), self.r_work(), self.r_free())
     n = 78 - len(str(part3)+"|")
-    print >> out, part3, " "*n +"|"
-    print >> out, "|" +"-"*77+"|"
+    print(part3, " "*n +"|", file=out)
+    print("|" +"-"*77+"|", file=out)
     out.flush()
 
   def _header_resolutions_nreflections(self, header, out):
@@ -2370,7 +2441,7 @@ tf is the twin fraction and Fo is an observed amplitude."""%(r_abs_work_f_overal
     tl = header+"-"+line1+line2+line4+line3+line5+line6
     line_len = len("|-"+"|"+tl)
     fill_len = 80-line_len-1
-    print >> out, "|-"+tl+"-"*(fill_len)+"|"
+    print("|-"+tl+"-"*(fill_len)+"|", file=out)
     out.flush()
 
   def _rfactors_and_bulk_solvent_and_scale_params(self, out):
@@ -2386,14 +2457,14 @@ tf is the twin fraction and Fo is an observed amplitude."""%(r_abs_work_f_overal
            "   Bsol= "+b_sol+"   scale= "+scale
     np = 79 - (len(line) + 1)
     if(np < 0): np = 0
-    print >> out, line + " "*np + "|"
-    print >> out, "| "+"  "*38+"|"
-    print >> out, "| overall anisotropic scale matrix (Cartesian basis; B11,B22,B33,B12,B13,B23):|"
+    print(line + " "*np + "|", file=out)
+    print("| "+"  "*38+"|", file=out)
+    print("| overall anisotropic scale matrix (Cartesian basis; B11,B22,B33,B12,B13,B23):|", file=out)
     c = ","
     line4 = "| ("+b0+c+b1+c+b2+c+b3+c+b4+c+b5+"); trace/3= "+b_iso
     np = 79 - (len(line4) + 1)
     line4 = line4 + " "*np + "|"
-    print >> out, line4
+    print(line4, file=out)
     out.flush()
 
 

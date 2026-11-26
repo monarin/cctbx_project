@@ -42,6 +42,7 @@ namespace {
 #endif
       IOTBX_LOC(fp)
       IOTBX_LOC(fdp)
+      IOTBX_LOC(resolution)
       IOTBX_LOC(i_seq)
       IOTBX_LOC(tmp)
       IOTBX_LOC(have_sentinel)
@@ -148,6 +149,15 @@ namespace {
       self.data->fdp = new_fdp;
     }
 
+    static double
+    get_resolution(w_t const& self) { return self.data->resolution; }
+
+    static void
+    set_resolution(w_t const& self, double new_resolution)
+    {
+      self.data->resolution = new_resolution;
+    }
+
     static unsigned
     get_i_seq(w_t const& self) { return self.data->i_seq; }
 
@@ -176,31 +186,14 @@ namespace {
     IOTBX_PDB_HIERARCHY_DATA_WRAPPERS_SMALL_STR_GET_SET(charge)
 
     static
-    boost::python::object
+    boost::python::str
     format_atom_record(
       w_t const& self,
       const char* replace_floats_with)
     {
-#ifdef IS_PY3K
-      boost::python::handle<> str_hdl(PyBytes_FromStringAndSize(0, 81));
-      PyObject* str_obj = str_hdl.get();
-      char* str_begin = PyBytes_AS_STRING(str_obj);
-#else
-      boost::python::handle<> str_hdl(PyString_FromStringAndSize(0, 81));
-      PyObject* str_obj = str_hdl.get();
-      char* str_begin = PyString_AS_STRING(str_obj);
-#endif
-      unsigned str_len = self.format_atom_record(
-        str_begin, 0, replace_floats_with);
-      str_hdl.release();
-#ifdef IS_PY3K
-      if (_PyBytes_Resize(&str_obj, static_cast<int>(str_len)) != 0) {
-#else
-      if (_PyString_Resize(&str_obj, static_cast<int>(str_len)) != 0) {
-#endif
-        boost::python::throw_error_already_set();
-      }
-      return boost::python::object(boost::python::handle<>(str_obj));
+      std::string result = self.format_atom_record(
+        0, replace_floats_with);
+      return static_cast<boost::python::str>(result);
     }
 
 #ifdef IS_PY3K
@@ -218,7 +211,8 @@ namespace {
       if (_PyBytes_Resize(&str_obj, static_cast<int>(str_len)) != 0) { \
         boost::python::throw_error_already_set(); \
       } \
-      return boost::python::object(boost::python::handle<>(str_obj)); \
+      return boost::python::object(boost::python::handle<>( \
+        PyUnicode_FromEncodedObject(str_obj, "ascii", "strict"))); \
     }
 
     IOTBX_LOC(sigatm)
@@ -279,7 +273,12 @@ namespace {
 #endif
         boost::python::throw_error_already_set();
       }
+#ifdef IS_PY3K
+      return boost::python::object(boost::python::handle<>(
+        PyUnicode_FromEncodedObject(str_obj, "ascii", "strict")));
+#else
       return boost::python::object(boost::python::handle<>(str_obj));
+#endif
     }
 
     // not inline to work around bug in
@@ -309,6 +308,7 @@ namespace {
 #endif
         .def("set_fp", set_fp, (arg("new_fp")), return_self<>())
         .def("set_fdp", set_fdp, (arg("new_fdp")), return_self<>())
+        .def("set_resolution", set_resolution, (arg("new_resolution")), return_self<>())
         .def("set_hetero", set_hetero, (arg("new_hetero")), return_self<>())
         .def("set_serial", set_serial, (arg("new_serial")), return_self<>())
         .def("set_name", set_name, (arg("new_name")), return_self<>())
@@ -337,6 +337,8 @@ namespace {
           make_function(get_fp), make_function(set_fp))
         .add_property("fdp",
           make_function(get_fdp), make_function(set_fdp))
+        .add_property("resolution",
+          make_function(get_resolution), make_function(set_resolution))
         .add_property("i_seq", make_function(get_i_seq))
         .add_property("tmp",
           make_function(get_tmp), make_function(set_tmp))
@@ -386,6 +388,9 @@ namespace {
         .def("quote", &w_t::quote, (arg("full")=false))
         .def("fetch_labels", &w_t::fetch_labels)
         .def("element_is_hydrogen", &w_t::element_is_hydrogen)
+        .def("element_is_positive_ion", &w_t::element_is_positive_ion)
+        .def("element_is_negative_ion", &w_t::element_is_negative_ion)
+        .def("element_is_ion", &w_t::element_is_ion)
         .def("determine_chemical_element_simple",
           &w_t::determine_chemical_element_simple)
         .def("set_chemical_element_simple_if_necessary",
@@ -440,8 +445,8 @@ namespace {
       /* HY36_WIDTH_4_MAX */ 2436111)
     IOTBX_LOC_GET(resseq)
     IOTBX_LOC_GET_SET(icode)
-    IOTBX_LOC_GET_SET(altloc)
-    IOTBX_LOC_GET_SET(resname)
+    // IOTBX_LOC_GET_SET(altloc)
+    // IOTBX_LOC_GET_SET(resname)
 
 #undef IOTBX_LOC_GET
 #undef IOTBX_LOC_SET
@@ -469,6 +474,8 @@ namespace {
 
     IOTBX_LOC_GET_SET_STD_STRING(model_id)
     IOTBX_LOC_GET_SET_STD_STRING(chain_id)
+    IOTBX_LOC_GET_SET_STD_STRING(resname)
+    IOTBX_LOC_GET_SET_STD_STRING(altloc)
 
 #undef IOTBX_LOC_GET_STD_STRING
 #undef IOTBX_LOC_SET_STD_STRING

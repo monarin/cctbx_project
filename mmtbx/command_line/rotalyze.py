@@ -1,67 +1,50 @@
+"""Validate protein sidechain rotamers"""
+from __future__ import absolute_import, division, print_function
 # LIBTBX_SET_DISPATCHER_NAME phenix.rotalyze
 # LIBTBX_SET_DISPATCHER_NAME molprobity.rotalyze
 # LIBTBX_PRE_DISPATCHER_INCLUDE_SH export PHENIX_GUI_ENVIRONMENT=1
 
-from __future__ import division
-import mmtbx.validation.rotalyze
-import iotbx.phil
-from libtbx.utils import Usage
 import sys
 
-def get_master_phil():
-  return iotbx.phil.parse(input_string="""
-    include scope mmtbx.validation.molprobity_cmdline_phil_str
-    show_errors = False
-      .type = bool
-      .help = '''Print out errors'''
-    wxplot = False
-      .type = bool
-      .help = Display interactive plots (requires wxPython and Matplotlib)
-""", process_includes=True)
+from iotbx.cli_parser import CCTBXParser
+from libtbx.utils import multi_out, show_total_time
+from mmtbx.programs import rotalyze
+from iotbx.cli_parser import run_program
 
-usage_string = """\
-phenix.rotalyze file.pdb [params.eff] [options ...]
+# =============================================================================
+def old_run(args):
 
-Options:
+  # create parser
+  logger = multi_out()
+  logger.register('stderr', sys.stderr)
+  logger2 = multi_out()
+  logger2.register('stdout', sys.stdout)
 
-  model=input_file        input PDB file
-  outliers_only=False   only print outliers
-  verbose=False         verbose text output
+  parser = CCTBXParser(
+    program_class=rotalyze.Program,
+    logger=logger)
+  namespace = parser.parse_args(sys.argv[1:])
 
-Example:
+  # start program
+  print('Starting job', file=logger)
+  print('='*79, file=logger)
+  task = rotalyze.Program(
+    parser.data_manager, parser.working_phil.extract(), logger=logger2)
 
-  phenix.rotalyze model=1ubq.pdb outliers_only=True
-"""
+  # validate inputs
+  task.validate()
 
-def run (args, out=sys.stdout, quiet=False) :
-  cmdline = iotbx.phil.process_command_line_with_files(
-    args=args,
-    master_phil=get_master_phil(),
-    pdb_file_def="model",
-    usage_string=usage_string)
-  params = cmdline.work.extract()
-  if (params.model is None) :
-    raise Usage(usage_string)
-  pdb_in = cmdline.get_file(params.model, force_type="pdb")
-  hierarchy = pdb_in.file_object.hierarchy
-  result = mmtbx.validation.rotalyze.rotalyze(
-    pdb_hierarchy=hierarchy,
-    data_version="8000",#params.data_version,
-    show_errors=params.show_errors,
-    outliers_only=params.outliers_only,
-    out=out,
-    quiet=quiet)
-  if params.verbose:
-    result.show_old_output(out=out, verbose=True)
-  if params.wxplot :
-    try :
-      import wxtbx.app
-    except ImportError, e :
-      raise Sorry("wxPython not available.")
-    else :
-      app = wxtbx.app.CCTBXApp(0)
-      result.display_wx_plots()
-      app.MainLoop()
+  # run program
+  task.run()
 
-if (__name__ == "__main__") :
-  run(sys.argv[1:])
+  # stop timer
+  print('', file=logger)
+  print('='*79, file=logger)
+  print('Job complete', file=logger)
+  show_total_time(out=logger)
+
+# =============================================================================
+if __name__ == '__main__':
+  #run(sys.argv[1:])
+  run_program(program_class=rotalyze.Program, hide_parsing_output=True)
+

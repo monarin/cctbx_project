@@ -1,6 +1,7 @@
-from __future__ import division
+from __future__ import absolute_import, division, print_function
 
 import os
+import shlex
 import subprocess
 import time
 
@@ -47,7 +48,7 @@ class NotSubmitted(object):
   @staticmethod
   def is_finished():
 
-    raise RuntimeError, "job has not been submitted yet"
+    raise RuntimeError("job has not been submitted yet")
 
 
   @staticmethod
@@ -59,25 +60,25 @@ class NotSubmitted(object):
   @staticmethod
   def terminate():
 
-    raise RuntimeError, "job has not been submitted yet"
+    raise RuntimeError("job has not been submitted yet")
 
 
   @staticmethod
   def exit_code():
 
-    raise RuntimeError, "job has not been submitted yet"
+    raise RuntimeError("job has not been submitted yet")
 
 
   @staticmethod
   def outcome(timeout, polltime):
 
-    raise RuntimeError, "job has not been submitted yet"
+    raise RuntimeError("job has not been submitted yet")
 
 
   @staticmethod
   def cleanup():
 
-    raise RuntimeError, "job has not been submitted yet"
+    raise RuntimeError("job has not been submitted yet")
 
 
 class Finished(object):
@@ -252,7 +253,7 @@ class Synchronous(JobStatus):
     if stdout is None or stderr is None:
       stdout = self.process.stdout.read()
       stderr = self.process.stderr.read()
-      raise errors.AbnormalExitError, "Queue error:%s\n%s" % ( stdout, stderr )
+      raise errors.AbnormalExitError("Queue error:%s\n%s" % ( stdout, stderr ))
 
     return Finished( stdout = stdout, stderr = stderr, exitcode = exitcode )
 
@@ -345,8 +346,8 @@ class Asynchronous(JobStatus):
     try:
       process = subprocess.Popen( self.qdel + [ self.jobid ] )
 
-    except OSError, e:
-      raise errors.ExecutableError, "'%s %s': %s" % ( self.qdel, self.jobid, e )
+    except OSError as e:
+      raise errors.ExecutableError("'%s %s': %s" % ( self.qdel, self.jobid, e ))
 
     process.communicate()
 
@@ -359,7 +360,8 @@ class Asynchronous(JobStatus):
   @classmethod
   def script(cls, include, executable, script, cwd = "."):
 
-    return cls.SCRIPT % ( cwd, include, executable, script )
+    return cls.SCRIPT % (
+      shlex.quote( cwd ), shlex.quote( include ), executable, script )
 
 
 class StdStreamStrategy(Asynchronous):
@@ -370,7 +372,7 @@ class StdStreamStrategy(Asynchronous):
   SCRIPT = \
 """\
 cd %s
-source %s
+. %s
 %s 2>&1 << EOF
 %s
 EOF
@@ -411,7 +413,7 @@ class SlurmStdStreamStrategy(StdStreamStrategy):
 """\
 #!/bin/sh
 cd %s
-source %s
+. %s
 srun %s 2>&1 << EOF
 %s
 EOF
@@ -428,7 +430,7 @@ class AccountingStrategy(Asynchronous):
   SCRIPT = \
 """\
 cd %s
-source %s
+. %s
 %s << EOF
 %s
 EOF
@@ -441,16 +443,18 @@ EOF
       process = subprocess.Popen(
         [ "qacct", "-j", self.jobid ],
         stdout = subprocess.PIPE,
-        stderr = subprocess.PIPE
+        stderr = subprocess.PIPE,
+        encoding = "utf-8",
+        errors = "replace",
         )
 
-    except OSError, e:
-      raise errors.ExecutableError, "'qacct -j %s': %s" % ( self.jobid, e )
+    except OSError as e:
+      raise errors.ExecutableError("'qacct -j %s': %s" % ( self.jobid, e ))
 
     ( out, err ) = process.communicate()
 
     if process.poll():
-      raise errors.AbnormalExitError, "Accounting error:\n%s" % err
+      raise errors.AbnormalExitError("Accounting error:\n%s" % err)
 
     exit_code = extract_exit_code_text( output = out )
 
@@ -472,7 +476,7 @@ def extract_exit_code_text(output):
       return exit_code
 
   else:
-    raise errors.ExtractionError, "Unexpected output: %r" % output
+    raise errors.ExtractionError("Unexpected output: %r" % output)
 
 
 class LogfileStrategy(Asynchronous):
@@ -482,9 +486,9 @@ class LogfileStrategy(Asynchronous):
 
   SCRIPT = \
 """\
-cd %s
 #!/bin/sh
-source %s
+cd %s
+. %s
 %s << EOF
 %s
 EOF

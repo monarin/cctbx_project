@@ -1,12 +1,12 @@
-from __future__ import division, print_function
 '''
-This file contains the data labels used in CIF and MTZ formats and a mapping
+Data labels used in CIF and MTZ formats and a mapping
 between the two formats
 
 References:
 http://mmcif.wwpdb.org/dictionaries/mmcif_pdbx_v50.dic/Categories/refln.html
 http://www.ccp4.ac.uk/html/cif2mtz.html
 '''
+from __future__ import absolute_import, division, print_function
 
 # =============================================================================
 # intensities
@@ -19,8 +19,10 @@ phenix_to_cif_intensities = {
   'SIGIOBS(+)': '_refln.pdbx_I_plus_sigma',
   'IOBS(-)': '_refln.pdbx_I_minus',
   'SIGIOBS(-)': '_refln.pdbx_I_minus_sigma',
-  'I-obs': '_refln.F_squared_meas',
-  'SIGI-obs': '_refln.F_squared_sigma',
+  # 'I-obs': '_refln.F_squared_meas',        # obsoleted
+  # 'SIGI-obs': '_refln.F_squared_sigma',    # obsoleted
+  'I-obs': '_refln.intensity_meas',
+  'SIGI-obs': '_refln.intensity_sigma',
   'I-obs(+)': '_refln.pdbx_I_plus',
   'SIGI-obs(+)': '_refln.pdbx_I_plus_sigma',
   'I-obs(-)': '_refln.pdbx_I_minus',
@@ -136,22 +138,35 @@ ccp4_to_cif_labels_dict.update(ccp4_to_cif_rfree)
 
 # =============================================================================
 # separate MTZ and CIF labels
-mtz_intensity_labels = set(phenix_to_cif_intensities.keys() +
-                           ccp4_to_cif_intensities.keys())
-cif_intensity_labels = set(phenix_to_cif_intensities.values() +
-                           ccp4_to_cif_intensities.values())
-mtz_amplitude_labels = set(phenix_to_cif_amplitudes.keys() +
-                           ccp4_to_cif_amplitudes.keys())
-cif_amplitude_labels = set(phenix_to_cif_amplitudes.values() +
-                           ccp4_to_cif_amplitudes.values())
-mtz_map_coefficient_labels = set(phenix_to_cif_map_coefficients.keys() +
-                                 ccp4_to_cif_map_coefficients.keys())
-cif_map_coefficient_labels = set(phenix_to_cif_map_coefficients.values() +
-                                 ccp4_to_cif_map_coefficients.values())
-mtz_HL_labels = set(phenix_to_cif_HL.keys() + ccp4_to_cif_HL.keys())
-cif_HL_labels = set(phenix_to_cif_HL.values() + ccp4_to_cif_HL.values())
-mtz_rfree_labels = set(phenix_to_cif_rfree.keys() + ccp4_to_cif_rfree.keys())
-cif_rfree_labels = set(phenix_to_cif_rfree.values() + ccp4_to_cif_rfree.values())
+mtz_intensity_labels = set(phenix_to_cif_intensities.keys())
+mtz_intensity_labels.update(ccp4_to_cif_intensities.keys())
+
+cif_intensity_labels = set(phenix_to_cif_intensities.values())
+cif_intensity_labels.update(ccp4_to_cif_intensities.values())
+
+mtz_amplitude_labels = set(phenix_to_cif_amplitudes.keys())
+mtz_amplitude_labels.update(ccp4_to_cif_amplitudes.keys())
+
+cif_amplitude_labels = set(phenix_to_cif_amplitudes.values())
+cif_amplitude_labels.update(ccp4_to_cif_amplitudes.values())
+
+mtz_map_coefficient_labels = set(phenix_to_cif_map_coefficients.keys())
+mtz_map_coefficient_labels.update(ccp4_to_cif_map_coefficients.keys())
+
+cif_map_coefficient_labels = set(phenix_to_cif_map_coefficients.values())
+cif_map_coefficient_labels.update(ccp4_to_cif_map_coefficients.values())
+
+mtz_HL_labels = set(phenix_to_cif_HL.keys())
+mtz_HL_labels.update(ccp4_to_cif_HL.keys())
+
+cif_HL_labels = set(phenix_to_cif_HL.values())
+cif_HL_labels.update(ccp4_to_cif_HL.values())
+
+mtz_rfree_labels = set(phenix_to_cif_rfree.keys())
+mtz_rfree_labels.update(ccp4_to_cif_rfree.keys())
+
+cif_rfree_labels = set(phenix_to_cif_rfree.values())
+cif_rfree_labels.update(ccp4_to_cif_rfree.values())
 
 # =============================================================================
 # check new dictionary matches old dictionary (needs old version of
@@ -161,3 +176,8 @@ cif_rfree_labels = set(phenix_to_cif_rfree.values() + ccp4_to_cif_rfree.values()
 
 #   assert (phenix_to_cif_labels_dict == mtz_as_cif.phenix_to_cif_labels_dict)
 #   assert (ccp4_to_cif_labels_dict == mtz_as_cif.ccp4_to_cif_labels_dict)
+def ccp4_label_from_cif(ciflabel):
+  for mtzlabl,ciflabl in ccp4_to_cif_labels_dict.items():
+    if ciflabel==ciflabl:
+      return mtzlabl
+  return None

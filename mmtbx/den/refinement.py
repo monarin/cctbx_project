@@ -1,4 +1,4 @@
-from __future__ import division
+from __future__ import absolute_import, division, print_function
 from mmtbx import utils
 from mmtbx.dynamics import simulated_annealing
 from mmtbx.refinement import tardy
@@ -6,7 +6,7 @@ from libtbx import easy_mp, Auto
 from mmtbx.refinement import print_statistics
 from mmtbx.refinement import adp_refinement
 from cctbx.array_family import flex
-from cStringIO import StringIO
+from six.moves import cStringIO as StringIO
 import sys, random
 from mmtbx.refinement import geometry_minimization
 
@@ -39,7 +39,7 @@ class manager(object):
     den_manager = model.restraints_manager. \
       geometry.den_manager
     print_statistics.make_header("DEN refinement", out=self.log)
-    pdb_hierarchy = self.model.get_hierarchy(sync_with_xray_structure=True)
+    pdb_hierarchy = self.model.get_hierarchy()
     if den_manager.get_n_proxies() == 0:
       print_statistics.make_sub_header(
         "DEN restraint nework", out = self.log)
@@ -58,16 +58,15 @@ class manager(object):
     #DEN refinement start, turn on
     if params.den.optimize:
       grid = den_manager.get_optimization_grid()
-      print >> log, \
-        "Running DEN torsion optimization on %d processors..." % \
-        params.main.nproc
+      print("Running DEN torsion optimization on %d processors..." % \
+        self.nproc, file=log)
     else:
       grid = [(params.den.gamma, params.den.weight)]
     grid_results = []
     grid_so = []
 
     if "torsion" in params.den.annealing_type:
-      print >> self.log, "Running torsion simulated annealing"
+      print("Running torsion simulated annealing", file=self.log)
       if ( (params.den.optimize) and
            ( (self.nproc is Auto) or (self.nproc > 1) )):
         stdout_and_results = easy_mp.pool_map(
@@ -79,7 +78,7 @@ class manager(object):
           if (r is None):
             raise RuntimeError(("DEN weight optimization failed:"+
               "\n%s\nThis is a "+
-              "serious error; please contact bugs@phenix-online.org.") % so)
+              "serious error; please contact help@phenix-online.org.") % so)
           grid_so.append(so)
           grid_results.append(r)
       else:
@@ -89,7 +88,7 @@ class manager(object):
           grid_results.append(result)
       self.show_den_opt_summary_torsion(grid_results)
     elif "cartesian" in params.den.annealing_type:
-      print >> self.log, "Running Cartesian simulated annealing"
+      print("Running Cartesian simulated annealing", file=self.log)
       if ( (params.den.optimize) and
            ( (self.nproc is Auto) or (self.nproc > 1) )):
         stdout_and_results = easy_mp.pool_map(
@@ -101,7 +100,7 @@ class manager(object):
           if (r is None):
             raise RuntimeError(("DEN weight optimization failed:"+
               "\n%s\nThis is a "+
-              "serious error; please contact bugs@phenix-online.org.") % so)
+              "serious error; please contact help@phenix-online.org.") % so)
           grid_so.append(so)
           grid_results.append(r)
       else:
@@ -129,12 +128,12 @@ class manager(object):
         best_so_i = i
     assert best_xray_structure is not None
     if params.den.optimize:
-      print >> self.log, "\nbest gamma: %.1f" % best_gamma
-      print >> self.log, "best weight: %.1f\n" % best_weight
+      print("\nbest gamma: %.1f" % best_gamma, file=self.log)
+      print("best weight: %.1f\n" % best_weight, file=self.log)
       if params.den.verbose:
         if len(grid_so) >= (best_so_i+1):
-          print >> self.log, "\nBest annealing results:\n"
-          print >> self.log, grid_so[best_so_i]
+          print("\nBest annealing results:\n", file=self.log)
+          print(grid_so[best_so_i], file=self.log)
     fmodels.fmodel_xray().xray_structure.replace_scatterers(
       best_xray_structure.deep_copy())
     fmodels.update_xray_structure(
@@ -185,8 +184,8 @@ class manager(object):
         local_log = StringIO()
     else:
       local_log = self.log
-    print >> self.log, "  ...trying gamma %.1f, weight %.1f" % (
-      gamma_local, weight_local)
+    print("  ...trying gamma %.1f, weight %.1f" % (
+      gamma_local, weight_local), file=self.log)
     while cycle < num_den_cycles:
       #if self.model.restraints_manager.geometry.\
       #     generic_restraints_manager.den_manager.current_cycle == \
@@ -194,13 +193,13 @@ class manager(object):
       #     generic_restraints_manager.den_manager.torsion_mid_point+1:
       #  self.params.tardy.\
       #    prolsq_repulsion_function_changes.k_rep = 1.0
-      print >> local_log, "DEN cycle %d" % (cycle+1)
+      print("DEN cycle %d" % (cycle+1), file=local_log)
       #print >> local_log, "Random seed: %d" % flex.get_random_seed()
       r_free = self.fmodels.fmodel_xray().r_free()
-      print >> local_log, "rfree at start of SA cycle: %.4f" % r_free
-      print >> local_log, "k_rep = %.2f" % \
+      print("rfree at start of SA cycle: %.4f" % r_free, file=local_log)
+      print("k_rep = %.2f" % \
         self.params.tardy.\
-          prolsq_repulsion_function_changes.k_rep
+          prolsq_repulsion_function_changes.k_rep, file=local_log)
       tardy.run(
         fmodels=self.fmodels,
         model=self.model,
@@ -219,7 +218,7 @@ class manager(object):
       self.model.restraints_manager.geometry.\
           den_manager.current_cycle += 1
       r_free = self.fmodels.fmodel_xray().r_free()
-      print >> local_log, "rfree at end of SA cycle: %f" % r_free
+      print("rfree at end of SA cycle: %f" % r_free, file=local_log)
     r_free = self.fmodels.fmodel_xray().r_free()
     step_xray_structure = self.fmodels.fmodel_xray().\
       xray_structure.deep_copy_scatterers().scatterers()
@@ -266,12 +265,12 @@ class manager(object):
         local_log = StringIO()
     else:
       local_log = self.log
-    print >> self.log, "  ...trying gamma %f, weight %f" % (
-      gamma_local, weight_local)
+    print("  ...trying gamma %f, weight %f" % (
+      gamma_local, weight_local), file=self.log)
     while cycle < num_den_cycles:
-      print >> local_log, "DEN cycle %s" % (cycle+1)
+      print("DEN cycle %s" % (cycle+1), file=local_log)
       r_free = self.fmodels.fmodel_xray().r_free()
-      print >> local_log, "rfree at start of SA cycle: %f" % r_free
+      print("rfree at start of SA cycle: %f" % r_free, file=local_log)
       simulated_annealing.manager(
         params         = self.params.simulated_annealing,
         target_weights = self.target_weights,
@@ -290,7 +289,7 @@ class manager(object):
       self.model.restraints_manager.geometry.\
           den_manager.current_cycle += 1
       r_free = self.fmodels.fmodel_xray().r_free()
-      print >> local_log, "rfree at end of SA cycle: %f" % r_free
+      print("rfree at end of SA cycle: %f" % r_free, file=local_log)
     r_free = self.fmodels.fmodel_xray().r_free()
     step_xray_structure = self.fmodels.fmodel_xray().\
       xray_structure.deep_copy_scatterers().scatterers()
@@ -305,44 +304,44 @@ class manager(object):
   def show_den_opt_summary_torsion(self, grid_results):
     print_statistics.make_header(
       "DEN torsion weight optimization results", out=self.log)
-    print >>self.log,"|---------------------------------------"+\
-                "--------------------------------------|"
-    print >>self.log,"|  Gamma    Weight    R-free            "+\
-                "                                      |"
+    print("|---------------------------------------"+\
+                "--------------------------------------|", file=self.log)
+    print("|  Gamma    Weight    R-free            "+\
+                "                                      |", file=self.log)
     for result in grid_results:
       if result == None:
         raise RuntimeError("Parallel DEN job failed: %s" % str(out))
       cur_gamma = result[0]
       cur_weight = result[1]
       cur_r_free = result[2]
-      print >> self.log, "| %6.1f    %6.1f    %6.4f              " %\
+      print("| %6.1f    %6.1f    %6.4f              " %\
         (cur_gamma,
          cur_weight,
          cur_r_free)+\
-                    "                                    |"
-    print >>self.log,"|---------------------------------------"+\
-                "--------------------------------------|"
+                    "                                    |", file=self.log)
+    print("|---------------------------------------"+\
+                "--------------------------------------|", file=self.log)
 
   def show_den_opt_summary_cartesian(self, grid_results):
     print_statistics.make_header(
       "DEN Cartesian weight optimization results", out=self.log)
-    print >>self.log,"|---------------------------------------"+\
-                "--------------------------------------|"
-    print >>self.log,"|  Gamma    Weight    R-free            "+\
-                "                                      |"
+    print("|---------------------------------------"+\
+                "--------------------------------------|", file=self.log)
+    print("|  Gamma    Weight    R-free            "+\
+                "                                      |", file=self.log)
     for result in grid_results:
       if result == None:
         raise RuntimeError("Parallel DEN job failed: %s" % str(out))
       cur_gamma = result[0]
       cur_weight = result[1]
       cur_r_free = result[2]
-      print >> self.log, "| %6.1f    %6.1f    %6.4f              " %\
+      print("| %6.1f    %6.1f    %6.4f              " %\
         (cur_gamma,
          cur_weight,
          cur_r_free)+\
-                    "                                    |"
-    print >>self.log,"|---------------------------------------"+\
-                "--------------------------------------|"
+                    "                                    |", file=self.log)
+    print("|---------------------------------------"+\
+                "--------------------------------------|", file=self.log)
 
   def bulk_solvent_and_scale(self, log):
     self.fmodels.update_all_scales(
@@ -386,22 +385,28 @@ class manager(object):
       nproc                  = 1)
 
   def minimize(self, ca_only=False):
-    pdb_hierarchy = self.model.get_hierarchy(sync_with_xray_structure=True)
+    sel = "all"
+    restraint_sites_cart = self.model.get_sites_cart().deep_copy()
     if ca_only:
-      ca_selection = pdb_hierarchy.get_peptide_c_alpha_selection()
       restraint_sites_cart = self.model.get_sites_cart().\
-        deep_copy().select(ca_selection)
-      restraint_selection = ca_selection
-    else:
-      restraint_sites_cart = self.model.get_sites_cart().deep_copy()
-      restraint_selection = pdb_hierarchy.atoms().extract_i_seq()
-    self.model.restraints_manager.geometry.\
-        add_reference_coordinate_restraints_in_place(
-            pdb_hierarchy=pdb_hierarchy,
-            selection=restraint_selection)
+          deep_copy().select(self.model.get_atom_selection_cache().selection("name CA"))
+      sel = "name CA"
+    self.model.set_reference_coordinate_restraints(
+        ref_model=self.model,
+        selection=sel,
+        exclude_outliers=False)
     ##### sanity check #####
-    assert(self.model.restraints_manager.geometry.
-           get_n_reference_coordinate_proxies() >= len(restraint_sites_cart))
+    # How this check was supposed to hold up when ca_only=True???
+    # When ca_only=True, number of restraints will be less than number of atoms.
+    # Good that users never change defaults (minimize_c_alpha_only = False).
+    #
+    # XXX finally, removing this assertion. On top of c_alpha_only case,
+    # it also fails (rightfully) when there are water molecules in the model,
+    # they are excluded. The same goes to hydrogens, but it seems no one yet
+    # tried den_refine for model with hydrogens on.
+    # n_rcp = self.model.get_restraints_manager().geometry.get_n_reference_coordinate_proxies()
+    # n_sc = len(restraint_sites_cart)
+    # assert n_rcp >= n_sc, "%d >= %d fail" % (n_rcp, n_sc)
     ########################
 
     # selection = self.model.selection_moving
@@ -416,7 +421,8 @@ class manager(object):
         angle                          = True,
         dihedral                       = True,
         chirality                      = True,
-        planarity                      = True)
+        planarity                      = True,
+        log                            = self.log)
     self.model.set_sites_cart_from_hierarchy()
 
     utils.assert_xray_structures_equal(

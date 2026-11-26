@@ -1,9 +1,11 @@
-from __future__ import division
+from __future__ import absolute_import, division, print_function
 import os.path
+from libtbx.utils import to_bytes
+from six.moves import range
 
 def encode(data):
   edata = ""
-  for i in xrange(len(data)):
+  for i in range(len(data)):
     edata += "%.2x" % ord(data[i])
   return edata
 
@@ -17,10 +19,10 @@ def create_encoded(image_file_name):
      % (name, w, h))
   encoded = encode(img.GetData())
   while (len(encoded) > 0):
-    print encoded[:78]+"\\"
+    print(encoded[:78]+"\\")
     encoded = encoded[78:]
-  print '""")'
-  print
+  print('""")')
+  print()
 
 class img_data:
 
@@ -42,16 +44,16 @@ class img_data:
                  "8":  8, "9":  9, "a": 10, "b": 11,
                  "c": 12, "d": 13, "e": 14, "f": 15}
     data = ""
-    for i in xrange(0, len(edata), 2):
+    for i in range(0, len(edata), 2):
       data += chr(hex_chars[edata[i]] * 16 + hex_chars[edata[i+1]])
     return data
 
   def as_wx_Bitmap(self):
     import wx
     w,h = self.get_size()
-    data = self.get_data()
+    data = to_bytes(self.get_data())
     mask = self.get_mask()
-    img = wx.EmptyImage(w, h)
+    img = wx.Image(w, h)
     img.SetData(data)
     if (mask >= 0):
       img.SetMaskColour(ord(data[mask]), ord(data[mask+1]), ord(data[mask+2]))
@@ -60,7 +62,6 @@ class img_data:
 
 if (__name__ == "__main__"):
   import sys
-  print 'from gltbx.images import img_data\n'
+  print('from gltbx.images import img_data\n')
   for arg in sys.argv[1:]:
     create_encoded(arg)
-

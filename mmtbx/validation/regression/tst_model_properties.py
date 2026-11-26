@@ -1,15 +1,16 @@
 
-from __future__ import division
+from __future__ import absolute_import, division, print_function
+from iotbx.pdb import hierarchy
 from mmtbx.monomer_library import pdb_interpretation
 from mmtbx.monomer_library import server
 from mmtbx.validation import model_properties
-import iotbx.pdb.hierarchy
+import iotbx.pdb
 from libtbx.test_utils import show_diff, approx_equal
 from libtbx.easy_pickle import loads, dumps
 from libtbx.utils import null_out
-from cStringIO import StringIO
+from six.moves import cStringIO as StringIO
 
-def exercise_1 () :
+def exercise_1():
   pdb_raw = """\
 ATOM   1134  N   LYS A  82       5.933  36.285  21.572  1.00 70.94           N
 ATOM   1135  CA  LYS A  82       6.564  37.423  20.931  1.00 76.69           C
@@ -98,17 +99,18 @@ HETATM  124  O   HOH S   3     -25.334  18.357  18.032  0.00 20.00           O
 """
   mon_lib_srv = server.server()
   ener_lib = server.ener_lib()
-  pdb_in = iotbx.pdb.hierarchy.input(pdb_string=pdb_raw)
-  xrs = pdb_in.input.xray_structure_simple()
+  pdb_in = iotbx.pdb.input(source_info=None, lines=pdb_raw)
+  xrs = pdb_in.xray_structure_simple()
+  hierarchy = pdb_in.construct_hierarchy()
   processed_pdb_file = pdb_interpretation.process(
     mon_lib_srv=mon_lib_srv,
     ener_lib=ener_lib,
-    raw_records=pdb_in.hierarchy.as_pdb_string(crystal_symmetry=xrs),
+    raw_records=hierarchy.as_pdb_string(crystal_symmetry=xrs),
     crystal_symmetry=xrs,
     log=null_out())
-  pdb_in.hierarchy.atoms().reset_i_seq()
+  hierarchy.atoms().reset_i_seq()
   mstats = model_properties.model_statistics(
-    pdb_hierarchy=pdb_in.hierarchy,
+    pdb_hierarchy=hierarchy,
     xray_structure=xrs,
     all_chain_proxies=processed_pdb_file.all_chain_proxies,
     ignore_hd=True)
@@ -164,7 +166,7 @@ Waters:
   assert (out1.getvalue() == out2.getvalue())
   # now with ignore_hd=False
   mstats3 = model_properties.model_statistics(
-    pdb_hierarchy=pdb_in.hierarchy,
+    pdb_hierarchy=hierarchy,
     xray_structure=xrs,
     all_chain_proxies=processed_pdb_file.all_chain_proxies,
     ignore_hd=False)
@@ -176,7 +178,7 @@ Waters:
   assert (len(outliers) == 86)
   # test with all_chain_proxies undefined
   mstats4 = model_properties.model_statistics(
-    pdb_hierarchy=pdb_in.hierarchy,
+    pdb_hierarchy=hierarchy,
     xray_structure=xrs,
     all_chain_proxies=None,
     ignore_hd=False)
@@ -184,7 +186,7 @@ Waters:
   assert (len(outliers) == 86)
 
 # corner case: deuterium as ligand (from 3qza)
-def exercise_2 () :
+def exercise_2():
   pdb_raw = """\
 ATOM   6407  N   GLY A 388      -0.783   9.368 -16.436  1.00 51.96           N
 ATOM   6408  CA  GLY A 388      -0.227   9.888 -15.197  1.00 54.04           C
@@ -207,7 +209,7 @@ HETATM 6419  D2  DOD A1001      -4.625  -4.741 -37.845  1.00 14.81           D
   assert ("B_iso: mean =  15.2  max =  15.2  min =  15.2" in out.getvalue())
 
 # explicitly specified ligand selection
-def exercise_3 () :
+def exercise_3():
   pdb_raw = """\
 ATOM      1  CA  GLY A   1      -0.227   9.888 -15.197  1.00 54.04           C
 ATOM      2  CA  GLY A   2      -0.227   9.888 -15.197  1.00 54.04           C
@@ -232,18 +234,19 @@ HETATM   21  O3P SEP A  11       1.127  -0.614   3.002  1.00 20.00      A    O-1
 END"""
   mon_lib_srv = server.server()
   ener_lib = server.ener_lib()
-  pdb_in = iotbx.pdb.hierarchy.input(pdb_string=pdb_raw)
-  xrs = pdb_in.input.xray_structure_simple()
+  pdb_in = iotbx.pdb.input(source_info=None, lines=pdb_raw)
+  xrs = pdb_in.xray_structure_simple()
+  hierarchy = pdb_in.construct_hierarchy()
   processed_pdb_file = pdb_interpretation.process(
     mon_lib_srv=mon_lib_srv,
     ener_lib=ener_lib,
-    raw_records=pdb_in.hierarchy.as_pdb_string(crystal_symmetry=xrs),
+    raw_records=hierarchy.as_pdb_string(crystal_symmetry=xrs),
     crystal_symmetry=xrs,
     log=null_out())
-  pdb_in.hierarchy.atoms().reset_i_seq()
-  ligand_sel = pdb_in.hierarchy.atom_selection_cache().selection("resname SEP")
+  hierarchy.atoms().reset_i_seq()
+  ligand_sel = hierarchy.atom_selection_cache().selection("resname SEP")
   mstats = model_properties.model_statistics(
-    pdb_hierarchy=pdb_in.hierarchy,
+    pdb_hierarchy=hierarchy,
     xray_structure=xrs,
     all_chain_proxies=processed_pdb_file.all_chain_proxies,
     ligand_selection=ligand_sel,
@@ -255,7 +258,7 @@ END"""
   assert approx_equal(mstats.macromolecules.b_mean, 54.04)
   # now with just the raw selection string
   mstats = model_properties.model_statistics(
-    pdb_hierarchy=pdb_in.hierarchy,
+    pdb_hierarchy=hierarchy,
     xray_structure=xrs,
     all_chain_proxies=processed_pdb_file.all_chain_proxies,
     ligand_selection="resname SEP",
@@ -268,17 +271,18 @@ END"""
 def get_mstats(pdb_raw):
   mon_lib_srv = server.server()
   ener_lib = server.ener_lib()
-  pdb_in = iotbx.pdb.hierarchy.input(pdb_string=pdb_raw)
-  xrs = pdb_in.input.xray_structure_simple()
+  pdb_in = iotbx.pdb.input(source_info=None, lines=pdb_raw)
+  xrs = pdb_in.xray_structure_simple()
+  hierarchy = pdb_in.construct_hierarchy()
   processed_pdb_file = pdb_interpretation.process(
     mon_lib_srv=mon_lib_srv,
     ener_lib=ener_lib,
-    raw_records=pdb_in.hierarchy.as_pdb_string(crystal_symmetry=xrs),
+    raw_records=hierarchy.as_pdb_string(crystal_symmetry=xrs),
     crystal_symmetry=xrs,
     log=null_out())
-  pdb_in.hierarchy.atoms().reset_i_seq()
+  hierarchy.atoms().reset_i_seq()
   mstats = model_properties.model_statistics(
-    pdb_hierarchy=pdb_in.hierarchy,
+    pdb_hierarchy=hierarchy,
     xray_structure=xrs,
     all_chain_proxies=processed_pdb_file.all_chain_proxies,
     ignore_hd=True)
@@ -365,10 +369,10 @@ ATOM    139  HZ3BLYS A  82      11.621  39.269  18.944  0.50 73.75           H
   assert (len(mstats.all.different_occ) == 1)  # occupancies in residue differ
   return True
 
-if (__name__ == "__main__") :
+if (__name__ == "__main__"):
   exercise_1()
   exercise_2()
   exercise_3()
   test_zero_occupancy()
   test_partial_occupancy()
-  print "OK"
+  print("OK")

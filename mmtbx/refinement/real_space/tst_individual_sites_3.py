@@ -1,9 +1,10 @@
-from __future__ import division
+from __future__ import absolute_import, division, print_function
 from scitbx.array_family import flex
 from libtbx import group_args
 from libtbx.utils import user_plus_sys_time
 from mmtbx.refinement.real_space import individual_sites
 import mmtbx
+from six.moves import range
 
 pdb_str_answer = """\
 CRYST1   23.136   23.980   28.180  90.00  90.00  90.00 P 1
@@ -499,7 +500,7 @@ TER
 """
 
 def get_pdb_inputs(pdb_str, restraints):
-  ppf = mmtbx.utils.process_pdb_file_srv(log=False).process_pdb_files(
+  ppf = mmtbx.utils.process_pdb_file_srv().process_pdb_files(
     raw_records=pdb_str.splitlines())[0]
   xrs = ppf.xray_structure(show_summary = False)
   restraints_manager=None
@@ -533,12 +534,12 @@ def exercise():
   xrs_poor = pi_poor.xrs.deep_copy_scatterers()
   #
   d = xrs_good.distances(other=xrs_poor)
-  print d.min_max_mean().as_tuple()
+  print(d.min_max_mean().as_tuple())
   assert flex.max(d)>2
   assert flex.mean(d)>0.7
   #
   xrs_refined = xrs_poor
-  for i in xrange(3):
+  for i in range(3):
     ero = individual_sites.easy(
       map_data                    = map_data,
       xray_structure              = xrs_refined,
@@ -547,7 +548,7 @@ def exercise():
     xrs_refined = ero.xray_structure
   # comapre
   d = xrs_good.distances(other=xrs_refined)
-  print d.min_max_mean().as_tuple()
+  print(d.min_max_mean().as_tuple())
   assert flex.max(d)<0.15
   assert flex.mean(d)<0.03
   ero.pdb_hierarchy.write_pdb_file(file_name="refined.pdb",
@@ -556,5 +557,5 @@ def exercise():
 if(__name__ == "__main__"):
   timer = user_plus_sys_time()
   exercise()
-  print "Time: %6.2f" % timer.elapsed()
-  print "OK"
+  print("Time: %6.2f" % timer.elapsed())
+  print("OK")

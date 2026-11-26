@@ -1,4 +1,6 @@
-from __future__ import division
+from __future__ import absolute_import, division, print_function
+from six.moves import range
+from six.moves import zip
 
 '''
 Author      : Lyubimov, A.Y.
@@ -11,6 +13,7 @@ import wx
 import numpy as np
 from scitbx.array_family import flex
 
+import matplotlib as mpl
 from matplotlib import pyplot as plt
 from matplotlib.gridspec import GridSpec
 from matplotlib.backends.backend_wxagg import FigureCanvasWxAgg as FigureCanvas
@@ -113,14 +116,46 @@ class NoBarPlot(gctr.CtrlBase):
   def update_number(self, number):
     self.num_txt.SetLabel(str(number))
 
+
+class CommonUnitCellKey(object):
+  """Handle unit cell parameters when setting a common legend for histograms"""
+  sep = '\n'
+  symbols = ['a', 'b', 'c', r'$\alpha$', r'$\beta$', r'$\gamma$']
+  units = 3 * [r'$\AA$'] + 3 * [r'$^\circ$']
+
+  def __init__(self, name='', crystals=0):
+    self.name = name
+    self.crystals = crystals
+    self.means = []
+    self.stds = []
+
+  @property
+  def prefix(self):
+    return self.name + (' ' if self.name else '') + "(N: %d)" % self.crystals
+
+  @property
+  def line_list(self):
+    return ['%s: %.2f +/- %.2f%s' % (d, m, s, u) for d, m, s, u
+            in zip(self.symbols, self.means, self.stds, self.units)]
+
+  def lines(self, mask=6*(True,)):
+    return self.sep.join(line for line, m in zip(self.line_list, mask) if m)
+
+  @classmethod
+  def common_lines_of(cls, uc_keys):
+    line_lists = zip(*[uc_key.line_list for uc_key in uc_keys])
+    return [ll.count(ll[0]) == len(ll) for ll in line_lists] # true if all same
+
+
 class PopUpCharts(object):
   ''' Class to generate chargs and graphs that will appear in separate
   windows when user requests them, e.g. unit cell histogram chart '''
 
-  def __init__(self, interactive = True):
+  def __init__(self, interactive = True, figure = None):
     import matplotlib.pyplot as plt
     self.plt=plt
     self.interactive = interactive
+    self.figure = figure
 
   def reject_outliers(self, data, iqr_ratio = 1.5):
     eps = 1e-6
@@ -137,12 +172,28 @@ class PopUpCharts(object):
     #print "Rejecting", outliers.count(True), "out of", len(outliers)
     return outliers
 
-  def plot_uc_histogram(self, info_list, legend_list, extra_title = None, xsize = 10, ysize = 10, high_vis = False, iqr_ratio = 1.5, ranges = None, title = None):
+  @staticmethod
+  def hist_range(data, lim):
+    """ The range for a histogram of data: lim when the caller set one, else
+        None so numpy takes the data's own span, unless that span is too
+        narrow to divide into bins. A symmetry-fixed cell angle comes back
+        from the database as 90 plus floating-point noise, a span of a few
+        ulps, and numpy refuses to make bins out of it. Such data get the
+        range numpy gives identical values, half a unit either side. """
+    if lim is not None or len(data) == 0:
+      return lim
+    low, high = flex.min(data), flex.max(data)
+    if high - low < 1e-9 * max(abs(low), abs(high), 1.0):
+      mid = (low + high) / 2
+      return (mid - 0.5, mid + 0.5)
+    return None
+
+  def plot_uc_histogram(self, info_list, legend_list, extra_title = None, xsize = 10, ysize = 10, high_vis = False, iqr_ratio = 1.5, ranges = None, angle_ranges = None, title = None, image_fname=None, hist_scale=None):
     """
     Plot a 3x3 grid of plots showing unit cell dimensions.
     @param info list of lists of dictionaries. The outer list groups seperate lists
     of cells to be plotted in the same graph, where each dictionary describes one cell.
-    @param extra_title will be added to the title of the plot
+    @param extra_title if given will be appended to the title of the plot
     @param xsize if class initialized with not interacive, this is the x size of the
     plot to save in inches
     @param ysize as xsize
@@ -158,35 +209,36 @@ class PopUpCharts(object):
     else:
       alim = blim = clim = None
 
-    plot_ratio = max(min(xsize, ysize)/2.5, 3)
-    if high_vis:
-      text_ratio = plot_ratio*4
-      separator = "\n"
+    if angle_ranges is not None:
+      assert len(angle_ranges) == 6
+      allim = angle_ranges[0:2]
+      belim = angle_ranges[2:4]
+      galim = angle_ranges[4:6]
     else:
-      text_ratio = plot_ratio*3
-      separator = "\n"
+      allim = belim = galim = None
+
+    plot_ratio = max(min(xsize, ysize)/2.5, 3)
+    text_ratio = plot_ratio * (4 if high_vis else 3)
 
     # Initialize figure
-    fig = plt.figure(figsize=(xsize, ysize))
+    if self.figure:
+      fig = self.figure
+    else:
+      fig = plt.figure(figsize=(xsize, ysize))
     gsp = GridSpec(3, 4)
-    legend_sub_a = fig.add_subplot(gsp[3])
-    legend_sub_b = fig.add_subplot(gsp[7])
-    legend_sub_c = fig.add_subplot(gsp[11])
-    sub_ba = fig.add_subplot(gsp[0])
-    sub_cb = fig.add_subplot(gsp[1])
-    sub_ac = fig.add_subplot(gsp[2])
-    sub_a = fig.add_subplot(gsp[4])
-    sub_b = fig.add_subplot(gsp[5], sharey=sub_a)
-    sub_c = fig.add_subplot(gsp[6], sharey=sub_a)
-    sub_alpha = fig.add_subplot(gsp[8])
-    sub_beta = fig.add_subplot(gsp[9], sharey=sub_alpha)
-    sub_gamma = fig.add_subplot(gsp[10], sharey=sub_alpha)
+    sub_ba = fig.add_subplot(gsp[0, 0])
+    sub_cb = fig.add_subplot(gsp[0, 1])
+    sub_ac = fig.add_subplot(gsp[0, 2])
+    sub_a = fig.add_subplot(gsp[1, 0], sharex=sub_ba)
+    sub_b = fig.add_subplot(gsp[1, 1], sharex=sub_cb, sharey=sub_a)
+    sub_c = fig.add_subplot(gsp[1, 2], sharex=sub_ac, sharey=sub_a)
+    sub_alpha = fig.add_subplot(gsp[2, 0])
+    sub_beta = fig.add_subplot(gsp[2, 1], sharey=sub_alpha)
+    sub_gamma = fig.add_subplot(gsp[2, 2], sharey=sub_alpha)
+    sub_key = fig.add_subplot(gsp[:, 3])
     total = 0
     abc_hist_ylim = 0
-
-    legend_sub_a.axis('off')
-    legend_sub_b.axis('off')
-    legend_sub_c.axis('off')
+    legend_keys = []
 
     for legend, info in zip(legend_list, info_list):
       if len(info) == 0:
@@ -199,13 +251,20 @@ class PopUpCharts(object):
       beta = flex.double([i['beta'] for i in info])
       gamma = flex.double([i['gamma'] for i in info])
       if ranges is not None:
-        sel = (a >= alim[0]) & (a <= alim[1]) & (b >= blim[0]) & (b <= blim[1]) & (c >= clim[0]) & (c <= clim[1])
-        a = a.select(sel)
-        b = b.select(sel)
-        c = c.select(sel)
-        alpha = alpha.select(sel)
-        beta = beta.select(sel)
-        gamma = gamma.select(sel)
+        axis_sel = (a >= alim[0]) & (a <= alim[1]) & (b >= blim[0]) & (b <= blim[1]) & (c >= clim[0]) & (c <= clim[1])
+      else:
+        axis_sel = flex.bool(len(a), True)
+      if angle_ranges is not None:
+        angle_sel = (alpha >= allim[0]) & (alpha <= allim[1]) & (beta >= belim[0]) & (beta <= belim[1]) & (gamma >= galim[0]) & (gamma <= galim[1])
+      else:
+        angle_sel = flex.bool(len(a), True)
+      sel = axis_sel & angle_sel
+      a = a.select(sel)
+      b = b.select(sel)
+      c = c.select(sel)
+      alpha = alpha.select(sel)
+      beta = beta.select(sel)
+      gamma = gamma.select(sel)
 
       accepted = flex.bool(len(a), True)
       for d in [a, b, c, alpha, beta, gamma]:
@@ -221,37 +280,23 @@ class PopUpCharts(object):
 
       total += len(a)
       nbins = int(np.sqrt(len(a))) * 2
-      n_str = "N: %d "%len(a)
-
-      from matplotlib.ticker import FormatStrFormatter
       hists = []
-      for name, dimension, sub, lim in \
-        [('a', a, sub_a, alim), ('b', b, sub_b, blim), ('c', c, sub_c, clim)]:
-        stats = flex.mean_and_variance(dimension)
+      legend_key = CommonUnitCellKey(name=legend, crystals=len(a))
+
+      for (d, sub, lim) in [(a, sub_a, alim), (b, sub_b, blim), (c, sub_c, clim)]:
+        stats = flex.mean_and_variance(d)
         mean = stats.mean()
         try:
           stddev = stats.unweighted_sample_standard_deviation()
         except RuntimeError:
           raise Exception("Not enough data to produce a histogram")
-        varstr = "%.2f +/- %.2f"%(mean, stddev)
-        if len(legend) > 0:
-          dim_legend = legend + separator + varstr
-        else:
-          dim_legend = varstr
-        if len(info_list) > 1 and name == "a":
-          dim_legend = n_str + dim_legend
-        hist = sub.hist(dimension, nbins, normed=False,
-                 alpha=0.75, histtype='stepfilled', label = dim_legend, range = lim)
-        sub.set_xlabel("%s-edge (%s $\AA$)"%(name, varstr)).set_fontsize(text_ratio)
-        xloc = plt.MaxNLocator(5)
-        if not high_vis:
-          sub.xaxis.set_major_locator(xloc)
-          sub.xaxis.set_major_formatter(FormatStrFormatter("%5.1f"))
-        if name == 'a':
-          sub.set_ylabel('Number of images').set_fontsize(text_ratio)
-        else:
-          self.plt.setp(sub.get_yticklabels(), visible=False)
+        legend_key.means.append(mean)
+        legend_key.stds.append(stddev)
+        hist = sub.hist(d, nbins, alpha=0.75, histtype='stepfilled',
+                        label='placeholder-label', range=self.hist_range(d, lim))
         hists.append(hist)
+        if len(info_list) == 1:
+          sub.set_xlabel(legend_key.line_list[-1]).set_fontsize(text_ratio)
 
       abc_hist_ylim = max(1.2*max([max(h[0]) for h in hists]), abc_hist_ylim)
       sub_a.set_ylim([0, abc_hist_ylim])
@@ -261,82 +306,78 @@ class PopUpCharts(object):
          ('b', 'c', b, c, blim, clim, sub_cb),
          ('c', 'a', c, a, clim, alim, sub_ac)]:
         if len(info_list) == 1:
-          sub.hist2d(d1, d2, bins=100, range=[lim1, lim2] if ranges is not None else None)
+          hist_kwargs = {
+            'norm': mpl.colors.LogNorm() if hist_scale == "log" else None,
+            'range': [lim1, lim2] if ranges is not None else None}
+          sub.hist2d(d1, d2, bins=100, **hist_kwargs)
         else:
-          sub.plot(d1.as_numpy_array(), d2.as_numpy_array(), '.')
+          sub.plot(d1.as_numpy_array(), d2.as_numpy_array(), '.', alpha=0.1,
+                   markeredgewidth=0, markersize=2)
           if ranges is not None:
             sub.set_xlim(lim1)
             sub.set_ylim(lim2)
-        sub.set_xlabel("%s axis"%n1).set_fontsize(text_ratio)
-        sub.set_ylabel("%s axis"%n2).set_fontsize(text_ratio)
-        # plt.setp(sub.get_yticklabels(), visible=False)
+        sub.set_xlabel("%s axis" % n1).set_fontsize(text_ratio)
+        sub.set_ylabel("%s axis" % n2).set_fontsize(text_ratio)
 
-      for ax in (sub_a, sub_b, sub_c, sub_alpha, sub_beta, sub_gamma):
-        ax.tick_params(axis='both', which='both', left='off', right='off')
-        ax.set_yticklabels([])
-      for ax in (sub_ba, sub_cb, sub_ac):
-        ax.tick_params(axis='both', which='both', bottom='off', top='off', left='off', right='off')
-        ax.set_xticklabels([])
-        ax.set_yticklabels([])
-
-      for (name, angle, sub) in \
-        [(r'$\alpha$', alpha, sub_alpha),
-         (r'$\beta$', beta, sub_beta),
-         (r'$\gamma$', gamma, sub_gamma)]:
-        sub.hist(angle, nbins, normed=False,
-                 alpha=0.75, histtype='stepfilled')
+      for (angle, sub, lim) in [(alpha, sub_alpha, allim), (beta, sub_beta, belim), (gamma, sub_gamma, galim)]:
+        sub.hist(angle, nbins, alpha=0.75, histtype='stepfilled', range=self.hist_range(angle, lim))
         stats = flex.mean_and_variance(angle)
         mean = stats.mean()
         stddev = stats.unweighted_sample_standard_deviation()
-        sub.set_xlabel(r'%s (%.2f +/- %.2f$^\circ$)' % (name, mean, stddev)).set_fontsize(text_ratio)
-        xloc = plt.MaxNLocator(5)
-        if not high_vis:
-          sub.xaxis.set_major_locator(xloc)
-          sub.xaxis.set_major_formatter(FormatStrFormatter("%5.1f"))
-        if name == '\alpha':
-          sub.set_ylabel('Number of images').set_fontsize(text_ratio)
-        else:
-          self.plt.setp(sub.get_yticklabels(), visible=False)
+        legend_key.means.append(mean)
+        legend_key.stds.append(stddev)
+        if len(info_list) == 1:
+          sub.set_xlabel(legend_key.line_list[-1]).set_fontsize(text_ratio)
+      legend_keys.append(legend_key)
 
-    sub_b.xaxis.get_major_ticks()[0].label1.set_visible(False)
-    sub_b.xaxis.get_major_ticks()[-1].label1.set_visible(False)
-    sub_c.xaxis.get_major_ticks()[0].label1.set_visible(False)
-    sub_c.xaxis.get_major_ticks()[-1].label1.set_visible(False)
-    sub_ba.xaxis.get_major_ticks()[0].label1.set_visible(False)
-    sub_ba.xaxis.get_major_ticks()[-1].label1.set_visible(False)
-    sub_cb.xaxis.get_major_ticks()[0].label1.set_visible(False)
-    sub_cb.xaxis.get_major_ticks()[-1].label1.set_visible(False)
-    sub_ac.xaxis.get_major_ticks()[0].label1.set_visible(False)
-    sub_ac.xaxis.get_major_ticks()[-1].label1.set_visible(False)
-    sub_beta.xaxis.get_major_ticks()[0].label1.set_visible(False)
-    sub_beta.xaxis.get_major_ticks()[-1].label1.set_visible(False)
-    sub_gamma.xaxis.get_major_ticks()[0].label1.set_visible(False)
-    sub_gamma.xaxis.get_major_ticks()[-1].label1.set_visible(False)
+    # Set up general subplot and legend information
+    sub_a.set_ylabel('Number of images').set_fontsize(text_ratio)
+    self.plt.setp(sub_b.get_yticklabels(), visible=False)
+    self.plt.setp(sub_c.get_yticklabels(), visible=False)
+    for sub in (sub_a, sub_b, sub_c):
+      if not high_vis:
+        sub.xaxis.set_major_locator(plt.MaxNLocator(4))
 
-    h, l = sub_a.get_legend_handles_labels()
-    legend_sub_a.legend(h, l, fontsize=text_ratio)
-    h, l = sub_b.get_legend_handles_labels()
-    legend_sub_b.legend(h, l, fontsize=text_ratio)
-    h, l = sub_c.get_legend_handles_labels()
-    legend_sub_c.legend(h, l, fontsize=text_ratio)
+    sub_alpha.set_ylabel('Number of images').set_fontsize(text_ratio)
+    self.plt.setp(sub_beta.get_yticklabels(), visible=False)
+    self.plt.setp(sub_gamma.get_yticklabels(), visible=False)
+    for sub in [sub_alpha, sub_beta, sub_gamma]:
+      if not high_vis:
+        sub.xaxis.set_major_locator(plt.MaxNLocator(4))
 
-    # if len(legend_list) > 0:
-    #   import matplotlib.patches as mpatches
-    #   rgb_alphas = [a_hist[2][i] for i in range(len(a_hist[2]))]
-    #   assert len(legend_list) == len(rgb_alphas)
-    #   patches = [mpatches.Patch(
-    #     color=rgb_alphas[i].get_facecolor(),
-    #     label=legend_list[i])
-    #   for i in xrange(len(rgb_alphas))]
-    #   fig.legend(patches, 'upper right')
+    for ax in (sub_a, sub_b, sub_c, sub_alpha, sub_beta, sub_gamma):
+      ax.tick_params(axis='both', which='both', left='off', right='off')
+      ax.set_yticklabels([])
+    for ax in (sub_ba, sub_cb, sub_ac):
+      ax.tick_params(axis='both', which='both', bottom='off', top='off',
+                     left='off', right='off')
+      plt.setp(ax.get_xticklabels(), visible=False)
+      ax.set_yticklabels([])
+
+    # Prepare common legend by using existing handles and CommonUnitCellKeys
+    handles, _ = sub_a.get_legend_handles_labels()
+    common_key_lines = CommonUnitCellKey.common_lines_of(legend_keys)
+    if len(info_list) == 1:
+      labels = [k.lines() for k in legend_keys]
+    else:
+      unique = [not common for common in common_key_lines]
+      labels = [k.prefix + k.sep + k.lines(unique) for k in legend_keys]
+      if any(common_key_lines):
+        handles.append(mpl.lines.Line2D([0], [0], alpha=0))  # empty handle
+        labels.append(legend_keys[0].lines(common_key_lines))
+    sub_key.legend(handles, labels, fontsize=text_ratio, labelspacing=1, loc=6)
+    sub_key.axis('off')
 
     gsp.update(wspace=0)
-    if title is None: title = "Unit cell distribution"
-    fig.suptitle(title + " (%d xtals)" % total)
+    title = "Unit cell distribution" if title is None else title
+    title += " (%d xtals)" % total
+    title += " %s" % extra_title if extra_title else ""
+    fig.suptitle(title)
 
     if not self.interactive:
+      image_fname = image_fname or "ucell_tmp.png"
       fig.set_size_inches(xsize*1.05+.5, ysize*.95)
-      fig.savefig("ucell_tmp.png", bbox_inches='tight', dpi=100)
+      fig.savefig(image_fname, bbox_inches='tight', dpi=100)
       plt.close(fig)
       return "ucell_tmp.png"
 
@@ -365,11 +406,11 @@ class PopUpCharts(object):
     b = b.select(accepted)
     c = c.select(accepted)
 
-    AA = "a-edge (%.2f +/- %.2f $\AA$)" % (flex.mean(a),
+    AA = r"a-edge (%.2f +/- %.2f $\AA$)" % (flex.mean(a),
                                         flex.mean_and_variance(a).unweighted_sample_standard_deviation())
-    BB = "b-edge (%.2f +/- %.2f $\AA$)" % (flex.mean(b),
+    BB = r"b-edge (%.2f +/- %.2f $\AA$)" % (flex.mean(b),
                                         flex.mean_and_variance(b).unweighted_sample_standard_deviation())
-    CC = "c-edge (%.2f +/- %.2f $\AA$)" % (flex.mean(c),
+    CC = r"c-edge (%.2f +/- %.2f $\AA$)" % (flex.mean(c),
                                         flex.mean_and_variance(c).unweighted_sample_standard_deviation())
 
 
@@ -387,9 +428,81 @@ class PopUpCharts(object):
 
     ax = fig.add_subplot(111, projection='3d')
 
-    for ia in xrange(len(a)):
+    for ia in range(len(a)):
       ax.scatter(a[ia],b[ia],c[ia],c='r',marker='+')
 
     ax.set_xlabel(AA)
     ax.set_ylabel(BB)
     ax.set_zlabel(CC)
+
+def plot_cluster_volumes(subplot, plots, cells, outliers=True):
+  ''' Histogram of unit cell volume, one filled step per cluster in the
+      cluster's color, for the cells the uc_metrics plot manager (plots) was
+      fit on, given as (a, b, c, alpha, beta, gamma) tuples in the order they
+      were handed to it. Cells the clustering left unassigned are never drawn;
+      they widen the range to show where the clusters sit among all the cells
+      unless outliers is False, when the clusters alone set it. '''
+  from cctbx import uctbx
+  assert len(cells) == len(plots.Lab), 'one label per cell'
+  volumes = np.array([uctbx.unit_cell(cell).volume() / 1000. for cell in cells]) # nm^3
+  components = np.array([plots.pop.reverse_lookup[label] for label in plots.Lab])
+  assigned = components >= 0
+  ranged = volumes if outliers or not assigned.any() else volumes[assigned]
+  bins = max(10, len(cells) // 100)
+  for j in range(len(plots.pop.fit_components)):
+    subplot.hist(volumes[components == j], bins=bins, range=(ranged.min(), ranged.max()),
+                 histtype='stepfilled', color=plots.appcolors[j], label='%d' % j)
+  subplot.set_title('Unit cell volume')
+  subplot.set_xlabel('Volume (nm$^3$)')
+  subplot.set_ylabel('Cells')
+  subplot.legend(loc='upper right')
+
+def plot_unit_cell_clustering(figure, plots, cells, all_pairs=False, side_plot='probability', outliers=True):
+  ''' Draw a unit cell clustering made by the uc_metrics plot manager (plots)
+      into the figure: the pairwise projections of the feature vector, the
+      cluster report along the bottom, and beside them either the probability
+      plot of the clusters' Mahalanobis distances or a histogram of the cell
+      volumes (side_plot 'probability' or 'volume'; cells and outliers as for
+      plot_cluster_volumes). Two features give one projection, three the
+      three projections in the plot manager's own arrangement, more than
+      three either the first three that way or, with all_pairs, a corner plot
+      of every pair. Returns how many features are shown. '''
+  features = plots.FV.features_
+  n = len(features)
+  assert n >= 2, 'need at least two features to plot'
+  def side(cell):
+    if side_plot == 'volume':
+      plot_cluster_volumes(figure.add_subplot(cell), plots, cells, outliers=outliers)
+    else:
+      plots.qq(figure.add_subplot(cell))
+  if n == 2:
+    gsp = GridSpec(1, 2, figure=figure, bottom=0.18)
+    plots.plot_2D_features(ax=(0, 1), plt=figure.add_subplot(gsp[0]))
+    inner = gsp[1].subgridspec(3, 3, **plots.QQ_INNER)
+    side(inner[1, 1])
+    shown = 2
+  elif n == 3 or not all_pairs:
+    gsp = GridSpec(2, 2, figure=figure, bottom=0.18)
+    subplot1 = figure.add_subplot(gsp[0]);                  plots.plot_2D_features(ax=(0, 1), plt=subplot1)
+    subplot2 = figure.add_subplot(gsp[1], sharey=subplot1); plots.plot_2D_features(ax=(2, 1), plt=subplot2)
+    subplot3 = figure.add_subplot(gsp[2], sharex=subplot1); plots.plot_2D_features(ax=(0, 2), plt=subplot3)
+    subplot3.invert_yaxis()
+    inner = gsp[3].subgridspec(3, 3, **plots.QQ_INNER)
+    side(inner[1, 1])
+    shown = 3
+  else:
+    # corner plot: feature j along x against feature i along y for j < i
+    gsp = GridSpec(n - 1, n - 1, figure=figure, bottom=0.18)
+    columns = {}
+    rows = {}
+    for i in range(1, n):
+      for j in range(i):
+        subplot = figure.add_subplot(gsp[i - 1, j], sharex=columns.get(j), sharey=rows.get(i))
+        plots.plot_2D_features(ax=(j, i), plt=subplot)
+        subplot.label_outer()
+        columns.setdefault(j, subplot)
+        rows.setdefault(i, subplot)
+    side(gsp[0, n - 2])
+    shown = n
+  figure.text(s=plots.legend, x=0.05, y=0.02, va='bottom', fontsize='small', fontfamily='monospace')
+  return shown

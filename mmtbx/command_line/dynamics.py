@@ -1,6 +1,7 @@
+"""Shake up structure with simple molecular dynamics"""
 # LIBTBX_SET_DISPATCHER_NAME phenix.dynamics
 
-from __future__ import division
+from __future__ import absolute_import, division, print_function
 from mmtbx.command_line import geometry_minimization
 import iotbx.phil
 from scitbx.array_family import flex
@@ -26,13 +27,13 @@ cartesian_dynamics
 def master_params():
   return iotbx.phil.parse(master_params_str, process_includes=True)
 
-def run_cartesian_dynamics (
+def run_cartesian_dynamics(
     xray_structure,
     states_collector,
     restraints_manager,
     params,
     stop_at_diff,
-    log) :
+    log):
   from mmtbx.dynamics import cartesian_dynamics
   make_header("Simple cartesian dynamics", out=log)
   sites_cart_start = xray_structure.sites_cart().deep_copy()
@@ -56,15 +57,16 @@ def run_cartesian_dynamics (
     verbose=1)
   sites_cart_end = xray_structure.sites_cart()
   rmsd = sites_cart_end.rms_difference(sites_cart_start)
-  print >> log, ""
-  print >> log, "RMSD from starting structure: %.3f" % rmsd
+  print("", file=log)
+  print("RMSD from starting structure: %.3f" % rmsd, file=log)
+  return sites_cart_end
 
-class run (geometry_minimization.run) :
+class run(geometry_minimization.run):
   _pdb_suffix = "shaken"
-  def master_params (self) :
+  def master_params(self):
     return master_params()
 
-  def format_usage_message (self) :
+  def format_usage_message(self):
     raise Usage("""\
 phenix.dynamics: perform simple dynamics to perturb a model
 Usage examples:
@@ -72,7 +74,7 @@ Usage examples:
   phenix.dynamics model.pdb ligands.cif
 """)
 
-  def __execute (self) :
+  def __execute(self):
     #
     self.caller(self.initialize,           "Initialization, inputs")
     self.caller(self.process_inputs,       "Processing inputs")
@@ -84,15 +86,15 @@ Usage examples:
     #
     self.show_times()
 
-  def atom_selection (self, prefix) :
+  def atom_selection(self, prefix):
     self.selection = flex.bool(self.model.get_xray_structure().sites_cart().size(), True)
     geometry_minimization.broadcast(m=prefix, log = self.log)
 
-  def dynamics (self, prefix) :
+  def dynamics(self, prefix):
     geometry_minimization.broadcast(m=prefix, log = self.log)
     self.sites_cart = self.model.get_sites_cart()
-    if (self.params.dynamics_type == "cartesian") :
-      run_cartesian_dynamics(
+    if (self.params.dynamics_type == "cartesian"):
+      sites_cart_result = run_cartesian_dynamics(
         xray_structure=self.model.get_xray_structure(),
         restraints_manager=self.model.get_restraints_manager(),
         states_collector=self.states_collector,
@@ -101,20 +103,20 @@ Usage examples:
         log=self.log)
     else : # TODO
       raise NotImplementedError()
-    self.model.set_sites_cart_from_xrs()
+    self.model.set_sites_cart(sites_cart=sites_cart_result)
 
-class launcher (runtime_utils.target_with_save_result) :
-  def run (self) :
+class launcher(runtime_utils.target_with_save_result):
+  def run(self):
     os.mkdir(self.output_dir)
     os.chdir(self.output_dir)
     filename = run(args=self.args, log=sys.stdout,
                    use_directory_prefix=False).result_model_fname
     return os.path.join(self.output_dir, filename)
 
-def validate_params (params) :
+def validate_params(params):
   return geometry_minimization.validate_params(params)
 
-def finish_job (result) :
+def finish_job(result):
   return geometry_minimization.finish_job(result)
 
 if(__name__ == "__main__"):
@@ -122,5 +124,6 @@ if(__name__ == "__main__"):
   log = sys.stdout
   o = run(sys.argv[1:], log=log)
   tt = timer.elapsed()
-  print >> o.log, "Overall runtime: %-8.3f" % tt
+  print("Overall runtime: %-8.3f" % tt, file=o.log)
   assert abs(tt-o.total_time) < 0.1 # guard against unaccounted times
+

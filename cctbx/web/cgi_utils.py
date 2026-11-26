@@ -1,9 +1,12 @@
-from __future__ import division
-import urlparse
-import exceptions
-import os,cgi
+from __future__ import absolute_import, division, print_function
+import os,sys,cgi
 
-class FormatError(exceptions.Exception): pass
+if sys.version_info.major >= 3:
+    from urllib.parse import urlunsplit
+if sys.version_info.major < 3:
+    from urlparse import urlunsplit
+
+class FormatError(Exception): pass
 
 class empty: pass
 
@@ -27,20 +30,20 @@ class server_info:
       '']
 
   def script(self, query=''):
-    return urlparse.urlunsplit(
+    return urlunsplit(
       self._script[:3] + [query] + self._script[4:])
 
   def base(self):
-    return urlparse.urlunsplit(self._base)
+    return urlunsplit(self._base)
 
   def file(self, target):
-    return urlparse.urlunsplit(
+    return urlunsplit(
       self._base[:2] + [self._base[2] + target] + self._base[3:])
 
 def inp_from_form(form, keys):
   inp = empty()
   for key in keys:
-    if (form.has_key(key[0])):
+    if (key[0] in form):
       #v = cgi.escape(form[key[0]].value,True).strip()
       v = form[key[0]].value.strip()
       if (v == ""): v = key[1]
@@ -54,7 +57,7 @@ def coordinates_from_form(form, suffix=None):
   for key_root in ("coordinates", "coor_file"):
     if (suffix is None): key = key_root
     else:                key = key_root + "_" + suffix
-    if (form.has_key(key)):
+    if (key in form):
       lines = cgi.escape(form[key].value,True).replace("\015", "\012").split("\012")
       for l in lines:
         s = l.strip()

@@ -1,6 +1,5 @@
-from __future__ import division
+from __future__ import absolute_import, division, print_function
 # LIBTBX_PRE_DISPATCHER_INCLUDE_SH export PHENIX_GUI_ENVIRONMENT=1
-# LIBTBX_PRE_DISPATCHER_INCLUDE_SH export BOOST_ADAPTBX_FPE_DEFAULT=1
 
 import cStringIO
 from crys3d.wx_selection_editor import selection_editor_mixin
@@ -48,7 +47,7 @@ def run (args, viewer_class=selection_editor_mixin) :
     elif arg in ["--thorough", "--slow", "--use_monomer_library"] :
       fast_connectivity = False
   if len(pdb_files) == 0 :
-    print "Please specify a PDB file (and optional CIFs) on the command line."
+    print("Please specify a PDB file (and optional CIFs) on the command line.")
     return
   a = App(viewer_class=viewer_class)
   a.frame.Show()
@@ -56,14 +55,14 @@ def run (args, viewer_class=selection_editor_mixin) :
   if not "--debug" in args :
     out = cStringIO.StringIO()
   for file_name in pdb_files :
-    print "Reading PDB file %s" % file_name
-    from iotbx import file_reader
+    print("Reading PDB file %s" % file_name)
+    import iotbx.pdb
     from mmtbx.monomer_library import pdb_interpretation
     from mmtbx import secondary_structure
     t1 = time.time()
     if fast_connectivity :
-      pdb_in = file_reader.any_file(file_name, force_type="pdb")
-      pdb_hierarchy = pdb_in.file_object.hierarchy
+      pdb_in = iotbx.pdb.input(file_name)
+      pdb_hierarchy = pdb_in.construct_hierarchy()
       atomic_bonds = pdb_hierarchy.distance_based_simple_two_way_bond_sets()
       acp_selection = None
     else :
@@ -78,7 +77,7 @@ def run (args, viewer_class=selection_editor_mixin) :
           "This is probably due to a missing CRYST1 record in the PDB file.")
       atomic_bonds = grm.shell_sym_tables[0].full_simple_connectivity()
     t2 = time.time()
-    print "%.2fs" % (t2-t1)
+    print("%.2fs" % (t2-t1))
     a.view_objects.add_model(file_name, pdb_hierarchy, atomic_bonds,
       mmtbx_selection_function=acp_selection)
     sec_str = secondary_structure.manager(

@@ -1,4 +1,6 @@
-from __future__ import division
+"""Set master params for phenix_masks"""
+
+from __future__ import absolute_import, division, print_function
 import libtbx.phil
 
 phenix_masks_master_params = """\

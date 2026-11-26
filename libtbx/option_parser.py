@@ -5,6 +5,7 @@ import copy
 import sys
 
 from optparse import *
+from six.moves import range
 
 def check_bool(option, opt, value):
   v = value.strip().lower()
@@ -55,7 +56,7 @@ class processed_options(object):
       if (self.chunk.n == 1):
         from libtbx.utils import escape_sh_double_quoted
         cmds = []
-        for i in xrange(n):
+        for i in range(n):
           cmd = command_call \
               + self.options_and_args \
               + ["--chunk=%d,%d" % (n,i)]
@@ -69,6 +70,13 @@ class processed_options(object):
     return False
 
 class option_parser(OptionParser):
+  """optparse parser with libtbx extras such as --show_defaults and --chunk.
+
+  Legacy for crystallographic programs: new ones subclass
+  libtbx.program_template.ProgramTemplate and run through
+  iotbx.cli_parser.run_program. libtbx's own build and test tools
+  still use this class.
+  """
 
   processed_options_type = processed_options
 
@@ -146,7 +154,7 @@ class option_parser(OptionParser):
     self.multiprocessing_is_enabled = True
     return self
 
-  def enable_dry_run (self) :
+  def enable_dry_run(self):
     self.add_option(make_option(None, "--dry_run",
       action="store_true",
       default=False,

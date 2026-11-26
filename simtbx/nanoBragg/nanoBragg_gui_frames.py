@@ -1,11 +1,10 @@
-from __future__ import division
-
 '''
 Author      : Lyubimov, A.Y.
 Created     : 12/12/2017
-Last Changed: 01/29/2018
+Last Changed: 06/20/2019
 Description : SIMTBX (nanoBragg) GUI Windows / frames
 '''
+from __future__ import absolute_import, division, print_function
 
 import os
 import wx
@@ -19,9 +18,9 @@ from matplotlib.figure import Figure
 from iotbx import phil as ip
 from simtbx.nanoBragg import nanoBragg_gui_dialogs as dlg
 from simtbx.nanoBragg import nanoBragg_threads as thr
-from iota.components import iota_controls as ct
-from iota.components.iota_misc import WxFlags, noneset
-from iota.components.iota_utils import InputFinder
+from iota.components.gui import controls as ct
+from iota.components.iota_utils import InputFinder, WxFlags, noneset
+from six.moves import range
 
 ginp = InputFinder()
 import time
@@ -256,7 +255,7 @@ class TopPanel(BasePanel):
   def onFinishedSimThread(self, e):
     pixels = e.GetValue()
     self.display_image(pixels=pixels)
-    print 'TOTAL TIME = ', time.time() - self.start_timer
+    print('TOTAL TIME = ', time.time() - self.start_timer)
 
   def display_image(self, pixels=None):
     if pixels is None:
@@ -273,8 +272,8 @@ class TopPanel(BasePanel):
     self.img_figure.subplots_adjust(left=0, bottom=0, right=1, top=1)
 
     self.preview_panel.Layout()
-    print 'DEBUG: AVERAGE PIXEL VALUE = ', np.mean(pixels)
-    print 'DONE!'
+    print('DEBUG: AVERAGE PIXEL VALUE = ', np.mean(pixels))
+    print('DONE!')
 
   def on_button_press(self, e):
     if e.button == 1 and e.dblclick:
@@ -309,9 +308,9 @@ class FileListCtrl(ct.CustomListCtrl):
     # Add file / folder buttons
     self.button_sizer = wx.BoxSizer(wx.HORIZONTAL)
     self.btn_add_file = wx.Button(self, label='Add File...')
-    #self.btn_add_dir = wx.Button(self, label='Add Folder...')
+    #self.btn_browse = wx.Button(self, label='Add Folder...')
     self.button_sizer.Add(self.btn_add_file)
-    #self.button_sizer.Add(self.btn_add_dir, flag=wx.LEFT, border=10)
+    #self.proc_sizer.Add(self.btn_browse, flag=wx.LEFT, border=10)
 
     self.sizer.Add(self.button_sizer, flag=wx.TOP | wx.BOTTOM, border=10)
 
@@ -326,7 +325,7 @@ class FileListCtrl(ct.CustomListCtrl):
                              defaultDir=os.curdir,
                              defaultFile="*",
                              wildcard="*",
-                             style=wx.OPEN | wx.FD_FILE_MUST_EXIST |
+                             style=wx.FD_OPEN | wx.FD_FILE_MUST_EXIST |
                                    wx.FD_MULTIPLE)
     if file_dlg.ShowModal() == wx.ID_OK:
       files = file_dlg.GetPaths()
@@ -344,7 +343,7 @@ class FileListCtrl(ct.CustomListCtrl):
                     'background',
                     'raw image file']
     preferred_selection = 0
-    inputs, input_type = ginp.get_input(path, filter=False)
+    inputs, input_type = ginp.get_input(path, filter_results=False)
 
     if input_type == 'data (MTZ)':
       input_type = 'structure factors'

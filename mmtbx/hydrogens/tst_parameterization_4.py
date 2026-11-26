@@ -1,4 +1,4 @@
-from __future__ import division
+from __future__ import absolute_import, division, print_function
 import time
 import mmtbx.model
 import iotbx.pdb
@@ -6,6 +6,8 @@ import mmtbx.refinement.geometry_minimization
 import scitbx.lbfgs
 import cctbx.geometry_restraints
 from mmtbx.hydrogens import riding
+from libtbx.utils import null_out
+from six.moves import zip
 
 #-----------------------------------------------------------------------------
 # This test checks the parameterization of hydrogen atoms for all H geometries
@@ -25,8 +27,8 @@ def exercise(pdb_str, use_ideal_bonds_angles):
 # ---------------------------------------------------------------
 
   pdb_inp = iotbx.pdb.input(lines=pdb_str.split("\n"), source_info=None)
-  model = mmtbx.model.manager(model_input=pdb_inp)
-
+  model = mmtbx.model.manager(model_input=pdb_inp, log=null_out())
+  model.process(make_restraints=True)
   pdb_hierarchy = model.get_hierarchy()
   geometry_restraints = model.get_restraints_manager().geometry
   xray_structure = model.get_xray_structure()
@@ -179,11 +181,11 @@ pdb_list_name = ['pdb_str_00', 'pdb_str_01', 'pdb_str_02', 'pdb_str_03',
 
 def run():
   for use_ideal_bonds_angles in [True, False]:
-    print 'use_ideal_bonds_angles =', use_ideal_bonds_angles
+    print('use_ideal_bonds_angles =', use_ideal_bonds_angles)
     for pdb_str, str_name in zip(pdb_list,pdb_list_name):
       exercise(pdb_str=pdb_str, use_ideal_bonds_angles=use_ideal_bonds_angles)
 
 if (__name__ == "__main__"):
   t0 = time.time()
   run()
-  print "OK. Time: %8.3f"%(time.time()-t0)
+  print("OK. Time: %8.3f"%(time.time()-t0))

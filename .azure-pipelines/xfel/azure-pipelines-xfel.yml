@@ -1,0 +1,35 @@
+# Templates for linux, macOS, and Windows
+# Based on approach from conda-forge
+
+# batch builds for master
+trigger:
+  batch: true
+  branches:
+    include:
+      - master
+
+# build pull requests, cancelling superseded builds of the same pull request
+pr:
+  autoCancel: true
+  branches:
+    include:
+      - '*'
+
+resources:
+  pipelines:
+  - pipeline: data_cache
+    source: 'Update data cache'
+  - pipeline: build_cache
+    source: 'Update build cache'
+
+stages:
+- stage: Preparation
+  displayName: Download
+  jobs:
+    - template: ./download-source.yml
+
+- stage: Build
+  displayName: Build and test
+  dependsOn: Preparation
+  jobs:
+    - template: ./xfel-ci-build.yml

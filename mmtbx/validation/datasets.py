@@ -1,5 +1,5 @@
 
-from __future__ import division
+from __future__ import absolute_import, division, print_function
 import os, sys
 import libtbx.load_env
 from libtbx.utils import Sorry
@@ -9,17 +9,16 @@ curated_repository_dir = libtbx.env.find_in_repositories(
   test=os.path.isdir)
 
 def imp_dataset(name, verbose=False):
-  import imp
-  try:
-    fp, pathname, description = imp.find_module(name, [curated_repository_dir])
-  except Exception :
+  import importlib.machinery, importlib.util
+  spec = importlib.machinery.PathFinder().find_spec(name, [curated_repository_dir])
+  if spec is None :
     assert 0
   if verbose:
-      print name
-      print fp
-      print pathname
-      print description
-  m = imp.load_module(name, fp, pathname, description)
+      print(name)
+      print(spec.origin)
+  m = importlib.util.module_from_spec(spec)
+  sys.modules[spec.name] = m
+  spec.loader.exec_module(m)
   return m
 
 top8000_data = imp_dataset("top8000").data
@@ -51,17 +50,17 @@ class dataset_item(object):
     return outl
 
 def generate_data_items(data):
-  if data.get("info", ""): print data.get("info", "")
+  if data.get("info", ""): print(data.get("info", ""))
   for row in data["data"]:
     yield dataset_item(data["headers"], row)
 
 data_lookups = {}
-for key in locals().keys():
+for key in list(locals().keys()):
   if not key.endswith("_data"): continue
   cmd = "generate_%s = generate_data_items(%s)" % (key[:-5],
                                                    key,
                                                  )
-  exec cmd
+  exec(cmd)
   if key=="top8000_data": data_lookups[key]="Top 8000"
   elif key=="rna11_data": data_lookups[key]="RNA 11"
   elif key=="hiq54_data": data_lookups[key]="HiQ54"
@@ -70,15 +69,15 @@ for key in locals().keys():
 
 
 def run(local):
-  if (curated_repository_dir is None) :
+  if (curated_repository_dir is None):
     raise Sorry("chem_data/curated_datasets is not available.")
-  print '\nCurated Repository Dir',curated_repository_dir
+  print('\nCurated Repository Dir',curated_repository_dir)
   for key in local.keys():
     if not key.endswith("_data"): continue
-    print '\n',('%s ' % data_lookups[key])*10
+    print('\n',('%s ' % data_lookups[key])*10)
     for i, item in enumerate(local.get("generate_%s" % key[:-5], [])):
-      print '-'*80
-      print i, item
+      print('-'*80)
+      print(i, item)
       if i>0: break
 
 if __name__=="__main__":

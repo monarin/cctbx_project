@@ -7,11 +7,14 @@
 #  This code is distributed under the BSD license, a copy of which is
 #  included in the root directory of this package.
 
-from __future__ import division
+from __future__ import absolute_import, division, print_function
 from scitbx import matrix
 from scitbx.array_family import flex
 import random
+import math
 from scitbx.math.lefebvre import matrix_inverse_error_propagation
+from six.moves import range
+from six.moves import map
 
 """Implementation of the propagation of errors formula for matrix inversion
 given in Lefebvre et al. (1999) http://arxiv.org/abs/hep-ex/9909031. As in
@@ -33,10 +36,10 @@ def create_Bmat():
 
   from dxtbx.model import Crystal
 
-  vecs = map(random_vector_close_to,
+  vecs = list(map(random_vector_close_to,
              [(20, 0, 0),
               (0, 20, 0),
-              (0, 0, 20)])
+              (0, 0, 20)]))
 
   return matrix.sqr(Crystal(*vecs, space_group_symbol = "P 1").get_B())
 
@@ -167,17 +170,22 @@ def test_B_matrix():
   cov_invB = matrix_inverse_error_propagation(Bmat, cov_B)
   cov_invB = cov_invB.as_flex_double_matrix()
 
-  # Get fractional differences
+  # Get differences as a fraction of the scale of each covariance,
+  # sqrt(var_i * var_j), i.e. differences of correlation coefficients. A
+  # fraction of the covariance itself is not usable: for a covariance close to
+  # zero the Monte Carlo noise, about sqrt(var_i * var_j / n_trials), is many
+  # times the value.
   frac = flex.double(flex.grid(n**2, n**2), 0.0)
+  n_tested = 0
   for i in range(frac.all()[0]):
     for j in range(frac.all()[1]):
-      e1 = cov_invB_MC[i,j]
-      e2 = cov_invB[i,j]
-      if e1 < 1e-10: continue # avoid divide-by-zero errors below
-      if e2 < 1e-10: continue # avoid elements that are supposed to be zero
-      frac[i,j] = (e1 - e2) / e1
+      scale = math.sqrt(cov_invB[i,i] * cov_invB[j,j])
+      if scale < 1e-10: continue # elements that are supposed to be zero
+      frac[i,j] = (cov_invB_MC[i,j] - cov_invB[i,j]) / scale
+      n_tested += 1
+  assert n_tested > 0
 
-  # assert all fractional errors are within 5%
+  # assert all differences are within 5%
   assert all([abs(e) < 0.05 for e in frac])
 
   return
@@ -189,13 +197,13 @@ if __name__ == '__main__':
 
   # run the Lefebvre paper test
   test_lefebvre()
-  print "OK"
+  print("OK")
 
   # run a similar test for a B matrix
   try:
     import dxtbx # import dependency
-  except ImportError:
+  except (ImportError, KeyError):
     pass
   else:
     test_B_matrix()
-    print "OK"
+    print("OK")

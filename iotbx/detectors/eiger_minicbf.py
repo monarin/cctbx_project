@@ -1,8 +1,9 @@
-from __future__ import division
-import copy,re
+from __future__ import absolute_import, division, print_function
+import copy
+import re
 from iotbx.detectors.detectorbase import DetectorImageBase
 from iotbx.detectors import ImageException
-
+from iotbx.detectors.eiger import vendortype_from_size
 
 class EigerCBFImage(DetectorImageBase):
   def __init__(self,filename):
@@ -43,30 +44,28 @@ class EigerCBFImage(DetectorImageBase):
              ).uncompress_data(self.size1,self.size2)
       self.bin_safe_set_data( data )
 
-    except Exception, e:
+    except Exception as e:
       raise ImageException(
           "unable to read miniCBF data; contact authors; error=\"%s\"" % \
           str(e).strip())
 
   def readHeader(self,maxlength=12288): # usually 1024 is OK; require 12288 for ID19
     if not self.parameters:
-      rawdata = open(self.filename,"rb").read(maxlength)
+      with open(self.filename,"rb") as fh:
+        rawdata = fh.read(maxlength)
 
       # The tag _array_data.header_convention "SLS_1.0" could be with/without quotes "..."
-      SLS_pattern = re.compile(r'''_array_data.header_convention[ "]*SLS''')
-      SLS_match = SLS_pattern.findall(rawdata)
-      PILATUS_pattern = re.compile(r'''_array_data.header_convention[ "]*PILATUS''')
-      PILATUS_match = PILATUS_pattern.findall(rawdata)
+      # SLS_match = re.findall(b'_array_data.header_convention[ "]*SLS', rawdata)
+      # PILATUS_match = re.findall(b'_array_data.header_convention[ "]*PILATUS', rawdata)
       #assert len(SLS_match) + len(PILATUS_match)>=1
 
       # read SLS header
-      headeropen = rawdata.index("_array_data.header_contents")
-      headerclose= rawdata.index("_array_data.data")
-      self.header = rawdata[headeropen+1:headerclose]
+      headeropen = rawdata.index(b"_array_data.header_contents")
+      headerclose = rawdata.index(b"_array_data.data")
+      self.header = rawdata[headeropen+1:headerclose].decode("latin-1")
       self.headerlines = [x.strip() for x in self.header.split("#")]
-      for idx in xrange(len(self.headerlines)):
-        for character in '\r\n,();':
-          self.headerlines[idx] = self.headerlines[idx].replace(character,'')
+      character_filter = re.compile(r"[\r\n,\(\);]")
+      self.headerlines = [character_filter.sub("", x) for x in self.headerlines]
 
       self.parameters={'CCD_IMAGE_SATURATION':65535}
       for tag,search,idx,datatype in [
@@ -110,7 +109,7 @@ class EigerCBFImage(DetectorImageBase):
       # read array size
       header_lines = []
       found_array_data_data = False
-      for record in rawdata.splitlines():
+      for record in rawdata.decode("latin-1").splitlines():
         if "_array_data.data" in record:
           found_array_data_data = True
         elif not found_array_data_data:
@@ -123,9 +122,7 @@ class EigerCBFImage(DetectorImageBase):
         header_lines.append(record)
       self.header = "\n".join(header_lines)
       self.headerlines = [x.strip() for x in self.header.split("\n")]
-      for idx in xrange(len(self.headerlines)):
-        for character in '\r\n,();':
-          self.headerlines[idx] = self.headerlines[idx].replace(character,'')
+      self.headerlines = [character_filter.sub("", x) for x in self.headerlines]
 
       for tag,search,idx,datatype in [
           ('SIZE1','X-Binary-Size-Second-Dimension',-1,int),
@@ -136,16 +133,7 @@ class EigerCBFImage(DetectorImageBase):
               self.parameters[tag] = datatype(line.split(" ")[idx])
               break
 
-      if self.size1==4371 and self.size2==4150:
-        self.vendortype="Eiger-16M"
-      elif self.size1==3269 and self.size2==3110:
-        self.vendortype="Eiger-9M"
-      elif self.size1==2167 and self.size2==2070:
-        self.vendortype="Eiger-4M"
-      elif self.size1==1065 and self.size2==2030:
-        self.vendortype="Eiger-1M"
-
-
+      self.vendortype = vendortype_from_size.get((self.size2,self.size1),self.vendortype)
 
 
 if __name__=='__main__':
@@ -153,6 +141,6 @@ if __name__=='__main__':
   i = sys.argv[1]
   a = EigerCBFImage(i)
   a.read()
-  print a
-  print a.parameters
-  print a.rawdata, len(a.rawdata), a.size1*a.size2
+  print(a)
+  print(a.parameters)
+  print(a.rawdata, len(a.rawdata), a.size1*a.size2)

@@ -10,21 +10,25 @@
 #  included in the root directory of this package.
 #
 # LIBTBX_SET_DISPATCHER_NAME cspad.detector_shifts
+# LIBTBX_SET_DISPATCHER_NAME cctbx.xfel.detector_shifts
 #
-from __future__ import division
+from __future__ import absolute_import, division, print_function
+from six.moves import range
+from dials.util import show_mail_on_error
 from scitbx.array_family import flex
 from scitbx.matrix import col
 from libtbx.phil import parse
 from libtbx.utils import Sorry
-from xfel.command_line.cspad_detector_congruence import get_center
+from serialtbx.detector import get_center
 import libtbx.load_env
+from six.moves import zip
 
 help_message = '''
 
 This program is used to show differences between a reference and a moving set of detectors
 Example:
 
-  %s experiment1.json experiment2.json reflections1.pickle reflections2.pickle
+  %s experiment1.expt experiment2.expt reflections1.refl reflections2.refl
 ''' % libtbx.env.dispatcher_name
 
 # Create the phil parameters
@@ -34,7 +38,7 @@ max_hierarchy_level=Auto
   .help = Maximum hierarchy level to compute shifts to
 ''', process_includes=True)
 
-from xfel.command_line.cspad_detector_congruence import iterate_detector_at_level, iterate_panels, id_from_name
+from serialtbx.detector import iterate_detector_at_level, iterate_panels, id_from_name
 from xfel.command_line.cspad_detector_congruence import Script as ParentScript
 
 class Script(ParentScript):
@@ -42,44 +46,42 @@ class Script(ParentScript):
 
   def __init__(self):
     ''' Set the expected options. '''
-    from dials.util.options import OptionParser
+    from dials.util.options import ArgumentParser
     import libtbx.load_env
 
     # Create the option parser
-    usage = "usage: %s experiment1.json experiment2.json reflections1.pickle reflections2.pickle" % libtbx.env.dispatcher_name
-    self.parser = OptionParser(
+    usage = "usage: %s experiment1.expt experiment2.expt reflections1.refl reflections2.refl" % libtbx.env.dispatcher_name
+    self.parser = ArgumentParser(
       usage=usage,
       sort_options=True,
       phil=phil_scope,
       read_experiments=True,
-      read_datablocks=True,
       read_reflections=True,
       check_format=False,
       epilog=help_message)
 
   def run(self):
     ''' Parse the options. '''
-    from dials.util.options import flatten_experiments, flatten_datablocks, flatten_reflections
     # Parse the command line arguments
     params, options = self.parser.parse_args(show_diff_phil=True)
     self.params = params
-    experiments = flatten_experiments(params.input.experiments)
-    datablocks = flatten_datablocks(params.input.datablock)
-    reflections = flatten_reflections(params.input.reflections)
+
+    if (len(params.input.experiments), len(params.input.reflections)) != (2,2):
+      raise Sorry("Please provide a reference and a moving set of experiments")
+    experiments1 = params.input.experiments[0].data
+    experiments2 = params.input.experiments[1].data
+    reflections1 = params.input.reflections[0].data
+    reflections2 = params.input.reflections[1].data
 
     # Find all detector objects
     detectors = []
-    detectors.extend(experiments.detectors())
-    dbs = []
-    for datablock in datablocks:
-      dbs.extend(datablock.unique_detectors())
-    detectors.extend(dbs)
+    detectors.extend(experiments1.detectors())
+    detectors.extend(experiments2.detectors())
 
     # Verify inputs
     if len(detectors) != 2:
-      raise Sorry("Please provide a reference and a moving set of experiments and or datablocks")
+      raise Sorry("Please provide a reference and a moving set of experiments")
 
-    reflections = reflections[1]
     detector = detectors[1]
 
     if not hasattr(detector, 'hierarchy'):
@@ -91,7 +93,7 @@ class Script(ParentScript):
       while root.is_group():
         root = root[0]
         params.max_hierarchy_level += 1
-      print "Found", params.max_hierarchy_level+1, "hierarchy levels"
+      print("Found", params.max_hierarchy_level+1, "hierarchy levels")
 
     reference_root = detectors[0].hierarchy()
     moving_root = detector.hierarchy()
@@ -99,7 +101,8 @@ class Script(ParentScript):
     rf = col(reference_root.get_fast_axis())
     rs = col(reference_root.get_slow_axis())
     r_norm = col(reference_root.get_normal())
-    s0 = col(flex.vec3_double([col(b.get_s0()) for b in experiments.beams()]).mean())
+    all_beams = experiments1.beams() + experiments2.beams()
+    s0 = col(flex.vec3_double([col(b.get_s0()) for b in all_beams]).mean())
 
     summary_table_header = ["Hierarchy","Delta XY","Delta XY","R Offsets","R Offsets","T Offsets","T Offsets","Z Offsets","Z Offsets","dR Norm","dR Norm","dT Norm","dT Norm","Local dNorm", "Local dNorm", "Rot Z","Rot Z"]
     summary_table_header2 = ["Level","","Sigma","","Sigma","","Sigma","","Sigma","","Sigma","","Sigma","","Sigma","","Sigma"]
@@ -112,7 +115,7 @@ class Script(ParentScript):
     table_header = ["PanelG","BC dist","Delta XY","R Offsets","T Offsets","Z Offsets","dR Norm","dT Norm","Local dNorm","Rot Z","N Refls"]
     table_header2 = ["ID","(mm)","(microns)","(microns)","(microns)","(microns)","(deg)","(deg)","(deg)","(deg)",""]
 
-    from xfel.cftbx.detector.cspad_cbf_tbx import basis
+    from serialtbx.detector import basis
     def get_full_basis_shift(pg):
       """Compute basis shift from pg to lab space"""
       shift = basis(panelgroup=pg)
@@ -125,7 +128,7 @@ class Script(ParentScript):
       return shift
 
     # Iterate through the hierarchy levels
-    for level in xrange(params.max_hierarchy_level+1):
+    for level in range(params.max_hierarchy_level+1):
       delta_xy = flex.double()
       r_offsets = flex.double()
       t_offsets = flex.double()
@@ -143,7 +146,8 @@ class Script(ParentScript):
                                              iterate_detector_at_level(moving_root, 0, level))):
         weight = 0
         for panel_id, p in enumerate(iterate_panels(pg2)):
-          weight += len(reflections.select(reflections['panel'] == id_from_name(detector, p.get_name())))
+          weight += len(reflections1.select(reflections1['panel'] == id_from_name(detector, p.get_name()))) + \
+                    len(reflections2.select(reflections2['panel'] == id_from_name(detector, p.get_name())))
         weights.append(weight)
 
         bc = col(pg1.get_beam_centre_lab(s0))
@@ -270,14 +274,14 @@ class Script(ParentScript):
       table_data.append(ws_row)
 
       from libtbx import table_utils
-      print "Hierarchy level %d Detector shifts"%level
-      print table_utils.format(table_data,has_header=2,justify='center',delim=" ")
+      print("Hierarchy level %d Detector shifts"%level)
+      print(table_utils.format(table_data,has_header=2,justify='center',delim=" "))
 
-    print "Detector shifts summary"
-    print table_utils.format(summary_table_data,has_header=3,justify='center',delim=" ")
+    print("Detector shifts summary")
+    print(table_utils.format(summary_table_data,has_header=3,justify='center',delim=" "))
 
-    print
-    print """
+    print()
+    print("""
 For each hierarchy level, the average shifts in are computed among objects at that level, weighted by the number of reflections recorded on each object. For example, for a four quadrant detector, the average Z shift will be the average of the four quadrant Z values, each weighted by the number of reflections on that quadrant.
 
 -------------------
@@ -296,12 +300,9 @@ Z offsets: relative shifts in the local frame in the local Z direction.
 R, T Norm: angle between normal vectors in lab space, projected onto the radial or transverse plane.
 Local dNorm: local relative angle between normal vectors.
 Rot Z: rotation around detector normal in lab space
-"""
+""")
 
 if __name__ == '__main__':
-  from dials.util import halraiser
-  try:
+  with show_mail_on_error():
     script = Script()
     script.run()
-  except Exception as e:
-    halraiser(e)

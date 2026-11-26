@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-from __future__ import division, absolute_import
+from __future__ import absolute_import, division, print_function
 from cctbx.xray import ext
 from cctbx.xray import structure_factors
 from cctbx import miller
@@ -13,18 +13,19 @@ import scitbx.math
 from scitbx import matrix
 import math
 from itertools import count
-import types
 import sys
 import random
+import six
 from libtbx.utils import count_max, Sorry, Keep
 from libtbx.test_utils import approx_equal
 from libtbx import group_args
-from libtbx.assert_utils import is_string
 from cctbx.eltbx.neutron import neutron_news_1992_table
 from cctbx import eltbx
 from libtbx.utils import format_float_with_standard_uncertainty \
      as format_float_with_su
 from cctbx import covariance
+from six.moves import range
+from six.moves import zip
 
 class scattering_type_registry_params(object):
   def __init__(self,
@@ -37,6 +38,16 @@ class scattering_type_registry_params(object):
     self.table       = table
     self.types_without_a_scattering_contribution = \
                                         types_without_a_scattering_contribution
+
+  def copy(self):
+    """Shallow copy, so that copies of a structure do not share (and mutate)
+    one another's scattering table bookkeeping."""
+    return scattering_type_registry_params(
+      custom_dict = self.custom_dict,
+      d_min       = self.d_min,
+      table       = self.table,
+      types_without_a_scattering_contribution =
+        self.types_without_a_scattering_contribution)
 
 class structure(crystal.special_position_settings):
   """A class to describe and handle information related to a crystal structure.
@@ -57,7 +68,9 @@ class structure(crystal.special_position_settings):
         site_symmetry_table=None,
         non_unit_occupancy_implies_min_distance_sym_equiv_zero=False,
         scattering_type_registry=None,
-        crystal_symmetry=None):
+        crystal_symmetry=None,
+        wavelength=None,
+        scattering_type_registry_params=None):
     assert [special_position_settings, crystal_symmetry].count(None) == 1
     assert scatterers is not None or site_symmetry_table is None
     if (special_position_settings is None):
@@ -75,8 +88,12 @@ class structure(crystal.special_position_settings):
         site_symmetry_table=site_symmetry_table,
         non_unit_occupancy_implies_min_distance_sym_equiv_zero=
           self._non_unit_occupancy_implies_min_distance_sym_equiv_zero)
-    self.scattering_type_registry_params = None
+    # Kept in step with _scattering_type_registry: whoever hands us a registry
+    # should hand us the params it was built from, or the record of which table
+    # (and which d_min!) the form factors came from is silently lost.
+    self.scattering_type_registry_params = scattering_type_registry_params
     self.inelastic_form_factors_source = None
+    self.wavelength = wavelength
 
   def _copy_constructor(self, other):
     crystal.special_position_settings._copy_constructor(
@@ -122,7 +139,9 @@ class structure(crystal.special_position_settings):
     cp = structure(self,
       scattering_type_registry=self._scattering_type_registry,
       non_unit_occupancy_implies_min_distance_sym_equiv_zero
-        =self._non_unit_occupancy_implies_min_distance_sym_equiv_zero)
+        =self._non_unit_occupancy_implies_min_distance_sym_equiv_zero,
+      wavelength=self.wavelength,
+      scattering_type_registry_params=self._scattering_type_registry_params_copy())
     cp._scatterers = self._scatterers.deep_copy()
     cp._site_symmetry_table = self._site_symmetry_table.deep_copy()
     return cp
@@ -131,7 +150,8 @@ class structure(crystal.special_position_settings):
         crystal_symmetry=Keep,
         unit_cell=Keep,
         space_group_info=Keep,
-        non_unit_occupancy_implies_min_distance_sym_equiv_zero=Keep):
+        non_unit_occupancy_implies_min_distance_sym_equiv_zero=Keep,
+        wavelength=Keep):
     if (crystal_symmetry is Keep):
       crystal_symmetry = self
     crystal_symmetry = crystal.symmetry.customized_copy(
@@ -141,6 +161,8 @@ class structure(crystal.special_position_settings):
     if (non_unit_occupancy_implies_min_distance_sym_equiv_zero is Keep):
       non_unit_occupancy_implies_min_distance_sym_equiv_zero \
         = self._non_unit_occupancy_implies_min_distance_sym_equiv_zero
+    if (wavelength is Keep):
+      wavelength = self.wavelength
     str = structure(
       special_position_settings=crystal.special_position_settings(
         crystal_symmetry=crystal_symmetry,
@@ -150,7 +172,9 @@ class structure(crystal.special_position_settings):
       scatterers=self._scatterers,
       non_unit_occupancy_implies_min_distance_sym_equiv_zero
         =non_unit_occupancy_implies_min_distance_sym_equiv_zero,
-      scattering_type_registry=self._scattering_type_registry)
+      scattering_type_registry=self._scattering_type_registry,
+      wavelength=wavelength,
+      scattering_type_registry_params=self._scattering_type_registry_params_copy())
     str.inelastic_form_factors_source = self.inelastic_form_factors_source
     return str
 
@@ -230,7 +254,7 @@ class structure(crystal.special_position_settings):
     selection = None
     l = max(fraction - 0.05, 0.0)
     r = min(fraction + 0.05, 1.0)
-    for i in xrange(5):
+    for i in range(5):
       while l <= r:
         arr = flex.random_double(scatterers_size)-l
         sel = arr > 0.0
@@ -247,7 +271,8 @@ class structure(crystal.special_position_settings):
     cp = structure(self,
       non_unit_occupancy_implies_min_distance_sym_equiv_zero
         =self._non_unit_occupancy_implies_min_distance_sym_equiv_zero,
-      scattering_type_registry=self._scattering_type_registry)
+      scattering_type_registry=self._scattering_type_registry,
+      wavelength=self.wavelength)
     new_scatterers = self._scatterers.deep_copy()
     new_scatterers.set_sites(new_sites)
     cp._scatterers = new_scatterers
@@ -313,7 +338,8 @@ class structure(crystal.special_position_settings):
     cp = structure(self,
       non_unit_occupancy_implies_min_distance_sym_equiv_zero
         =self._non_unit_occupancy_implies_min_distance_sym_equiv_zero,
-      scattering_type_registry=self._scattering_type_registry)
+      scattering_type_registry=self._scattering_type_registry,
+      wavelength=self.wavelength)
     new_scatterers = self._scatterers.deep_copy()
     new_scatterers.set_sites(
       self.unit_cell().fractionalize(
@@ -412,7 +438,7 @@ class structure(crystal.special_position_settings):
           sc.u_iso = sc.u_iso * factor
         if(sc.flags.use_u_aniso()):
           result = []
-          for i in xrange(6): result.append(sc.u_star[i] * factor)
+          for i in range(6): result.append(sc.u_star[i] * factor)
           sc.u_star = result
 
   def shake_adp(self, b_max=None, b_min=None, spread=10.0, aniso_spread=0.1,
@@ -425,7 +451,10 @@ class structure(crystal.special_position_settings):
         b_mean = adptbx.u_as_b(flex.mean(u_isos))
         b_max = int(b_mean + spread)
         b_min = int(max(0.0, b_mean - spread))
-    assert b_min <= b_max, [b_min,b_max,spread,b_mean]
+    if b_min is not None and b_max is not None:
+      assert b_min <= b_max, [b_min,b_max,spread,b_mean]
+      b_min = int(b_min)
+      b_max = int(b_max)
     if(selection is not None):
       assert selection.size() == self._scatterers.size()
     else:
@@ -438,7 +467,7 @@ class structure(crystal.special_position_settings):
           sc.u_iso=adptbx.b_as_u(r)
         if(sc.flags.use_u_aniso() and not keep_anisotropic):
           result = []
-          for i in xrange(6):
+          for i in range(6):
             result.append(sc.u_star[i]+sc.u_star[i]*random.choice(
                                              (-aniso_spread,aniso_spread)))
           if(is_special_position(i_seq=i_seq)):
@@ -469,12 +498,32 @@ class structure(crystal.special_position_settings):
 
   def shake_occupancies(self, selection = None):
     s = self._scatterers
-    q_new = flex.random_double(s.size())*2.
+    q_new = flex.random_double(s.size())
     if(selection is None):
       s.set_occupancies(q_new)
     else:
       assert selection.size() == s.size()
       s.set_occupancies(q_new, selection)
+
+  def shake_fps(self, selection = None):
+    s = self._scatterers
+    q_deltas = flex.double([random.gauss(0,1) for _ in range(s.size())])
+    q_new = q_deltas + flex.double([sc.fp for sc in s])
+    if(selection is None):
+      s.set_fps(q_new)
+    else:
+      assert selection.size() == s.size()
+      s.set_fps(q_new, selection)
+
+  def shake_fdps(self, selection = None):
+    s = self._scatterers
+    q_deltas = flex.double([random.gauss(0,1) for _ in range(s.size())])
+    q_new = q_deltas + flex.double([sc.fdp for sc in s])
+    if(selection is None):
+      s.set_fdps(q_new)
+    else:
+      assert selection.size() == s.size()
+      s.set_fdps(q_new, selection)
 
   def set_occupancies(self, value, selection = None):
     if(selection is not None and isinstance(selection, flex.size_t)):
@@ -491,6 +540,40 @@ class structure(crystal.special_position_settings):
     else:
       assert selection.size() == s.size()
       s.set_occupancies(values, selection)
+    return self
+
+  def set_fps(self, value, selection = None):
+    if(selection is not None and isinstance(selection, flex.size_t)):
+      selection = flex.bool(self._scatterers.size(), selection)
+    s = self._scatterers
+    if(hasattr(value, 'size')):
+      values = value
+      if(selection is not None):
+        assert values.size() == selection.size()
+    else:
+      values = flex.double(s.size(), value)
+    if(selection is None):
+      s.set_fps(values)
+    else:
+      assert selection.size() == s.size()
+      s.set_fps(values, selection)
+    return self
+
+  def set_fdps(self, value, selection = None):
+    if(selection is not None and isinstance(selection, flex.size_t)):
+      selection = flex.bool(self._scatterers.size(), selection)
+    s = self._scatterers
+    if(hasattr(value, 'size')):
+      values = value
+      if(selection is not None):
+        assert values.size() == selection.size()
+    else:
+      values = flex.double(s.size(), value)
+    if(selection is None):
+      s.set_fdps(values)
+    else:
+      assert selection.size() == s.size()
+      s.set_fdps(values, selection)
     return self
 
   def coordinate_degrees_of_freedom_counts(self, selection=None):
@@ -512,6 +595,47 @@ class structure(crystal.special_position_settings):
                  .get(i).site_constraints()
                    .n_independent_params()] += 1
     return result
+
+  def get_scattering_table(self):
+    if not self._scattering_type_registry:
+      return None
+    return self._scattering_type_registry.last_table()
+
+  def _scattering_type_registry_params_copy(self):
+    if(self.scattering_type_registry_params is None): return None
+    return self.scattering_type_registry_params.copy()
+
+  def set_scattering_table(self, table, d_min=None):
+    """Record from which table the scattering factors of this xrs come from.
+
+    It sets both places where the answer is kept,
+
+      self.scattering_type_registry_params.table
+      self._scattering_type_registry (last_table)
+
+    so that the two cannot disagree, but it does NOT re-derive any scattering
+    factors. Use it when the factors already are the ones belonging to `table`
+    and only the record of where they came from was lost, e.g. after select()
+    or a copy. To (re-)compute scattering factors, use
+    scattering_type_registry(table=..., d_min=...) instead.
+
+    Pass d_min whenever it is known: "n_gaussian" depends on d_min
+    """
+    assert table in ["n_gaussian", "it1992", "wk1995", "xray", "electron",
+        "neutron"]
+    if(self._scattering_type_registry is None):
+      # nothing to label: we have to build the factors, which needs the d_min
+      if(table == "n_gaussian"): assert d_min is not None
+      self.scattering_type_registry(table=table, d_min=d_min)
+      return
+    self._scattering_type_registry.set_last_table(table)
+    if(self.scattering_type_registry_params is None):
+      self.scattering_type_registry_params = scattering_type_registry_params(
+        d_min = d_min, table = table)
+    else:
+      self.scattering_type_registry_params.table = table
+      if(d_min is not None):
+        self.scattering_type_registry_params.d_min = d_min
 
   def guess_scattering_type_neutron(self):
     ac,bc,cc = 0,0,0
@@ -738,7 +862,7 @@ class structure(crystal.special_position_settings):
         def find_3():
           sl = shift_length
           while (sl != 0):
-            for i_trial in xrange(10):
+            for i_trial in range(10):
               shift_frac = col(frac(
                 col(mersenne_twister.random_double_point_on_sphere()) * sl))
               site_mod = site_frac + shift_frac
@@ -760,9 +884,9 @@ class structure(crystal.special_position_settings):
         assert len(plane_vectors) == 9
         axis = None
         axis_length = None
-        for i in xrange(8):
+        for i in range(8):
           vi = plane_vectors[i]
-          for j in xrange(i+1,9):
+          for j in range(i+1,9):
             vj = plane_vectors[j]
             cross = vi.cross(vj)
             length = cross.length()
@@ -888,7 +1012,10 @@ class structure(crystal.special_position_settings):
     return self._scatterers.extract_u_iso_or_u_equiv(
       unit_cell=self.unit_cell())
 
-  def scale_adps (self, scale_factor) :
+  def b_iso_or_b_equiv(self):
+    return self.extract_u_iso_or_u_equiv()*adptbx.u_as_b(1.)
+
+  def scale_adps(self, scale_factor):
     return self._scatterers.scale_adps(scale_factor)
 
   def switch_to_neutron_scattering_dictionary(self):
@@ -910,190 +1037,6 @@ class structure(crystal.special_position_settings):
       else: result.append(False)
     return result
 
-
-  def heavy_selection(self,
-    ignore_atoms_with_alternative_conformations=False,
-    include_only_atoms_with_alternative_conformations=False,
-    only_protein=False,
-                   ):
-    """Get a selector array for heavy (= non H or D) scatterers of the structure.
-
-    :param ignore_atoms_with_alternative_conformations: select normal atoms/conformations only
-    :type ignore_atoms_with_alternative_conformations: boolean
-    :param include_only_atoms_with_alternative_conformations: select only scatterers with alternative conformations
-    :type include_only_atoms_with_alternative_conformations: boolean
-    :param only_protein: select only protein scatterers
-    :type only_protein: boolean
-
-    :returns: an array to select the desired scatterers of the structure
-    :rtype: boolean[]
-    """
-    if ( ignore_atoms_with_alternative_conformations and
-         include_only_atoms_with_alternative_conformations
-         ):
-      raise Sorry("Mutually exclusive alternative location options")
-    scattering_types = self._scatterers.extract_scattering_types()
-    scatterers = self.scatterers()
-    result = flex.bool()
-    for i, sct in enumerate(scattering_types):
-      if ignore_atoms_with_alternative_conformations:
-        if scatterers[i].label[9:10]!=" ":
-          result.append(False)
-          continue
-      if include_only_atoms_with_alternative_conformations:
-        if scatterers[i].label[9:10]==" ":
-          result.append(False)
-          continue
-      if only_protein:
-        for resname in [
-            "ALA",
-            "CYS",
-            "ASP",
-            "GLU",
-            "PHE",
-            "GLY",
-            "HIS",
-            "ILE",
-            "LYS",
-            "LEU",
-            "MET",
-            "ASN",
-            "PRO",
-            "GLN",
-            "ARG",
-            "SER",
-            "THR",
-            "VAL",
-            "TRP",
-            "TYR",
-            ]:
-          if scatterers[i].label[10:13]==resname:
-            break
-        else:
-          result.append(False)
-          continue
-
-      if(sct.strip() in ['H','D']): result.append(False)
-      else: result.append(True)
-    return result
-
-  def atom_names_selection(self,
-    atom_names=["C","O","CA","N"],
-    ignore_atoms_with_alternative_conformations=False,
-    include_only_atoms_with_alternative_conformations=False,
-    ):
-    """Get a selector array for scatterers of the structure by "atom" names.
-
-    :param atom_names: list of labels of scatterers to select
-    :type atom_names: list(string)
-    :param ignore_atoms_with_alternative_conformations: select normal atoms/conformations only
-    :type ignore_atoms_with_alternative_conformations: boolean
-    :param include_only_atoms_with_alternative_conformations: select only scatterers with alternative conformations
-    :type include_only_atoms_with_alternative_conformations: boolean
-
-    :returns: an array to select the desired scatterers of the structure
-    :rtype: boolean[]
-    """
-    #XXX may need a better function
-    if ( ignore_atoms_with_alternative_conformations and
-         include_only_atoms_with_alternative_conformations
-         ):
-      raise Sorry("Mutually exclusive alternative location options")
-    scattering_types = self._scatterers.extract_scattering_types()
-    result = flex.bool()
-    for sc in self.scatterers():
-      if(sc.label.find("HOH")>-1):
-        result.append(False)
-        continue
-      if ignore_atoms_with_alternative_conformations:
-        if sc.label[9:10]!=" ":
-          result.append(False)
-          continue
-      if include_only_atoms_with_alternative_conformations:
-        if sc.label[9:10]==" ":
-          result.append(False)
-          continue
-      for name in atom_names:
-        if(sc.label[5:9].find("%s " % name)>-1 and
-           sc.scattering_type==name[0]
-           ):
-          result.append(True)
-          break
-      else: result.append(False)
-    return result
-
-  def backbone_selection(self,
-    atom_names=["C","O","CA","N"],
-    ignore_atoms_with_alternative_conformations=False,
-    include_only_atoms_with_alternative_conformations=False,
-                         ):
-    """Get a selector array for scatterers of the backbone of the structure.
-    (This is just an alias for atom_names_selection.)
-
-    :param atom_names: list of labels of scatterers to select
-    :type atom_names: list(string)
-    :param ignore_atoms_with_alternative_conformations: select normal atoms/conformations only
-    :type ignore_atoms_with_alternative_conformations: boolean
-    :param include_only_atoms_with_alternative_conformations: select only scatterers with alternative conformations
-    :type include_only_atoms_with_alternative_conformations: boolean
-
-    :returns: an array to select the desired scatterers of the structure
-    :rtype: boolean[]
-    """
-    return self.atom_names_selection(
-      atom_names=atom_names,
-      ignore_atoms_with_alternative_conformations=ignore_atoms_with_alternative_conformations,
-      include_only_atoms_with_alternative_conformations=include_only_atoms_with_alternative_conformations,
-      )
-
-  def main_chain_selection(self,
-    atom_names=["C","O","CA","N","CB"],
-    ignore_atoms_with_alternative_conformations=False,
-    include_only_atoms_with_alternative_conformations=False,
-                           ):
-    """Get a selector array for scatterers of the main chain of the structure.
-    (This is just an alias for atom_names_selection with a different default selection.)
-
-    :param atom_names: list of labels of scatterers to select
-    :type atom_names: list(string)
-    :param ignore_atoms_with_alternative_conformations: select normal atoms/conformations only
-    :type ignore_atoms_with_alternative_conformations: boolean
-    :param include_only_atoms_with_alternative_conformations: select only scatterers with alternative conformations
-    :type include_only_atoms_with_alternative_conformations: boolean
-
-    :returns: an array to select the desired scatterers of the structure
-    :rtype: boolean[]
-    """
-    return self.atom_names_selection(
-      atom_names=atom_names,
-      ignore_atoms_with_alternative_conformations=ignore_atoms_with_alternative_conformations,
-      include_only_atoms_with_alternative_conformations=include_only_atoms_with_alternative_conformations,
-      )
-
-  def peptide_dihedral_selection(self,
-    atom_names=["C","CA","N"],
-    ignore_atoms_with_alternative_conformations=False,
-    include_only_atoms_with_alternative_conformations=False,
-                                 ):
-    """Get a selector array for peptide dihedral scatterers of the structure.
-    (This is just an alias for atom_names_selection with a different default selection.)
-
-    :param atom_names: list of labels of scatterers to select
-    :type atom_names: list(string)
-    :param ignore_atoms_with_alternative_conformations: select normal atoms/conformations only
-    :type ignore_atoms_with_alternative_conformations: boolean
-    :param include_only_atoms_with_alternative_conformations: select only scatterers with alternative conformations
-    :type include_only_atoms_with_alternative_conformations: boolean
-
-    :returns: an array to select the desired scatterers of the structure
-    :rtype: boolean[]
-    """
-    return self.atom_names_selection(
-      atom_names=atom_names,
-      ignore_atoms_with_alternative_conformations=ignore_atoms_with_alternative_conformations,
-      include_only_atoms_with_alternative_conformations=include_only_atoms_with_alternative_conformations,
-      )
-
   def element_selection(self, *elements):
     """Get a selector array for scatterers of specified element type(s) of the structure.
 
@@ -1104,33 +1047,6 @@ class structure(crystal.special_position_settings):
     :rtype: boolean[]
     """
     return flex.bool([ sc.element_symbol().strip() in elements
-                       for sc in self.scatterers() ])
-
-  def label_selection(self, *labels):
-    """Get a selector array for scatterers of specified labels from the structure.
-
-    :param labels: tuple of scatterer labels to select
-    :type labels: list(string) or set(string) or tuple(string)
-
-    :returns: an array to select the desired scatterers of the structure
-    :rtype: boolean[]
-    """
-    return flex.bool([ sc.label in labels for sc in self.scatterers() ])
-
-  def label_regex_selection(self, label_regex):
-    """Get a selector array for scatterers of specified labels (via regular
-    expression) from the structure.
-
-    :param label_regex: a regular expression matching scatterer labels to select
-    :type label_regex: string or re
-
-    :returns: an array to select the desired scatterers of the structure
-    :rtype: boolean[]
-    """
-    if is_string(label_regex):
-      import re
-      label_regex = re.compile(label_regex)
-    return flex.bool([ label_regex.search(sc.label) is not None
                        for sc in self.scatterers() ])
 
   def by_index_selection(self, selected_scatterers):
@@ -1148,8 +1064,8 @@ class structure(crystal.special_position_settings):
     try:
       result.set_selected(flex.size_t(selected_scatterers), True)
     except(RuntimeError):
-      raise(IndexError("Tried to select a scatterer by index with index => "+\
-            "of scatterers for this structuture."))
+      raise IndexError("Tried to select a scatterer by index with index => "+\
+            "of scatterers for this structuture.")
     return result
 
   def apply_rigid_body_shift(self, rot, trans, selection = None,
@@ -1223,21 +1139,21 @@ class structure(crystal.special_position_settings):
     part1 = "|-"+text
     part2 = "-|"
     n = 79 - len(part1+part2)
-    print >> out, part1 + "-"*n + part2
+    print(part1 + "-"*n + part2, file=out)
     n = 79 - len(part1 + "|")
-    print >> out, "| iso = %-5d   aniso = %-5d   pos. def. = %-5d   "\
-          "non-pos. def. = %-5d     |"%(n_isotropic,n_anisotropic,npd,nnpd)
-    print >> out, "| Total B(isotropic equivalent): min = %-6.2f   "\
+    print("| iso = %-5d   aniso = %-5d   pos. def. = %-5d   "\
+          "non-pos. def. = %-5d     |"%(n_isotropic,n_anisotropic,npd,nnpd), file=out)
+    print("| Total B(isotropic equivalent): min = %-6.2f   "\
                   "max = %-6.2f   mean = %-6.2f"%(flex.min(beq),flex.max(beq),
-                  flex.mean(beq))+" "*2+"|"
-    print >> out, "| Isotropic B only:              min = %-6.2f   "\
+                  flex.mean(beq))+" "*2+"|", file=out)
+    print("| Isotropic B only:              min = %-6.2f   "\
                   "max = %-6.2f   mean = %-6.2f"%(flex.min(bisos),
-                  flex.max(bisos),flex.mean(bisos))+" "*2+"|"
-    print >> out, "| "+"- "*38+"|"
-    print >> out, "|                     Distribution of isotropic B-factors:"\
-                  "                    |"
-    print >> out, "|            Isotropic                |             Total "\
-                  "                    |"
+                  flex.max(bisos),flex.mean(bisos))+" "*2+"|", file=out)
+    print("| "+"- "*38+"|", file=out)
+    print("|                     Distribution of isotropic B-factors:"\
+                  "                    |", file=out)
+    print("|            Isotropic                |             Total "\
+                  "                    |", file=out)
     histogram_1 = flex.histogram(data = bisos, n_slots = 10)
     low_cutoff_1 = histogram_1.data_min()
     histogram_2 = flex.histogram(data = beq, n_slots = 10)
@@ -1246,11 +1162,11 @@ class structure(crystal.special_position_settings):
                                    enumerate(histogram_2.slots())):
       high_cutoff_1 = histogram_1.data_min() + histogram_1.slot_width()*(i_1+1)
       high_cutoff_2 = histogram_2.data_min() + histogram_2.slot_width()*(i_2+1)
-      print >> out, "|  %9.3f -%9.3f:%8d      |    %9.3f -%9.3f:%8d      |" % \
-             (low_cutoff_1,high_cutoff_1,n_1,low_cutoff_2,high_cutoff_2,n_2)
+      print("|  %9.3f -%9.3f:%8d      |    %9.3f -%9.3f:%8d      |" % \
+             (low_cutoff_1,high_cutoff_1,n_1,low_cutoff_2,high_cutoff_2,n_2), file=out)
       low_cutoff_1 = high_cutoff_1
       low_cutoff_2 = high_cutoff_2
-    print >> out, "|" +"-"*77+"|"
+    print("|" +"-"*77+"|", file=out)
 
   def site_symmetry_table(self):
     return self._site_symmetry_table
@@ -1378,7 +1294,7 @@ class structure(crystal.special_position_settings):
          / self.unit_cell().volume()
 
   def __getitem__(self, slice_object):
-    assert type(slice_object) == types.SliceType
+    assert type(slice_object) == slice
     assert self.scatterers() is not None
     sel = flex.slice_indices(
       array_size=self._scatterers.size(),
@@ -1387,7 +1303,8 @@ class structure(crystal.special_position_settings):
       special_position_settings=self,
       scatterers=self._scatterers.select(sel),
       site_symmetry_table=self._site_symmetry_table.select(sel),
-      scattering_type_registry=self._scattering_type_registry)
+      scattering_type_registry=self._scattering_type_registry,
+      wavelength=self.wavelength)
 
   def select(self, selection, negate=False):
     assert self.scatterers() is not None
@@ -1396,7 +1313,9 @@ class structure(crystal.special_position_settings):
       special_position_settings=self,
       scatterers=self._scatterers.select(selection),
       site_symmetry_table=self._site_symmetry_table.select(selection),
-      scattering_type_registry=self._scattering_type_registry)
+      scattering_type_registry=self._scattering_type_registry,
+      wavelength=self.wavelength,
+      scattering_type_registry_params=self._scattering_type_registry_params_copy())
 
   def select_inplace(self, selection):
     assert self.scatterers() is not None
@@ -1459,8 +1378,8 @@ class structure(crystal.special_position_settings):
   def concatenate_inplace(self, other):
     d1 = self.scattering_type_registry().as_type_gaussian_dict()
     d2 = other.scattering_type_registry().as_type_gaussian_dict()
-    for key1, item1 in zip(d1.keys(), d1.items()):
-      for key2, item2 in zip(d2.keys(), d2.items()):
+    for key1, item1 in six.moves.zip(d1.keys(), six.iteritems(d1)):
+      for key2, item2 in six.moves.zip(d2.keys(), six.iteritems(d2)):
         if(key1 == key2):
           i1 = item1[1]
           i2 = item2[1]
@@ -1515,7 +1434,8 @@ class structure(crystal.special_position_settings):
                               quality_factor=None,
                               u_base=None,
                               b_base=None,
-                              wing_cutoff=None):
+                              wing_cutoff=None,
+                              extra_params=None):
     """
     Calculate structure factors for the current scatterers using either direct
     summation or FFT method; by default the appropriate method will be guessed
@@ -1544,6 +1464,8 @@ class structure(crystal.special_position_settings):
     :param wing_cutoff: is how far away from atomic center you sample density
       around atom
     :type wing_cutoff: float
+    :param extra_params: Additional parameters passed to the structure factor calculation algorithm
+    :type extra_params: libtbx.phil.scope_extract
 
     :returns: a custom Python object (exact type depends on method used), from
       which f_calc() may be called
@@ -1560,17 +1482,21 @@ class structure(crystal.special_position_settings):
             "xray.structure with anomalous scatterers"
           + " but miller.array is non-anomalous.")
     miller_set = miller.build_set(self, anomalous_flag, d_min)
+    d_min = miller_set.d_min() # Overwrite d_min with the actual value
     return structure_factors.from_scatterers(
       crystal_symmetry=self,
       d_min=d_min,
       cos_sin_table=cos_sin_table,
+      grid_resolution_factor=1/3.,
       quality_factor=quality_factor,
       u_base=u_base,
       b_base=b_base,
-      wing_cutoff=wing_cutoff)(
+      wing_cutoff=wing_cutoff,
+      exp_table_one_over_step_size=None)(
         xray_structure=self,
         miller_set=miller_set,
-        algorithm=algorithm)
+        algorithm=algorithm,
+        extra_params=extra_params)
 
   def as_py_code(self, indent=""):
     """eval(self.as_py_code()) is similar (but sometimes not identical)
@@ -1593,17 +1519,17 @@ class structure(crystal.special_position_settings):
 
   def show_summary(self, f=None, prefix=""):
     if (f is None): f = sys.stdout
-    print >> f, prefix + "Number of scatterers:", \
-      self.scatterers().size()
-    print >> f, prefix + "At special positions:", \
-      self.special_position_indices().size()
+    print(prefix + "Number of scatterers:", \
+      self.scatterers().size(), file=f)
+    print(prefix + "At special positions:", \
+      self.special_position_indices().size(), file=f)
     crystal.symmetry.show_summary(self, f=f, prefix=prefix)
     return self
 
   def show_scatterers(self, f=None, special_positions_only=False):
     if (f is None): f = sys.stdout
-    print >> f, ("Label, Scattering, Multiplicity, Coordinates, Occupancy, "
-                 "Uiso, Ustar as Uiso")
+    print(("Label, Scattering, Multiplicity, Coordinates, Occupancy, "
+                 "Uiso, Ustar as Uiso"), file=f)
     scatterers = self.scatterers()
     if (special_positions_only):
       scatterers = scatterers.select(self.special_position_indices())
@@ -1624,6 +1550,27 @@ class structure(crystal.special_position_settings):
       sites_frac_exact=self.scatterers().extract_sites(),
       out=out,
       prefix=prefix)
+
+  def is_similar(self, other, eps = 1.e-6):
+    """
+    Check if similar. Can be endlessly fortified as needed.
+    """
+    if(self.scatterers().size() != other.scatterers().size()): return False
+    f1 = self.crystal_symmetry().is_similar_symmetry(other.crystal_symmetry())
+    f2 = approx_equal(self.sites_frac(), other.sites_frac(), eps)
+    f3 = approx_equal(self.extract_u_iso_or_u_equiv(),
+                      other.extract_u_iso_or_u_equiv(), eps)
+    f4 = approx_equal(self.scatterers().extract_occupancies(),
+                      other.scatterers().extract_occupancies(), eps)
+    f5 = approx_equal(self.scatterers().extract_scattering_types(),
+                      other.scatterers().extract_scattering_types())
+    sr1 = self.scattering_type_registry().unique_gaussians_as_list()
+    sr2 = other.scattering_type_registry().unique_gaussians_as_list()
+    f6 = True
+    for s1, s2 in zip(sr1, sr2):
+      f6 &= approx_equal(s1.parameters(), s2.parameters(), eps)
+    f = list(set([f1,f2,f3,f4,f5,f6]))
+    return len(f)==1 and f[0]
 
   def is_positive_definite_u(self, u_cart_tolerance=None):
     if (u_cart_tolerance is None):
@@ -1701,7 +1648,8 @@ class structure(crystal.special_position_settings):
     new_structure = structure(
       crystal.special_position_settings(
         crystal.symmetry.cell_equivalent_p1(self)),
-      scattering_type_registry=self._scattering_type_registry)
+      scattering_type_registry=self._scattering_type_registry,
+      wavelength=self.wavelength)
     new_structure._scatterers = self.scatterers().deep_copy()
     new_structure._site_symmetry_table = self.site_symmetry_table().deep_copy()
     return new_structure
@@ -1714,7 +1662,8 @@ class structure(crystal.special_position_settings):
         =crystal.special_position_settings.change_basis(self, cb_op),
       scatterers=ext.change_basis(scatterers=self._scatterers, cb_op=cb_op),
       site_symmetry_table=self._site_symmetry_table.change_basis(cb_op=cb_op),
-      scattering_type_registry=self._scattering_type_registry)
+      scattering_type_registry=self._scattering_type_registry,
+      wavelength=self.wavelength)
 
   def change_hand(self):
     ch_op = self.space_group_info().type().change_of_hand_op()
@@ -1750,7 +1699,8 @@ class structure(crystal.special_position_settings):
         scatterers=self._scatterers,
         site_symmetry_table=self._site_symmetry_table,
         append_number_to_labels=append_number_to_labels),
-      scattering_type_registry=self._scattering_type_registry)
+      scattering_type_registry=self._scattering_type_registry,
+      wavelength=self.wavelength)
     if (sites_mod_positive):
       result = result.sites_mod_positive()
     return result
@@ -1766,7 +1716,8 @@ class structure(crystal.special_position_settings):
     return structure(
       special_position_settings=self,
       scatterers=self.scatterers().sites_mod_positive(),
-      scattering_type_registry=self._scattering_type_registry)
+      scattering_type_registry=self._scattering_type_registry,
+      wavelength=self.wavelength)
 
   def sites_mod_short(self):
     """Get the current structure converted into a structure with short
@@ -1779,7 +1730,8 @@ class structure(crystal.special_position_settings):
     return structure(
       special_position_settings=self,
       scatterers=self.scatterers().sites_mod_short(),
-      scattering_type_registry=self._scattering_type_registry)
+      scattering_type_registry=self._scattering_type_registry,
+      wavelength=self.wavelength)
 
   def apply_shift(self, shift, recompute_site_symmetries=False):
     shifted_scatterers = self.scatterers().deep_copy()
@@ -1792,7 +1744,8 @@ class structure(crystal.special_position_settings):
       special_position_settings=self,
       scatterers=shifted_scatterers,
       site_symmetry_table=site_symmetry_table,
-      scattering_type_registry=self._scattering_type_registry)
+      scattering_type_registry=self._scattering_type_registry,
+      wavelength=self.wavelength)
 
   def random_shift_sites(self, max_shift_cart=0.2):
     shifts = flex.vec3_double(
@@ -1809,7 +1762,8 @@ class structure(crystal.special_position_settings):
       special_position_settings=self,
       scatterers=self._scatterers.select(p),
       site_symmetry_table=self._site_symmetry_table.select(p),
-      scattering_type_registry=self._scattering_type_registry)
+      scattering_type_registry=self._scattering_type_registry,
+      wavelength=self.wavelength)
 
   def as_emma_model(self):
     from cctbx import euclidean_model_matching as emma
@@ -1880,20 +1834,20 @@ class structure(crystal.special_position_settings):
       if (flags.grad_occupancy()): n_grad_occupancy += 1
       if (flags.grad_fp()):        n_grad_fp += 1
       if (flags.grad_fdp()):       n_grad_fdp += 1
-    print >> out, "n_use            = ", n_use
+    print("n_use            = ", n_use, file=out)
     if (n_use_u_none != 0):
-      print >> out, "n_use_u_none     = ", n_use_u_none
+      print("n_use_u_none     = ", n_use_u_none, file=out)
     if (n_use_u_both != 0):
-      print >> out, "n_use_u_both     = ", n_use_u_both
-    print >> out, "n_use_u_iso      = ", n_use_u_iso
-    print >> out, "n_use_u_aniso    = ", n_use_u_aniso
-    print >> out, "n_grad_site      = ", n_grad_site
-    print >> out, "n_grad_u_iso     = ", n_grad_u_iso
-    print >> out, "n_grad_u_aniso   = ", n_grad_u_aniso
-    print >> out, "n_grad_occupancy = ", n_grad_occupancy
-    print >> out, "n_grad_fp        = ", n_grad_fp
-    print >> out, "n_grad_fdp       = ", n_grad_fdp
-    print >> out, "total number of scatterers = ", self.scatterers().size()
+      print("n_use_u_both     = ", n_use_u_both, file=out)
+    print("n_use_u_iso      = ", n_use_u_iso, file=out)
+    print("n_use_u_aniso    = ", n_use_u_aniso, file=out)
+    print("n_grad_site      = ", n_grad_site, file=out)
+    print("n_grad_u_iso     = ", n_grad_u_iso, file=out)
+    print("n_grad_u_aniso   = ", n_grad_u_aniso, file=out)
+    print("n_grad_occupancy = ", n_grad_occupancy, file=out)
+    print("n_grad_fp        = ", n_grad_fp, file=out)
+    print("n_grad_fdp       = ", n_grad_fdp, file=out)
+    print("total number of scatterers = ", self.scatterers().size(), file=out)
 
   def scatterer_flags(self):
     return ext.shared_scatterer_flags(self.scatterers())
@@ -2069,6 +2023,27 @@ class structure(crystal.special_position_settings):
       keep_pair_asu_table=keep_pair_asu_table,
       out=out)
 
+  def show_dihedral_angles(self,
+        distance_cutoff=None,
+        max_d=1.7,
+        max_angle=170,
+        asu_mappings_buffer_thickness=None,
+        asu_is_inside_epsilon=None,
+        pair_asu_table=None,
+        keep_pair_asu_table=False,
+        out=None):
+    if (pair_asu_table is None):
+      pair_asu_table = self.pair_asu_table(
+        distance_cutoff=distance_cutoff,
+        asu_mappings_buffer_thickness=asu_mappings_buffer_thickness,
+        asu_is_inside_epsilon=asu_is_inside_epsilon)
+    return pair_asu_table.show_dihedral_angles(
+      site_labels=self.scatterers().extract_labels(),
+      sites_frac=self.sites_frac(),
+      max_d=max_d,
+      max_angle=max_angle,
+      out=out)
+
   def conservative_pair_proxies(self, bond_sym_table, conserve_angles):
     return conservative_pair_proxies(
       structure=self,
@@ -2146,7 +2121,8 @@ class structure(crystal.special_position_settings):
       crystal_symmetry=crystal.symmetry(
         unit_cell=abc,
         space_group_symbol="P1"),
-      scatterers=self.scatterers())
+      scatterers=self.scatterers(),
+      wavelength=self.wavelength)
     result.set_sites_cart(sites_cart)
     return result
 
@@ -2160,16 +2136,17 @@ class structure(crystal.special_position_settings):
       crystal_symmetry=crystal.symmetry(
         unit_cell=[a,a,a],
         space_group_symbol="P1"),
-      scatterers=self.scatterers())
+      scatterers=self.scatterers(),
+      wavelength=self.wavelength)
     result.set_sites_cart(sites_cart)
     return result
 
-  def as_cif_simple(self, out=None, data_name="global"):
+  def as_cif_simple(self, out=None, data_name="global", format="mmCIF"):
     if out is None: out = sys.stdout
     import iotbx.cif
     cif = iotbx.cif.model.cif()
-    cif[data_name] = self.as_cif_block()
-    print >> out, cif
+    cif[data_name] = self.as_cif_block(format=format)
+    print(cif, file=out)
 
   def as_cif_block(self, covariance_matrix=None,
     cell_covariance_matrix=None, format="mmCIF"):
@@ -2253,7 +2230,10 @@ class structure(crystal.special_position_settings):
                                       '_atom_site_aniso_U_12',
                                       '_atom_site_aniso_U_13',
                                       '_atom_site_aniso_U_23'))
+      anharmonic_scatterers = []
       for sc in aniso_scatterers:
+        if sc.anharmonic_adp:
+          anharmonic_scatterers.append(sc)
         u_cif = adptbx.u_star_as_u_cif(uc, sc.u_star)
         if covariance_matrix is not None:
           row = [sc.label]
@@ -2272,7 +2252,35 @@ class structure(crystal.special_position_settings):
           row = [sc.label] + [fmt%u_cif[i] for i in range(6)]
         aniso_loop.add_row(row)
       cs_cif_block.add_loop(aniso_loop)
-      cs_cif_block.add_loop(atom_type_cif_loop(self))
+      if anharmonic_scatterers:
+        from cctbx.sgtbx import rank_3_tensor_constraints as t3c
+        from cctbx.sgtbx import rank_4_tensor_constraints as t4c
+        C_header= ['_atom_site_anharm_GC_C_label']
+        D_header= ['_atom_site_anharm_GC_D_label']
+        for idx in flex.rows(t3c.indices()):
+          C_header.append("_atom_site_anharm_GC_C_%s%s%s" %(idx[0]+1,idx[1]+1,idx[2]+1))
+        for idx in flex.rows(t4c.indices()):
+          D_header.append("_atom_site_anharm_GC_D_%s%s%s%s" %(idx[0]+1,idx[1]+1,idx[2]+1,idx[3]+1))
+        C_loop = model.loop(header=(C_header))
+        D_loop = model.loop(header=(D_header))
+        for sc in anharmonic_scatterers:
+          C_row = [sc.label]
+          D_row = [sc.label]
+          for i, d in enumerate(sc.anharmonic_adp.data()):
+            if covariance_matrix is not None:
+              idx = param_map[labels.index(sc.label)].u_aniso
+              if idx > -1:
+                var = covariance_diagonal[idx+6:idx+6+25]
+                d = format_float_with_su(d, math.sqrt(var[i]))
+            if i < 10:
+              C_row.append(d)
+            else:
+              D_row.append(d)
+          C_loop.add_row(C_row)
+          D_loop.add_row(D_row)
+        cs_cif_block.add_loop(C_loop)
+        cs_cif_block.add_loop(D_loop)
+      cs_cif_block.add_loop(atom_type_cif_loop(self, format=format))
     return cs_cif_block
 
   def as_pdb_file(self,
@@ -2290,11 +2298,12 @@ class structure(crystal.special_position_settings):
       resname=resname,
       connect=connect)
 
+  @classmethod
   def from_shelx(cls, *args, **kwds):
     import iotbx.shelx
-    return iotbx.shelx.cctbx_xray_structure_from(cls, *args, **kwds)
-  from_shelx = classmethod(from_shelx)
+    return iotbx.shelx._cctbx_xray_structure_from(*args, **kwds)
 
+  @classmethod
   def from_cif(cls, file_object=None, file_path=None, data_block_name=None):
     import iotbx.cif
     from iotbx.cif import builders
@@ -2309,7 +2318,6 @@ class structure(crystal.special_position_settings):
         return result.xray_structures
     else:
       raise Sorry("Could not extract an xray.structure from the given input")
-  from_cif = classmethod(from_cif)
 
   def unit_cell_content(self, omit=None):
     """ The content of the unit cell as a chemical formula """
@@ -2343,7 +2351,7 @@ class structure(crystal.special_position_settings):
         reset(label=lbl)
       else:
         def find_tail_replacement(fmt, n):
-          for i in xrange(1,n):
+          for i in range(1,n):
             s = fmt % i
             trial = lbl[:4-len(s)]+s
             if (trial not in lbl_set):
@@ -2360,7 +2368,7 @@ class structure(crystal.special_position_settings):
           if (len(e) == 1): fmt, n = "%03d", 1000
           else:             fmt, n = "%02d", 100
           e = e.upper()
-          for i in xrange(1,n):
+          for i in range(1,n):
             trial = e + fmt % i
             if (trial not in lbl_set):
               reset(label=trial)
@@ -2368,7 +2376,7 @@ class structure(crystal.special_position_settings):
           return False
         def find_complete_replacement():
           for c in upper:
-            for i in xrange(1,1000):
+            for i in range(1,1000):
               trial = c + "%03d" % i
               if (trial not in lbl_set):
                 reset(label=trial)
@@ -2384,18 +2392,18 @@ class structure(crystal.special_position_settings):
           "Unable to find unused SHELX-compatible scatterer label.")
     return result
 
-  def intersection_of_scatterers (self, i_seq, j_seq) :
+  def intersection_of_scatterers(self, i_seq, j_seq):
     """
     For a pair of scatterers, calculates their overlap given the coordinates
     and displacement parameters (using adptbx.intersection).
     """
     sc1 = self.scatterers()[i_seq]
     sc2 = self.scatterers()[j_seq]
-    if (sc1.flags.use_u_aniso()) :
+    if (sc1.flags.use_u_aniso()):
       u1 = sc1.u_star
     else :
       u1 = sc1.u_iso
-    if (sc2.flags.use_u_aniso()) :
+    if (sc2.flags.use_u_aniso()):
       u2 = sc2.u_star
     else :
       u2 = sc2.u_iso
@@ -2476,6 +2484,5 @@ class meaningful_site_cart_differences(object):
     return flex.max_absolute(self.delta.as_double())
 
   def show(self):
-    import itertools
-    for lbl, diff in itertools.izip(self.labels, self.delta):
-      print "%6s: (%.6f, %.6f, %.6f)" % ((lbl,) + diff)
+    for lbl, diff in six.moves.zip(self.labels, self.delta):
+      print("%6s: (%.6f, %.6f, %.6f)" % ((lbl,) + diff))

@@ -1,4 +1,4 @@
-from __future__ import division
+from __future__ import absolute_import, division, print_function
 
 import iotbx.pdb
 import mmtbx.model
@@ -7,6 +7,7 @@ import sys
 import libtbx.load_env
 
 pdb_str = """\
+CRYST1   10.000   10.000   10.000  90.00  90.00  90.00 P 1
 ATOM   2327  N   GLY A 318     169.195 115.930  63.690  1.00216.32           N
 ATOM   2328  CA  GLY A 318     169.975 114.907  64.348  1.00193.16           C
 ATOM   2329  C   GLY A 318     169.246 113.598  64.539  1.00197.19           C
@@ -76,7 +77,7 @@ def exercise_yes_sidechains(prefix="tst_one_resid_rotation_yes_sidechains"):
 
 if __name__ == '__main__':
   if (not libtbx.env.has_module(name="probe")):
-    print "Skipping: probe not configured"
+    print("Skipping: probe not configured")
   else:
     exercise_no_sidechains()
     exercise_yes_sidechains()

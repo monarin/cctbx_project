@@ -1,16 +1,19 @@
-from __future__ import division
+"""Tools for manipulation of SHELX formatted data files
+"""
+from __future__ import absolute_import, division, print_function
 from iotbx.shelx.errors import *
 from iotbx.shelx.lexer import *
 from iotbx.shelx.parsers import *
 import iotbx.shelx.writer # implicit import
 
-import boost.python
-ext = boost.python.import_ext("iotbx_shelx_ext")
+import boost_adaptbx.boost.python as bp
+ext = bp.import_ext("iotbx_shelx_ext")
 
-def cctbx_xray_structure_from(cls, file=None, filename=None,
-                              set_grad_flags=True,
-                              min_distance_sym_equiv=0.5,
-                              strictly_shelxl=True):
+def _cctbx_xray_structure_from(file=None, filename=None,
+                               set_grad_flags=True,
+                               min_distance_sym_equiv=0.5,
+                               strictly_shelxl=True):
+  # Not intended to be called directly: use cctbx.xray.structure.from_shelx() instead
   from iotbx import builders
   builder = builders.crystal_structure_builder(
     set_grad_flags=set_grad_flags,
@@ -18,11 +21,13 @@ def cctbx_xray_structure_from(cls, file=None, filename=None,
   stream = command_stream(file=file, filename=filename)
   stream = crystal_symmetry_parser(stream, builder)
   stream = atom_parser(stream.filtered_commands(), builder, strictly_shelxl)
+  stream = wavelength_parser(stream.filtered_commands(), builder)
   stream.parse()
   return builder.structure
 
-def smtbx_refinement_model_from(cls, ins_or_res=None, hkl=None,
-                                fo_sq=None, strictly_shelxl=True):
+def _smtbx_refinement_model_from(cls, ins_or_res=None, hkl=None,
+                                 fo_sq=None, strictly_shelxl=True):
+  # Not intended to be called directly: use smtbx.refinement.model.from_shelx() instead
   import os
   from iotbx.reflection_file_reader import any_reflection_file
 
@@ -58,7 +63,8 @@ def smtbx_refinement_model_from(cls, ins_or_res=None, hkl=None,
              builder.restraints_manager,
              builder.weighting_scheme,
              builder.temperature_in_celsius,
-             builder.conformer_indices)
+             builder.conformer_indices,
+             builder.wavelength_in_angstrom)
 
 
 def parse_smtbx_refinement_model(file=None, filename=None,
@@ -77,5 +83,6 @@ def parse_smtbx_refinement_model(file=None, filename=None,
                        strictly_shelxl=strictly_shelxl)
   stream = restraint_parser(stream.filtered_commands(), builder)
   stream = instruction_parser(stream.filtered_commands(), builder)
+  stream = wavelength_parser(stream.filtered_commands(), builder)
   stream.parse()
   return builder

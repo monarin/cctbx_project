@@ -8,7 +8,7 @@ Run this module with:
 phenix.python -m mmtbx.ions.svm.dump_sites [args]
 """
 
-from __future__ import division
+from __future__ import absolute_import, division, print_function
 
 import os
 import sys
@@ -20,7 +20,25 @@ from mmtbx.ions.environment import ChemicalEnvironment, ScatteringEnvironment
 from mmtbx.ions.identify import WATER_RES_NAMES
 from mmtbx.ions.svm.utils import iterate_sites
 from mmtbx.command_line import load_model_and_data
-from mmtbx.command_line.water_screen import master_phil
+
+def master_phil():
+  from mmtbx.command_line import generate_master_phil_with_inputs
+  return generate_master_phil_with_inputs(
+    enable_automatic_twin_detection=True,
+    enable_pdb_interpretation_params=True,
+    enable_stop_for_unknowns=False,
+    phil_string="""
+include scope mmtbx.ions.identify.ion_master_phil
+include scope mmtbx.ions.svm.svm_phil_str
+debug = True
+  .type = bool
+elements = Auto
+  .type = str
+use_svm = False
+  .type = bool
+nproc = Auto
+  .type = int
+""")
 
 def _main(args, out=sys.stdout):
   """
@@ -73,7 +91,7 @@ atomic properties.
   sites = dump_sites(manager)
 
   out_name = os.path.splitext(params.input.pdb.file_name[0])[0] + "_sites.pkl"
-  print >> out, "Dumping to", out_name
+  print("Dumping to", out_name, file=out)
   easy_pickle.dump(out_name, sites)
 
 def dump_sites(manager):

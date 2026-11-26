@@ -1,7 +1,8 @@
-from __future__ import division
+from __future__ import absolute_import, division, print_function
 
-import boost.python
-ext = boost.python.import_ext( "boost_adaptbx_graph_min_cut_max_flow_ext" )
+import boost_adaptbx.boost.python as bp
+from six.moves import zip
+ext = bp.import_ext( "boost_adaptbx_graph_min_cut_max_flow_ext" )
 
 def group_vertices(graph, parities):
 

@@ -1,4 +1,5 @@
-from __future__ import division
+from __future__ import absolute_import, division, print_function
+from six.moves import range
 import copy
 from iotbx.detectors import ReadADSC
 from scitbx.array_family import flex
@@ -30,7 +31,7 @@ class DetectorImageBase(object):
     if self.size1%bin!=0: return
     self.parameters['SIZE1']=self.parameters['SIZE1']//bin
     self.parameters['SIZE2']=self.parameters['SIZE2']//bin
-    if self.parameters.has_key('CCD_IMAGE_SATURATION'):
+    if 'CCD_IMAGE_SATURATION' in self.parameters:
       self.parameters['CCD_IMAGE_SATURATION']=self.parameters['CCD_IMAGE_SATURATION']*bin*bin
     self.parameters['PIXEL_SIZE']=self.parameters['PIXEL_SIZE']*bin
     self.bin = bin
@@ -151,7 +152,7 @@ class DetectorImageBase(object):
     return Spotfinder,this_frame
 
   def debug_write(self,fileout,mod_data=None):
-    if not self.parameters.has_key("TWOTHETA"):
+    if "TWOTHETA" not in self.parameters:
       self.parameters["TWOTHETA"]=0.0
     from iotbx.detectors import ImageException
     try:
@@ -164,7 +165,7 @@ class DetectorImageBase(object):
       endian = 0
       self.parameters["BYTE_ORDER"]="little_endian"
 
-    if self.parameters.has_key("DETECTOR_SN"):
+    if "DETECTOR_SN" in self.parameters:
       try:
         self.parameters["DETECTOR_SN"] = int(self.parameters["DETECTOR_SN"])
       except ValueError:
@@ -217,11 +218,12 @@ BEAM_CENTER_Y=%(BEAM_CENTER_Y).2f;
 CCD_IMAGE_SATURATION=65535;
 DETECTOR_SN=%(DETECTOR_SN)d;
 }\f"""%self.parameters
-    F = open(fileout,"wb")
-    F.write(info)
-    len_null=1024-len(info)
-    F.write('\0'*len_null)
-    F.close()
+    with open(fileout, "w") as F:
+      F.write(info)
+      len_null=1024-len(info)
+    with open(fileout, "ab") as F:
+      F.write(b'\0'*len_null)
+
     from iotbx.detectors import WriteADSC
     if mod_data==None: mod_data=self.linearintdata
     if not mod_data.all_ge(0):
@@ -250,18 +252,18 @@ DETECTOR_SN=%(DETECTOR_SN)d;
     raise AttributeError
 
   def show_header(self, out=None):
-    if (out is None) :
+    if (out is None):
       out = sys.stdout
-    print >> out, "File:",self.filename
-    print >> out, "Number of pixels: slow=%d fast=%d"%(self.size1,self.size2)
-    print >> out, "Pixel size: %f mm"%self.pixel_size
-    print >> out, "Saturation: %.0f"%self.saturation
-    print >> out, "Detector distance: %.2f mm"%self.distance
-    print >> out, "Detector 2theta swing: %.2f deg."%self.twotheta
-    print >> out, "Rotation start: %.2f deg."%self.osc_start
-    print >> out, "Rotation width: %.2f deg."%self.deltaphi
-    print >> out, "Beam center: x=%.2f mm  y=%.2f mm"%(self.beamx,self.beamy)
-    print >> out, "Wavelength: %f Ang."%self.wavelength
+    print("File:",self.filename, file=out)
+    print("Number of pixels: slow=%d fast=%d"%(self.size1,self.size2), file=out)
+    print("Pixel size: %f mm"%self.pixel_size, file=out)
+    print("Saturation: %.0f"%self.saturation, file=out)
+    print("Detector distance: %.2f mm"%self.distance, file=out)
+    print("Detector 2theta swing: %.2f deg."%self.twotheta, file=out)
+    print("Rotation start: %.2f deg."%self.osc_start, file=out)
+    print("Rotation width: %.2f deg."%self.deltaphi, file=out)
+    print("Beam center: x=%.2f mm  y=%.2f mm"%(self.beamx,self.beamy), file=out)
+    print("Wavelength: %f Ang."%self.wavelength, file=out)
 
   # code developed for the image viewer. phil_parameters is a scope extract
   def initialize_viewer_properties(self,phil_parameters,verbose=True):
@@ -271,42 +273,42 @@ DETECTOR_SN=%(DETECTOR_SN)d;
       beam_center_convention_from_image_object
     bc = beam_center_convention_from_image_object(self,phil_parameters)
     if verbose:
-      print "beam center convention: %d" % bc
+      print("beam center convention: %d" % bc)
     # FIXME what about 2-4 & 6-7?
-    if (bc == 0) :
+    if (bc == 0):
       self._invert_beam_center = True
       self._invert_y = True
-    elif (bc == 1) :
+    elif (bc == 1):
       self._invert_y = False
-    elif (bc == 5) :
+    elif (bc == 5):
       self._invert_y = True
 
     self.image_size_fast = self.size2 # width
     self.image_size_slow = self.size1 # height
     self.pixel_resolution = self.pixel_size
 
-  def detector_coords_as_image_coords_float (self, x, y) :
+  def detector_coords_as_image_coords_float(self, x, y):
     """
     Convert absolute detector position (in mm) to floating-value image pixel coordinates.
     """
     dw = self.image_size_fast * self.pixel_resolution
     dh = self.image_size_slow * self.pixel_resolution
     x_frac = x / dw
-    if (self._invert_y) :
+    if (self._invert_y):
       y_frac = - ((y / dh) - 1.0)
     else :
       y_frac = y / dh
     return x_frac * self.image_size_fast, \
            y_frac * self.image_size_slow
 
-  def detector_coords_as_image_coords (self, x, y) :
+  def detector_coords_as_image_coords(self, x, y):
     """
     Convert absolute detector position (in mm) to integer-value image pixel coordinates.
     """
     x_point,y_point = self.detector_coords_as_image_coords_float(x,y)
     return (int(x_point), int(y_point))
 
-  def image_coords_as_detector_coords (self, x, y, readout=None) :
+  def image_coords_as_detector_coords(self, x, y, readout=None):
     """
     Convert image pixel coordinates to absolute position on the detector
     (in mm).
@@ -316,15 +318,15 @@ DETECTOR_SN=%(DETECTOR_SN)d;
     x_frac = x / self.image_size_fast
     y_frac = y / self.image_size_slow
     x_detector = x_frac * dw
-    if (self._invert_y) :
+    if (self._invert_y):
       y_detector = (1.0 - y_frac) * dh
     else :
       y_detector = y_frac * dh
     return x_detector, y_detector
 
-  def get_beam_center_mm (self) :
+  def get_beam_center_mm(self):
     # FIXME Pilatus and ADSC images appear to have different conventions???
-    if (self._invert_beam_center) :
+    if (self._invert_beam_center):
       center_x = self.beamy
       center_y = self.beamx
     else :
@@ -376,7 +378,7 @@ class tile_manager_base(object):
     if reapply_peripheral_margin:
       try:    peripheral_margin = self.working_params.distl.peripheral_margin
       except Exception: peripheral_margin = 2
-      for i in xrange(len(IT) // 4):
+      for i in range(len(IT) // 4):
         IT[4 * i + 0] += peripheral_margin
         IT[4 * i + 1] += peripheral_margin
         IT[4 * i + 2] -= peripheral_margin
@@ -398,7 +400,7 @@ class tile_manager_base(object):
       for flag in self.working_params.distl.tile_flags :
         expand_flags=expand_flags + [flag]*4
       Zero_IT = flex.int()
-      for idx in xrange(len(IT)):
+      for idx in range(len(IT)):
         Zero_IT.append(expand_flags[idx]*IT[idx])
       return Zero_IT
 

@@ -2,7 +2,8 @@
 """Class for processing Fluctuation X-ray Scattering data (FXS)
 
 """
-from __future__ import division
+from __future__ import absolute_import, division, print_function
+from six.moves import range
 from psana                              import *
 
 import numpy             as np
@@ -105,7 +106,7 @@ class fluctuation_scattering(object):
 
        if mask_path is None :                   # Create a binary mask of ones, default mask only works for xtc/ffb
 
-          evt               = self.ds.events().next()
+          evt               = next(self.ds.events())
           self.mask_address = self.src.mask(evt,calib=True,status=True)
           self.msk          = self.src.image(evt,self.mask_address)
           self.mask         = np.copy(self.msk)
@@ -150,7 +151,7 @@ class fluctuation_scattering(object):
 
     if self.detector_address == 'pnccdFront' :
 
-       evt          = self.ds.events().next()
+       evt          = next(self.ds.events())
        gain         = self.src.gain(evt)
        self.gain    = self.src.image(evt,gain)
 
@@ -187,7 +188,7 @@ class fluctuation_scattering(object):
     self.det_pix = det_pix
 
     if beam_l is None :                        # Get wavelength from event, note it can change slightly between events. So in the future use average.
-       self.beam_l   = cspad_tbx.evt_wavelength(self.ds.events().next())
+       self.beam_l   = cspad_tbx.evt_wavelength(next(self.ds.events()))
     else :
        self.beam_l   = beam_l
 
@@ -354,7 +355,7 @@ class fluctuation_scattering(object):
          # Multiplot, plot C2 for 10 q-points
          multi   = MultiPlot(n_c2,title,ncols=5)
          step    = round(len(self.q) / (n_q + 1))
-         for p in xrange(n_q):
+         for p in range(n_q):
              R    = XYPlot(n_c2,'q = '+ str(np.around(self.q[(p+1)*step],decimals=3)),self.phi,c2[(p+1)*step],xlabel='dPhi')
              multi.add(R)
          publish.send('C2',multi)
@@ -1090,7 +1091,7 @@ class fluctuation_scattering(object):
       f         = h5py.File(filename,'r')
 
       # Ascert that time-stamp exist in file
-      if time in f.keys():
+      if time in f:
          self.image  = f[time][self.detector_address]['HistData'].value
       else:
         self.image   = None

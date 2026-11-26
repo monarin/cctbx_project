@@ -1,4 +1,4 @@
-from __future__ import division
+from __future__ import absolute_import, division, print_function
 from cctbx import uctbx
 from cctbx import adptbx
 from cctbx.array_family import flex
@@ -7,6 +7,8 @@ from scitbx import matrix
 from libtbx.test_utils import Exception_expected, approx_equal
 import math
 import random
+from six.moves import range
+from six.moves import zip
 
 def check_eigenvalue(adp, x):
   r = -adp[0] - adp[1] - adp[2]
@@ -91,7 +93,7 @@ def exercise_interface():
   up = (0.534, 0.812, 0.613, 0.0166, 0.134, -0.0124)
   s = adptbx.eigensystem(up)
   assert approx_equal(s.values(), (0.813132, 0.713201, 0.432668))
-  for i in xrange(3):
+  for i in range(3):
     check_eigenvector(up, s.values()[i], s.vectors(i))
   c = (1,2,3, 3,-4,5, 4,5,6)
   v = (198,18,1020,116,447,269)
@@ -100,7 +102,7 @@ def exercise_interface():
     (14.279201519086316, 2.9369143826320214, -1.2161159017183376))
   s = adptbx.eigensystem(up)
   try: s.vectors(4)
-  except RuntimeError, e: assert str(e).endswith("Index out of range.")
+  except RuntimeError as e: assert str(e).endswith("Index out of range.")
   else: raise Exception_expected
   uf = adptbx.eigenvalue_filtering(u_cart=u, u_min=0)
   assert approx_equal(uf, (3.0810418, 4.7950710, 9.3400030,
@@ -130,7 +132,7 @@ def u_star_minus_u_iso_ralf(unit_cell, u_star):
   return adptbx.u_cart_as_u_star(unit_cell, u_cart_minus_u_iso)
 
 def exercise_factor_u_star_u_iso():
-  for i_trial in xrange(100):
+  for i_trial in range(100):
     a = flex.random_double(size=9, factor=3)
     a.resize(flex.grid(3,3))
     u = a.matrix_transpose().matrix_multiply(a) # always positive-definite
@@ -207,20 +209,20 @@ def exercise_eigen_core(diag):
   ev = list(adptbx.eigenvalues(u))
   diag.sort()
   ev.sort()
-  for i in xrange(3):
+  for i in range(3):
     check_eigenvalue(u, ev[i])
-  for i in xrange(3):
+  for i in range(3):
     assert abs(diag[i] - ev[i]) < 1.e-4
   if (adptbx.is_positive_definite(ev)):
     es = adptbx.eigensystem(u)
     ev = list(es.values())
     ev.sort()
-    for i in xrange(3):
+    for i in range(3):
       check_eigenvalue(u, ev[i])
-    for i in xrange(3):
+    for i in range(3):
       assert abs(diag[i] - ev[i]) < 1.e-4
     evec = []
-    for i in xrange(3):
+    for i in range(3):
       check_eigenvector(u, es.values()[i], es.vectors(i))
       evec.extend(es.vectors(i))
     return # XXX following tests disabled for the moment
@@ -246,10 +248,10 @@ def exercise_eigen_core(diag):
 
 def exercise_eigen(n_trials=100):
   exercise_eigen_core([0,0,0])
-  for n_equal in xrange(3):
-    for i_trial in xrange(n_trials):
+  for n_equal in range(3):
+    for i_trial in range(n_trials):
       if (n_equal == 0):
-        diag = [random.random() for i in xrange(3)]
+        diag = [random.random() for i in range(3)]
       if (n_equal == 1):
         i = random.randrange(3)
         diag[i] = random.random()
@@ -269,20 +271,20 @@ def exercise_random_traceless_symmetry_constrained_b_cart():
   assert approx_equal(bc[4],0)
   assert approx_equal(bc[5],0)
 
-def exercise_misc () :
+def exercise_misc():
   import libtbx.load_env
   if (not libtbx.env.has_module("iotbx")) : return
-  from iotbx.pdb import hierarchy
+  import iotbx.pdb
   # Pair 1: 0.5 A apart, mean displacement = 0.4 A
   # Pair 2: 1.5 A apart, mean displacement = 0.6 A
-  pdb_in = hierarchy.input(pdb_string="""
+  pdb_in = iotbx.pdb.input(source_info=None, lines="""
 CRYST1   10.000   11.000   12.000  70.00  80.00  90.00 P 1
 HETATM    1  O  AHOH A   1       4.000   5.000   3.000  1.00 12.63           O
 HETATM    2  O  BHOH A   1       4.500   5.000   3.000  1.00 12.63           O
 HETATM    3  O  AHOH A   2       7.000   1.000   6.000  1.00 28.42           O
 HETATM    4  O  BHOH A   2       8.500   1.000   6.000  1.00 28.42           O
 END""")
-  xrs = pdb_in.input.xray_structure_simple()
+  xrs = pdb_in.xray_structure_simple()
   unit_cell = xrs.unit_cell()
   sc = xrs.scatterers()
   delta12 = adptbx.intersection(
@@ -319,7 +321,7 @@ def run():
   exercise_grad_u_transformations()
   exercise_eigen()
   exercise_random_traceless_symmetry_constrained_b_cart()
-  print "OK"
+  print("OK")
 
 if (__name__ == "__main__"):
   run()

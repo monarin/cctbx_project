@@ -1,4 +1,4 @@
-from __future__ import division
+from __future__ import absolute_import, division, print_function
 
 import iotbx.phil
 from libtbx.utils import Sorry, Usage
@@ -33,15 +33,15 @@ symmetry_search
 }
 """)
 
-def run (args=(), params=None, out=sys.stdout) :
-  if (len(args) > 0) :
+def run(args=(), params=None, out=sys.stdout):
+  if (len(args) > 0):
     cmdline = iotbx.phil.process_command_line_with_files(
       args=args,
       master_phil=master_phil,
       pdb_file_def="symmetry_search.file_name",
       reflection_file_def="symmetry_search.file_name")
     params = cmdline.work.extract().symmetry_search
-  elif (params is None) :
+  elif (params is None):
     raise Usage("""mmtbx.search_pdb_symmetry [file] [space_group] [unit_cell]
   Utility for finding similar unit cells deposited in the PDB.
 """)
@@ -51,35 +51,35 @@ def run (args=(), params=None, out=sys.stdout) :
   from iotbx import crystal_symmetry_from_any
   from cctbx import crystal
   db = pdb_symmetry.load_db()
-  if (params.file_name is not None) :
+  if (params.file_name is not None):
     symm = crystal_symmetry_from_any.extract_from(file_name=params.file_name)
-    if (symm is None) :
+    if (symm is None):
       raise Sorry("The file %s does not include symmetry information." %
         params.file_name)
-    elif (symm.space_group() is None) or (symm.unit_cell() is None) :
+    elif (symm.space_group() is None) or (symm.unit_cell() is None):
       raise Sorry("Incomplete symmetry information in %s." % params.file_name)
   else :
     symm = crystal.symmetry(
       unit_cell=params.unit_cell,
       space_group_info=params.space_group)
-  print >> out, ""
-  print >> out, "Input symmetry:"
+  print("", file=out)
+  print("Input symmetry:", file=out)
   symm.show_summary()
   scores = pdb_symmetry.symmetry_search(db, symm, max_rmsd=params.max_rmsd)
   niggli_cell = symm.niggli_cell().unit_cell().parameters()
-  print >> out, ""
-  print >> out, "Top %d matches (sorted by RMSD):"
+  print("", file=out)
+  print("Top %d matches (sorted by RMSD):", file=out)
   results = []
   for scored in scores[:params.max_hits_to_display] :
-    print >> out, "%s (rmsd = %.3f, volume ratio = %.2f)" % \
-      (scored.entry.pdb_id, scored.rmsd, scored.volume_ratio)
-    print >> out, "    Unit cell: %8.3f %8.3f %8.3f %8.3f %8.3f %8.3f" % \
-      scored.entry.crystal_symmetry.unit_cell().parameters()
-    print >> out, "  Niggli cell: %8.3f %8.3f %8.3f %8.3f %8.3f %8.3f" % \
-      scored.entry.niggli_cell.unit_cell().parameters()
-    print >> out, "  Target cell: %8.3f %8.3f %8.3f %8.3f %8.3f %8.3f" % \
-      niggli_cell
-    print >> out, ""
+    print("%s (rmsd = %.3f, volume ratio = %.2f)" % \
+      (scored.entry.pdb_id, scored.rmsd, scored.volume_ratio), file=out)
+    print("    Unit cell: %8.3f %8.3f %8.3f %8.3f %8.3f %8.3f" % \
+      scored.entry.crystal_symmetry.unit_cell().parameters(), file=out)
+    print("  Niggli cell: %8.3f %8.3f %8.3f %8.3f %8.3f %8.3f" % \
+      scored.entry.niggli_cell.unit_cell().parameters(), file=out)
+    print("  Target cell: %8.3f %8.3f %8.3f %8.3f %8.3f %8.3f" % \
+      niggli_cell, file=out)
+    print("", file=out)
     results.append(group_args(
       pdb_id=scored.entry.pdb_id,
       rmsd=scored.rmsd,
@@ -89,12 +89,12 @@ def run (args=(), params=None, out=sys.stdout) :
     crystal_symmetry=symm,
     hits=results)
 
-def validate_params (params) :
+def validate_params(params):
   params = params.symmetry_search
   have_symm = (not None in [params.unit_cell, params.space_group])
-  if (not have_symm) and (params.file_name is None) :
+  if (not have_symm) and (params.file_name is None):
     raise Sorry("Missing or incomplete symmetry information.")
   return True
 
-if (__name__ == "__main__") :
+if (__name__ == "__main__"):
   run(sys.argv[1:])

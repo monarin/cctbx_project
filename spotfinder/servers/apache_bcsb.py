@@ -1,5 +1,6 @@
-from __future__ import division
-import StringIO
+from __future__ import absolute_import, division, print_function
+from six.moves import range
+from six.moves import StringIO
 
 def run(args, verbose=False):
   from libtbx.utils import Sorry
@@ -16,7 +17,7 @@ def run(args, verbose=False):
   from spotfinder.servers.apache_utils import LongLineSimpleNode as SimpleNode
   from spotfinder.applications import signal_strength
 
-  logger = StringIO.StringIO()
+  logger = StringIO()
   top = SimpleNode("spotfinder")
 
   try:
@@ -34,25 +35,25 @@ def run(args, verbose=False):
       raise Sorry("%s not a readable file"%params.distl.image)
 
     Org = signal_strength.run_signal_strength(params)
-    assert len(Org.S.images.keys())==1 # there is only one image
-    key = Org.S.images.keys()[0]
+    assert len(list(Org.S.images.keys()))==1 # there is only one image
+    key = list(Org.S.images.keys())[0]
 
     # List of spots between specified high- and low-resolution limits
-    if Org.S.images[key].has_key('lo_pass_resolution_spots'):
+    if Org.S.images[key].has_extended_key('lo_pass_resolution_spots'):
       spots = Org.S.images[key]['lo_pass_resolution_spots']
-    elif Org.S.images[key].has_key('inlier_spots'):
+    elif Org.S.images[key].has_extended_key('inlier_spots'):
       spots = Org.S.images[key]['inlier_spots']
     else:
       spots = []
 
-    if Org.S.images[key].has_key('N_spots_total'):
+    if Org.S.images[key].has_extended_key('N_spots_total'):
       total = "%d"%Org.S.images[key]["N_spots_total"]
     else:
       total = "0"
 
-    if Org.S.images[key].has_key('resolution'):
+    if Org.S.images[key].has_extended_key('resolution'):
       resolution = Org.S.images[key]['resolution']
-    elif Org.S.images[key].has_key('distl_resolution'):
+    elif Org.S.images[key].has_extended_key('distl_resolution'):
       resolution = Org.S.images[key]['distl_resolution']
     else:
       resolution = 0.0
@@ -68,13 +69,13 @@ def run(args, verbose=False):
       reporter = Org.S.reporters[key][-1]
       normalizer = reporter.weights.sum()
       summation = 0;
-      for x in xrange(reporter.S_table_rows):
+      for x in range(reporter.S_table_rows):
         summation += reporter.weights[x] * reporter.MeanIsigI[x]
       top.child(SimpleNode(tag="mean_isigi",contents="%.3f"%(summation/normalizer)))
       integrated = reporter.Integrated.sum()
       top.child(SimpleNode(tag="integrated",contents="%.3f"%integrated))
 
-  except Exception,e:
+  except Exception as e:
     top.child(SimpleNode(tag="status",contents=repr(e)))
     top.emit(logger)
     return logger.getvalue()

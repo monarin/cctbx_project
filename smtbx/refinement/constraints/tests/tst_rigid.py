@@ -1,4 +1,5 @@
-from __future__ import division
+from __future__ import absolute_import, division, print_function
+
 from cctbx.array_family import flex
 from scitbx import sparse
 from cctbx import uctbx, xray, crystal
@@ -9,6 +10,7 @@ from scitbx.matrix import col
 from scitbx import matrix as mat
 from libtbx.test_utils import approx_equal
 from smtbx.refinement.constraints import rigid
+from six.moves import range
 
 def exercise_rigid_site_proxy(n=5):
   uc = uctbx.unit_cell((1, 2, 3))
@@ -21,7 +23,7 @@ def exercise_rigid_site_proxy(n=5):
     independents.append(p)
   pivot, pivot_neighbour = independents
   rigid_group_scatterers = [ ]
-  for i in xrange(n):
+  for i in range(n):
     sc = xray.scatterer('C%i' %i,
                         site=tuple(flex.random_double(3)))
     sc.flags.set_grad_site(True)
@@ -36,7 +38,7 @@ def exercise_rigid_site_proxy(n=5):
                             size=size,
                             scatterers=rigid_group_scatterers)
   proxies = [ ]
-  for i in xrange(n):
+  for i in range(n):
     proxies.append(reparam.add(constraints.rigid_site_proxy,
                                parent=rigid_group,
                                index=i))
@@ -72,7 +74,7 @@ digraph dependencies {
   jt0 = sparse.matrix(q, q + 2*3*n) # + rigid_group + constrained site proxies
   assert jt.n_rows == jt0.n_rows
   assert jt.n_cols == jt0.n_cols
-  for i,j in zip(xrange(q, q+3*n), xrange(q+3*n, jt0.n_cols)):
+  for i,j in zip(range(q, q+3*n), range(q+3*n, jt0.n_cols)):
     assert jt.col(i) == jt.col(j)
 
 def exercise_rigid_pivoted_rotatable():
@@ -162,7 +164,7 @@ class rigid_rotatable(object):
     r.linearise()
     r.store()
     shift = col(self.sites[0]) - (col(self.sites[0])-self.center)*self.size_value
-    for i in xrange(1,4):
+    for i in range(1,4):
       calc_site = (col(self.sites[i])-self.center)*self.size_value + shift
       assert approx_equal(
         self.uc.distance(
@@ -201,7 +203,7 @@ class rigid_rotatable(object):
                     0, 0, 1))
     R = rx_m*ry_m*rz_m #comulative rotation matrix
     shift = col(self.sites[0])-col(mat.row(col(self.sites[0])-self.center)*R)
-    for i in xrange(1,4):
+    for i in range(1,4):
       calc_site = col(mat.row(col(self.sites[i])-self.center)*R) + shift
       assert approx_equal(
         self.uc.distance(
@@ -252,13 +254,13 @@ class idealised(object):
       assert approx_equal(a.x, _b[i][0], 1e-6)
       assert approx_equal(a.y, _b[i][1], 1e-6)
 
-  def excersise_generation(self):
+  def exercise_generation(self):
     frags = ("Cp", "Ph", "Cp*", "Naphthalene")
     for i in frags:
       self.compare_results(
         self.tested.generate_fragment(i), self.def_len_ref[i])
 
-  def excersise_fitting(self):
+  def exercise_fitting(self):
     source_pts_indices = [1, 2, 5]
     ref_sites = ((-0.695,-1.203775,0), (-1.39,-0,0), (1.39,0,0))
     control_pts_indices = [0, 1, 4]
@@ -271,16 +273,16 @@ class idealised(object):
           col((fragment[p].x,fragment[p].y,0)),
           crds[control_pts_indices[i]]), 1e-14)
 
-  def excersise(self):
-    self.excersise_generation()
-    self.excersise_fitting()
+  def exercise(self):
+    self.exercise_generation()
+    self.exercise_fitting()
 
 def run():
   exercise_rigid_site_proxy()
   exercise_rigid_pivoted_rotatable()
   rigid_rotatable().excercise()
-  idealised().excersise()
-  print 'OK'
+  idealised().exercise()
+  print('OK')
 
 if __name__ == '__main__':
   run()

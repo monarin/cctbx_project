@@ -1,5 +1,5 @@
 
-from __future__ import division
+from __future__ import absolute_import, division, print_function
 from mmtbx.validation import residue, validation, atom
 from mmtbx.validation import graphics
 from iotbx import data_plots
@@ -12,6 +12,9 @@ from mmtbx.validation import utils
 from mmtbx.validation.rotalyze import get_center
 import mmtbx.rotamer
 from mmtbx.rotamer import ramachandran_eval
+from mmtbx.validation.fav_lists import fav_tables
+from six.moves import range
+import json
 
 # XXX Use these constants internally, never strings!
 RAMA_GENERAL = 0
@@ -27,6 +30,10 @@ RAMALYZE_FAVORED = 2
 RAMALYZE_ANY = 3
 RAMALYZE_NOT_FAVORED = 4
 
+# Values are rama_keys, from 0 to 5
+res_types_dict = {"general": 0, "glycine":1, "cis-proline":2, "trans-proline":3,
+             "pre-proline":4, "isoleucine or valine":5}
+
 res_types = ["general", "glycine", "cis-proline", "trans-proline",
              "pre-proline", "isoleucine or valine"]
 res_type_labels = ["General", "Gly", "cis-Pro", "trans-Pro", "pre-Pro",
@@ -36,14 +43,14 @@ res_type_plot_labels = ["all non-Pro/Gly residues", "Glycine", "cis-Proline",
 rama_types = ["OUTLIER", "Allowed", "Favored", "Any", "Allowed/Outlier"]
 rama_type_labels = ["Outlier", "Allowed", "Favored", "Any", "Allowed/Outlier"]
 
-class c_alpha (slots_getstate_setstate) :
+class c_alpha(slots_getstate_setstate):
   """Container class used in the generation of kinemages."""
   __slots__ = ['id_str', 'xyz']
-  def __init__ (self, id_str, xyz) :
+  def __init__(self, id_str, xyz):
     self.id_str = id_str
     self.xyz = xyz
 
-class ramachandran (residue) :
+class ramachandran(residue):
   """
   Result class for protein backbone Ramachandran analysis (phenix.ramalyze).
   """
@@ -60,32 +67,40 @@ class ramachandran (residue) :
   __slots__ = residue.__slots__ + __rama_attr__
 
   @staticmethod
-  def header () :
+  def header():
     return "%-20s %-12s %10s %6s %-20s" % ("Residue", "Type", "Region", "Score",
       "Phi/Psi")
 
-  def residue_type (self) :
+  def residue_type(self):
     return res_type_labels[self.res_type]
 
-  def ramalyze_type (self) :
+  def ramalyze_type(self):
     return rama_types[self.rama_type]
 
-  def as_string (self) :
+  def as_string(self):
     return "%-20s %-12s %10s %6.2f %10s" % (self.id_str(), self.residue_type(),
       self.ramalyze_type(), self.score,
       ",".join([ "%.1f" % x for x in [self.phi, self.psi] ]))
 
+  def as_csv(self):
+    rc = [self.chain_id.strip(), self.resseq.strip(),
+      # self.icode, self.altloc,
+      self.resname.strip()]
+    rc += [self.residue_type(), self.ramalyze_type(), '%0.1f' % (self.score)]
+    rc += [ "%.1f" % x for x in [self.phi, self.psi]]
+    return ','.join(rc)
+
   # Backwards compatibility
-  def id_str_old (self) :
+  def id_str_old(self):
     return "%s%4s%1s %1s%s" % (self.chain_id, self.resseq, self.icode,
       self.altloc, self.resname)
 
-  def format_old (self) :
+  def format_old(self):
     return "%s:%.2f:%.2f:%.2f:%s:%s" % (self.id_str(), self.score,
       self.phi, self.psi, self.ramalyze_type(),
       res_types[self.res_type].capitalize())
 
-  def as_kinemage (self) :
+  def as_kinemage(self):
     assert self.is_outlier()
 #    ram_out = "{%s CA}P %s\n" % (self.c_alphas[0].id_str, "%.3f %.3f %.3f" %
 #      self.c_alphas[0].xyz)
@@ -96,15 +111,29 @@ class ramachandran (residue) :
 #    return ram_out
     return self.markup
 
+  def as_JSON(self):
+    serializable_slots = [s for s in self.__slots__ if s != 'markup' and hasattr(self, s)]
+    slots_as_dict = ({s: getattr(self, s) for s in serializable_slots})
+    slots_as_dict["rama_type"] = rama_types[slots_as_dict["rama_type"]]
+    res_type_index = slots_as_dict['res_type']
+    slots_as_dict['res_type'] = res_types[res_type_index]
+    slots_as_dict['res_type_label'] = res_type_labels[res_type_index]
+    return json.dumps(slots_as_dict, indent=2)
+
+  def as_hierarchical_JSON(self):
+    hierarchical_dict = {}
+    hierarchy_nest_list = ['model_id', 'chain_id', 'resid', 'altloc']
+    return json.dumps(self.nest_dict(hierarchy_nest_list, hierarchical_dict), indent=2)
+
   # GUI output
-  def as_table_row_phenix (self) :
+  def as_table_row_phenix(self):
     return [ self.chain_id, "%1s%s %s" % (self.altloc,self.resname,self.resid),
              self.residue_type(), self.score, self.phi, self.psi ]
 
-class ramachandran_ensemble (residue) :
+class ramachandran_ensemble(residue):
   """Container for results for an ensemble of residues"""
   __slots__ = ramachandran.__slots__
-  def __init__ (self, all_results) :
+  def __init__(self, all_results):
     self._copy_constructor(all_results[0])
     self.res_type = all_results[0].res_type
     self.rama_type = [ r.rama_type for r in all_results ]
@@ -112,39 +141,39 @@ class ramachandran_ensemble (residue) :
     self.psi = flex.double([ r.psi for r in all_results ])
     self.score = flex.double([ r.score for r in all_results ])
 
-  def phi_min_max_mean (self) :
+  def phi_min_max_mean(self):
     return self.phi.min_max_mean()
 
-  def psi_min_max_mean (self) :
+  def psi_min_max_mean(self):
     return self.psi.min_max_mean()
 
-  def score_statistics (self) :
+  def score_statistics(self):
     return self.score.min_max_mean()
 
-  def phi_range (self) :
+  def phi_range(self):
     pass
 
-class ramalyze (validation) :
+class ramalyze(validation):
   """
   Frontend for calculating Ramachandran statistics for a model.  Can directly
   generate the corresponding plots.
   """
   __slots__ = validation.__slots__ + ["out_percent", "fav_percent",
-    "n_allowed", "n_favored", "n_type", "_outlier_i_seqs" ]
+    "n_allowed", "n_favored", "n_allowed_by_model", "n_favored_by_model", "n_type", "_outlier_i_seqs" ]
   program_description = "Analyze protein backbone ramachandran"
   output_header = "residue:score%:phi:psi:evaluation:type"
   gui_list_headers = ["Chain","Residue","Residue type","Score","Phi","Psi"]
   gui_formats = ["%s", "%s", "%s", "%.2f", "%.1f", "%.1f"]
   wx_column_widths = [75, 125, 125, 100, 125, 125]
 
-  def get_result_class (self) : return ramachandran
+  def get_result_class(self) : return ramachandran
 
-  def __init__ (self,
+  def __init__(self,
       pdb_hierarchy,
       outliers_only=False,
       show_errors=False,
       out=sys.stdout,
-      quiet=False) :
+      quiet=False):
     # Optimization hint: make it possible to pass
     # ramachandran_eval.RamachandranEval() from outside.
     # Better - convert this to using mmtbx.model.manager where
@@ -152,18 +181,20 @@ class ramalyze (validation) :
     validation.__init__(self)
     self.n_allowed = 0
     self.n_favored = 0
+    self.n_allowed_by_model = {}
+    self.n_favored_by_model = {}
     self.n_type = [ 0 ] * 6
     self._outlier_i_seqs = flex.size_t()
     pdb_atoms = pdb_hierarchy.atoms()
     all_i_seqs = pdb_atoms.extract_i_seq()
-    if (all_i_seqs.all_eq(0)) :
+    if (all_i_seqs.all_eq(0)):
       pdb_atoms.reset_i_seq()
     use_segids = utils.use_segids_in_place_of_chainids(
       hierarchy=pdb_hierarchy)
     analysis = ""
     output_list = []
-    count_keys = []
-    uniqueness_keys = []
+    count_keys = set()
+    uniqueness_keys = set()
     r = ramachandran_eval.RamachandranEval()
     ##if use_segids:
     ##      chain_id = utils.get_segid_as_chainid(chain=chain)
@@ -180,12 +211,18 @@ class ramalyze (validation) :
       coords = get_center(main_residue) #should find the CA of the center residue
 
       if (phi is not None and psi is not None):
+        model_id = main_residue.parent().parent().parent().id
+        if model_id not in self.n_total_by_model:
+          self.n_total_by_model[model_id] = 0
+          self.n_outliers_by_model[model_id] = 0
+          self.n_allowed_by_model[model_id] = 0
+          self.n_favored_by_model[model_id] = 0
         res_type = RAMA_GENERAL
         #self.n_total += 1
         if (main_residue.resname[0:3] == "GLY"):
           res_type = RAMA_GLYCINE
         elif (main_residue.resname[0:3] == "PRO"):
-          is_cis = is_cis_peptide(three)
+          is_cis = is_cislike_peptide(three)
           if is_cis:
             res_type = RAMA_CISPRO
           else:
@@ -230,9 +267,10 @@ class ramalyze (validation) :
         if result.altloc in ['','A'] and result_key not in count_keys:
           self.n_total += 1
           self.n_type[res_type] += 1
-          self.add_to_validation_counts(ramaType)
-          count_keys.append(result_key)
-        if (not outliers_only or is_outlier) :
+          self.n_total_by_model[model_id] += 1
+          self.add_to_validation_counts(ramaType, model_id)
+          count_keys.add(result_key)
+        if (not outliers_only or is_outlier):
           if (result.altloc != '' or
             result_key not in uniqueness_keys):
             #the threes/conformers method results in some redundant result
@@ -240,12 +278,13 @@ class ramalyze (validation) :
             #  uniqueness_keys list prevents redundant results being added to
             #  the final list
             self.results.append(result)
-            uniqueness_keys.append(result_key)
+            uniqueness_keys.add(result_key)
         if is_outlier :
           i_seqs = main_residue.atoms().extract_i_seq()
           assert (not i_seqs.all_eq(0))
           self._outlier_i_seqs.extend(i_seqs)
-    self.results.sort(key=lambda r: r.model_id+r.id_str())
+    #self.results.sort(key=lambda r: (r.model_id,r. chain_id, r.resseq_as_int(), r.icode, r.altloc))
+    self.results.sort(key=lambda r: (r.model_id,r. chain_id, r.resseq_as_int(), r.icode, r.altloc))
     out_count, out_percent = self.get_outliers_count_and_fraction()
     fav_count, fav_percent = self.get_favored_count_and_fraction()
     self.out_percent = out_percent * 100.0
@@ -255,58 +294,86 @@ class ramalyze (validation) :
     self.results += other.results
     return self
 
-  def write_plots (self, plot_file_base, out, show_labels=True) :
+  def get_plots(self, show_labels=True, point_style='bo',
+      markersize=10,markeredgecolor="black", dpi=100,markerfacecolor="white",
+      show_filling=True, show_contours=True):
+    """
+    Create a dictionary of six PNG images representing the plots for each residue type.
+    :param out: log filehandle
+    """
+    result = {}
+    for pos in range(6):
+      stats = utils.get_rotarama_data(
+        pos_type=res_types[pos],
+        convert_to_numpy_array=True)
+      points, coords = self.get_plot_data(position_type=pos)
+      result[pos] = draw_ramachandran_plot(
+        points=points,
+        rotarama_data=stats,
+        position_type=pos,
+        title=format_ramachandran_plot_title(pos, '*'),
+        show_labels=show_labels,
+        markeredgecolor=markeredgecolor,
+        markerfacecolor=markerfacecolor,
+        show_filling=show_filling,
+        show_contours=show_contours,
+        point_style=point_style,
+        markersize=markersize)
+    return result
+
+  def write_plots(self, plot_file_base, out, show_labels=True, point_style='bo',
+    markersize=10,markeredgecolor="black", show_filling=True, show_contours=True,
+    dpi=100,markerfacecolor="white"):
     """
     Write a set of six PNG images representing the plots for each residue type.
 
     :param plot_file_base: file name prefix
     :param out: log filehandle
     """
-    print >> out, ""
-    print >> out, "Creating images of plots..."
-    for pos in range(6) :
-      stats = utils.get_rotarama_data(
-        pos_type=res_types[pos],
-        convert_to_numpy_array=True)
+    print("", file=out)
+    print("Creating images of plots...", file=out)
+    plots = self.get_plots(
+        show_labels=show_labels,
+        point_style=point_style,
+        markersize=markersize,
+        markeredgecolor=markeredgecolor,
+        show_filling=show_filling,
+        show_contours=show_contours,
+        dpi=dpi,
+        markerfacecolor=markerfacecolor)
+    for pos in range(6):
       file_label = res_type_labels[pos].replace("/", "_")
       plot_file_name = plot_file_base + "_rama_%s.png" % file_label
-      points, coords = self.get_plot_data(position_type=pos)
-      draw_ramachandran_plot(
-        points=points,
-        rotarama_data=stats,
-        position_type=pos,
-        title=format_ramachandran_plot_title(pos, '*'),
-        file_name=plot_file_name,
-        show_labels=show_labels)
-      print >> out, "  wrote %s" % plot_file_name
+      plots[pos].save_image(plot_file_name, dpi=dpi)
+      print("  wrote %s" % plot_file_name, file=out)
 
-  def display_wx_plots (self, parent=None,
-      title="MolProbity - Ramachandran plots") :
+  def display_wx_plots(self, parent=None,
+      title="MolProbity - Ramachandran plots"):
     import wxtbx.plots.molprobity     # causes GUI error when moved to top?
     frame = wxtbx.plots.molprobity.ramalyze_frame(
       parent=parent, title=title, validation=self)
     frame.Show()
     return frame
 
-  def show_summary (self, out=sys.stdout, prefix="") :
-    print >> out, prefix + 'SUMMARY: %i Favored, %i Allowed, %i Outlier out of %i residues (altloc A where applicable)' % (self.n_favored, self.n_allowed, self.n_outliers, self.n_total)
-    print >> out, prefix + 'SUMMARY: %.2f%% outliers (Goal: %s)' % \
-      (self.out_percent, self.get_outliers_goal())
-    print >> out, prefix + 'SUMMARY: %.2f%% favored (Goal: %s)' % \
-      (self.fav_percent, self.get_favored_goal())
+  def show_summary(self, out=sys.stdout, prefix=""):
+    print(prefix + 'SUMMARY: %i Favored, %i Allowed, %i Outlier out of %i residues (altloc A where applicable)' % (self.n_favored, self.n_allowed, self.n_outliers, self.n_total), file=out)
+    print(prefix + 'SUMMARY: %.2f%% outliers (Goal: %s)' % \
+      (self.out_percent, self.get_outliers_goal()), file=out)
+    print(prefix + 'SUMMARY: %.2f%% favored (Goal: %s)' % \
+      (self.fav_percent, self.get_favored_goal()), file=out)
 
-  def get_plot_data (self, position_type=RAMA_GENERAL, residue_name="*",
-      point_type=RAMALYZE_ANY) :
+  def get_plot_data(self, position_type=RAMA_GENERAL, residue_name="*",
+      point_type=RAMALYZE_ANY):
     assert isinstance(position_type, int) and (0 <= position_type <= 5), \
       position_type
     points, coords = [], []
-    for i, residue in enumerate(self.results) :
+    for i, residue in enumerate(self.results):
       if ((residue.res_type == position_type) and
-          ((residue_name == '*') or (residue_name == residue.resname))) :
+          ((residue_name == '*') or (residue_name == residue.resname))):
         if ((point_type == RAMALYZE_ANY) or
             (point_type == residue.rama_type) or
             ((residue.rama_type in [RAMALYZE_ALLOWED,RAMALYZE_OUTLIER]) and
-             (point_type == RAMALYZE_NOT_FAVORED))) :
+             (point_type == RAMALYZE_NOT_FAVORED))):
           points.append((residue.phi, residue.psi, residue.simple_id(),
             residue.is_outlier()))
           coords.append(residue.xyz)
@@ -343,36 +410,48 @@ class ramalyze (validation) :
     #  self.n_outliers += 1
     return ev
 
-  def add_to_validation_counts(self, ev):
+  def add_to_validation_counts(self, ev, model_id=""):
     if ev == RAMALYZE_FAVORED:
       self.n_favored += 1
+      if model_id in self.n_favored_by_model:
+        self.n_favored_by_model[model_id] += 1
+      else:
+        raise Sorry("Model ID not found in ramalyze favored count dictionary, make sure you are calling this function with the correct model ID")
     elif ev == RAMALYZE_ALLOWED:
       self.n_allowed += 1
+      if model_id in self.n_allowed_by_model:
+        self.n_allowed_by_model[model_id] += 1
+      else:
+        raise Sorry("Model ID not found in ramalyze allowed count dictionary, make sure you are calling this function with the correct model ID")
     elif ev == RAMALYZE_OUTLIER:
       self.n_outliers += 1
+      if model_id in self.n_outliers_by_model:
+        self.n_outliers_by_model[model_id] += 1
+      else:
+        raise Sorry("Model ID not found in ramalyze outliers count dictionary, make sure you are calling this function with the correct model ID")
 
   def get_outliers_goal(self):
     return "< 0.2%"
 
-  def _get_count_and_fraction (self, res_type) :
-    if (self.n_total != 0) :
+  def _get_count_and_fraction(self, res_type):
+    if (self.n_total != 0):
       count = self.n_type[res_type]
       fraction = float(count) / self.n_total
       return count, fraction
     return 0, 0.
 
   @property
-  def percent_favored (self) :
+  def percent_favored(self):
     n_favored, frac_favored = self.get_favored_count_and_fraction()
     return frac_favored * 100.
 
   @property
-  def percent_allowed (self) :
+  def percent_allowed(self):
     n_allowed, frac_allowed = self.get_allowed_count_and_fraction()
     return frac_allowed * 100.
 
   def get_allowed_count_and_fraction(self):
-    if (self.n_total != 0) :
+    if (self.n_total != 0):
       fraction = self.n_allowed / self.n_total
       return self.n_allowed, fraction
     return 0, 0.
@@ -381,7 +460,7 @@ class ramalyze (validation) :
     return "> 99.8%"
 
   def get_favored_count_and_fraction(self):
-    if (self.n_total != 0) :
+    if (self.n_total != 0):
       fraction = self.n_favored / self.n_total
       return self.n_favored, fraction
     return 0, 0.
@@ -410,33 +489,73 @@ class ramalyze (validation) :
   def get_phi_psi_residues_count(self):
     return self.n_total
 
-  def as_markup_for_kinemage (self,c_alphas):
+  def as_markup_for_kinemage(self,c_alphas):
     #atom.id_str() returns 'pdb=" CA  LYS    16 "'
     #The [9:-1] slice gives ' LYS    16 '
     if None in c_alphas: return ''
+    # Draw from midpoint(prev_CA, central_CA) -> central_CA ->
+    # midpoint(central_CA, next_CA) so the markup spans only the region
+    # around the central residue, matching the old MolProbity/prekin style.
+    mid_01 = tuple((a + b) / 2.0 for a, b in zip(c_alphas[0].xyz, c_alphas[1].xyz))
+    mid_12 = tuple((a + b) / 2.0 for a, b in zip(c_alphas[1].xyz, c_alphas[2].xyz))
     ram_out = "{%s CA}P %s\n" % (c_alphas[0].id_str()[9:-1], "%.3f %.3f %.3f" %
-      c_alphas[0].xyz)
+      mid_01)
     ram_out += "{%s CA} %s\n" % (c_alphas[1].id_str()[9:-1], "%.3f %.3f %.3f" %
       c_alphas[1].xyz)
     ram_out += "{%s CA} %s\n" % (c_alphas[2].id_str()[9:-1], "%.3f %.3f %.3f" %
-      c_alphas[2].xyz)
+      mid_12)
     return ram_out
 
-  def as_kinemage (self) :
+  def as_kinemage(self, chain_id=None):
     ram_out = "@subgroup {Rama outliers} master= {Rama outliers}\n"
     ram_out += "@vectorlist {bad Rama Ca} width= 4 color= green\n"
     for rama in self.results :
-      if rama.is_outlier() :
-        ram_out += rama.as_kinemage()
+      if rama.is_outlier():
+        if chain_id is None or rama.chain_id == chain_id:
+          ram_out += rama.as_kinemage()
     return ram_out
 
-  def as_coot_data (self) :
+  def as_coot_data(self):
     data = []
     for result in self.results :
-      if result.is_outlier() :
+      if result.is_outlier():
         data.append((result.chain_id, result.resid, result.resname,
           result.score, result.xyz))
     return data
+
+  def as_JSON(self, addon_json={}):
+    if not addon_json:
+      addon_json = {}
+    addon_json["validation_type"] = "ramalyze"
+    data = addon_json
+    flat_results = []
+    hierarchical_results = {}
+    summary_results = {}
+    for result in self.results:
+      flat_results.append(json.loads(result.as_JSON()))
+      hier_result = json.loads(result.as_hierarchical_JSON())
+      hierarchical_results = self.merge_dict(hierarchical_results, hier_result)
+
+    data['flat_results'] = flat_results
+    data['hierarchical_results'] = hierarchical_results
+    data['summary_results'] = summary_results
+    for model_id in self.n_total_by_model.keys():
+      summary_results[model_id] = {"num_favored" : self.n_favored_by_model[model_id],
+        "num_allowed" : self.n_allowed_by_model[model_id],
+        "num_outliers" : self.n_outliers_by_model[model_id],
+        "num_residues" : self.n_total_by_model[model_id],
+        "outlier_percentage" : self.n_outliers_by_model[model_id]/self.n_total_by_model[model_id]*100,
+        "outlier_goal" : self.get_outliers_goal(),
+        "favored_percentage" : self.n_favored_by_model[model_id]/self.n_total_by_model[model_id]*100,
+        "favored_goal" : self.get_favored_goal()
+      }
+    data['summary_results'] = summary_results
+    #{summary: {"summary_text": "74 Favored, 0 Allowed, 0 Outlier out of 74 residues (altloc A where applicable)"}
+    #           "info": {"res_count": 74,
+    #                    "favored": 74,}
+                #}
+    #filebase = os.path.basename(self.data_manager.get_model_names()[0])
+    return json.dumps(data, indent=2)
 
 def get_matching_atom_group(residue_group, altloc):
   match = None
@@ -494,13 +613,30 @@ def get_omega_atoms(three):
   omega_atoms = [ca1, c, n, ca2]
   return omega_atoms
 
-def is_cis_peptide(three):
+def is_cis_peptide(three): #Depricated in favor of is_cislike_peptide below
   omega_atoms = get_omega_atoms(three)
   omega = get_dihedral(omega_atoms)
   if omega is None:
     return False
   if(omega > -30 and omega < 30):
     return True
+  else:
+    return False
+
+def is_cislike_peptide(three):
+  omega_atoms = get_omega_atoms(three)
+  omega = get_dihedral(omega_atoms)
+  if omega is None:
+    return False
+  if(omega > -90 and omega < 90):
+    return True
+    #Splitting omega at 90 accounts for twisted peptides and placed them in the cis/trans
+    #  category closest to their modeled angle
+    #This split is currently only relevant for twisted Proline, since cis nonPro is extremely rare
+    #  and we do not define a separate Rama category for it
+    #Users are advised to inspect every twisted Proline manually, since twisted peptides are higly
+    #  unusual and should not be assumed to be close to correct. But they have to go somewhere on
+    #  the Ramachandran plot
   else:
     return False
 
@@ -522,26 +658,24 @@ def get_cas_from_three(three):
   ##return cas
 
 def get_altloc_from_three(three):
-  #in conformer world, where threes come from, altlocs are most accurately
-  #  stored at the atom level, in the .id_str()
   #look at all atoms in the main residues, plus the atoms used in calculations
   #  from adjacent residues to find if any have altlocs
   ##mc_atoms = (" N  ", " CA ", " C  ", " O  ")
   for atom in three[1].atoms():
-    altchar = atom.id_str()[9:10]
-    if altchar != ' ':
+    altchar = atom.parent().altloc
+    if altchar != '':
       return altchar
   for atom in three[0].atoms():
     if atom.name != ' C  ':
       continue
-    altchar = atom.id_str()[9:10]
-    if altchar != ' ':
+    altchar = atom.parent().altloc
+    if altchar != '':
       return altchar
   for atom in three[2].atoms():
     if atom.name != ' N  ':
       continue
-    altchar = atom.id_str()[9:10]
-    if altchar != ' ':
+    altchar = atom.parent().altloc
+    if altchar != '':
       return altchar
   return ''
 
@@ -553,7 +687,7 @@ def construct_complete_residues(res_group):
     reordered = []
     # XXX always process blank-altloc atom group first
     for ag in atom_groups :
-      if (ag.altloc == '') :
+      if (ag.altloc == ''):
         reordered.insert(0, ag)
       else :
         reordered.append(ag)
@@ -564,9 +698,9 @@ def construct_complete_residues(res_group):
         if (atom.name == " CA "): ca = atom
         if (atom.name == " C  "): co = atom
         if (atom.name == " O  "): oxy = atom
-        if (atom.name in [" N  ", " CA ", " C  ", " O  "]) :
+        if (atom.name in [" N  ", " CA ", " C  ", " O  "]):
           changed = True
-      if (not None in [nit, ca, co, oxy]) and (changed) :
+      if (not None in [nit, ca, co, oxy]) and (changed):
         # complete residue backbone found
         complete_dict[ag.altloc] = [nit, ca, co, oxy]
     if len(complete_dict) > 0:
@@ -591,7 +725,7 @@ def get_favored_regions(rama_key):
   assert rama_key in range(6)
 
   if rama_key == RAMA_GENERAL:
-    return [(-99, 119), (-63, -43), (53, 43)]
+    return [(-99, 119), (-63, -43), (53, 43), (60,-120)]
   if rama_key == RAMA_GLYCINE:
     return [(63, 41), (-63, -41), (79, -173), (-79, 173)]
   if rama_key == RAMA_CISPRO:
@@ -605,51 +739,170 @@ def get_favored_regions(rama_key):
     return [(-63, -45), (-119, 127)]
   return None
 
+def get_favored_peaks(rama_key):
+  """
+  returns exact favored peaks with their score value
+  """
+  assert rama_key in range(6)
+
+  if rama_key == RAMA_GENERAL:
+    return [((-115.0, 131.0), 0.57068),
+            ((-63.0, -43.0), 1.0),
+            ((53.0, 43.0), 0.323004),
+            ((53.0, -127.0), 0.0246619)]
+  if rama_key == RAMA_GLYCINE:
+    return [((63.0, 41.0), 1.0),
+            ((-63.0, -41.0), 1.0),
+            ((79.0, -173.0), 0.553852),
+            # ((-79.0, 173.0), 0.553852),
+            ]
+  if rama_key == RAMA_CISPRO:
+    return [((-75.0, 155.0), 1.0),
+            ((-89.0, 5.0), 0.701149)]
+  if rama_key == RAMA_TRANSPRO:
+    return [((-57.0, -37.0), 0.99566),
+            ((-59.0, 143.0), 1.0),
+            ((-81.0, 65.0), 0.0896269)]
+  if rama_key == RAMA_PREPRO:
+    return [((-57.0, -45.0), 1.0),
+            ((-67.0, 147.0), 0.992025),
+            ((49.0, 57.0), 0.185259)]
+  if rama_key == RAMA_ILE_VAL:
+    return [((-63.0, -45.0), 1.0),
+            ((-121.0, 129.0), 0.76163)]
+  return None
+
+def find_region_max_value(rama_key, phi, psi, allow_outside=False):
+  def normalize(angle):
+    a = int(angle)
+    while a >= 180:
+      a -= 360
+    while a <= -180:
+      a += 360
+    return a
+  from mmtbx.rotamer import ramachandran_eval
+  from collections import Counter
+  r = ramachandran_eval.RamachandranEval()
+  value = r.evaluate(rama_key, [phi, psi])
+  ev = ramalyze.evalScore(rama_key, value)
+  if ev != RAMALYZE_FAVORED and not allow_outside:
+    return None
+  ph = int(phi)
+  ps = int(psi)
+  peaks = get_favored_peaks(rama_key)
+  v = fav_tables[rama_key][normalize(ph)+180][normalize(ps)+180]
+  values = []
+  if v == 0:
+    # look around, rounding problems
+    for i in [-1,0,1]:
+      for j in [-1,0,1]:
+        values.append(fav_tables[rama_key][normalize(ph+i)+180][normalize(ps+j)+180])
+    for e in Counter(values).elements():
+      if e != 0:
+        return peaks[e-1]
+  if allow_outside:
+    # do more comprehensive search, basically looking for the nearest
+    # favorite region
+    c = 1
+    flag = True
+    while flag:
+      for i in range(-c,c):
+        for j in range(-c,c):
+          reg_number = fav_tables[rama_key][normalize(ph+i)+180][normalize(ps+j)+180]
+          if reg_number != 0:
+            flag = False
+            return peaks[reg_number-1]
+      c += 2
+    return peaks[reg_number-1]
+  if v == 0:
+    return None
+  else:
+    return peaks[v-1]
+
 #-----------------------------------------------------------------------
 # GRAPHICS OUTPUT
-def format_ramachandran_plot_title (position_type, residue_type) :
-  if (residue_type == '*') :
+def format_ramachandran_plot_title(position_type, residue_type):
+  if (residue_type == '*'):
     title = "Ramachandran plot for " + res_type_plot_labels[position_type]
   else :
     title = "Ramachandran plot for " + residue_type
   return title
 
-class ramachandran_plot_mixin (graphics.rotarama_plot_mixin) :
-  extent = [-179,179,-179,179]
-  def set_labels (self, y_marks=()) :
-    axes = self.plot.get_axes()
-    axes.set_xlabel("Phi")
-    axes.set_xticks([-120,-60,0,60,120])
-    axes.set_ylabel("Psi")
-    axes.set_yticks([-120,-60,0,60,120])
+class ramachandran_plot_mixin(graphics.rotarama_plot_mixin):
+  extent = [-180,180,-180,180]
 
-class ramachandran_plot (data_plots.simple_matplotlib_plot,
-                         ramachandran_plot_mixin) :
-  def __init__ (self, *args, **kwds) :
+  def set_labels(self, y_marks=()):
+    self.plot.set_xlabel("Phi")
+    self.plot.set_xticks([-120,-60,0,60,120])
+    # self.plot.set_xticks([-160, -140, -120, -100, -80, -60, -40, -20, 0, 20, 40, 60, 80, 100, 120, 140, 160])
+    self.plot.set_ylabel("Psi")
+    self.plot.set_yticks([-120,-60,0,60,120])
+    # self.plot.set_yticks([-160, -140, -120, -100, -80, -60, -40, -20, 0, 20, 40, 60, 80, 100, 120, 140, 160])
+    self.plot.set_ylim((-182,182))
+    self.plot.set_xlim((-182,182))
+    # self.plot.grid(which='both', color='lime', linestyle='-', linewidth=2)
+
+class ramachandran_plot(data_plots.simple_matplotlib_plot,
+                         ramachandran_plot_mixin):
+  def __init__(self, *args, **kwds):
     data_plots.simple_matplotlib_plot.__init__(self, *args, **kwds)
     ramachandran_plot_mixin.__init__(self, *args, **kwds)
 
-def draw_ramachandran_plot (points,
+def get_contours(position_type):
+  '''
+  Function for determining the contours in a Ramachandran plot
+
+  Parameters
+  ----------
+  position_type: int, defined in beginning of file (e.g. RAMA_GENERAL)
+
+  Returns
+  -------
+  list containing contours (2 numbers)
+
+  data for plotting is being "scaled" in
+  mmtbx/validation/utils.py: export_ramachandran_distribution():
+    return npz ** scale_factor, # scale_factor = 0.25
+  Therefore to calculate contours we need to look at
+  mmtbx/validation/ramalyze.py: evalScore() for the logic and
+  put the cutoff numbers to the power of 0.25
+  '''
+  general_contours = [0.1495, 0.376] # [0.0005**0.25, 0.02**0.25]
+  cispro_contours = [0.21147, 0.376] # [0.002**0.25, 0.02**0.25]
+  default_contours = [0.1778, 0.376] # [0.001**0.25, 0.02**0.25]
+
+  contours = default_contours
+  if position_type == RAMA_GENERAL :
+    contours = general_contours
+  elif position_type == RAMA_CISPRO :
+    contours = cispro_contours
+  return contours
+
+def draw_ramachandran_plot(points,
                             rotarama_data,
                             position_type,
                             title,
-                            file_name,
-                            show_labels=True) :
+                            show_labels=True,
+                            markerfacecolor="white",
+                            markeredgecolor="black",
+                            show_filling=True,
+                            show_contours=True,
+                            markersize=10,
+                            point_style='bo'):
   p = ramachandran_plot()
-  # XXX where do these numbers come from?
-  # They are probably wrong/inconsistent.
-  # They don't match what we have right here in evaluateScore function
-  # - at the very least I don't see separate values for cis-proline
-  # while it is present in evaluateScore.
-  if position_type == RAMA_GENERAL :
-    contours = [0.1495, 0.376]
-  else :
-    contours = [0.2115, 0.376]
+  contours = None
+  if show_contours:
+    contours = get_contours(position_type)
   p.draw_plot(
     stats=rotarama_data,
     title=title,
     points=points,
     show_labels=show_labels,
     colormap="Blues",
-    contours=contours)
-  p.save_image(file_name)
+    contours=contours,
+    markerfacecolor=markerfacecolor,
+    markeredgecolor=markeredgecolor,
+    show_filling=show_filling,
+    markersize=markersize,
+    point_style=point_style)
+  return p

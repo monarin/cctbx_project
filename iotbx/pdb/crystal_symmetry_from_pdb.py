@@ -1,4 +1,5 @@
-from __future__ import division
+"""Extract crystal symmetry from a PDB file"""
+from __future__ import absolute_import, division, print_function
 from iotbx.pdb import cryst1_interpretation
 from iotbx.cns import pdb_remarks as cns_pdb_remarks
 from libtbx import smart_open
@@ -8,9 +9,11 @@ def extract_from(file_name=None, file=None, monitor_initial=None):
   assert [file_name, file].count(None) == 1
   if (file is None):
     file = smart_open.for_reading(file_name=file_name)
+  lines = file.readlines()
+  file.close()
   detect_binary = detect_binary_file(monitor_initial=monitor_initial)
   line_number = 0
-  for line in file:
+  for line in lines:
     line_number += 1
     if (detect_binary is not None):
       is_binary = detect_binary.is_binary_file(block=line)
@@ -24,4 +27,4 @@ def extract_from(file_name=None, file=None, monitor_initial=None):
       pdb_record=line)
     if (crystal_symmetry is not None):
       return crystal_symmetry
-  raise RuntimeError, "No CRYST1 record."
+  raise RuntimeError("No CRYST1 record.")

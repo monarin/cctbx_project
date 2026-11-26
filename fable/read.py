@@ -1,5 +1,5 @@
 from __future__ import absolute_import, division, print_function
-import collections
+from six.moves import range
 from fable \
   import unsigned_integer_scan, \
   identifier_scan, \
@@ -10,6 +10,7 @@ from fable import intrinsics
 from fable import equivalence
 from fable import utils
 import sys
+from six.moves import zip
 
 class Error(Exception): pass
 
@@ -498,7 +499,9 @@ def load_includes(global_line_index_generator, stripped_source_lines):
 
 def load(global_line_index_generator, file_name, skip_load_includes=False):
   source_lines = []
-  for i_line,line in enumerate(open(file_name).read().splitlines()):
+  with open(file_name) as f:
+    lines = f.read().splitlines()
+  for i_line,line in enumerate(lines):
     source_lines.append(source_line(
       global_line_index_generator=global_line_index_generator,
       file_name=file_name,
@@ -2548,8 +2551,9 @@ class fproc(fproc_p_methods):
   def fmt_counts_by_statement_label(O):
     assert O.body_lines_processed_already
     result = O._fmt_counts_by_statement_label
-    if result is None:
-      result = collections.defaultdict(lambda: 0)
+    if (result is None):
+      from libtbx import dict_with_default_0
+      result = dict_with_default_0()
       for ei in O.executable:
         if (ei.key in ["read", "write", "print"] and ei.fmt_tokens is None):
           tl = ei.cilist.fmt
@@ -2917,7 +2921,8 @@ class split_fprocs(object):
               else:
                 msg.append(name.format_error(
                   msg="%d. definition" % len(msg), prefix="  "))
-            sys.exit("\n".join(msg))
+            from libtbx.utils import Sorry
+            raise Sorry("\n".join(msg))
           O._fprocs_by_name[fproc.name.value] = fproc
           if (fproc.name_plain is not None):
             O._fprocs_by_name_plain[fproc.name_plain.value] = fproc

@@ -1,14 +1,16 @@
-from __future__ import division
-import boost.python
+from __future__ import absolute_import, division, print_function
+from six.moves import range
+import boost_adaptbx.boost.python as bp
 import rstbx.dps_core # import dependency
-boost.python.import_ext("rstbx_indexing_api_ext")
+bp.import_ext("rstbx_indexing_api_ext")
 from rstbx_indexing_api_ext import *
 import rstbx_indexing_api_ext as ext
 from rstbx.array_family import flex
 from scitbx.matrix import col
 from rstbx_ext import * # gets us SpotClass
 
-class _(boost.python.injector, ext.dps_extended):
+@bp.inject_into(ext.dps_extended)
+class _():
 
   def set_beam_vector(self,beam):
     # input vector "beam" points from crystal to source.
@@ -35,7 +37,7 @@ class _(boost.python.injector, ext.dps_extended):
     reciprocal_space_vectors = flex.vec3_double()
 
     # tile surface to laboratory transformation
-    for n in xrange(len(raw_spot_input)):
+    for n in range(len(raw_spot_input)):
       pid = panelID[n]
       lab_direct = col(detector[pid].get_lab_coord(raw_spot_input[n][0:2]))
 
@@ -72,7 +74,7 @@ class _(boost.python.injector, ext.dps_extended):
     reciprocal_space_vectors = flex.vec3_double()
 
     # tile surface to laboratory transformation
-    for n in xrange(len(raw_spot_input)):
+    for n in range(len(raw_spot_input)):
       pid = panelID[n]
       lab_direct = col(detector[pid].get_lab_coord(raw_spot_input[n][0:2]))
 

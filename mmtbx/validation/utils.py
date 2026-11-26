@@ -1,14 +1,16 @@
 
-from __future__ import division
+from __future__ import absolute_import, division, print_function
 from libtbx import easy_pickle
 from libtbx import group_args
 from libtbx.utils import Sorry
 from collections import defaultdict
+from iotbx.pdb import common_residue_names_get_class
 import os.path
 import math
 import sys
+from six.moves import range
 
-def export_ramachandran_distribution (n_dim_table, scale_factor=0.25) :
+def export_ramachandran_distribution(n_dim_table, scale_factor=0.25):
   """
   Convert a MolProbity Ramachandran distribution to a format suitable for
   display using matplotlib (see wxtbx.plots).
@@ -20,7 +22,7 @@ def export_ramachandran_distribution (n_dim_table, scale_factor=0.25) :
   npz = numpy.array(z_grid)
   return npz ** scale_factor
 
-def export_rotamer_distribution (n_dim_table, scale_factor=0.5) :
+def export_rotamer_distribution(n_dim_table, scale_factor=0.5):
   """
   Convert a MolProbity rotamer distribution to a format suitable for
   display using matplotlib (see wxtbx.plots).  Will reduce dimensionality to
@@ -38,17 +40,17 @@ def export_rotamer_distribution (n_dim_table, scale_factor=0.5) :
     for nbins in n_dim_table.nBins[2:] :
       y_width *= nbins
   z_grid = [ [] for i in range(n_dim_table.nBins[1]) ]
-  for i in range(n_dim_table.nBins[0]) :
-    for j in range(n_dim_table.nBins[1]) :
+  for i in range(n_dim_table.nBins[0]):
+    for j in range(n_dim_table.nBins[1]):
       z_total = 0
-      for k in range(y_width) :
+      for k in range(y_width):
         z_total += z[(i * x_offset) + (j * y_width) + k]
       z_grid[j].append(z_total)
   npz = numpy.array(z_grid)
   return npz ** scale_factor
 
-def get_rotarama_data (residue_type=None, pos_type=None, db="rama",
-    convert_to_numpy_array=False) :
+def get_rotarama_data(residue_type=None, pos_type=None, db="rama",
+    convert_to_numpy_array=False):
   from mmtbx.rotamer import ramachandran_eval
   from mmtbx.rotamer.rotamer_eval import find_rotarama_data_dir
   # backwards compatibility
@@ -64,22 +66,22 @@ def get_rotarama_data (residue_type=None, pos_type=None, db="rama",
     residue_type = "phetyr"
   assert (residue_type is not None)
   rama_data_dir = find_rotarama_data_dir()
-  if (db == "rama") :
+  if (db == "rama"):
     pkl_file = "%s8000-%s.pickle" % (db, residue_type)
   else :
     pkl_file = "%s8000-%s.pickle" % (db, residue_type.lower())
   ndt = easy_pickle.load(os.path.join(rama_data_dir, pkl_file))
   if convert_to_numpy_array :
-    if (db == "rama") :
+    if (db == "rama"):
       return export_ramachandran_distribution(ndt)
     else :
       return export_rotamer_distribution(ndt)
   else :
     return ndt
 
-def decode_atom_str (atom_id) :
+def decode_atom_str(atom_id):
   chain_id = atom_id[8:10].strip()
-  if (chain_id == "") :
+  if (chain_id == ""):
     chain_id = " "
   return group_args(
     name = atom_id[0:4],
@@ -89,18 +91,18 @@ def decode_atom_str (atom_id) :
     resid = atom_id[10:],
     resseq = atom_id[10:-1].strip())
 
-def find_sequence_mismatches (pdb_hierarchy,
+def find_sequence_mismatches(pdb_hierarchy,
                               sequences,
                               assume_same_order=True,
                               expected_sequence_identity=0.8,
-                              log=sys.stdout) :
+                              log=sys.stdout):
   chains = pdb_hierarchy.models()[0].chains()
   chain_ids = []
   actual_seqs = []
   expected_seqs = []
-  if (len(chains) != len(sequences)) or (not assume_same_order) :
-    print >> log, "Can't determine sequence->chain mapping autoamtically"
-    print >> log, "Running sequence alignments. . ."
+  if (len(chains) != len(sequences)) or (not assume_same_order):
+    print("Can't determine sequence->chain mapping autoamtically", file=log)
+    print("Running sequence alignments. . .", file=log)
     from mmtbx.alignment import pairwise_global_wrapper
     for chain in chains :
       chain_seq = chain.as_padded_sequence()
@@ -111,27 +113,422 @@ def find_sequence_mismatches (pdb_hierarchy,
       for sequence in sequences :
         pg = pairwise_global_wrapper(chain_seq, sequence)
         identity = pg.calculate_sequence_identity()
-        if (identity >= expected_sequence_identity) :
-          if (identity >= best_identity) :
+        if (identity >= expected_sequence_identity):
+          if (identity >= best_identity):
             best_identity = identity
             best_sequence = sequence
       expected_seqs.append(best_sequence)
   mismatches = []
 
-def molprobity_score (clashscore, rota_out, rama_fav) :
+def molprobity_score(clashscore, rota_out, rama_fav):
   """
   Calculate the overall Molprobity score, as described here:
     http://www.ncbi.nlm.nih.gov/pmc/articles/PMC2877634/?tool=pubmed
     http://kinemage.biochem.duke.edu/suppinfo/CASP8/methods.html
   """
-  if (clashscore >= 0) and (rota_out >= 0) and (rama_fav >= 0) :
+  if clashscore is not None and rota_out is not None and rama_fav is not None \
+       and (clashscore >= 0) and (rota_out >= 0) and (rama_fav >= 0):
     rama_iffy = 100. - rama_fav
     mpscore = (( 0.426 * math.log(1 + clashscore) ) +
              ( 0.33 * math.log(1 + max(0, rota_out - 1)) ) +
              ( 0.25 * math.log(1 + max(0, rama_iffy - 2)) )) + 0.5
   else :
-    return -1 # FIXME prevents crashing on RNA
+    return -1 # FIXME prevents crashing on RNA and None in inputs
   return mpscore
+
+from typing import Dict, Any, Optional, List
+
+def _clash_severity(abs_overlap, num_clashes):
+    """Map clash overlap magnitude and count to a continuous severity.
+
+    Uses a non-linear power curve on the worst overlap so that small
+    clashes near the 0.4 A threshold are mild while large overlaps
+    grow sublinearly, staying below the twisted-peptide tier.  The
+    count bonus uses log2 with a cap at 4.0, because high clash counts
+    typically reflect many atom-atom contacts from a single bad
+    pairwise interaction rather than independent problems.
+
+    Severity scale (single clash, approximate):
+      0.4 A overlap -> 1.4    (minor)
+      0.5 A         -> 2.0    (moderate)
+      0.7 A         -> 3.4    (moderate)
+      0.9 A         -> 5.0    (significant)
+      1.5 A         -> 10.3   (severe, still below twisted peptide)
+
+    Count bonus (log2, capped):
+      2 clashes  -> +1.0
+      5 clashes  -> +2.3
+      16 clashes -> +4.0  (cap reached)
+      50 clashes -> +4.0
+    """
+    severity = max(0.0, (abs_overlap - 0.1) * 10.0) ** 1.3 / 3.0
+    if num_clashes > 1:
+        severity += min(math.log2(num_clashes), 4.0) * 1.0
+    return severity
+
+CBETA_THRESHOLD = 0.25          # Angstroms, MolProbity's C-beta outlier cut
+# Anchored so 0.25 A -> 1.0 and 0.50 A -> 4.0, the values the linear form documented.
+CBETA_K = 3.0 / math.log(0.50 / 0.25)
+
+
+def _cbeta_severity(deviation):
+    """Map C-beta deviation to a continuous severity.
+
+    Outlier threshold is 0.25 A.  Logarithmic in the deviation, so severity tracks
+    -log(population frequency):
+
+      0.25 A -> 1.0
+      0.50 A -> 4.0
+      1.00 A -> 7.0
+      2.00 A -> 10.0
+
+    Replaces an uncapped linear form.  Deviations at or below the threshold return 1.0,
+    since the caller only invokes this for residues already flagged as outliers.
+    """
+    if deviation is None or deviation <= CBETA_THRESHOLD:
+        return 1.0
+    return 1.0 + CBETA_K * math.log(deviation / CBETA_THRESHOLD)
+
+def _omega_twist_severity(omega):
+    """Map a twisted peptide's omega to a continuous severity.
+
+    Follows sin^2 of the twist: a peptide bond resists rotation because the amide is
+    conjugated, and that conjugation is lost as sin^2 of the rotation.
+
+      twist 30 deg (MolProbity's Twisted border) ->  3.0
+      twist 45 deg                               ->  7.0
+      twist 60 deg                               -> 11.0
+      twist 90 deg (perpendicular)               -> 15.0, the old flat value
+
+    Replaces a flat 15.0 for every twisted peptide.  The floor is 3.0 rather than 0.0 so
+    a borderline twist is not scored as harmless.  omega is the dihedral in degrees; if
+    unavailable the old flat 15.0 is returned.
+    """
+    if omega is None:
+        return 15.0
+    twist = min(abs(omega), 180.0 - abs(omega))
+    frac = (math.sin(math.radians(twist)) ** 2 - 0.25) / 0.75   # 0.25 = sin^2(30 deg)
+    return max(3.0, min(15.0, 3.0 + 12.0 * frac))
+
+
+BOND_ANGLE_THRESHOLD = 4.0      # sigma, MolProbity's bond/angle outlier cut
+# Anchored so 4 sigma -> 1.0 and 10 sigma -> 4.0, the values the linear form documented.
+BOND_ANGLE_K = 3.0 / math.log(10.0 / 4.0)
+
+
+def _bond_angle_severity(num_outliers, worst_sigma):
+    """Map bond/angle outlier count and worst sigma to a continuous severity.
+
+    Logarithmic in the worst deviation, with the 4-sigma outlier threshold as the floor,
+    so severity tracks -log(population frequency):
+
+      4 sigma   -> 1.0
+      10 sigma  -> 4.0
+      30 sigma  -> 7.6
+      100 sigma -> 11.5
+      164 sigma -> 13.2   (the worst seen in 1.2M bond restraints; still under 15)
+
+    Replaces an uncapped straight line that reached 86.6 and let covalent geometry alone
+    outrank residues carrying five or six independent problems.  Bond and angle share one
+    function because both are anchored to the same two documented points.  The count bonus
+    matches _clash_severity: log2 capped at 4.0.
+    """
+    if worst_sigma is None or worst_sigma == 0:
+        severity = 1.0                       # sigma unavailable; count is all we have
+    else:
+        s = abs(worst_sigma)
+        severity = 1.0 if s <= BOND_ANGLE_THRESHOLD else \
+            1.0 + BOND_ANGLE_K * math.log(s / BOND_ANGLE_THRESHOLD)
+    if num_outliers > 1:
+        severity += min(math.log2(num_outliers), 4.0)
+    return severity
+
+def _planarity_severity(num_outliers, worst_sigma, worst_tilt=None, tilt_limit=None):
+    """Map planarity outliers to a continuous severity.
+
+    A plane flagged in sigma uses the bond/angle curve.  A plane flagged for an atom
+    tilted out of its ring uses the same shape in tilt / limit, the limit standing in
+    for the 4-sigma threshold:
+
+      limit        -> 1.0     (7 deg for a CB, 11 deg for a C1')
+      2.5 x limit  -> 4.0     (as 10 sigma, 2.5 x the 4-sigma threshold)
+      5 x limit    -> 6.3
+
+    The count bonus matches _bond_angle_severity.
+    """
+    if worst_tilt is None or not tilt_limit:
+        return _bond_angle_severity(num_outliers, worst_sigma)
+    severity = 1.0 + BOND_ANGLE_K * math.log(max(1.0, worst_tilt / tilt_limit))
+    if num_outliers > 1:
+        severity += min(math.log2(num_outliers), 4.0)
+    return severity
+
+
+ARG_CHI5_OUTLIER = 20.0         # degrees from planar
+
+
+def _arg_chi5_severity(twist):
+    """Map an Arg guanidinium twist about NE-CZ (chi5, degrees from planar) to a severity.
+
+    Follows sin^2 of the twist, as _omega_twist_severity does, since the conjugation
+    holding CD in the guanidinium plane is lost as sin^2 of the rotation:
+
+      twist 20 deg (outlier threshold) ->  1.0
+      twist 30 deg                     ->  2.4
+      twist 45 deg                     ->  4.9
+      twist 60 deg                     ->  7.5
+      twist 90 deg (perpendicular)     -> 10.0
+
+    Capped below a perpendicular peptide (15.0): a twisted guanidinium is a side-chain
+    error, not a backbone one.  Returns 0.0 at or under the threshold.
+    """
+    if twist is None or abs(twist) <= ARG_CHI5_OUTLIER:
+        return 0.0
+    floor = math.sin(math.radians(ARG_CHI5_OUTLIER)) ** 2
+    frac = (math.sin(math.radians(min(abs(twist), 90.0))) ** 2 - floor) / (1.0 - floor)
+    return 1.0 + 9.0 * frac
+
+
+def _rna_suite_severity(is_outlier, suiteness):
+    """Map an RNA backbone suite to a graded severity.
+
+    A suite is the backbone unit between two riboses, classified by suitename
+    into named rotamer-like conformers.  A full outlier ("!!") matches no known
+    cluster and is the serious case.  A suite that is assigned a cluster but fits
+    it poorly (low suiteness "wannabe") gets a mild disfavored-tier severity, so
+    the metric has dynamic range instead of a single binary flag.  suiteness is
+    0..1 (higher = better fit).
+
+    Suites are the RNA analogue of protein rotamers (a few % outliers in good
+    structures), so the full-outlier tier sits just below the Ramachandran-
+    equivalent sugar-pucker tier (see _rna_pucker_severity).
+      full outlier             -> 4.0
+      assigned, suiteness < 0.3 -> 1.5   (disfavored-tier "wannabe")
+      otherwise                -> 0.0
+    """
+    if is_outlier:
+        return 4.0
+    if suiteness is not None and suiteness < 0.3:
+        return 1.5
+    return 0.0
+
+def _rna_pucker_severity(is_delta_outlier, is_epsilon_outlier,
+                         is_pucker_outlier=False):
+    """Map an RNA sugar-pucker problem to a graded severity.
+
+    A *delta* outlier means the base-phosphate perpendicular (P-perp) distance
+    and the delta torsion disagree about the sugar pucker (C2'- vs C3'-endo) -- a
+    genuinely wrong, rare, chemically well-defined error, so it sits at the
+    Ramachandran tier.  An *epsilon-only* outlier (epsilon torsion out of the
+    valid range while the sugar pucker itself is consistent) is a milder backbone
+    problem.  Sugar-pucker outliers are rarer than suite outliers, hence weighted
+    above them.
+      delta outlier (wrong sugar pucker) -> 5.0
+      epsilon-only outlier               -> 3.0
+      otherwise                          -> 0.0
+    is_pucker_outlier is a fallback for the (delta OR epsilon) flag when the typed
+    sub-flags are unavailable; treated as the delta (wrong-pucker) tier.
+    """
+    if is_delta_outlier:
+        return 5.0
+    if is_epsilon_outlier:
+        return 3.0
+    if is_pucker_outlier:
+        return 5.0
+    return 0.0
+
+def calculate_overall_residue_quality_score(
+    residue_data: Dict[str, Any],
+) -> Optional[float]:
+    """
+    Calculates a triage priority score for a single residue based on
+    validation outliers.
+
+    The score is designed to rank residues by how urgently they need
+    attention: higher scores indicate problems that are more likely to
+    be genuine modeling errors.  The combination rule ensures that a
+    single severe problem (e.g. a twisted peptide) always outranks an
+    accumulation of minor issues.
+
+    Combination rule:
+      score = worst_severity + 0.25 * sum(remaining_severities)
+
+    Where possible, continuous values (clash overlap in A, C-beta
+    deviation in A, bond/angle deviation in sigma) are used rather
+    than discrete outlier/not-outlier bins.
+
+    Args:
+        residue_data: Dictionary of validation metrics for one residue.
+            Recognized keys:
+              num_bad_clashes_res (int), worst_clash_overlap (float, negative),
+              ramalyze_type (str), ramalyze_category (str),
+              rotalyze_category (str),
+              is_glycine (bool), is_cbeta_outlier (bool), cbeta_deviation (float),
+              cablam_outlier_type (str),
+              omega_type (str), omega_dihedral (float, degrees), is_proline (bool),
+              num_bond_outliers_res (int), worst_bond_deviation (float, sigma),
+              num_angle_outliers_res (int), worst_angle_deviation (float, sigma),
+              num_chiral_handedness_res (int), num_chiral_tetrahedral_res (int),
+              num_chiral_pseudochiral_res (int),
+              num_chiral_outliers_res (int, fallback if typed counts unavailable),
+              is_rna_residue (bool),
+              is_rna_suite_outlier (bool), rna_suite_suiteness (float, 0..1),
+              is_rna_pucker_outlier (bool), is_delta_outlier (bool),
+              is_epsilon_outlier (bool),
+              num_planarity_outliers_res (int), worst_planarity_sigma (float),
+              worst_planarity_tilt (float, degrees), worst_planarity_tilt_limit (float),
+              arg_chi5_twist (float, degrees from planar; Arg only),
+              nacetyl_twist (float, degrees from planar; sugar N-acetyl groups only),
+              glycan_link_twist (float, degrees from planar; sugars on an Asn only).
+
+    Returns:
+        The triage score rounded to 1 decimal place (0.0 = no issues,
+        higher = worse), or None if no applicable metrics were found.
+    """
+
+    severities: List[float] = []
+    has_any_metric = False
+
+    def get(key, default=None):
+        return residue_data.get(key, default)
+
+    # --- 1. Steric Clashes ---
+    num_bad_clashes = get('num_bad_clashes_res', 0)
+    if num_bad_clashes > 0:
+        has_any_metric = True
+        worst_overlap = get('worst_clash_overlap', 0.0)
+        abs_overlap = abs(worst_overlap) if worst_overlap else 0.4
+        severities.append(_clash_severity(abs_overlap, num_bad_clashes))
+
+    # --- 2. Ramachandran ---
+    if get('ramalyze_type') not in ['not_applicable', 'not_evaluated']:
+        has_any_metric = True
+        if get('ramalyze_category') == 'outlier':
+            severities.append(5.0)
+
+    # --- 3. Rotamer ---
+    if get('rotalyze_category') not in ['not_evaluated', None]:
+        has_any_metric = True
+        if get('rotalyze_category') == 'outlier':
+            severities.append(3.0)
+
+    # --- 4. C-beta Deviation ---
+    # Suppressed when a chirality handedness swap is already flagged: the second C-beta
+    # mode at 1.9-2.3 A is almost entirely chirality-flagged D-amino acids, so scoring
+    # both counts one physical fact twice.  Only the typed handedness count suppresses.
+    if not get('is_glycine', False):
+        has_any_metric = True
+        if get('is_cbeta_outlier') and not get('num_chiral_handedness_res', 0):
+            deviation = get('cbeta_deviation', 0.0) or 0.0
+            severities.append(_cbeta_severity(deviation))
+
+    # --- 5. CaBLAM ---
+    cablam_type = get('cablam_outlier_type')
+    if cablam_type not in ['not_evaluated', None]:
+        has_any_metric = True
+        if cablam_type in ('outlier', 'ca_geom_outlier'):
+            severities.append(3.0)
+        elif cablam_type == 'disfavored':
+            severities.append(1.0)
+
+    # --- 6. Omega Angle ---
+    omega_type = get('omega_type')
+    if omega_type not in ['not_applicable', 'not_evaluated', None]:
+        has_any_metric = True
+        if omega_type == 'twisted':
+            severities.append(_omega_twist_severity(get('omega_dihedral')))
+        elif omega_type == 'cis' and not get('is_proline'):
+            severities.append(8.0)
+
+    # --- 7. Bond Lengths ---
+    num_bond_outliers = get('num_bond_outliers_res', 0)
+    if num_bond_outliers > 0:
+        has_any_metric = True
+        worst_bond = get('worst_bond_deviation')
+        severities.append(_bond_angle_severity(num_bond_outliers, worst_bond))
+
+    # --- 8. Bond Angles ---
+    num_angle_outliers = get('num_angle_outliers_res', 0)
+    if num_angle_outliers > 0:
+        has_any_metric = True
+        worst_angle = get('worst_angle_deviation')
+        severities.append(_bond_angle_severity(num_angle_outliers, worst_angle))
+
+    # --- 9. Chirality ---
+    # Three distinct types with very different implications:
+    #   - Handedness swap: true chirality inversion (e.g. L->D), serious error
+    #   - Tetrahedral geometry: distorted geometry, needs attention
+    #   - Pseudochiral naming: swapped names on chemically identical atoms
+    #     (e.g. VAL CG1/CG2), cosmetic fix only
+    n_handedness = get('num_chiral_handedness_res', 0)
+    n_tetrahedral = get('num_chiral_tetrahedral_res', 0)
+    n_pseudochiral = get('num_chiral_pseudochiral_res', 0)
+    n_chiral_total = n_handedness + n_tetrahedral + n_pseudochiral
+    if n_chiral_total > 0:
+        has_any_metric = True
+        if n_handedness > 0:
+            severities.append(10.0)
+        if n_tetrahedral > 0:
+            severities.append(5.0)
+        if n_pseudochiral > 0:
+            severities.append(1.5)
+    elif get('num_chiral_outliers_res', 0) > 0:
+        # Fallback if only total count is available
+        has_any_metric = True
+        severities.append(5.0)
+
+    # --- 10. RNA Suite (graded: full outlier + low-suiteness wannabe) ---
+    if get('is_rna_residue', False):
+        has_any_metric = True
+        suite_sev = _rna_suite_severity(
+            get('is_rna_suite_outlier', False),
+            get('rna_suite_suiteness'))
+        if suite_sev > 0:
+            severities.append(suite_sev)
+
+    # --- 11. RNA Pucker (graded: wrong-pucker delta outranks epsilon-only) ---
+    if get('is_rna_residue', False):
+        has_any_metric = True
+        pucker_sev = _rna_pucker_severity(
+            get('is_delta_outlier', False),
+            get('is_epsilon_outlier', False),
+            get('is_rna_pucker_outlier', False))
+        if pucker_sev > 0:
+            severities.append(pucker_sev)
+
+    # --- 12. Planarity (sigma planes on the bond/angle curve, ring tilts by tilt / limit) ---
+    num_planar = get('num_planarity_outliers_res', 0) or 0
+    if num_planar > 0:
+        has_any_metric = True
+        severities.append(_planarity_severity(
+            num_planar, get('worst_planarity_sigma'),
+            get('worst_planarity_tilt'), get('worst_planarity_tilt_limit')))
+
+    # --- 13. Arg chi5 (guanidinium twist about NE-CZ) ---
+    chi5_sev = _arg_chi5_severity(get('arg_chi5_twist'))
+    if chi5_sev > 0:
+        has_any_metric = True
+        severities.append(chi5_sev)
+
+    # --- 14-15. Sugar N-acetyl twist about N-C(=O) and Asn-glycan link twist about
+    # CG-ND2: the same conjugation as Arg chi5, the same curve ---
+    for key in ('nacetyl_twist', 'glycan_link_twist'):
+        sugar_sev = _arg_chi5_severity(get(key))
+        if sugar_sev > 0:
+            has_any_metric = True
+            severities.append(sugar_sev)
+
+    if not has_any_metric:
+        return None
+    if not severities:
+        return 0.0
+
+    # Combination rule: worst finding dominates, additional findings
+    # contribute at 25% so accumulation of minor issues cannot outrank
+    # a single severe problem.
+    severities.sort(reverse=True)
+    score = severities[0] + 0.25 * sum(severities[1:])
+    return round(score, 1)
 
 def use_segids_in_place_of_chainids(hierarchy, strict=False):
   use_segids = False
@@ -165,7 +562,7 @@ def get_segid_as_chainid(chain):
   for atom in chain.atoms():
     return atom.segid
 
-def get_rna_backbone_dihedrals (processed_pdb_file,
+def get_rna_backbone_dihedrals(processed_pdb_file,
       geometry=None, pdb_hierarchy=None):
   # at present, this will only return measurements for angles arising from
   # atoms with altloc ' ' or altloc 'A'
@@ -174,7 +571,7 @@ def get_rna_backbone_dihedrals (processed_pdb_file,
   bb_dihedrals = defaultdict(dict)
   formatted_out = []
   alt_tracker = {}
-  if (processed_pdb_file is not None) :
+  if (processed_pdb_file is not None):
     sites_cart = processed_pdb_file.all_chain_proxies.sites_cart
     geometry = processed_pdb_file.geometry_restraints_manager()
     pdb_hierarchy = processed_pdb_file.all_chain_proxies.pdb_hierarchy
@@ -223,7 +620,7 @@ def get_rna_backbone_dihedrals (processed_pdb_file,
       bb_dihedrals[key][name] = restraint.angle_model
       if invert_sign:
         bb_dihedrals[key][name] = bb_dihedrals[key][name] * -1.0
-  for key in bb_dihedrals.keys():
+  for key in list(bb_dihedrals.keys()):
     altloc = key[0:1]
     resname = key[1:4]
     chainID = key[4:6]
@@ -338,13 +735,22 @@ def build_name_hash(pdb_hierarchy):
     i_seq_name_hash[atom.i_seq]=atom.pdb_label_columns()
   return i_seq_name_hash
 
-def exercise () :
+def get_mmtype_from_resname(resname):
+  class_string = common_residue_names_get_class(resname)
+  if "amino_acid" in class_string:
+    return "PROTEIN"
+  elif "rna_dna" in class_string:
+    return "NA"
+  else:
+    return "OTHER"
+
+def exercise():
   from libtbx.test_utils import approx_equal
   try :
     import numpy
   except ImportError :
     test_numpy = False
-    print "Numpy not installed, will skip array conversion."
+    print("Numpy not installed, will skip array conversion.")
   else :
     test_numpy = True
   # ramachandran
@@ -370,4 +776,4 @@ def exercise () :
 
 if __name__ == "__main__" :
   exercise()
-  print "OK"
+  print("OK")

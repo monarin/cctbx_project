@@ -7,6 +7,8 @@ import re
 import subprocess
 import sys
 
+import six
+
 # This code is partially derived from a similar module I wrote
 # for EMAN2, previously released under a BSD-like license.
 
@@ -86,6 +88,8 @@ def check_output(*popenargs, **kwargs):
     if cmd is None:
       cmd = popenargs[0]
     raise subprocess.CalledProcessError(retcode, cmd)
+  if six.PY3:
+    return output.decode("latin-1")
   return output
 
 class FixLinuxRpath(object):

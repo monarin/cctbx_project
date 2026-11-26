@@ -1,16 +1,17 @@
 
 # TODO more tests
 
-from __future__ import division
+from __future__ import absolute_import, division, print_function
+from iotbx.pdb import hierarchy
 from mmtbx.command_line import molprobity
-import iotbx.pdb.hierarchy
+import iotbx.pdb
 from scitbx.array_family import flex
 from libtbx.utils import null_out
 import libtbx.load_env
 import random
 
 # Deuterium as ligand - formerly crashed real-space correlation
-def exercise_01 () :
+def exercise_01():
   pdb_raw = """\
 CRYST1   10.000   15.000   10.000  90.00  90.00  90.00 P 1
 ATOM   6407  N   GLY A 388      -0.783   9.368 -16.436  1.00 51.96           N
@@ -29,11 +30,12 @@ HETATM 6419  D2  DOD A1001      -4.625   2.741 -13.845  1.00 14.81           D
 """
   random.seed(12345)
   flex.set_random_seed(12345)
-  pdb_in = iotbx.pdb.hierarchy.input(pdb_string=pdb_raw)
-  xrs = pdb_in.input.xray_structure_simple()
-  pdb_in.hierarchy.atoms().reset_i_seq()
+  pdb_in = iotbx.pdb.input(source_info=None, lines=pdb_raw)
+  xrs = pdb_in.xray_structure_simple()
+  hierarchy = pdb_in.construct_hierarchy()
+  hierarchy.atoms().reset_i_seq()
   open("tst_validate_experimental.pdb", "w").write(
-    pdb_in.hierarchy.as_pdb_string(crystal_symmetry=xrs))
+    hierarchy.as_pdb_string(crystal_symmetry=xrs))
   f_calc =abs( xrs.structure_factors(d_min=2.0).f_calc())
   f_calc.set_observation_type_xray_amplitude()
   flags = f_calc.generate_r_free_flags()
@@ -52,6 +54,6 @@ HETATM 6419  D2  DOD A1001      -4.625   2.741 -13.845  1.00 14.81           D
   ds = result.data_stats
   assert (ds.n_free > 0)
 
-if (__name__ == "__main__") :
+if (__name__ == "__main__"):
   exercise_01()
-  print "OK"
+  print("OK")

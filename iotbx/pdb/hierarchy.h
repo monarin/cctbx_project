@@ -72,8 +72,7 @@ A residue object is NOT a parent of the atoms.
 
 namespace hierarchy {
 
-  static const char blank_altloc_char = ' ';
-  static const char blank_altloc_cstr[2] = {blank_altloc_char, '\0'};
+  static const std::string blank_altloc_string(" ");
 
   class root_data;
   class root;
@@ -203,21 +202,21 @@ namespace hierarchy {
       friend struct atom_label_columns_formatter;
       weak_ptr<residue_group_data> parent;
     public:
-      str1 altloc;
-      str3 resname;
+      std::string altloc;
+      std::string resname;
     protected:
       std::vector<atom> atoms;
 
       inline
       atom_group_data(
         weak_ptr<residue_group_data> const& parent_,
-        const char* altloc_,
-        const char* resname_);
+        std::string altloc_,
+        std::string resname_);
 
       inline
       atom_group_data(
-        const char* altloc_,
-        const char* resname_);
+        std::string altloc_,
+        std::string resname_);
 
       inline
       atom_group_data(
@@ -245,6 +244,7 @@ namespace hierarchy {
 #endif
       double fp;
       double fdp;
+      double resolution;
       unsigned i_seq;
       int tmp;
       bool have_sentinel;
@@ -267,7 +267,7 @@ namespace hierarchy {
                         siguij_
 #endif
                                ,
-        double fp_, double fdp_,
+        double fp_, double fdp_, double resolution_,
         bool hetero_, str5 serial_, str4 name_,
         str4 segid_, str2 element_, str2 charge_)
       :
@@ -279,7 +279,7 @@ namespace hierarchy {
 #ifdef IOTBX_PDB_ENABLE_ATOM_DATA_SIGUIJ
         siguij(siguij_),
 #endif
-        fp(fp_), fdp(fdp_),
+        fp(fp_), fdp(fdp_), resolution(resolution_),
         i_seq(0), tmp(0), have_sentinel(false),
         hetero(hetero_), serial(serial_), name(name_),
         segid(segid_), element(element_), charge(charge_)
@@ -295,7 +295,7 @@ namespace hierarchy {
                         siguij_
 #endif
                                ,
-        double fp_, double fdp_,
+        double fp_, double fdp_, double resolution_,
         bool hetero_, str5 serial_, str4 name_,
         str4 segid_, str2 element_, str2 charge_)
       :
@@ -306,7 +306,7 @@ namespace hierarchy {
 #ifdef IOTBX_PDB_ENABLE_ATOM_DATA_SIGUIJ
         siguij(siguij_),
 #endif
-        fp(fp_), fdp(fdp_),
+        fp(fp_), fdp(fdp_), resolution(resolution_),
         i_seq(0), tmp(0), have_sentinel(false),
         hetero(hetero_), serial(serial_), name(name_),
         segid(segid_), element(element_), charge(charge_)
@@ -348,7 +348,7 @@ namespace hierarchy {
       friend struct atom_label_columns_formatter;
       weak_ptr<conformer_data> parent;
     public:
-      str3 resname;
+      std::string resname;
       str4 resseq;
       str1 icode;
       bool link_to_previous;
@@ -385,16 +385,27 @@ namespace hierarchy {
         If add_model or add_segid is true, the size of the result
         array must be 52 (or greater) and result IS null-terminated.
      */
-    void
+    // void
+    // format(
+    //   char* result,
+    //   bool add_model=false,
+    //   bool add_segid=false) const;
+
+    std::string
     format(
-      char* result,
       bool add_model=false,
       bool add_segid=false) const;
 
     //! Extracts chain_id and model_id, then calls format(char*, bool).
-    void
+    // void
+    // format(
+    //   char* result,
+    //   shared_ptr<chain_data> const& ch_lock,
+    //   bool add_model,
+    //   bool add_segid);
+
+    std::string
     format(
-      char* result,
       shared_ptr<chain_data> const& ch_lock,
       bool add_model,
       bool add_segid);
@@ -405,21 +416,24 @@ namespace hierarchy {
         If add_model or add_segid is true, the size of the result
         array must be 52 (or greater) and result IS null-terminated.
      */
-    void
+    // void
+    // format(
+    //   char* result,
+    //   hierarchy::atom const& atom,
+    //   bool add_model=false,
+    //   bool add_segid=false,
+    //   bool pdbres=false);
+
+    std::string
     format(
-      char* result,
       hierarchy::atom const& atom,
       bool add_model=false,
       bool add_segid=false,
       bool pdbres=false);
 
     //! All relevant labels are extracted from the residue and its parents.
-    /*! result must point to an array of size 37 (or greater).
-        On return, result IS null-terminated.
-     */
-    void
+    std::string
     format(
-      char* result,
       hierarchy::residue const& residue);
   };
 
@@ -448,7 +462,7 @@ namespace hierarchy {
         double b=0, double sigb=0,
         sym_mat3 const& uij=sym_mat3(-1,-1,-1,-1,-1,-1),
         sym_mat3 const& siguij=sym_mat3(-1,-1,-1,-1,-1,-1),
-        double fp=0, double fdp=0,
+        double fp=0, double fdp=0, double resolution=0,
         bool hetero=false, const char* serial="", const char* name="",
         const char* segid="", const char* element="", const char* charge="");
 
@@ -459,7 +473,7 @@ namespace hierarchy {
         double b=0, double sigb=0,
         sym_mat3 const& uij=sym_mat3(-1,-1,-1,-1,-1,-1),
         sym_mat3 const& siguij=sym_mat3(-1,-1,-1,-1,-1,-1),
-        double fp=0, double fdp=0,
+        double fp=0, double fdp=0, double resolution=0,
         bool hetero=false, const char* serial="", const char* name="",
         const char* segid="", const char* element="", const char* charge="")
       :
@@ -469,7 +483,7 @@ namespace hierarchy {
           b, sigb,
           uij,
           siguij,
-          fp, fdp,
+          fp, fdp, resolution,
           hetero, serial, name,
           segid, element, charge))
       {}
@@ -481,7 +495,7 @@ namespace hierarchy {
         double b, double sigb,
         sym_mat3 const& uij,
         sym_mat3 const& siguij,
-        double fp, double fdp,
+        double fp, double fdp,  double resolution,
         bool hetero, str5 serial, str4 name,
         str4 segid, str2 element, str2 charge)
       :
@@ -491,7 +505,7 @@ namespace hierarchy {
           b, sigb,
           uij,
           siguij,
-          fp, fdp,
+          fp, fdp, resolution,
           hetero, serial, name,
           segid, element, charge))
       {}
@@ -577,6 +591,13 @@ namespace hierarchy {
       set_fdp(double new_fdp)
       {
         data->fdp = new_fdp;
+        return *this;
+      }
+
+      atom&
+      set_resolution(double new_resolution)
+      {
+        data->resolution = new_resolution;
         return *this;
       }
 
@@ -678,13 +699,8 @@ namespace hierarchy {
       }
 
       //! Not available in Python.
-      /*! result must point to an array of size 27 (or greater).
-          The first 6 characters are not modified.
-          On return, result is NOT null-terminated.
-       */
-      void
+      std::string
       format_atom_record_serial_label_columns(
-        char* result,
         atom_label_columns_formatter* label_formatter=0) const;
 
       //! Not available in Python.
@@ -697,19 +713,11 @@ namespace hierarchy {
         unsigned segid_start,
         unsigned blanks_start_at) const;
 
-      //! Not available in Python.
-      /*! result must point to an array of size 4 (or greater).
-          On return, result is NOT null-terminated.
-       */
-      void
-      format_pdb_element_charge_columns(
-        char* result) const;
-
       std::string
       pdb_label_columns() const;
 
       //! Not available in Python.
-      small_str<19>
+      std::string
       pdb_label_columns_segid_small_str() const;
 
       std::string
@@ -723,9 +731,8 @@ namespace hierarchy {
       /*! result must point to an array of size 81 (or greater).
           On return, result is null-terminated.
        */
-      unsigned
+      std::string
       format_atom_record(
-        char* result,
         atom_label_columns_formatter* label_formatter=0,
         const char* replace_floats_with=0) const;
 
@@ -777,6 +784,15 @@ namespace hierarchy {
 
       bool
       element_is_hydrogen() const;
+
+      bool
+      element_is_positive_ion() const;
+
+      bool
+      element_is_negative_ion() const;
+
+      bool
+      element_is_ion() const;
 
       boost::optional<std::string>
       determine_chemical_element_simple() const;
@@ -853,13 +869,13 @@ namespace hierarchy {
       explicit
       atom_group(
         residue_group const& parent,
-        const char* altloc="",
-        const char* resname="");
+        std::string altloc="",
+        std::string resname="");
 
       explicit
       atom_group(
-        const char* altloc="",
-        const char* resname="")
+        std::string altloc="",
+        std::string resname="")
       :
         data(new atom_group_data(altloc, resname))
       {}
@@ -868,8 +884,8 @@ namespace hierarchy {
       atom_group(const atom_group_data* other)
       :
         data(new atom_group_data(
-          other->altloc.elems,
-          other->resname.elems))
+          other->altloc,
+          other->resname))
       {}
 
       atom_group(
@@ -930,8 +946,8 @@ namespace hierarchy {
       get_atom(char const* name) const;
 
       //! Not available in Python.
-      str4
-      confid_small_str() const;
+      // str4
+      // confid_small_str() const;
 
       //! Not available in Python.
       bool
@@ -1221,6 +1237,9 @@ namespace hierarchy {
 
       void
       sort_atoms_in_place();
+
+      bool
+      is_polymer_chain() const;
   };
 
   //! Model attributes.
@@ -1405,6 +1424,10 @@ namespace hierarchy {
       af::shared<atom>
       atoms_with_i_seq_mismatch() const;
 
+      //! The atoms of atoms() with their model, chain and residue labels.
+      af::shared<atom_with_labels>
+      atoms_with_labels() const;
+
       void
       atoms_reset_serial(
         int interleaved_conf=0,
@@ -1440,6 +1463,10 @@ namespace hierarchy {
 
       void
       sort_atoms_in_place();
+
+      bool
+      fits_in_pdb_format(
+        bool use_hybrid36=true);
   };
 
   //! label_formatter chain_id must be set before this function is called.
@@ -1666,8 +1693,8 @@ namespace hierarchy {
       std::string chain_id;
       str4 resseq;
       str1 icode;
-      str1 altloc;
-      str3 resname;
+      std::string altloc;
+      std::string resname;
       bool is_first_in_chain;
       bool is_first_after_break;
 
@@ -1730,11 +1757,15 @@ namespace hierarchy {
     const char* id_)
   :
     parent(parent_),
-    id(id_)
+    id((id_ == 0) ? "" : id_)
   {}
 
   inline
-  model_data::model_data(const char* id_) : id(id_) {}
+  model_data::model_data(
+    const char* id_)
+  :
+    id((id_ == 0) ? "" : id_)
+  {}
 
   inline
   model_data::model_data(
@@ -1759,14 +1790,15 @@ namespace hierarchy {
     const char* id_)
   :
     parent(parent_),
-    id(id_)
+    id((id_ == 0) ? "" : id_)
+
   {}
 
   inline
   chain_data::chain_data(
     const char* id_)
   :
-    id(id_)
+    id((id_ == 0) ? "" : id_)
   {}
 
   inline
@@ -1834,8 +1866,8 @@ namespace hierarchy {
   inline
   atom_group_data::atom_group_data(
     weak_ptr<residue_group_data> const& parent_,
-    const char* altloc_,
-    const char* resname_)
+    std::string altloc_,
+    std::string resname_)
   :
     parent(parent_),
     altloc(altloc_),
@@ -1844,8 +1876,8 @@ namespace hierarchy {
 
   inline
   atom_group_data::atom_group_data(
-    const char* altloc_,
-    const char* resname_)
+    std::string altloc_,
+    std::string resname_)
   :
     altloc(altloc_),
     resname(resname_)
@@ -1864,8 +1896,8 @@ namespace hierarchy {
   inline
   atom_group::atom_group(
     residue_group const& parent,
-    const char* altloc,
-    const char* resname)
+    std::string altloc,
+    std::string resname)
   :
     data(new atom_group_data(parent.data, altloc, resname))
   {}
@@ -1878,7 +1910,7 @@ namespace hierarchy {
     double b, double sigb,
     sym_mat3 const& uij,
     sym_mat3 const& siguij,
-    double fp, double fdp,
+    double fp, double fdp, double resolution,
     bool hetero, const char* serial, const char* name,
     const char* segid, const char* element, const char* charge)
   :
@@ -1889,7 +1921,7 @@ namespace hierarchy {
       b, sigb,
       uij,
       siguij,
-      fp, fdp,
+      fp, fdp, resolution,
       hetero, serial, name,
       segid, element, charge))
   {}

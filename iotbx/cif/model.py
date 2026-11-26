@@ -1,22 +1,39 @@
-from __future__ import division
+from __future__ import absolute_import, division, print_function
 from libtbx.containers import OrderedDict, OrderedSet
 from libtbx.utils import Sorry
 import sys
 import string
 import copy
-from cStringIO import StringIO
-from UserDict import DictMixin
-
+from six.moves import cStringIO as StringIO
+from collections import Counter
+try:
+  from collections.abc import MutableMapping
+except ImportError:
+  from collections import MutableMapping
 from cctbx.array_family import flex
+import boost_adaptbx.boost.python as bp
+ext = bp.import_ext("iotbx_cif_ext")
+from six.moves import range
+from six.moves import zip
+from six import string_types
+import six
 
 
-class cif(DictMixin):
+class cif(MutableMapping):
   def __init__(self, blocks=None):
+    self._errors = None
     if blocks is not None:
       self.blocks = OrderedDict(blocks)
     else:
       self.blocks = OrderedDict()
     self.keys_lower = dict([(key.lower(), key) for key in self.blocks.keys()])
+
+  def __len__(self):
+    return len(self.keys())
+
+  def __iter__(self):
+    for k in self.keys():
+      yield k
 
   def __setitem__(self, key, value):
     assert isinstance(value, block)
@@ -42,10 +59,10 @@ class cif(DictMixin):
     del self.keys_lower[key.lower()]
 
   def keys(self):
-    return self.blocks.keys()
+    return list(self.blocks.keys())
 
   def __repr__(self):
-    return repr(OrderedDict(self.iteritems()))
+    return repr(OrderedDict(six.iteritems(self)))
 
   def __copy__(self):
     return cif(self.blocks.copy())
@@ -65,7 +82,7 @@ class cif(DictMixin):
     if out is None:
       out = sys.stdout
     for name, block in self.items():
-      print >> out, "data_%s" %name
+      print("data_%s" %name, file=out)
       block.show(
         out=out, indent=indent, indent_row=indent_row,
         data_name_field_width=data_name_field_width,
@@ -80,17 +97,20 @@ class cif(DictMixin):
   def validate(self, dictionary, show_warnings=True, error_handler=None, out=None):
     if out is None: out = sys.stdout
     from iotbx.cif import validation
-    errors = {}
+    self._errors = {}
     if error_handler is None:
       error_handler = validation.ErrorHandler()
-    for key, block in self.blocks.iteritems():
+    for key, block in six.iteritems(self.blocks):
       error_handler = error_handler.__class__()
       dictionary.set_error_handler(error_handler)
       block.validate(dictionary)
-      errors.setdefault(key, error_handler)
+      self._errors.setdefault(key, error_handler)
       if error_handler.error_count or error_handler.warning_count:
         error_handler.show(show_warnings=show_warnings, out=out)
     return error_handler
+
+  def get_errors(self):
+    return self._errors
 
   def sort(self, recursive=False, key=None, reverse=False):
     self.blocks = OrderedDict(sorted(self.blocks.items(), key=key, reverse=reverse))
@@ -98,12 +118,19 @@ class cif(DictMixin):
       for b in self.blocks.values():
         b.sort(recursive=recursive, reverse=reverse)
 
-class block_base(DictMixin):
+class block_base(MutableMapping):
   def __init__(self):
     self._items = {}
     self.loops = {}
     self._set = OrderedSet()
     self.keys_lower = {}
+
+  def __len__(self):
+    return len(self.keys())
+
+  def __iter__(self):
+    for k in self.keys():
+      yield k
 
   def __setitem__(self, key, value):
     if not re.match(tag_re, key):
@@ -113,7 +140,7 @@ class block_base(DictMixin):
       self.keys_lower[key.lower()] = key
       for k in value.keys():
         self.keys_lower[k.lower()] = k
-    elif isinstance(value, basestring):
+    elif isinstance(value, string_types):
       v = str(value)
       if not (re.match(any_print_char_re, v) or
               re.match(quoted_string_re, v) or
@@ -148,6 +175,12 @@ class block_base(DictMixin):
           return loop[key]
       if key in self.loops:
         return self.loops[key]
+      # special key added to GeoStd
+      if key in ['_chem_comp.initial_date',
+                 '_chem_comp.modified_date',
+                 '_chem_comp.source',
+                 ]:
+        return '.'
     raise KeyError(key)
 
   def __delitem__(self, key):
@@ -155,9 +188,12 @@ class block_base(DictMixin):
     if key in self._items:
       del self._items[key]
       self._set.discard(key)
+    elif key in self.loops:
+      del self.loops[key]
+      self._set.discard(key)
     elif key in self.keys():
       # must be a looped item
-      for k, loop in self.loops.iteritems():
+      for k, loop in six.iteritems(self.loops):
         if key in loop:
           if len(loop) == 1:
             # remove the now empty loop
@@ -166,9 +202,6 @@ class block_base(DictMixin):
             del loop[key]
           return
       raise KeyError(key)
-    elif key in self.loops:
-      del self.loops[key]
-      self._set.discard(key)
     else:
       raise KeyError
 
@@ -233,16 +266,16 @@ class block_base(DictMixin):
 
   def item_keys(self):
     '''Returns names of all entries that are not loops'''
-    return self._items.keys()
+    return list(self._items.keys())
 
   def __repr__(self):
-    return repr(OrderedDict(self.iteritems()))
+    return repr(OrderedDict(six.iteritems(self)))
 
   def update(self, other=None, **kwargs):
     if other is None:
       return
     if isinstance(other, OrderedDict) or isinstance(other, dict):
-      for key, value in other.iteritems():
+      for key, value in six.iteritems(other):
         self[key] = value
     else:
       self._items.update(other._items)
@@ -273,7 +306,7 @@ class block_base(DictMixin):
       if ln[-1] != '.':
         ln += '.'
         found_keys = {}
-      for key, value in self.iteritems():
+      for key, value in six.iteritems(self):
         if key.startswith(ln):
           found_keys[key] = flex.std_string([value])
       # constructing the loop
@@ -288,7 +321,7 @@ class block_base(DictMixin):
     if loop_ is None:
       loop_ = loop(header=default_dict.keys())
     n_rows = loop_.n_rows()
-    for key, value in default_dict.iteritems():
+    for key, value in six.iteritems(default_dict):
       if key not in loop_:
         loop_.add_column(key, flex.std_string(n_rows, value))
     return loop_
@@ -320,12 +353,13 @@ class block_base(DictMixin):
     return s.getvalue()
 
   def validate(self, dictionary):
-    for key, value in self._items.iteritems():
+    for key, value in six.iteritems(self._items):
       dictionary.validate_single_item(key, value, self)
+    parent_value_sets = {} # shared by all loops of this block, see validate_loop
     for loop in self.loops.values():
-      dictionary.validate_loop(loop, self)
+      dictionary.validate_loop(loop, self, parent_value_sets=parent_value_sets)
     if isinstance(self, block):
-      for value in self.saves.itervalues():
+      for value in six.itervalues(self.saves):
         value.validate(dictionary)
 
   def sort(self, recursive=False, key=None, reverse=False):
@@ -341,7 +375,7 @@ class block_base(DictMixin):
   def difference(self, other):
     new = self.__class__()
     for items in (self._items, self.loops):
-      for key, value in items.iteritems():
+      for key, value in six.iteritems(items):
         if key in other:
           other_value = other[key]
           if other_value == value: continue
@@ -361,11 +395,11 @@ class save(block_base):
     for k in self._set:
       v = self._items.get(k)
       if v is not None:
-        print >> out, indent + format_str %k, format_value(v)
+        print(indent + format_str %k, format_value(v), file=out)
       else:
-        print >> out, indent,
+        print(indent, end=' ', file=out)
         self.loops[k].show(out=out, indent=(indent+indent),align_columns=align_columns)
-        print >> out
+        print(file=out)
 
 
 class block(block_base):
@@ -419,14 +453,14 @@ class block(block_base):
     for k in self._set:
       v = self._items.get(k)
       if v is not None:
-        print >> out, format_str %k, format_value(v)
+        print(format_str %k, format_value(v), file=out)
       elif k in self.saves:
-        print >> out
-        print >> out, "save_%s" %k
+        print(file=out)
+        print("save_%s" %k, file=out)
         self.saves[k].show(out=out, indent=indent,
                            data_name_field_width=data_name_field_width)
-        print >> out, indent + "save_"
-        print >> out
+        print(indent + "save_", file=out)
+        print(file=out)
       else:
         lp = self.loops[k]
         if lp.n_rows() == 0:
@@ -439,7 +473,7 @@ class block(block_base):
         else:
           lp.show(out=out, indent=indent, indent_row=indent_row,
             align_columns=align_columns)
-        print >> out
+        print(file=out)
 
   def sort(self, recursive=False, key=None, reverse=False):
     block_base.sort(self, recursive=recursive, key=key, reverse=reverse)
@@ -457,7 +491,81 @@ class block(block_base):
     new.saves = self.saves.copy()
     return new
 
-class loop(DictMixin):
+# Rows per call of the C++ row formatter in loop.show(): bounds the size of
+# the string returned per chunk.
+_show_chunk_rows = 65536
+
+# True if a value of the column (a flex.std_string) holds a newline or is
+# changed by format_value; such a column goes through format_value.
+_column_needs_format_value = ext.column_needs_format_value
+
+# Values of a column that are not plain numbers go to flex.double one at a
+# time up to this many, then the whole column goes in one call.
+_numeric_single_values = 64
+
+def _flex_double_accepts(column):
+  """True if flex.double accepts every value of the column (a
+  flex.std_string), '.' and '?' aside."""
+  values = column.select(~((column == ".") | (column == "?")))
+  try:
+    flex.double(values)
+  except ValueError:
+    return False
+  return True
+
+def _is_numeric_column(column):
+  """True if every value of the column (a flex.std_string), '.' and '?'
+  aside, parses as a number.  loop.show() right-aligns such a column; its
+  values never need quoting.  Plain numbers are recognised by a C++ scan;
+  flex.double, the authority, judges the values the scan rejects: the
+  first _numeric_single_values one at a time, then the whole column in
+  one call, as before the scan."""
+  n = column.size()
+  i = 0
+  for unused in range(_numeric_single_values):
+    i = ext.first_non_plain_number(column, i)
+    if i == n:
+      return True
+    try:
+      flex.double(column[i:i+1])
+    except ValueError:
+      return False
+    i += 1
+  return _flex_double_accepts(column)
+
+def _printed_column(column, numeric=False):
+  """The column (a flex.std_string) as loop.show() prints it and the width
+  of its widest value that is not a text field: (values, width).  Every
+  value goes through format_value unless none needs it: a numeric column
+  (numeric=True, decided by the caller) or one for which
+  _column_needs_format_value is False."""
+  if numeric or not _column_needs_format_value(column):
+    return column, column.max_element_length()
+  printed = [format_value(value) for value in list(column)]
+  # exclude semicolon text fields from column width calculation
+  width = flex.std_string(
+    [value for value in printed if "\n" not in value]).max_element_length()
+  return flex.std_string(printed), width
+
+# Rows start to stop of the columns as loop.show() prints them: the
+# contract of format_loop_rows in loop_format.h.
+_format_rows = ext.format_loop_rows
+
+def _format_rows_python(columns, start, stop, prefix, widths):
+  """The Python original of _format_rows, the reference of the parity tests
+  in tst_model.py; to be retired once the C++ path has shipped."""
+  rows = zip(*[list(column[start:stop]) for column in columns])
+  if len(widths) == 0:
+    lines = [prefix + " ".join(row) for row in rows]
+  else:
+    fmt_str = prefix + "  ".join(["%%%is" % width for width in widths])
+    lines = [(fmt_str % row).rstrip() for row in rows]
+  if len(lines) == 0:
+    return ""
+  return "\n".join(lines) + "\n"
+
+
+class loop(MutableMapping):
   def __init__(self, header=None, data=None):
     self._columns = OrderedDict()
     self.keys_lower = {}
@@ -477,11 +585,20 @@ class loop(DictMixin):
       self.keys_lower = dict(
         [(key.lower(), key) for key in self._columns.keys()])
 
+  def __len__(self):
+    return len(self.keys())
+
+  def __iter__(self):
+    for k in self.keys():
+      yield k
+
   def __setitem__(self, key, value):
     if not re.match(tag_re, key):
       raise Sorry("%s is not a valid data name" %key)
     if len(self) > 0:
       assert len(value) == self.size()
+    if isinstance(value, flex.size_t):
+      value = value.as_int()
     if not isinstance(value, flex.std_string):
       for flex_numeric_type in (flex.int, flex.double):
         if isinstance(value, flex_numeric_type):
@@ -511,10 +628,10 @@ class loop(DictMixin):
     return self._columns.keys()
 
   def __repr__(self):
-    return repr(OrderedDict(self.iteritems()))
+    return repr(OrderedDict(six.iteritems(self)))
 
   def name(self):
-    return common_substring(self.keys()).rstrip('_').rstrip('.')
+    return common_substring(list(self.keys())).rstrip('_').rstrip('.')
 
   def size(self):
     size = 0
@@ -548,7 +665,7 @@ class loop(DictMixin):
 
   def add_columns(self, columns):
     assert isinstance(columns, dict) or isinstance(columns, OrderedDict)
-    for key, value in columns.iteritems():
+    for key, value in six.iteritems(columns):
       self.add_column(key, value)
 
   def update_column(self, key, values):
@@ -595,10 +712,11 @@ class loop(DictMixin):
       indent_row = indent
     assert indent.strip() == ""
     assert indent_row.strip() == ""
-    print >> out, "loop_"
+    print("loop_", file=out)
     for k in self.keys():
-      print >> out, indent + k
-    values = self._columns.values()
+      print(indent + k, file=out)
+
+    values = list(self._columns.values())
     range_len_values = range(len(values))
     if fmt_str is not None:
       # Pretty printing:
@@ -606,6 +724,7 @@ class loop(DictMixin):
       #   Values are not quoted - it is the user's responsibility to place
       #   appropriate quotes in the format string if a particular value may
       #   contain spaces.
+      # Avoid modifying self in place
       values = copy.deepcopy(values)
       for i, v in enumerate(values):
         for flex_numeric_type in (flex.int, flex.double):
@@ -619,32 +738,28 @@ class loop(DictMixin):
       if fmt_str is None:
         fmt_str = indent_row + ' '.join(["%s"]*len(values))
       for i in range(self.size()):
-        print >> out, fmt_str % tuple([values[j][i] for j in range_len_values])
+        print(fmt_str % tuple([values[j][i] for j in range_len_values]), file=out)
     elif align_columns:
-      fmt_str = []
-      for i, (k, v) in enumerate(self.iteritems()):
-        for i_v in range(v.size()):
-          v[i_v] = format_value(v[i_v])
-        # exclude and semicolon text fields from column width calculation
-        v_ = flex.std_string(item for item in v if "\n" not in item)
-        width = v_.max_element_length()
-        # See if column contains only number, '.' or '?'
+      columns = []
+      widths = []
+      for v in values:
         # right-align numerical columns, left-align everything else
-        v = v.select(~( (v == ".") | (v == "?") ))
-        try:
-          flex.double(v)
-        except ValueError:
+        numeric = _is_numeric_column(v)
+        v, width = _printed_column(v, numeric=numeric)
+        if not numeric:
           width *= -1
-        fmt_str.append("%%%is" %width)
-      fmt_str = indent_row + "  ".join(fmt_str)
-      for i in range(self.size()):
-        print >> out, (fmt_str %
-                       tuple([values[j][i]
-                              for j in range_len_values])).rstrip()
+        columns.append(v)
+        widths.append(width)
+      self._show_rows(out, columns, indent_row, widths)
     else:
-      for i in range(self.size()):
-        values_to_print = [format_value(values[j][i]) for j in range_len_values]
-        print >> out, ' '.join([indent] + values_to_print)
+      columns = [_printed_column(v)[0] for v in values]
+      self._show_rows(out, columns, indent + " ", [])
+
+  def _show_rows(self, out, columns, prefix, widths):
+    n = self.size()
+    for start in range(0, n, _show_chunk_rows):
+      out.write(_format_rows(
+        columns, start, min(start + _show_chunk_rows, n), prefix, widths))
 
   def __str__(self):
     s = StringIO()
@@ -654,9 +769,8 @@ class loop(DictMixin):
   def iterrows(self):
     """ Warning! Still super-slow! """
     keys = self.keys()
-    s_values = self.values()
+    s_values = list(self.values())
     range_len_self = range(len(self))
-    # range is 1% faster than xrange in this particular place.
     # tuple (s_values...) is slightly faster than list
     for j in range(self.size()):
       yield OrderedDict(zip(keys, (s_values[i][j] for i in range_len_self)))
@@ -666,17 +780,32 @@ class loop(DictMixin):
     for k in kv_dict.keys():
       assert k in self_keys
     result = []
-    s_values = self.values()
+    s_values = list(self.values())
     range_len_self = range(len(self))
     for i in range(self.size()):
       goodrow = True
-      for k, v in kv_dict.iteritems():
+      for k, v in six.iteritems(kv_dict):
         if self[k][i] != v:
           goodrow = False
           break
       if goodrow:
         result.append(OrderedDict(zip(self_keys, [s_values[j][i] for j in range_len_self])))
     return result
+
+  def check_key_is_unique(self, key_list):
+    """
+    Majority (if not all) loops have 1 or more keys that should be unique
+    to identify a row. This function checks if this holds up
+    """
+    self_keys = self.keys()
+    for k in key_list:
+      assert k in self_keys
+    key_comb_list = []
+    for i in range(self.size()):
+      key_comb_list.append(tuple([self[k][i] for k in key_list]))
+    c = Counter(key_comb_list)
+    duplicates = [k for k in c.keys() if c[k] > 1]
+    return duplicates
 
   def sort(self, key=None, reverse=False):
     self._columns = OrderedDict(
@@ -700,9 +829,9 @@ class loop(DictMixin):
   def __eq__(self, other):
     if (len(self) != len(other) or
         self.size() != other.size() or
-        self.keys() != other.keys()):
+        list(self.keys()) != list(other.keys())):
       return False
-    for value, other_value in zip(self.values(), other.values()):
+    for value, other_value in zip(list(self.values()), list(other.values())):
       if (value == other_value).count(True) != len(value):
         return False
     return True
@@ -714,9 +843,13 @@ def common_substring(seq):
   #
   #   http://www.iucr.org/resources/cif/spec/ancillary/reserved-prefixes
 
+  seq = list(seq) # indexable list for Py3 compatibility
   if len(seq) == 1: return seq[0]
   substr = seq[0]
   for s in seq:
+    # if substr occurs in s, it is already their longest common substring
+    if substr in s:
+      continue
     substr = LCSubstr_set(substr, s).pop()
   if not (substr.endswith('_') or substr.endswith('.')):
     if '.' in substr:
@@ -730,11 +863,11 @@ def LCSubstr_set(S, T):
   http://en.wikibooks.org/wiki/Algorithm_Implementation/Strings/Longest_common_substring#Python"""
 
   m = len(S); n = len(T)
-  L = [[0] * (n+1) for i in xrange(m+1)]
+  L = [[0] * (n+1) for i in range(m+1)]
   LCS = set()
   longest = 0
-  for i in xrange(m):
-    for j in xrange(n):
+  for i in range(m):
+    for j in range(n):
       if S[i] == T[j]:
         v = L[i][j] + 1
         L[i+1][j+1] = v
@@ -759,6 +892,8 @@ unquoted_string_re = re.compile(
 quoted_string_re = re.compile(r"('|\")[%s]*('|\")" %_any_print_char_set)
 semicolon_string_re = re.compile(r"(\s*)(;).*?(;)(\s*)", re.DOTALL)
 
+# column_needs_format_value in loop_format.cpp ports these rules to C++ for
+# loop.show: change both together.
 def format_value(value_string):
   string_is_quoted = False
   if not value_string:

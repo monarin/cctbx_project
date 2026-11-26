@@ -40,6 +40,7 @@ namespace boost_python {
   void wrap_row_echelon();
   void wrap_tensor_rank_2();
   void wrap_icosahedron();
+  void wrap_golden_spiral();
   void wrap_chebyshev_base();
   void wrap_chebyshev_polynome();
   void wrap_chebyshev_fitter();
@@ -321,6 +322,10 @@ namespace {
     def("GfuncOfRSsqr_approx", (double(*)(double))
       g_function::GfuncOfRSsqr_approx);
 
+    def("g_function", (scitbx::af::shared<double>(*)(
+        af::const_ref<double> const&, double const&, bool const&))
+      g_function::Gfunction);
+
     def("bessel_i1_over_i0", (double(*)(double const&)) bessel::i1_over_i0);
     def("bessel_i1_over_i0",
       (scitbx::af::shared<double>(*)(scitbx::af::const_ref<double> const&))
@@ -433,6 +438,7 @@ namespace {
     wrap_row_echelon();
     wrap_tensor_rank_2();
     wrap_icosahedron();
+    wrap_golden_spiral();
     wrap_chebyshev_base();
     wrap_chebyshev_polynome();
     wrap_chebyshev_fitter();

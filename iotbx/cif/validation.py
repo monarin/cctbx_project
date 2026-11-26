@@ -1,4 +1,4 @@
-from __future__ import division
+from __future__ import absolute_import, division, print_function
 from cctbx.array_family import flex
 from iotbx.cif import builders, model, errors
 import libtbx.load_env
@@ -8,7 +8,10 @@ import os
 import shutil
 import re
 import sys
-from urllib2 import urlopen
+from six import string_types
+from six.moves.urllib.request import urlopen
+from six.moves import zip
+import six
 
 
 class ErrorHandler:
@@ -47,17 +50,17 @@ class ErrorHandler:
   def show(self, show_warnings=True, out=None):
     if out is None:
       out = sys.stdout
-    codes = self.errors.keys()
-    errors = self.errors.values()
+    codes = list(self.errors.keys())
+    errors = list(self.errors.values())
     if show_warnings:
-      codes.extend(self.warnings.keys())
-      errors.extend(self.warnings.values())
+      codes.extend(list(self.warnings.keys()))
+      errors.extend(list(self.warnings.values()))
     for code, errs in zip(codes, errors):
       printed_messages = set()
       for e in errs:
         if str(e) not in printed_messages: # avoid printing duplicates
           printed_messages.add(str(e))
-          print >> out, e
+          print(e, file=out)
 
 
 class ValidationError(Exception):
@@ -140,28 +143,29 @@ class dictionary(model.cif):
     self.item_type_list = {}
     self.child_parent_relations = {}
     self.look_up_table = {} # cached definitions for each data name
-    if self.has_key('on_this_dictionary'):
+    if 'on_this_dictionary' in self:
       self.DDL_version = 1
-      for key, value in self.blocks.iteritems():
+      for key, value in six.iteritems(self.blocks):
         self[key] = DDL1_definition(value)
       on_this_dict = self['on_this_dictionary']
       self.name = on_this_dict['_dictionary_name']
       self.version = on_this_dict['_dictionary_version']
     else:
       self.DDL_version = 2
-      master_block = self.values()[0]
+      master_block = list(self.values())[0]
       self.name = master_block['_dictionary.title']
       self.version = master_block['_dictionary.version']
       type_codes = master_block.get('_item_type_list.code')
       type_constructs = master_block.get('_item_type_list.construct')
       for code, construct in zip(type_codes, type_constructs):
-        self.item_type_list.setdefault(code, re.compile(construct))
-      for key, save in master_block.saves.iteritems():
+        # constructs given as semicolon text fields carry a trailing newline
+        self.item_type_list.setdefault(code, re.compile(construct.strip()))
+      for key, save in six.iteritems(master_block.saves):
         master_block[key] = DDL2_definition(save)
         children = save.get('_item_linked.child_name')
         parents = save.get('_item_linked.parent_name')
         if parents is not None and children is not None:
-          if not isinstance(parents, basestring):
+          if not isinstance(parents, string_types):
             for child, parent in zip(children, parents):
               self.child_parent_relations.setdefault(child, parent)
     self.err = ErrorHandler()
@@ -199,9 +203,9 @@ class dictionary(model.cif):
         return key_
       # otherwise we have to check every block in turn
       else:
-        for k, v in self.iteritems():
+        for k, v in six.iteritems(self):
           if k == 'on_this_dictionary': continue
-          elif isinstance(v['_name'], basestring):
+          elif isinstance(v['_name'], string_types):
             if v['_name'] == key:
               self.look_up_table.setdefault(key, key_)
               return k
@@ -209,11 +213,11 @@ class dictionary(model.cif):
             self.look_up_table.setdefault(key, key_)
             return k
         self.report_error(1001, key=key) # item not in dictionary
-        raise KeyError, key
+        raise KeyError(key)
     else:
-      if key not in self.values()[0]:
+      if key not in list(self.values())[0]:
         self.report_error(1001, key=key) # item not in dictionary
-        raise KeyError, key
+        raise KeyError(key)
       else:
         return key
 
@@ -221,7 +225,7 @@ class dictionary(model.cif):
     if self.DDL_version == 1:
       return self[self.find_definition(key)]
     elif self.DDL_version == 2:
-      return self.values()[0][self.find_definition(key)]
+      return list(self.values())[0][self.find_definition(key)]
 
   def validate_single_item(self, key, value, block):
     try:
@@ -246,7 +250,7 @@ class dictionary(model.cif):
       # only for DDL1
       try:
         builders.float_from_string(value)
-      except Exception, e:
+      except Exception as e:
         # can't interpret as numb
         self.report_error(2001, key=key, value=value, item_type=definition.type)
       else:
@@ -255,7 +259,7 @@ class dictionary(model.cif):
         if type_condition not in ('esd', 'su'):
           try:
             float(value)
-          except Exception, e:
+          except Exception as e:
             # if we have got here, then from the data type checking we can assume
             # that the value is given with an esd, which causes it to be invalid.
             self.report_error(2002, key=key)
@@ -263,14 +267,14 @@ class dictionary(model.cif):
   def validate_dependent(self, key, block, definition):
     dependents = definition.dependent
     if dependents is None: return
-    elif isinstance(dependents, basestring):
+    elif isinstance(dependents, string_types):
       dependents = [dependents]
     for dependent in dependents:
       if dependent not in block:
         self.report_error(2301, dependent=dependent, key=key)
 
   def validate_enumeration(self, key, value, definition):
-    if isinstance(value, basestring):
+    if isinstance(value, string_types):
       values = [value]
     else:
       values = value
@@ -300,9 +304,9 @@ class dictionary(model.cif):
         else:
           if enum_min is None and enum_max is None: return
           elif enum_min is None:
-            enum_min = '.'*len(enum_max)
+            enum_min = ['.'] * len(enum_max)
           elif enum_max is None:
-            enum_max = '.'*len(enum_min)
+            enum_max = ['.'] * len(enum_min)
           for min, max in zip(enum_min, enum_max):
             if ((min == '.' or v > float(min)) and
                 (max == '.' or v < float(max))):
@@ -310,14 +314,15 @@ class dictionary(model.cif):
             elif (min == max and v == float(min)):
               return # matched boundary value
           # else value out of range
-          self.report_error(2101, key=key, value=value, enum="%s:%s" %(min, max))
+          self.report_error(2101, key=key, value=value,
+            enum=", ".join("%s:%s" % mm for mm in zip(enum_min, enum_max)))
 
   def validate_related(self, key, block, definition):
     related_items = definition.related
     related_functions = definition.related_function
     if related_items is not None and related_functions is not None:
-      if (isinstance(related_items, basestring) and
-          isinstance(related_functions, basestring)):
+      if (isinstance(related_items, string_types) and
+          isinstance(related_functions, string_types)):
         related_items = [related_items]
         related_functions = [related_functions]
       for related_item, related_function in zip(related_items, related_functions):
@@ -335,9 +340,9 @@ class dictionary(model.cif):
               related_item not in block): # missing associated value
           self.report_error(2202, key=key, related_item=related_item)
 
-  def validate_loop(self, loop, block):
+  def validate_loop(self, loop, block, parent_value_sets=None):
     list_category = None
-    for key, value in loop.iteritems():
+    for key, value in six.iteritems(loop):
       try:
         definition = self.get_definition(key)
       except KeyError: continue
@@ -349,41 +354,43 @@ class dictionary(model.cif):
         self.report_error(2501, key=key) # not allowed in list
       definition_category = definition.category
       if (definition_category is not None and
-          not isinstance(definition_category, basestring)):
+          not isinstance(definition_category, string_types)):
         definition_name = definition.name
         i = flex.first_index(definition_name, key)
         definition_category = definition_category[i]
       if list_category is None:
         list_category = definition_category
-      elif (isinstance(list_category, basestring)
+      elif (isinstance(list_category, string_types)
             and definition_category is not None
             and list_category != definition_category):
-        print list_category, list(definition_category)
         self.report_error(2502, key=key) # multiple categories in loop
       mandatory = definition.mandatory == 'yes'
       references = definition.get('_list_reference')
       if references is not None:
-        if isinstance(references, basestring):
+        if isinstance(references, string_types):
           references = [references]
         for reference in references:
-          ref_data = self.get_definition(reference)
+          try:
+            ref_data = self.get_definition(reference)
+          except KeyError:
+            ref_data = self.get_definition(key)
           ref_names = ref_data['_name']
-          if isinstance(ref_names, basestring):
+          if isinstance(ref_names, string_types):
             ref_names = [ref_names]
           for name in ref_names:
             if name not in loop:
               self.report_error(2505, key=key, reference=name) # missing _list_reference
       elif (self.DDL_version == 2
-            and isinstance(definition.category, basestring)):
+            and isinstance(definition.category, string_types)):
         category_def = self.get_definition(definition.category)
         if category_def.category_key is not None:
           category_keys = category_def.category_key
-          if isinstance(category_keys, basestring):
+          if isinstance(category_keys, string_types):
             category_keys = [category_keys]
           for cat_key in category_keys:
             cat_key_def = self.get_definition(cat_key)
           if (cat_key_def.mandatory == 'yes'
-              and isinstance(cat_key_def.mandatory, basestring)
+              and isinstance(cat_key_def.mandatory, string_types)
               and cat_key_def.name not in block):
             self.report_error(
               2203, key=cat_key_def.name, category=definition.category)
@@ -391,20 +398,44 @@ class dictionary(model.cif):
       link_parent = definition.get(
         '_list_link_parent', self.child_parent_relations.get(key))
       if link_parent is not None:
-        parent_values = loop.get(link_parent, block.get(link_parent))
+        parent_values = self._parent_value_set(
+          link_parent, loop, block, cache=parent_value_sets)
         if parent_values is not None:
           for v in loop[key]:
-            if v != '.' and v not in parent_values:
-              # missing parent value
+            if v not in ('.', '?') and v not in parent_values:
+              # missing parent value (null markers need no parent)
               self.report_error(2503, value=v, child=key, parent=link_parent)
         else:
           self.report_error(2504, child=key, parent=link_parent) # missing parent
+
+  def _parent_value_set(self, link_parent, loop, block, cache=None):
+    """Values of the parent item as a set, or None if the parent is absent.
+
+    Membership tests against a flex.std_string are linear scans, so testing
+    every child value directly made the child-parent check
+    O(n_child * n_parent) and dominated validation time for large atom_site
+    loops. The set is built once per parent item and, when a cache dict is
+    supplied (block_base.validate passes one per block), shared by every
+    loop in the block that links to the same parent.
+    """
+    if cache is not None and link_parent in cache:
+      return cache[link_parent]
+    parent_values = loop.get(link_parent, block.get(link_parent))
+    if parent_values is None:
+      result = None
+    elif isinstance(parent_values, string_types):
+      result = set([parent_values])
+    else:
+      result = set(parent_values)
+    if cache is not None:
+      cache[link_parent] = result
+    return result
 
   def update(self, other, mode="strict"):
     assert mode in ("strict", "replace", "overlay")
     assert self.DDL_version == other.DDL_version
     if self.DDL_version == 1:
-      for k, v in other.iteritems():
+      for k, v in six.iteritems(other):
         if k == "on_this_dictionary": continue
         name = v.name
         try:
@@ -425,8 +456,8 @@ class dictionary(model.cif):
           else:
             self[k] = v
     elif self.DDL_version == 2:
-      master_block = self.values()[0]
-      for k, v in other.values()[0].saves.iteritems():
+      master_block = list(self.values())[0]
+      for k, v in six.iteritems(list(other.values())[0].saves):
         #name = v["_item.name"]
         name = k
         try:
@@ -558,4 +589,11 @@ class DDL2_definition(model.save, definition_base):
       self.keys_lower = other.keys_lower
 
   def get_min_max(self):
-    return (self.get('_item_range.minimum'), self.get('_item_range.maximum'))
+    # A single range gives _item_range.minimum/maximum as plain strings,
+    # a looped one as arrays; validate_enumeration zips the two, so a
+    # string must not be iterated character by character.
+    enum_min = self.get('_item_range.minimum')
+    enum_max = self.get('_item_range.maximum')
+    if isinstance(enum_min, string_types): enum_min = [enum_min]
+    if isinstance(enum_max, string_types): enum_max = [enum_max]
+    return (enum_min, enum_max)

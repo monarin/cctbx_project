@@ -1,7 +1,6 @@
-from __future__ import division
-
 """ Tools to solve non-linear L.S. problems formulated with normal-equations.
 """
+from __future__ import absolute_import, division, print_function
 
 import libtbx
 from scitbx.array_family import flex
@@ -109,9 +108,6 @@ class iterations(object):
   n_max_iterations = 100
   gradient_threshold = None
   step_threshold = None
-  damping_value = 0.0007
-  max_shift_over_esd = 15
-  convergence_as_shift_over_esd = 1e-5
   verbose_iterations = False
 
   def __init__(self, non_linear_ls, **kwds):
@@ -140,15 +136,20 @@ class iterations(object):
     a = self.non_linear_ls.normal_matrix_packed_u()
     a.matrix_packed_u_diagonal_add_in_place(value*a.matrix_packed_u_diagonal())
 
-  def do_scale_shifts(self, max_shift_over_esd):
+  def do_scale_shifts(self, limit_shift_over_su):
     x = self.non_linear_ls.step()
     esd = self.non_linear_ls.covariance_matrix().matrix_packed_u_diagonal()
-    x_over_esd = flex.abs(x/flex.sqrt(esd))
-    max_val = flex.max(x_over_esd)
-    if max_val < self.convergence_as_shift_over_esd:
+    ls_shifts_over_su = flex.abs(x/flex.sqrt(esd))
+    #max shift for the LS
+    self.max_ls_shift_over_su = flex.max(ls_shifts_over_su)
+    jac_tr = self.non_linear_ls.actual.\
+      reparametrisation.jacobian_transpose_matching_grad_fc()
+    self.shifts_over_su = jac_tr.transpose() * ls_shifts_over_su
+    self.max_shift_over_su = flex.max(self.shifts_over_su)
+    if self.max_shift_over_su < self.convergence_as_shift_over_esd:
       return True
-    if max_val > max_shift_over_esd:
-      shift_scale = max_shift_over_esd/max_val
+    if self.max_ls_shift_over_su > limit_shift_over_su:
+      shift_scale = limit_shift_over_su/self.max_ls_shift_over_su
       x *= shift_scale
     return False
 
@@ -174,6 +175,8 @@ class naive_iterations(iterations):
 
 class naive_iterations_with_damping(iterations):
 
+  damping_value = 0.0007
+
   def do(self):
     self.n_iterations = 0
     do_last = False
@@ -192,7 +195,11 @@ class naive_iterations_with_damping(iterations):
     return "pure Gauss-Newton with damping"
 
 
-class naive_iterations_with_damping_and_shift_limit(iterations):
+class naive_iterations_with_damping_and_shift_limit(
+  naive_iterations_with_damping):
+
+  max_shift_over_esd = 15
+  convergence_as_shift_over_esd = 1e-5
 
   def do(self):
     self.n_iterations = 0
@@ -277,20 +284,20 @@ class levenberg_marquardt_iterations_encapsulated_eqns(
       2) avoid a memory leak by deleting the following circular reference to self:
     """
     if self.verbose_iterations:
-      print "Iteration      Objective        Mu     ||Gradient||       Step"
+      print("Iteration      Objective        Mu     ||Gradient||       Step")
     del self.non_linear_ls.journal
 
   def had_too_small_a_step(self):
     if self.verbose_iterations:
-      print "%5d %18.4f"%(self.n_iterations,self.objective_history[-1]),
-      print "%12.7f"%(self.mu),"%12.3f"%(self.gradient_norm_history[-1]),
+      print("%5d %18.4f"%(self.n_iterations,self.objective_history[-1]), end=' ')
+      print("%12.7f"%(self.mu),"%12.3f"%(self.gradient_norm_history[-1]), end=' ')
       x = self.parameter_vector_norm_history[-1]
       h = self.step_norm_history[-1]
       import math
       root = (-x + math.sqrt(x*x+4.*h))/2.
       form_p = int(-math.log10(self.step_threshold))
       format = "%%12.%df"%(form_p+1)
-      print format%(root)
+      print(format%(root))
     return iterations.had_too_small_a_step(self)
 
   def do(self):

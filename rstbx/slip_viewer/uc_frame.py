@@ -1,4 +1,4 @@
-from __future__ import division
+from __future__ import absolute_import, division, print_function
 # -*- Mode: Python; c-basic-offset: 2; indent-tabs-mode: nil; tab-width: 8 -*-
 #
 # $Id
@@ -6,7 +6,7 @@ from __future__ import division
 import wx, math
 
 class UCSettingsFrame(wx.MiniFrame):
-  def __init__ (self, *args, **kwds) :
+  def __init__(self, *args, **kwds):
     super(UCSettingsFrame, self).__init__(*args, **kwds)
     szr = wx.BoxSizer(wx.VERTICAL)
     self.phil_params = args[0].params
@@ -21,7 +21,7 @@ class UCSettingsFrame(wx.MiniFrame):
 
 
 class UCSettingsPanel(wx.Panel):
-  def __init__ (self, *args, **kwds) :
+  def __init__(self, *args, **kwds):
     super(UCSettingsPanel, self).__init__(*args, **kwds)
 
     self.phil_params = args[0].phil_params
@@ -277,14 +277,14 @@ class UCSettingsPanel(wx.Panel):
     try:
       uc = symmetry(unit_cell=self._cell, space_group_symbol=str(self._spacegroup))
       hkl_list = cctbx.miller.build_set(uc, False, d_min=self.d_min_ctrl.GetValue())
-    except Exception, e:
-      frame.update_statusbar(e.message)
+    except Exception as e:
+      frame.update_statusbar(str(e))
       return
 
     frame.update_statusbar("%d %d %d %d %d %d, "%tuple(self._cell) + "number of indices: %d"%len(hkl_list.indices()))
 
     spacings = list(hkl_list.d_spacings())
-    print "Printing spacings, len: %s"%len(spacings)
+    print("Printing spacings, len: %s"%len(spacings))
 
     def cmp(a,b):
       if a[1] > b[1]: return 1
@@ -294,7 +294,7 @@ class UCSettingsPanel(wx.Panel):
     spacings = sorted(spacings, cmp=cmp, reverse=True)
 
     for d in spacings:
-      print d
+      print(d)
 
     detector = self._pyslip.tiles.raw_image.get_detector()
     beam     = self._pyslip.tiles.raw_image.get_beam()

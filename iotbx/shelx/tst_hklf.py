@@ -1,9 +1,9 @@
-from __future__ import division
+from __future__ import absolute_import, division, print_function
 from iotbx.shelx import hklf
 from cctbx.array_family import flex
-from libtbx.test_utils import approx_equal
+from libtbx.test_utils import Exception_not_expected, approx_equal
 from libtbx.test_utils import Exception_expected, show_diff
-from cStringIO import StringIO
+from six.moves import cStringIO as StringIO
 
 def exercise_hklf_reader():
   s = ('   1   2  -1  -23.34    4.56   1\n'
@@ -20,6 +20,7 @@ def exercise_hklf_reader():
   assert approx_equal(r.alphas(), [1, 2, 9999, -999, ])
   for ma in r.as_miller_arrays():
     assert ma.indices().all_eq(r.indices())
+    assert ma.anomalous_flag() is False
   ma = r.as_miller_arrays()[0]
   assert ma.data().all_approx_equal(r.data())
   assert ma.sigmas().all_approx_equal(r.sigmas())
@@ -120,9 +121,11 @@ def exercise_miller_export_as_shelx_hklf():
   assert approx_equal(ma.indices(), ma2.indices())
   assert approx_equal(ma.data(), ma2.data())
   assert approx_equal(ma.sigmas(), ma2.sigmas())
+  assert ma.anomalous_flag() is False
+  assert ma2.anomalous_flag() is False
   #
   ma = ma.select(flex.size_t([0]))
-  def check(d, s, f):
+  def check(d, s, f, exception_expected=True):
     if (s is not None): s = flex.double([s])
     ma2 = ma.array(data=flex.double([d]), sigmas=s)
     sio = StringIO()
@@ -131,17 +134,25 @@ def exercise_miller_export_as_shelx_hklf():
    1   2  -1%s
    0   0   0    0.00    0.00
 """ % f)
-    try: ma2.export_as_shelx_hklf(sio)
-    except RuntimeError: pass
-    else: raise Exception_expected
+    if exception_expected:
+      try: ma2.export_as_shelx_hklf(sio)
+      except RuntimeError: pass
+      else: raise Exception_expected
+    else:
+      try: ma2.export_as_shelx_hklf(sio)
+      except RuntimeError: raise Exception_not_expected
+
   check(-12345678, 1, "-999999.    0.08")
   check(-12345678, None, "-999999.    0.00")
-  check(2, -12345678, "    0.16-999999.")
+  check(2, -12345678, "    0.16-999999.") # Should negative sigma be allowed?
   check(123456789, 30, "9999999.    2.43")
   check(123456789, None, "9999999.    0.00")
   check(40, 123456789, "    3.249999999.")
   check(-23456789, 123456789, "-999999.5263153.")
   check(123456789, -23456789, "5263153.-999999.")
+  # Numbers that would be formatted as integers should end with "."
+  check(-123456, 1,   "-123456.    1.00", exception_expected=False)
+  check(1234567, 10, "1234567.   10.00", exception_expected=False)
   #
   ma = hklf.reader(file_object=StringIO(s)).as_miller_arrays()[0]
   ma = ma.select(flex.size_t([0,1]))
@@ -161,11 +172,18 @@ def exercise_miller_export_as_shelx_hklf():
    2  -3   99999999.    0.00
    0   0   0    0.00    0.00
 """)
+  # Test that setting the scale range works.
+  ma2.export_as_shelx_hklf(
+    sio,
+    scale_range=(-9999., 9999.),
+    normalise_if_format_overflow=True)
+  # Test that ignoring the scale range and normalising out-of-range values anyway works.
+  ma2.export_as_shelx_hklf(sio, full_dynamic_range=True)
 
 def run():
   exercise_hklf_reader()
   exercise_miller_export_as_shelx_hklf()
-  print "OK"
+  print("OK")
 
 if __name__ == '__main__':
   run()

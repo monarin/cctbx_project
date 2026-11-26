@@ -28,8 +28,8 @@ namespace iotbx { namespace pdb { namespace hierarchy {
         unsigned n_ag = rg.atom_groups_size();
         for(unsigned i_ag=0;i_ag<n_ag;i_ag++) {
           atom_group const& ag = rg.atom_groups()[i_ag];
-          label_formatter.altloc = ag.data->altloc.elems;
-          label_formatter.resname = ag.data->resname.elems;
+          label_formatter.altloc = ag.data->altloc.c_str();
+          label_formatter.resname = ag.data->resname.c_str();
           typedef std::vector<atom> va;
           va const& atoms = ag.atoms();
           va::const_iterator atoms_end = atoms.end();
@@ -55,8 +55,8 @@ namespace iotbx { namespace pdb { namespace hierarchy {
         for(unsigned i_at=0;i_at<n_at;i_at++) {
           hierarchy::atom const* atom = &ats[i_at];
           shared_ptr<atom_group_data> ag_data = atom->parent_ptr();
-          label_formatter.altloc = ag_data->altloc.elems;
-          label_formatter.resname = ag_data->resname.elems;
+          label_formatter.altloc = ag_data->altloc.c_str();
+          label_formatter.resname = ag_data->resname.c_str();
           IOTBX_LOC
         }
       }
@@ -64,6 +64,8 @@ namespace iotbx { namespace pdb { namespace hierarchy {
     }
   }
 
+  // Why we have separate write functions? see
+  // iotbx/pdb/construct_hierarchy.cpp:input_atoms_with_labels_generator::run
   void
   models_as_pdb_string(
     stream_write& write,
@@ -93,7 +95,7 @@ namespace iotbx { namespace pdb { namespace hierarchy {
           ch.residue_groups(),
           interleaved_conf,
           atom_hetatm, sigatm, anisou, siguij, output_break_records);
-        write("TER\n", 4U);
+        if (ch.is_polymer_chain()) write("TER\n", 4U);
       }
       if (n_mds != 1U) {
         write("ENDMDL\n", 7U);

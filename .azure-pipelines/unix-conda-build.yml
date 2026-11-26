@@ -1,0 +1,302 @@
+# Script for building CCTBX on linux and macOS
+#
+# Variables:
+#   CONDA: Linux, MacOSX
+#   OS: linux-64, osx-64
+#   PYTHON_VERSION: py36, py37, py38, py39, py310
+#   MODULES: <modules artifact name>
+#
+# Optional Parameters:
+#   distribution: centos, ubuntu
+#   version: [6, 10]
+
+steps:
+
+# download components
+- checkout: none
+
+- task: DownloadPipelineArtifact@2
+  inputs:
+    source: 'current'
+    artifact: $(MODULES)
+    path: $(Pipeline.Workspace)
+  displayName: Download modules tarball
+
+- script: |
+    set -xe
+    cd $(Pipeline.Workspace)
+    tar -xf modules.tar
+  displayName: Extract modules tarball
+
+- script: |
+    set -xe
+    cd $(Pipeline.Workspace)/modules
+    rm -fr boost
+  displayName: Remove subset of Boost sources
+
+- script: |
+    set -xe
+    cd $(Pipeline.Workspace)/modules/cctbx_project/scitbx
+    sed -i .bak 's/"$D\/suffixtree/#"$D\/suffixtree/g' run_tests.py
+  displayName: Skip scitbx/suffixtree/test/tst_single.py for -O1 on macOS
+  condition: and(eq(variables['MODULES'], 'modules1'), eq(variables['OS'], 'osx-64'))
+
+- script: |
+    set -xe
+    cd $(Pipeline.Workspace)/modules/cctbx_project/scitbx/math/tests
+    sed -i .back 's/  test_B_matrix/# test_B_matrix/g' tst_error_propagation_matrix_inverse.py
+  displayName: Skip test for -O0 on macOS
+  condition: and(eq(variables['MODULES'], 'modules0'), eq(variables['OS'], 'osx-64'))
+
+- script: |
+    set -xe
+    cd $(Pipeline.Workspace)
+    ln -s modules/cctbx_project/libtbx/auto_build/bootstrap.py
+  displayName: Link bootstrap.py
+
+# install miniforge
+- task: DownloadPipelineArtifact@2
+  inputs:
+    source: 'specific'
+    project: '$(resources.pipeline.data_cache.projectID)'
+    pipeline: '$(resources.pipeline.data_cache.pipelineID)'
+    artifact: 'miniforge'
+    path: $(Pipeline.Workspace)/miniforge
+  displayName: Download miniforge
+
+- script: |
+    set -xe
+    bash $(Pipeline.Workspace)/miniforge/Miniforge3-$(CONDA)-x86_64.sh -b -u -p $(Pipeline.Workspace)/miniforge
+  displayName: Install miniforge
+
+# create conda environment
+# fresh downloads for "Update build cache" and "Full" pipelines
+- task: DownloadPipelineArtifact@2
+  inputs:
+    source: 'current'
+    artifact: $(PYTHON_VERSION)_$(OS)
+    path: $(Pipeline.Workspace)/channel
+  displayName: Download conda packages
+  condition: >
+    or(eq(variables['Build.DefinitionName'], 'Update build cache'),
+       eq(variables['Build.DefinitionName'], 'Full'))
+
+- task: DownloadPipelineArtifact@2
+  inputs:
+    source: 'specific'
+    project: '$(resources.pipeline.build_cache.projectID)'
+    pipeline: '$(resources.pipeline.build_cache.pipelineID)'
+    allowPartiallySucceededBuilds: true
+    allowFailedBuilds: true
+    artifact: $(PYTHON_VERSION)_$(OS)
+    path: $(Pipeline.Workspace)/channel
+  displayName: Download cached conda packages
+  condition: >
+    and(ne(variables['Build.DefinitionName'], 'Update build cache'),
+        ne(variables['Build.DefinitionName'], 'Full'))
+
+- script: |
+    set -xe
+    source $(Pipeline.Workspace)/miniforge/etc/profile.d/conda.sh
+    conda install -y conda-build
+    cd $(Pipeline.Workspace)/channel
+    conda index .
+    echo @EXPLICIT > env.txt
+    for filename in `cat filenames.txt`; do
+      echo file://$(Pipeline.Workspace)/channel/${filename} >> env.txt
+    done
+  displayName: Build local channel
+
+- script: |
+    set -xe
+    source $(Pipeline.Workspace)/miniforge/etc/profile.d/conda.sh
+    if [ -d $(Pipeline.Workspace)/miniforge/envs/$(PYTHON_VERSION) ]; then
+      conda remove  -y --all -n $(PYTHON_VERSION)
+    fi
+    conda create -y --offline -n $(PYTHON_VERSION) --file $(Pipeline.Workspace)/channel/env.txt
+    conda activate $(PYTHON_VERSION)
+    pip install junit-xml
+  displayName: Create conda environment
+  retryCountOnTaskFailure: 3
+
+# build
+- script: |
+    set -xe
+    source $(Pipeline.Workspace)/miniforge/etc/profile.d/conda.sh
+    conda activate $(PYTHON_VERSION)
+    cd $(Pipeline.Workspace)
+    python bootstrap.py build \
+      --builder=cctbx \
+      --use-conda=${CONDA_PREFIX} \
+      --config-flags="--cxxstd=c++14" \
+      --nproc=4
+    cd build
+    source setpaths.sh
+    libtbx.configure \
+      cma_es \
+      fable \
+      qttbx \
+      rstbx \
+      spotfinder \
+      cbflib_adaptbx \
+      phenix_regression \
+      phenix_examples
+    libtbx.scons -j 4
+    libtbx.scons -j 4
+  displayName: Configure and Build
+
+- script: |
+    set -xe
+    cd $(Pipeline.Workspace)
+    if [ -f "./build/config.log" ]; then
+      cd build
+      cat config.log
+    fi
+  displayName: Debug info
+  condition: succeededOrFailed()
+
+# install pyDiSCaMB
+- script: |
+    set -xe
+
+    if [[ "$(OS)" == "osx"* ]]; then
+      source $(Pipeline.Workspace)/miniforge/etc/profile.d/conda.sh
+      if [ -d $(Pipeline.Workspace)/miniforge/envs/compiler ]; then
+        conda remove  -y --all -n compiler
+      fi
+      conda create -y -n compiler cxx-compiler
+      conda activate compiler
+    fi
+
+    cd $(Pipeline.Workspace)
+    source ./build/setpaths.sh
+    cd ./modules/pyDiSCaMB
+    libtbx.python -m pip install .
+  displayName: Install pyDiSCaMB
+  retryCountOnTaskFailure: 3
+
+# test timings from the latest run on master, so that the longest tests
+# start first; pipelines that set timings_pipeline use them
+- script: |
+    set -xe
+    mkdir -p $(Pipeline.Workspace)/timings
+  displayName: Create test timings directory
+  condition: ne(variables['timings_pipeline'], '')
+
+- task: DownloadPipelineArtifact@2
+  inputs:
+    source: 'specific'
+    project: '$(System.TeamProjectId)'
+    pipeline: '$(timings_pipeline)'
+    runVersion: 'latestFromBranch'
+    runBranch: 'refs/heads/master'
+    allowPartiallySucceededBuilds: true
+    allowFailedBuilds: true
+    artifact: timings_$(job_name)
+    path: $(Pipeline.Workspace)/timings
+  displayName: Download test timings
+  condition: ne(variables['timings_pipeline'], '')
+  continueOnError: true
+
+# test
+- script: |
+    set -xe
+    source $(Pipeline.Workspace)/miniforge/etc/profile.d/conda.sh
+    conda activate $(PYTHON_VERSION)
+    cd $(Pipeline.Workspace)
+    source ./build/setpaths.sh
+    timings=""
+    if [ -d $(Pipeline.Workspace)/timings ]; then
+      timings="timings=$(Pipeline.Workspace)/timings/timings.csv"
+    fi
+    rm -fr tests
+    mkdir tests
+    cd tests
+    export PYTHONDEVMODE=1
+    echo "##vso[task.setvariable variable=tests_failed]false"
+    rc=0
+    libtbx.run_tests_parallel \
+      module=annlib_adaptbx \
+      module=boost_adaptbx \
+      module=cbflib_adaptbx \
+      module=cctbx \
+      module=xcif \
+      module=cctbx_website \
+      module=cma_es \
+      module=fable \
+      module=gltbx \
+      module=iotbx \
+      module=libtbx \
+      module=rstbx \
+      module=scitbx \
+      module=crys3d \
+      module=qttbx \
+      module=smtbx \
+      module=spotfinder \
+      max_retries=2 \
+      nproc=4 \
+      ${timings} || rc=$?
+    if [ "$rc" -ne 0 ]; then
+      echo "##vso[task.setvariable variable=tests_failed]true"
+    fi
+    exit $rc
+  failOnStderr: false
+  displayName: Test
+  retryCountOnTaskFailure: 3
+
+# only runs on master update the test timings
+- publish: $(Pipeline.Workspace)/timings
+  artifact: timings_$(job_name)
+  displayName: Save test timings
+  condition: >
+    and(always(),
+        ne(variables['timings_pipeline'], ''),
+        eq(variables['Build.SourceBranch'], 'refs/heads/master'),
+        ne(variables['Build.Reason'], 'PullRequest'))
+  continueOnError: true
+
+# delete currently failing test
+- script: |
+    cd $(Pipeline.Workspace)
+    cd ./modules/cctbx_project/mmtbx/regression/discamb
+    rm -f tst_fmodel_fd_discamb_taam.py tst_fmodel_fd_discamb_taam_tyr.py
+  displayName: Delete failing tests
+  condition: eq(variables['OS'], 'linux-64')
+
+# run pyDiSCaMB tests
+- script: |
+    set -xe
+    cd $(Pipeline.Workspace)
+    source ./build/setpaths.sh
+    cd ./modules/cctbx_project/mmtbx/regression/discamb
+    for t in `/bin/ls tst*.py`; do
+      echo ${t}
+      echo "============================================================"
+      libtbx.python ${t}
+      echo
+    done
+  displayName: Run pyDiSCaMB tests
+  retryCountOnTaskFailure: 3
+
+# store tests directory as an artifact
+- script: |
+    set -xe
+    cd $(Pipeline.Workspace)
+    mkdir -p tests
+    tar -Jcf tests_$(job_name).tar.xz ./tests
+    touch ./tests/output.xml
+  displayName: Save test directory
+  condition: succeededOrFailed()
+  continueOnError: true
+
+- publish: $(Pipeline.Workspace)/tests_$(job_name).tar.xz
+  artifact: tests_$(job_name)_$(MODULES)
+  condition: and(failed(), eq(variables['tests_failed'], 'true'))
+  continueOnError: true
+
+# publish test results
+- task: PublishTestResults@2
+  condition: succeededOrFailed()
+  inputs:
+    testResultsFormat: 'JUnit'
+    testResultsFiles: '$(Pipeline.Workspace)/tests/output.xml'

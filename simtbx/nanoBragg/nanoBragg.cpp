@@ -6,12 +6,14 @@
 namespace simtbx {
 namespace nanoBragg {
 
+using boost::math::isnan;
 
 /* constructor that takes a dxtbx "panel" detector model */
 nanoBragg::nanoBragg(
     const dxtbx::model::Detector& detector, // no default
     const dxtbx::model::Beam& beam,  // no default
-    int verbose)    // =0
+    int verbose, // =0
+    int panel_id) //=0
 {
     double temp;
     vec3 xyz;
@@ -62,54 +64,19 @@ nanoBragg::nanoBragg(
     /* DETECTOR properties */
 
     /* size of the pixels in meters */
-    pixel_size = detector[0].get_pixel_size()[0]/1000.;
+    pixel_size = detector[panel_id].get_pixel_size()[0]/1000.;
 
     /* pixel count in short and fast-axis directions */
-    spixels = detector[0].get_image_size()[1];
-    fpixels = detector[0].get_image_size()[0];
+    spixels = detector[panel_id].get_image_size()[1];
+    fpixels = detector[panel_id].get_image_size()[0];
 
     /* allocate all the other arrays */
     init_detector();
 
     /* direction in 3-space of detector axes */
     beam_convention = CUSTOM;
-    /* typically: 1 0 0 */
-    fdet_vector[1] = detector[0].get_fast_axis()[0];
-    fdet_vector[2] = detector[0].get_fast_axis()[1];
-    fdet_vector[3] = detector[0].get_fast_axis()[2];
-    unitize(fdet_vector,fdet_vector);
-    /* typically: 0 -1 0 */
-    sdet_vector[1] = detector[0].get_slow_axis()[0];
-    sdet_vector[2] = detector[0].get_slow_axis()[1];
-    sdet_vector[3] = detector[0].get_slow_axis()[2];
-    unitize(sdet_vector,sdet_vector);
-    /* set orthogonal vector to the detector pixel array */
-    cross_product(fdet_vector,sdet_vector,odet_vector);
-    unitize(odet_vector,odet_vector);
 
-    /* dxtbx origin is location of outer corner of the first pixel */
-    pix0_vector[1] = detector[0].get_origin()[0]/1000.0;
-    pix0_vector[2] = detector[0].get_origin()[1]/1000.0;
-    pix0_vector[3] = detector[0].get_origin()[2]/1000.0;
-    /* what is the point of closest approach between sample and detector? */
-    Fclose = Xclose = -dot_product(pix0_vector,fdet_vector);
-    Sclose = Yclose = -dot_product(pix0_vector,sdet_vector);
-    close_distance = distance =  dot_product(pix0_vector,odet_vector);
-
-    /* set beam centre */
-    scitbx::vec2<double> dials_bc = detector[0].get_beam_centre(beam.get_s0());
-    Xbeam = dials_bc[0]/1000.0;
-    Ybeam = dials_bc[1]/1000.0;
-
-    /* detector sensor layer properties */
-    detector_thick   = detector[0].get_thickness();
-    temp = detector[0].get_mu();        // is this really a mu? or mu/rho ?
-    if(temp>0.0) detector_attnlen = 1.0/temp;
-
-    /* quantum_gain = amp_gain * electrooptical_gain, does not include capture_fraction */
-    quantum_gain = detector[0].get_gain();
-
-    //adc_offset = detector[0].ADC_OFFSET;
+    set_dxtbx_detector_panel(detector[panel_id], beam.get_s0());
 
     /* SPINDLE properties */
 
@@ -118,19 +85,23 @@ nanoBragg::nanoBragg(
     spindle_vector[2] = fdet_vector[2];
     spindle_vector[3] = fdet_vector[3];
     unitize(spindle_vector,spindle_vector);
+    user_beam=true;//needed for tilted dxtbx geometries, locks user (dxtbx) geom in place
 
     /* NOT IMPLEMENTED: read in any other stuff?  */
-    show_params();
+    /*TODO: consider reading in a crystal model as well, showing params without crystal model can be confusing*/
+    if (verbose)
+      show_params();
 
     /* sensible initialization of all unititialized values */
     reconcile_parameters();
+    SCITBX_ASSERT(distance > 0);  // safe to check,  especially with multi panel dxtbx models
 }
 
 
 // constructor for the nanoBragg class that takes most any member as an argument, defaults in nanoBragg_ext.cpp
 nanoBragg::nanoBragg(
         scitbx::vec2<int> detpixels_slowfast, // = 1024, 1024
-        scitbx::vec3<int> Ncells_abc, // 1 1 1
+        scitbx::vec3<double> Ncells_abc, // 1. 1. 1.
         cctbx::uctbx::unit_cell unitcell, // lysozyme
         vec3 missets_deg, // 0 0 0
         vec2 beam_center_mm, // NAN NAN
@@ -245,6 +216,9 @@ nanoBragg::init_defaults()
         exit(9);
     };
 
+    /* write cbf files in int precision? */
+    cbf_int = false;
+
     /* optional file stuff, to be removed eventually? */
     matfilename = NULL;
     hklfilename = NULL;
@@ -268,6 +242,9 @@ nanoBragg::init_defaults()
     printout = 0;
     printout_spixel=printout_fpixel=-1;
     verbose = 1;
+#ifdef NANOBRAGG_HAVE_CUDA
+    device_Id = 0; // for running the CUDA code
+#endif
 
     /* default x-ray beam properties */
 //    double beam_vector[4] = {0,1,0,0};  this->beam_vector = beam_vector;
@@ -377,11 +354,13 @@ nanoBragg::init_defaults()
     Xclose=NAN;Yclose=NAN;close_distance=NAN;
     Fclose=NAN;Sclose=NAN;
     ORGX=NAN;ORGY=NAN;
+    detector_is_righthanded=true;
     adc_offset = 40.0;
 
     /* use these to remember "user" inputs */
     user_beam = false;
     user_distance =false;
+    user_mosdomains = false;
 
     /* scattering vectors */
 //    double incident[4] = {0,0,0,0};
@@ -776,6 +755,8 @@ nanoBragg::init_beamcenter()
         if(verbose) printf("WARNING: auto-generating odet_vector\n");
         cross_product(fdet_vector,sdet_vector,odet_vector);
         unitize(odet_vector,odet_vector);
+        if (! detector_is_righthanded)
+            vector_rescale(odet_vector, odet_vector, -1);
     }
     unitize(polar_vector,polar_vector);
     unitize(spindle_vector,spindle_vector);
@@ -1236,6 +1217,63 @@ nanoBragg::update_beamcenter()
 // end of update_beamcenter()
 
 
+void nanoBragg::set_dxtbx_detector_panel(const dxtbx::model::Panel& panel, const vec3& s0_vector){
+
+    int spixels_new = panel.get_image_size()[1];
+    int fpixels_new = panel.get_image_size()[0];
+    if (spixels_new != spixels || fpixels_new != fpixels){
+        printf("New panel has different dimension than allocated panel!\n");
+        pixel_size = panel.get_pixel_size()[0]/1000.;
+        spixels = panel.get_image_size()[1];
+        fpixels = panel.get_image_size()[0];
+        init_detector();
+    }
+
+    /* typically: 1 0 0 */
+    fdet_vector[1] = panel.get_fast_axis()[0];
+    fdet_vector[2] = panel.get_fast_axis()[1];
+    fdet_vector[3] = panel.get_fast_axis()[2];
+    unitize(fdet_vector,fdet_vector);
+    /* typically: 0 -1 0 */
+    sdet_vector[1] = panel.get_slow_axis()[0];
+    sdet_vector[2] = panel.get_slow_axis()[1];
+    sdet_vector[3] = panel.get_slow_axis()[2];
+    unitize(sdet_vector,sdet_vector);
+    /* set orthogonal vector to the detector pixel array */
+    cross_product(fdet_vector,sdet_vector,odet_vector);
+    unitize(odet_vector,odet_vector);
+
+    /* dxtbx origin is location of outer corner of the first pixel */
+    pix0_vector[1] = panel.get_origin()[0]/1000.0;
+    pix0_vector[2] = panel.get_origin()[1]/1000.0;
+    pix0_vector[3] = panel.get_origin()[2]/1000.0;
+    /* what is the point of closest approach between sample and detector? */
+    Fclose = Xclose = -dot_product(pix0_vector,fdet_vector);
+    Sclose = Yclose = -dot_product(pix0_vector,sdet_vector);
+    close_distance = distance =  dot_product(pix0_vector,odet_vector);
+    if (close_distance < 0){
+        if(verbose)printf("WARNING: dxtbx model seems to be lefthanded. Inverting odet_vector.\n");
+        vector_rescale(odet_vector, odet_vector, -1);
+        close_distance = distance =  dot_product(pix0_vector,odet_vector);
+        detector_is_righthanded = false;
+    }
+
+    /* set beam centre */
+    scitbx::vec2<double> dials_bc = panel.get_beam_centre(s0_vector);
+    Xbeam = dials_bc[0]/1000.0;
+    Ybeam = dials_bc[1]/1000.0;
+
+    user_beam = true; // necessary for tilted dxtbx geometries
+
+    /* detector sensor layer properties */
+    detector_thick   = panel.get_thickness();
+    double temp = panel.get_mu();        // is this really a mu? or mu/rho ?
+    if(temp>0.0) detector_attnlen = 1.0/temp;
+
+    /* quantum_gain = amp_gain * electrooptical_gain, does not include capture_fraction */
+    quantum_gain = panel.get_gain();
+    //adc_offset = detector[panel_id].ADC_OFFSET;
+    }
 
 
 /* automatically decide if we are interpolating, allocate memory if yes */
@@ -1254,6 +1292,7 @@ nanoBragg::init_interpolator()
         }
         if(verbose>6) printf("freeing %d %ld-byte double** Fhkl at %p\n",5,sizeof(double**),sub_Fhkl);
         free(sub_Fhkl);
+        sub_Fhkl = NULL;
     }
 
     if(interpolate > 1){
@@ -1571,9 +1610,9 @@ void
 nanoBragg::update_oversample()
 {
     /* now we know the cell, calculate crystal size in meters */
-    if(xtal_size_x > 0) Na = ceil(xtal_size_x/a[0]-1e-6);
-    if(xtal_size_y > 0) Nb = ceil(xtal_size_y/b[0]-1e-6);
-    if(xtal_size_z > 0) Nc = ceil(xtal_size_z/c[0]-1e-6);
+    if(xtal_size_x > 0) Na = xtal_size_x/a[0];
+    if(xtal_size_y > 0) Nb = xtal_size_y/b[0];
+    if(xtal_size_z > 0) Nc = xtal_size_z/c[0];
     if(Na <= 1.0) Na = 1.0;
     if(Nb <= 1.0) Nb = 1.0;
     if(Nc <= 1.0) Nc = 1.0;
@@ -1992,7 +2031,7 @@ nanoBragg::init_sources()
         double flux_sum = 0.0, lambda_sum = 0.0, polar_sum = 0.0, div_sum = 0.0;
         for (i=0; i < sources; ++i)
         {
-            xyz = pythony_beams[i].get_direction();
+            xyz = pythony_beams[i].get_sample_to_source_direction();
             source_X[i] = xyz[0];
             source_Y[i] = xyz[1];
             source_Z[i] = xyz[2];
@@ -2229,6 +2268,9 @@ nanoBragg::init_mosaicity()
     /* temporary local seed */
     long mseed;
 
+    /* catch nks initialized values here? */
+    if(user_mosdomains) return;
+
     /* free any previous allocations */
     if(mosaic_umats!=NULL) free(mosaic_umats);
 
@@ -2304,12 +2346,15 @@ nanoBragg::set_mosaic_blocks(af::shared<mat3> umat_in) {
     /* free any previous allocations */
     if(mosaic_umats!=NULL) free(mosaic_umats);
 
+    /* flag to avoid over-writing with automatic random domains */
+    user_mosdomains=true;
+
     /* allocate enough space */
     mosaic_domains = umat_in.size();
     if(verbose>6) printf("allocating enough space for %d mosaic domain orientation matrices\n",mosaic_domains);
     mosaic_umats = (double *) calloc(mosaic_domains+10,9*sizeof(double));
 
-    /* now actually create the orientation of each domain */
+    /* now actually import the orientation of each domain */
     for(mos_tic=0;mos_tic<mosaic_domains;++mos_tic) {
       int offset = 9 * mos_tic;
       mat3& domain = umat_in[mos_tic];
@@ -2318,9 +2363,9 @@ nanoBragg::set_mosaic_blocks(af::shared<mat3> umat_in) {
       mosaic_umats[6+offset]=domain[6];mosaic_umats[7+offset]=domain[7];mosaic_umats[8+offset]=domain[8];
    }
 
-    if(verbose) printf("  created a total of %d mosaic domains\n",mosaic_domains);
+    if(verbose) printf("  imported a total of %d mosaic domains\n",mosaic_domains);
 }
-// end of init_mosaicity()
+// end of set_mosaic_blocks()
 
 
 /* reconcile different conventions of beam center input and detector position */
@@ -2334,8 +2379,9 @@ nanoBragg::show_params()
     if(xtal_shape == ROUND)  printf("ellipsoidal");
     if(xtal_shape == SQUARE) printf("parallelpiped");
     if(xtal_shape == GAUSS ) printf("gaussian");
+    if(xtal_shape == GAUSS_ARGCHK ) printf("gaussian_argchk");
     if(xtal_shape == TOPHAT) printf("tophat-spot");
-    printf(" xtal: %.0fx%.0fx%.0f cells\n",Na,Nb,Nc);
+    printf(" xtal: %.1fx%.1fx%.1f cells\n",Na,Nb,Nc);
     printf("Unit Cell: %g %g %g %g %g %g\n", a_A[0],b_A[0],c_A[0],alpha*RTD,beta*RTD,gamma*RTD);
     printf("Recp Cell: %g %g %g %g %g %g\n", a_star[0],b_star[0],c_star[0],alpha_star*RTD,beta_star*RTD,gamma_star*RTD);
     printf("volume = %g A^3\n",V_cell);
@@ -2620,6 +2666,14 @@ nanoBragg::add_nanoBragg_spots()
                                         /* fudge the radius so that volume and FWHM are similar to square_xtal spots */
                                         F_latt = Na*Nb*Nc*exp(-( hrad_sqr / 0.63 * fudge ));
                                     }
+                                    if (xtal_shape == GAUSS_ARGCHK)
+                                    {
+                                        /* fudge the radius so that volume and FWHM are similar to square_xtal spots */
+                                        double my_arg = hrad_sqr / 0.63 * fudge; // pre-calculate to check for no Bragg signal
+                                        if (my_arg<35.){ F_latt = Na * Nb * Nc * exp(-(my_arg));}
+                                        else { F_latt = 0.; } // not expected to give performance gain on optimized C++, only on GPU
+                                    }
+
                                     if(xtal_shape == TOPHAT)
                                     {
                                         /* make a flat-top spot of same height and volume as square_xtal spots */
@@ -2778,7 +2832,7 @@ nanoBragg::add_nanoBragg_spots()
                                 }
 
                                 /* convert amplitudes into intensity (photons per steradian) */
-                                    I += F_cell*F_cell*F_latt*F_latt*source_I[source]*capture_fraction;
+                                    I += F_cell*F_cell*F_latt*F_latt*source_I[source]*capture_fraction*omega_pixel;
                             }
                             /* end of mosaic loop */
                         }
@@ -2793,7 +2847,7 @@ nanoBragg::add_nanoBragg_spots()
             /* end of sub-pixel x loop */
 
 
-            floatimage[i] += r_e_sqr*fluence*spot_scale*polar*I/steps*omega_pixel;
+            floatimage[i] += r_e_sqr*fluence*spot_scale*polar*I/steps;
 //          floatimage[i] = test;
             if(floatimage[i] > max_I) {
                 max_I = floatimage[i];
@@ -2815,6 +2869,7 @@ nanoBragg::add_nanoBragg_spots()
                     printf("hkl= %f %f %f  hkl0= %d %d %d\n", h,k,l,h0,k0,l0);
                     printf(" F_cell=%g  F_latt=%g   I = %g\n", F_cell,F_latt,I);
                     printf("I/steps %15.10g\n", I/steps);
+                    printf("cap frac   %f\n", capture_fraction);
                     printf("polar   %15.10g\n", polar);
                     printf("omega   %15.10g\n", omega_pixel);
                     printf("pixel   %15.10g\n", floatimage[i]);
@@ -2823,6 +2878,24 @@ nanoBragg::add_nanoBragg_spots()
                     printf("X: %11.8f %11.8f %11.8f\n",a[1]*1e10,b[1]*1e10,c[1]*1e10);
                     printf("Y: %11.8f %11.8f %11.8f\n",a[2]*1e10,b[2]*1e10,c[2]*1e10);
                     printf("Z: %11.8f %11.8f %11.8f\n",a[3]*1e10,b[3]*1e10,c[3]*1e10);
+                    SCITBX_EXAMINE(fluence);
+                    SCITBX_EXAMINE(source_I[0]);
+                    SCITBX_EXAMINE(spot_scale);
+                    SCITBX_EXAMINE(Na);
+                    SCITBX_EXAMINE(Nb);
+                    SCITBX_EXAMINE(Nc);
+                    SCITBX_EXAMINE(airpath);
+                    SCITBX_EXAMINE(Fclose);
+                    SCITBX_EXAMINE(Sclose);
+                    SCITBX_EXAMINE(close_distance);
+                    SCITBX_EXAMINE(pix0_vector[0]);
+                    SCITBX_EXAMINE(pix0_vector[1]);
+                    SCITBX_EXAMINE(pix0_vector[2]);
+                    SCITBX_EXAMINE(pix0_vector[3]);
+                    SCITBX_EXAMINE(odet_vector[0]);
+                    SCITBX_EXAMINE(odet_vector[1]);
+                    SCITBX_EXAMINE(odet_vector[2]);
+                    SCITBX_EXAMINE(odet_vector[3]);
                 }
             }
             else
@@ -2855,14 +2928,17 @@ nanoBragg::add_nanoBragg_spots()
 
 /* member function to generate background from Fbg vs stol list
    arguments allow override of features that usually just slow things down,
-   like oversampling pixels and multiple sources.  Providing these arguments
-   does NOT change the values of the member variables */
+   like oversampling pixels and multiple sources.
+   oversample: user can provide a smaller override value to save time.
+   override_source: user can select a single source from the collection to save time.
+   Providing these arguments does NOT change the values of the member variables */
 void
-nanoBragg::add_background( int oversample, int source )
+nanoBragg::add_background( int oversample, int const& override_source )
 {
     int i;
     int source_start = 0;
-    int sources = this->sources;
+    int orig_sources = this->sources;
+    int end_sources = this->sources;
     max_I = 0.0;
     floatimage = raw_pixels.begin();
 //    double* floatimage(raw_pixels.begin());
@@ -2871,10 +2947,12 @@ nanoBragg::add_background( int oversample, int source )
     /* allow user to override automated oversampling decision at call time with arguments */
     if(oversample<=0) oversample = this->oversample;
     if(oversample<=0) oversample = 1;
-    if(source>=0) {
-        /* user-specified source in the argument */
-        source_start = source;
-        sources = source_start +1;
+    bool have_single_source = false;
+    if(override_source>=0) {
+        /* user-specified idx_single_source in the argument */
+        source_start = override_source;
+        end_sources = source_start +1;
+        have_single_source = true;
     }
 
     /* make sure we are normalizing with the right number of sub-steps */
@@ -2955,7 +3033,8 @@ nanoBragg::add_background( int oversample, int source )
                         }
 
                         /* loop over sources now */
-                        for(source=source_start;source<sources;++source){
+                        for(source=source_start; source < end_sources; ++source){
+                            double n_source_scale = (have_single_source) ? orig_sources : source_I[source];
 
                             /* retrieve stuff from cache */
                             incident[1] = -source_X[source];
@@ -2998,7 +3077,7 @@ nanoBragg::add_background( int oversample, int source )
                             }
 
                             /* accumulate unscaled pixel intensity from this */
-                            Ibg += sign*Fbg*Fbg*polar*omega_pixel*source_I[source]*capture_fraction;
+                            Ibg += sign*Fbg*Fbg*polar*omega_pixel*capture_fraction*n_source_scale;
                             if(verbose>7 && i==1)printf("DEBUG: Fbg= %g polar= %g omega_pixel= %g source[%d]= %g capture_fraction= %g\n",
                                                            Fbg,polar,omega_pixel,source,source_I[source],capture_fraction);
                         }
@@ -3590,6 +3669,8 @@ nanoBragg::apply_psf(shapetype psf_type, double fwhm_pixels, int user_psf_radius
 void
 nanoBragg::add_noise()
 {
+    encapsulated_twodev image_deviates;
+    encapsulated_twodev pixel_deviates;
     int i = 0;
     long cseed;
 
@@ -3639,10 +3720,10 @@ nanoBragg::add_noise()
 
             /* simulate 1/f noise in source */
             if(flicker_noise > 0.0){
-                expected_photons *= ( 1.0 + flicker_noise * gaussdev( &seed ) );
+                expected_photons *= ( 1.0 + flicker_noise * image_deviates.gaussdev( &seed ) );
             }
             /* simulate photon-counting error */
-            observed_photons = poidev( expected_photons, &seed );
+            observed_photons = image_deviates.poidev( expected_photons, &seed );
 
             /* now we overwrite the flex array, it is now observed, rather than expected photons */
             floatimage[i] = observed_photons;
@@ -3689,7 +3770,7 @@ nanoBragg::add_noise()
                 }
 
                 /* calibration is same from shot to shot, but varies from pixel to pixel */
-                floatimage[i] *= ( 1.0 + calibration_noise * gaussdev( &cseed ) );
+                floatimage[i] *= ( 1.0 + calibration_noise * pixel_deviates.gaussdev( &cseed ) );
 
                 /* accumulate number of photons, and keep track of max */
                 if(floatimage[i] > max_I) {
@@ -3750,7 +3831,7 @@ nanoBragg::add_noise()
 
                 /* readout noise is in pixel units (adu) */
                 if(readout_noise > 0.0){
-                    adu += readout_noise * gaussdev( &seed );
+                    adu += readout_noise * image_deviates.gaussdev( &seed );
             }
 
             /* once again, overwriting flex array, this time in ADU units */
@@ -3769,6 +3850,39 @@ nanoBragg::add_noise()
     if(verbose) printf("%.0f net adu generated on final image, max= %f at ( %.0f, %.0f )\n",sum-adc_offset*sumn,max_I,max_I_x,max_I_y);
 }
 // end of add_noise()
+
+double nanoBragg::get_intfile_scale(double intfile_scale) const {
+    const double* floatimage = raw_pixels.begin();
+    double max_value = (double)std::numeric_limits<unsigned short int>::max();
+    double saturation = floor(max_value - 1 );
+    /* output as ints */
+
+    unsigned short int intimage;
+    double max_I = this-> max_I;
+    double max_I_x = this-> max_I_x;
+    double max_I_y = this-> max_I_y;
+    if(intfile_scale <= 0.0){
+        /* need to auto-scale */
+        int i=0;
+        for(int spixel=0;spixel<spixels;++spixel)
+        {
+            for(int fpixel=0;fpixel<fpixels;++fpixel)
+            {
+                if(i==0 || max_I < floatimage[i])
+                {
+                    max_I = floatimage[i];
+                    max_I_x = fpixel;
+                    max_I_y = spixel;
+                }
+                ++i;
+            }
+        }
+        if(verbose) printf("providing default scaling: max_I = %g @ (%g %g)\n",max_I,max_I_x,max_I_y);
+        intfile_scale = 1.0;
+        if(max_I>0.0) intfile_scale = 55000.0/(max_I);
+    }
+    return intfile_scale;
+}
 
 void
 nanoBragg::to_smv_format_streambuf(boost_adaptbx::python::streambuf & output,
@@ -4232,94 +4346,6 @@ double *umat2misset(double umat[9],double *missets)
 
 
 /* random number generators */
-
-/* Poisson deviate given expectation value of photon count (xm) */
-double poidev(double xm, long *idum)
-{
-//    double gammln(double xx);
-//    double ran1(long *idum);
-    /* oldm is a flag for whether xm has changed since last call */
-    static double sq,alxm,g,oldm=(-1.0);
-    double em,t,y;
-
-    /* routine below locks up for > 1e6 photons? */
-    if (xm > 1.0e6) {
-        return xm+sqrt(xm)*gaussdev(idum);
-    }
-
-    if (xm < 12.0) {
-        /* use direct method: simulate exponential delays between events */
-        if(xm != oldm) {
-            /* xm is new, compute the exponential */
-            oldm=xm;
-            g=exp(-xm);
-        }
-        /* adding exponential deviates is equivalent to multiplying uniform deviates */
-        /* final comparison is to the pre-computed exponential */
-        em = -1;
-        t = 1.0;
-        do {
-            ++em;
-            t *= ran1(idum);
-        } while (t > g);
-    } else {
-        /* Use rejection method */
-        if(xm != oldm) {
-            /* xm has changed, pre-compute a few things... */
-            oldm=xm;
-            sq=sqrt(2.0*xm);
-            alxm=log(xm);
-            g=xm*alxm-gammln(xm+1.0);
-        }
-        do {
-            do {
-                /* y is a deviate from a lorentzian comparison function */
-                y=tan(M_PI*ran1(idum));
-                /* shift and scale */
-                em=sq*y+xm;
-            } while (em < 0.0);         /* there are no negative Poisson deviates */
-            /* round off to nearest integer */
-            em=floor(em);
-            /* ratio of Poisson distribution to comparison function */
-            /* scale it back by 0.9 to make sure t is never > 1.0 */
-            t=0.9*(1.0+y*y)*exp(em*alxm-gammln(em+1.0)-g);
-        } while (ran1(idum) > t);
-    }
-
-    return em;
-}
-
-
-/* return gaussian deviate with rms=1 and FWHM = 2/sqrt(log(2)) */
-double gaussdev(long *idum)
-{
-//    double ran1(long *idum);
-    static int iset=0;
-    static double gset;
-    double fac,rsq,v1,v2;
-
-    if (iset == 0) {
-        /* no extra deviats handy ... */
-
-        /* so pick two uniform deviates on [-1:1] */
-        do {
-            v1=2.0*ran1(idum)-1.0;
-            v2=2.0*ran1(idum)-1.0;
-            rsq=v1*v1+v2*v2;
-        } while (rsq >= 1.0 || rsq == 0);
-        /* restrained to the unit circle */
-
-        /* apply Box-Muller transformation to convert to a normal deviate */
-        fac=sqrt(-2.0*log(rsq)/rsq);
-        gset=v1*fac;
-        iset=1;         /* we now have a spare deviate */
-        return v2*fac;
-    } else {
-        /* there is an extra deviate in gset */
-        iset=0;
-        return gset;
-    }
-}
 
 
 /* generate Lorentzian deviate with FWHM = 2 */

@@ -11,9 +11,17 @@ import sys
 import time
 import traceback
 import warnings
+from functools import wraps
+from collections import OrderedDict
+
+from six.moves import cStringIO as StringIO
 
 from libtbx.queuing_system_utils import pbs_utils, sge_utils
+from libtbx.math_utils import round2
 from libtbx.str_utils import show_string
+from six.moves import range
+from six.moves import zip
+from six.moves import input
 
 try: import gzip
 except ImportError: gzip = None
@@ -58,7 +66,7 @@ def xfrange(start, stop=None, step=None, tolerance=None):
   if (    tolerance is not None
       and abs(start + count * step - stop) < abs(step * tolerance)):
     count += 1
-  for i in xrange(count):
+  for i in range(count):
     yield start + i * step
 
 def safe_div(a,b):
@@ -244,7 +252,7 @@ def gzip_open(file_name, mode):
   RuntimeError
       If gzip is not available.
   """
-  assert mode in ["r", "rb", "w", "wb", "a", "ab"]
+  assert mode in ["r", "rb", "rt", "w", "wb", "wt", "a", "ab"]
   if (gzip is None):
     un = ""
     if (mode[0] == "r"): un = "un"
@@ -276,6 +284,79 @@ def bz2_open(file_name, mode):
     raise RuntimeError('bz2 module not available: cannot %compress file %s'
                        % ({'r':'un', 'w':''}[mode], file_name))
   return bz2.BZ2File(file_name, mode)
+
+def lzma_open(file_name, mode):
+  """
+  Wraps lzma.open to open a .xz or .lzma file. The container is auto-detected on
+  read; on write it is chosen from the extension (.lzma -> legacy FORMAT_ALONE,
+  otherwise FORMAT_XZ). lzma is stdlib but may be absent on minimal builds.
+
+  Parameters
+  ----------
+  file_name : str
+  mode : str
+
+  Returns
+  -------
+  file
+
+  Raises
+  ------
+  RuntimeError
+      If lzma is not available.
+  """
+  assert mode in ["r", "rb", "rt", "w", "wb", "wt", "a", "ab"]
+  try:
+    import lzma
+  except ImportError:
+    un = "un" if (mode[0] == "r") else ""
+    raise RuntimeError(
+      "lzma module not available: cannot %scompress file %s"
+        % (un, show_string(file_name)))
+  if (mode[0] == "r"):
+    return lzma.open(file_name, mode)
+  fmt = lzma.FORMAT_ALONE if file_name.endswith(".lzma") else lzma.FORMAT_XZ
+  return lzma.open(file_name, mode, format=fmt)
+
+def zstd_open(file_name, mode):
+  """
+  Wraps zstandard.open to open a .zst file. zstandard is an OPTIONAL dependency;
+  it is imported lazily so libtbx keeps working when it is absent.
+
+  Parameters
+  ----------
+  file_name : str
+  mode : str
+
+  Returns
+  -------
+  file
+
+  Raises
+  ------
+  RuntimeError
+      If zstandard is not available or is too old to provide zstandard.open.
+  """
+  assert mode in ["r", "rb", "rt", "w", "wb", "wt", "a", "ab"]
+  try:
+    import zstandard
+  except ImportError:
+    un = "un" if (mode[0] == "r") else ""
+    raise RuntimeError(
+      "zstandard package not available: cannot %scompress file %s\n"
+      "  Install it with 'libtbx.conda install zstandard' or "
+      "'libtbx.pip install zstandard'." % (un, show_string(file_name)))
+  if not hasattr(zstandard, 'open'):
+    raise RuntimeError(
+      "the installed zstandard lacks zstandard.open (need >= 0.15); upgrade "
+      "with 'libtbx.conda install zstandard' or "
+      "'libtbx.pip install -U zstandard'.")
+  # zstandard.open() defaults a bare r/w/a mode to TEXT, unlike lzma/gzip/bz2
+  # which are binary; normalize so .zst matches the sibling compressors that
+  # smart_open dispatches to.
+  if mode in ("r", "w", "a"):
+    mode = mode + "b"
+  return zstandard.open(file_name, mode)
 
 def warn_if_unexpected_md5_hexdigest(
       path,
@@ -315,20 +396,34 @@ def warn_if_unexpected_md5_hexdigest(
   print("*"*width, file=out)
   return True
 
-def md5_hexdigest(filename=None, blocksize=256):
-  """ Compute the MD5 hexdigest of the content of the given file,
-      efficiently even for files much larger than the available RAM.
-
-      The file is read by chunks of `blocksize` MB.
+def file_hexdigest(filename=None, algorithm=None, blocksize=256):
+  """
+  Compute the hexdigest in blocksize (MB) chunks
   """
   blocksize *= 1024**2
-  m = hashlib.md5()
+  m = algorithm()
   with open(filename, 'rb') as f:
     buf = f.read(blocksize)
     while buf:
       m.update(buf)
       buf = f.read(blocksize)
   return m.hexdigest()
+
+def md5_hexdigest(filename=None, blocksize=256):
+  """ Compute the MD5 hexdigest of the content of the given file,
+      efficiently even for files much larger than the available RAM.
+
+      The file is read by chunks of `blocksize` MB.
+  """
+  return file_hexdigest(filename=filename, algorithm=hashlib.md5, blocksize=blocksize)
+
+def sha256_hexdigest(filename, blocksize=256):
+  """ Compute the sha256 hexdigest of the content of the given file,
+      efficiently even for files much larger than the available RAM.
+
+      The file is read by chunks of `blocksize` MB.
+  """
+  return file_hexdigest(filename=filename, algorithm=hashlib.sha256, blocksize=blocksize)
 
 def get_memory_from_string(mem_str):
   """
@@ -440,8 +535,9 @@ def copy_file(source, target, compress=None):
   else:
     assert compress == ".gz"
     t = gzip_open(file_name=target+compress, mode="wb")
-  t.write(open(source, "rb").read())
-  del t
+  with open(source, "rb") as f:
+    t.write(f.read())
+  t.close()
 
 def remove_files(pattern=None, paths=None, ensure_success=True):
   """
@@ -466,7 +562,7 @@ def remove_files(pattern=None, paths=None, ensure_success=True):
       if (op.isfile(path)):
         os.remove(path)
 
-def find_files (dir_name, pattern="*", files_only=True) :
+def find_files(dir_name, pattern="*", files_only=True):
   """
   Find files matching a pattern in a directory.
 
@@ -486,13 +582,13 @@ def find_files (dir_name, pattern="*", files_only=True) :
   matching_files = []
   for file_name in files :
     full_path = os.path.join(dir_name, file_name)
-    if (files_only) and (not os.path.isfile(full_path)) :
+    if (files_only) and (not os.path.isfile(full_path)):
       continue
-    if (regex.search(file_name) is not None) :
+    if (regex.search(file_name) is not None):
       matching_files.append(full_path)
   return matching_files
 
-def sort_files_by_mtime (file_names=None, dir_name=None, reverse=False) :
+def sort_files_by_mtime(file_names=None, dir_name=None, reverse=False):
   """
   Sorts a list of file names by when they were last modified, ascending.
 
@@ -507,14 +603,14 @@ def sort_files_by_mtime (file_names=None, dir_name=None, reverse=False) :
   list of str
   """
   assert ([file_names, dir_name].count(None) == 1)
-  if (dir_name is not None) :
+  if (dir_name is not None):
     assert os.path.isdir(dir_name)
     file_names = [ os.path.join(dir_name, fn) for fn in os.listdir(dir_name) ]
   files_and_mtimes = []
   for file_name in file_names :
     files_and_mtimes.append((file_name, os.path.getmtime(file_name)))
   files_and_mtimes.sort(key=lambda x: x[1])
-  if (reverse) :
+  if (reverse):
     files_and_mtimes.reverse()
   return [ file_name for file_name, mtime in files_and_mtimes ]
 
@@ -598,7 +694,7 @@ class KeepType(object):
   def __repr__(self):
     return "Keep"
   def __eq__(self, other):
-    return type(other) is self.__class__
+    return isinstance(other, self.__class__)
   def __ne__(self, other):
     return not self.__eq__(other)
   def __hash__(self):
@@ -614,7 +710,7 @@ class Sorry(Exception):
   # trick to get just "Sorry" instead of "libtbx.utils.Sorry"
   __module__ = Exception.__module__
 
-  def reset_module (self) :
+  def reset_module(self):
     """
     Reset the class module on an instance to libtbx.utils.
     """
@@ -660,18 +756,46 @@ class Usage(Sorry):
   """
   __module__ = Exception.__module__
 
-class Abort(Sorry) :
+class Abort(Sorry):
   """
   Subclass of Sorry, primarily used in the Phenix GUI in response to user
   input.
   """
   __module__ = Exception.__module__
 
-class Failure(Sorry) :
+class Failure(Sorry):
   """
   Subclass of Sorry.
   """
   __module__ = Exception.__module__
+
+def kludge_show_to_str(obj):
+  """
+  Take an object which has a show method which we shall assume will by default
+  write it's output to stdout - capture this with cStringIO and return the
+  string. Allows objects which have show() but not __repr__ or __str__ methods
+  to add without much code changes.
+
+  Returns
+  -------
+  str - output
+
+  Raises
+  ------
+  AttrbuteError if object does not have callable show() method
+  """
+
+  out = StringIO()
+
+  stdout = sys.stdout
+  sys.stdout = out
+
+  try:
+    obj.show()
+  finally:
+    sys.stdout = stdout
+
+  return out.getvalue().rstrip()
 
 def detect_multiprocessing_problem():
   """
@@ -689,9 +813,9 @@ def detect_multiprocessing_problem():
       " Python 2.6 or higher is required" \
       " (version currently in use: %d.%d)" % vers_info
   import libtbx.load_env
-  if (libtbx.env.has_module("omptbx")) :
+  if (libtbx.env.has_module("omptbx")):
     import omptbx
-    if (omptbx.omp_version is not None) :
+    if (omptbx.omp_version is not None):
       return "multiprocessing is not compatible with OpenMP"
   sem_open_msg = "This platform lacks a functioning sem_open implementation"
   pool = None
@@ -751,7 +875,7 @@ def show_exception_info_if_full_testing(prefix="EXCEPTION_INFO: "):
       and not disable_tracebacklimit):
     return
   from libtbx import introspection
-  from cStringIO import StringIO
+  from six.moves import cStringIO as StringIO
   sio = StringIO()
   introspection.show_stack(out=sio)
   traceback.print_exc(file=sio)
@@ -766,7 +890,11 @@ def show_exception_info_if_full_testing(prefix="EXCEPTION_INFO: "):
     if (is_done()): continue
     out.write(msg)
     flush = getattr(out, "flush", None)
-    if (flush is not None): flush()
+    if (flush is not None):
+      try:
+        flush()
+      except Exception as e:
+        pass # can happen if stale file handle
     done.append(out)
   return msg
 
@@ -1007,6 +1135,15 @@ class time_log(object):
       self.label, self.n, self.accumulation,
       self.delta, self.average())
 
+def human_readable_code(s, extra=False):
+  rc = ''
+  for c in s:
+    if c in ['O', 'I', 'S']:        rc += c.lower()
+    elif c in ['l']:                rc += c.upper()
+    elif extra and c in ['Z', 'B']: rc += c.lower()
+    else:                           rc += c
+  return rc
+
 def human_readable_time(time_in_seconds):
   """
   Rounds a time in seconds to the nearest days / hours / minutes, depending on
@@ -1055,7 +1192,7 @@ def human_readable_time_as_seconds(time_units, time_unit):
   if (time_unit == "days"): return time_units*60*60*24
   raise RuntimeError("Unknown time_unit: %s" % time_unit)
 
-def format_timestamp_12_hour (unix_time, short=False, replace_with="unknown") :
+def format_timestamp_12_hour(unix_time, short=False, replace_with="unknown"):
   """
   Formats a unix_time in a 12-hour format.
 
@@ -1077,7 +1214,7 @@ def format_timestamp_12_hour (unix_time, short=False, replace_with="unknown") :
   else :
     return time.strftime("%b %d %Y %I:%M %p", time.localtime(float(unix_time)))
 
-def format_timestamp_24_hour (unix_time, short=False, replace_with="unknown") :
+def format_timestamp_24_hour(unix_time, short=False, replace_with="unknown"):
   """
   Formats a unix_time in a 24-hour format.
 
@@ -1226,10 +1363,10 @@ class host_and_user:
     self.user = os.environ.get("USER")
     self.username = os.environ.get("USERNAME")
     self.homedir = None
-    if (os.name == "nt") :
+    if (os.name == "nt"):
       homedrive = os.environ.get("HOMEDRIVE")
       homepath = os.environ.get("HOMEPATH")
-      if (not None in [homedrive, homepath]) :
+      if (not None in [homedrive, homepath]):
         self.homedir = os.path.join(homedrive, homepath)
     else :
       self.homedir = os.environ.get("HOME")
@@ -1241,18 +1378,18 @@ class host_and_user:
     self.sge_info = sge_utils.info()
     self.pbs_info = pbs_utils.chunk_info()
 
-  def get_user_name (self) :
-    if (self.user is not None) :
+  def get_user_name(self):
+    if (self.user is not None):
       return self.user
     else :
       return self.username
 
-  def get_host_name (self) :
-    if (self.host is not None) :
+  def get_host_name(self):
+    if (self.host is not None):
       return self.host
-    elif (self.hostname is not None) :
+    elif (self.hostname is not None):
       return self.hostname
-    elif (self.computername is not None) :
+    elif (self.computername is not None):
       return self.computername
     return None
 
@@ -1294,7 +1431,7 @@ class host_and_user:
     self.sge_info.show(out=out, prefix=prefix)
     self.pbs_info.show(out=out, prefix=prefix)
 
-def allow_delete_directory (target_dir) :
+def allow_delete_directory(target_dir):
   """
   Check for specified reserved directories which are standard on many systems;
   these should never be deleted as part of any program.
@@ -1322,7 +1459,7 @@ def allow_delete_directory (target_dir) :
   ]
   target_dir = os.path.abspath(target_dir)
   for safe_dir in safe_dirs :
-    if (target_dir == safe_dir) :
+    if (target_dir == safe_dir):
       return False
   return True
 
@@ -1366,6 +1503,7 @@ class indentor(object):
       lines = block.splitlines()
       if (len(lines) == 1):
         if (self.incomplete_line):
+          self.file_object.write(' ')
           self.file_object.write(lines[-1])
         else:
           self.file_object.write(self.indent + lines[-1])
@@ -1487,7 +1625,8 @@ class multi_out(object):
         old_label,
         new_label,
         new_file_object,
-        new_atexit_send_to=None):
+        new_atexit_send_to=None,
+        close_old_stream=True):
     """
     Replaces a registered stream with a new file. Dumps everything accumulated
     in stream to the file.
@@ -1501,11 +1640,14 @@ class multi_out(object):
     new_label : str
     new_file_object : file
     new_atexit_send_to : file, optional
+    close_old_stream :  bool, close existing stream
     """
     i = self.labels.index(old_label)
     old_file_object = self.file_objects[i]
-    new_file_object.write(old_file_object.getvalue())
-    old_file_object.close()
+    if hasattr(old_file_object, 'getvalue'):
+      new_file_object.write(old_file_object.getvalue())
+    if close_old_stream:
+      old_file_object.close()
     self.labels[i] = new_label
     self.file_objects[i] = new_file_object
     self.atexit_send_to[i] = new_atexit_send_to
@@ -1523,7 +1665,11 @@ class multi_out(object):
   def flush(self):
     for file_object in self.file_objects:
       flush = getattr(file_object, "flush", None)
-      if (flush is not None): flush()
+      if (flush is not None):
+        try:
+          flush()
+        except Exception as e:
+          pass # was closed
 
   def write(self, str):
     for file_object in self.file_objects:
@@ -1587,7 +1733,7 @@ class input_with_prompt(object):
     except Exception: self.previous_tracebacklimit = None
     if (tracebacklimit is not None):
       sys.tracebacklimit = tracebacklimit
-    self.input = raw_input(prompt)
+    self.input = input(prompt)
 
   def __del__(self):
     if (self.previous_tracebacklimit is None):
@@ -1772,19 +1918,19 @@ def format_float_with_standard_uncertainty(value, standard_uncertainty,
   '0.0050000(10)'
   """
   if standard_uncertainty <= minimum: return str(value)
-  precision = -int(round(math.log10(standard_uncertainty)))
+  precision = -int(round2(math.log10(standard_uncertainty)))
   if precision > -1:
     su = standard_uncertainty * math.pow(10, precision)
-    if round(su,1) < 2:
+    if round2(su,1) < 2:
       su *= 10
       precision += 1
     fmt_str = "%%.%if(%%i)" %precision
-    return fmt_str %(value, round(su))
+    return fmt_str %(value, round2(su))
   else:
     precision += 1
-    su = int(round(standard_uncertainty, precision))
+    su = int(round2(standard_uncertainty, precision))
     fmt_str = "%.0f(%i)"
-    return fmt_str %(round(value, precision), su)
+    return fmt_str %(round2(value, precision), su)
 
 def random_hex_code(number_of_digits):
   """
@@ -1800,7 +1946,7 @@ def random_hex_code(number_of_digits):
   """
   import random
   digits = []
-  for i_digit in xrange(number_of_digits):
+  for i_digit in range(number_of_digits):
     i = random.randrange(16)
     digits.append("0123456789abcdef"[i])
   return "".join(digits)
@@ -1820,8 +1966,8 @@ def get_svn_revision(path=None):
   else:
     # Versions >= 7 of the entries file are flat text.  The first line is
     # the version number. The next set of digits after 'dir' is the revision.
-    if re.match('(\d+)', entries):
-      rev_match = re.search('\d+\s+dir\s+(\d+)', entries)
+    if re.match(r'(\d+)', entries):
+      rev_match = re.search(r'\d+\s+dir\s+(\d+)', entries)
       if rev_match:
         rev = int(rev_match.groups()[0])
   return rev
@@ -1847,7 +1993,7 @@ def get_build_tag(path=None):
     tag = open(tag_file_path).readline().strip()
   return tag
 
-def getcwd_safe () :
+def getcwd_safe():
   """
   Returns the current working directory, raising Sorry if it has been deleted or
   unmounted.
@@ -1864,14 +2010,14 @@ def getcwd_safe () :
   try :
     cwd = os.getcwd()
   except OSError as e :
-    if (e.errno == 2) :
+    if (e.errno == 2):
       raise Sorry("Could not determine the current working directory because "+
         "it has been deleted or unmounted.")
     else :
       raise e
   return cwd
 
-def getcwd_or_default (default=None) :
+def getcwd_or_default(default=None):
   """
   Returns the current working directory or default if it cannot be found.
 
@@ -1883,8 +2029,8 @@ def getcwd_or_default (default=None) :
   -------
   str
   """
-  if (default is None) :
-    if (os.name == "nt") :
+  if (default is None):
+    if (os.name == "nt"):
       home_drive = os.environ.get("HOMEDRIVE", "C:")
       home_dir = os.environ.get("HOMEPATH", "\\")
       default = home_drive + home_dir
@@ -1893,13 +2039,13 @@ def getcwd_or_default (default=None) :
   try :
     cwd = os.getcwd()
   except OSError as e:
-    if (e.errno == 2) :
+    if (e.errno == 2):
       cwd = default
     else :
       raise e
   return cwd
 
-def create_run_directory (prefix, default_directory_number=None) :
+def create_run_directory(prefix, default_directory_number=None):
   """
   Create a program output directory using sequential numbering, picking the
   highest run ID.  In other words, if the prefix is 'Refine' and the current
@@ -1907,25 +2053,25 @@ def create_run_directory (prefix, default_directory_number=None) :
   directory will be Refine_10.
   """
   dir_number = default_directory_number
-  if (dir_number is None) :
+  if (dir_number is None):
     dir_ids = []
-    for file_name in os.listdir(os.getcwd()) :
-      if (os.path.isdir(file_name)) and (file_name.startswith(prefix)) :
+    for file_name in os.listdir(os.getcwd()):
+      if (os.path.isdir(file_name)) and (file_name.startswith(prefix)):
         dir_id = file_name.split("_")[-1]
-        if (dir_id.isdigit()) :
+        if (dir_id.isdigit()):
           dir_ids.append(int(dir_id))
-    if (len(dir_ids) > 0) :
+    if (len(dir_ids) > 0):
       dir_number = max(max(dir_ids) + 1, 1)
     else :
       dir_number = 1
   dir_name = prefix + "_" + str(dir_number)
-  if (os.path.isdir(dir_name)) :
+  if (os.path.isdir(dir_name)):
     raise OSError("The directory %s already exists."%os.path.abspath(dir_name))
   else :
     os.makedirs(dir_name)
   return os.path.abspath(dir_name)
 
-class tmp_dir_wrapper (object) :
+class tmp_dir_wrapper(object):
   """
   Convenience methods for running in a (presumably empty) temporary directory
   and copying all files to another directory.  Can be used whether or not the
@@ -1933,23 +2079,23 @@ class tmp_dir_wrapper (object) :
   Otherwise, both tmp_dir and dest_dir (default is current directory) must be
   existing paths.
   """
-  def __init__ (self, tmp_dir, dest_dir=None, out=sys.stdout) :
-    if (dest_dir is None) :
+  def __init__(self, tmp_dir, dest_dir=None, out=sys.stdout):
+    if (dest_dir is None):
       dest_dir = os.getcwd()
     self.tmp_dir = tmp_dir
     self.dest_dir = dest_dir
-    if (tmp_dir is None) :
+    if (tmp_dir is None):
       pass
-    elif (not os.path.isdir(tmp_dir)) :
+    elif (not os.path.isdir(tmp_dir)):
       raise Sorry("The temporary directory %s does not exist." % tmp_dir)
     else :
-      if (not os.path.isdir(dest_dir)) :
+      if (not os.path.isdir(dest_dir)):
         raise Sorry("The destination directory %s does not exist." % dest_dir)
       print("Changing working directory to %s" % tmp_dir, file=out)
       print("Ultimate destination is %s" % dest_dir, file=out)
       os.chdir(tmp_dir)
 
-  def transfer_files (self, out=sys.stdout) :
+  def transfer_files(self, out=sys.stdout):
     if (self.tmp_dir is None) : return False
     assert os.path.isdir(self.dest_dir)
     files = os.listdir(self.tmp_dir)
@@ -1960,7 +2106,7 @@ class tmp_dir_wrapper (object) :
     print("", file=out)
     return True
 
-def show_development_warning (out=sys.stdout) :
+def show_development_warning(out=sys.stdout):
   """
   Shows a warning when running an experimental program.
 
@@ -1974,41 +2120,42 @@ def show_development_warning (out=sys.stdout) :
   !!                                                                        !!
   !! This program is still in development - some functionality may be       !!
   !! missing and/or untested.  Use at your own risk!  For bug reports, etc. !!
-  !! email bugs@phenix-online.org.                                          !!
+  !! email help@phenix-online.org.                                          !!
   !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
 """, file=out)
 
-def check_if_output_directory_exists (file_name=None, dir_name=None) :
-  if (file_name is not None) :
+def check_if_output_directory_exists(file_name=None, dir_name=None):
+  if (file_name is not None):
     assert (dir_name is None)
     dir_name = os.path.dirname(file_name)
   if (dir_name == "") : return
-  if (dir_name is None) :
+  if (dir_name is None):
     raise Sorry("No output directory specified.")
-  if (not op.isdir(dir_name)) :
+  if (not op.isdir(dir_name)):
     raise Sorry(("The specified output directory (%s) does not exist or "+
       "is not a directory.") % dir_name)
   else :
     # XXX writing to Dropbox folders is generally not a good idea
     head, tail = os.path.split(dir_name)
     while tail != "" :
-      if (tail == "Dropbox") :
+      if (tail == "Dropbox"):
         warnings.warn("You are directing output to a Dropbox directory.  "+
           "Please note that this is not guaranteed to work in all cases; "+
           "use at your own risk.", UserWarning)
       head, tail = os.path.split(head)
 
-def concatenate_python_script (out, file_name) :
+def concatenate_python_script(out, file_name):
   """
   Insert a Python script into an existing file, removing any __future__
   import to prevent syntax errors.  (This could be dangerous in most contexts
   but is required for some of our Coot-related scripts to work.)
   """
-  data = open(file_name, "r").read()
+  with open(file_name, "r") as f:
+    data = f.read()
   print("", file=out)
   print("#--- script copied from %s" % os.path.basename(file_name), file=out)
-  for line in data.splitlines() :
-    if line.startswith("from __future__") :
+  for line in data.splitlines():
+    if line.startswith("from __future__"):
       continue
     else :
       print(line, file=out)
@@ -2047,34 +2194,34 @@ def greek_time(secs):
 
 libtbx_urllib_proxy = None
 
-def install_urllib_http_proxy (server, port=80, user=None, password=None) :
+def install_urllib_http_proxy(server, port=80, user=None, password=None):
   global libtbx_urllib_proxy
-  import urllib2
-  if (user is None) :
-    proxy = urllib2.ProxyHandler({'http': '%s:%d' % (server, port) })
-    opener = urllib2.build_opener(proxy)
+  from six.moves import urllib
+  if (user is None):
+    proxy = urllib.request.ProxyHandler({'http': '%s:%d' % (server, port) })
+    opener = urllib.request.build_opener(proxy)
   else :
-    proxy = urllib2.ProxyHandler({
+    proxy = urllib.request.ProxyHandler({
       'http': 'http://%s:%s@%s:%s' % (user, password, server, port),
     })
-    auth = urllib2.HTTPBasicAuthHandler()
-    opener = urllib2.build_opener(proxy, auth, urllib2.HTTPHandler)
+    auth = urllib.request.HTTPBasicAuthHandler()
+    opener = urllib.request.build_opener(proxy, auth, urllib.request.HTTPHandler)
   libtbx_urllib_proxy = proxy
-  urllib2.install_opener(opener)
-  print("Installed urllib2 proxy at %s:%d" % (server, port))
+  urllib.request.install_opener(opener)
+  print("Installed urllib proxy at %s:%d" % (server, port))
   return proxy
 
-def urlopen (*args, **kwds) :
+def urlopen(*args, **kwds):
   """
-  Substitute for urllib2.urlopen, with automatic HTTP proxy configuration
+  Substitute for urllib.request.urlopen, with automatic HTTP proxy configuration
   if specific environment variables are defined.
   """
-  if ("CCTBX_HTTP_PROXY" in os.environ) and (libtbx_urllib_proxy is None) :
+  if ("CCTBX_HTTP_PROXY" in os.environ) and (libtbx_urllib_proxy is None):
     server = os.environ["CCTBX_HTTP_PROXY_SERVER"]
     port = os.environ.get("CCTBX_HTTP_PROXY_PORT", 80)
     user = os.environ.get("CCTBX_HTTP_PROXY_USER", None)
     passwd = os.environ.get("CCTBX_HTTP_PROXY_PASSWORD", None)
-    if (user is not None) and (password is None) :
+    if (user is not None) and (password is None):
       raise Sorry("You have defined a user name for the HTTP proxy, but "+
         "no password was specified.  Please set the environment variable "+
         "CCTBX_HTTP_PROXY_PASSWORD.")
@@ -2083,8 +2230,8 @@ def urlopen (*args, **kwds) :
       port=port,
       user=user,
       password=password)
-  import urllib2
-  return urllib2.urlopen(*args, **kwds)
+  from six.moves import urllib
+  return urllib.request.urlopen(*args, **kwds)
 
 def retrieve_unless_exists(url, filename, digests=None):
   """ Download the file at the given url to the given local filename,
@@ -2102,14 +2249,14 @@ def retrieve_unless_exists(url, filename, digests=None):
   """
   import urlparse
   from os import path
-  import urllib
+  from six.moves import urllib
   if digests is None:
     digests = urlparse.urljoin(url, 'digests.txt')
-  digest_of = dict(tuple(li.split()) for li in urllib.urlopen(digests))
+  digest_of = dict(tuple(li.split()) for li in urllib.request.urlopen(digests))
   src_name = os.path.basename(urlparse.urlparse(url).path)
   if (not os.path.isfile(filename)
       or md5_hexdigest(filename) != digest_of[src_name]):
-    urllib.urlretrieve(url, filename)
+    urllib.request.urlretrieve(url, filename)
     return "Downloaded"
   else:
     return "Cached"
@@ -2117,19 +2264,19 @@ def retrieve_unless_exists(url, filename, digests=None):
 
 
 
-class download_progress (object) :
+class download_progress(object):
   """
   Simple proxy for displaying download status - here with methods for
   writing to the console, but can be subclassed and used for graphical display.
   """
-  def __init__ (self, log=None, n_kb_total=None) :
-    if (log is None) :
+  def __init__(self, log=None, n_kb_total=None):
+    if (log is None):
       log = null_out()
     self.log = log
     self.n_kb_total = n_kb_total
     self.n_kb_elapsed = 0
 
-  def set_total_size (self, n_kb_total) :
+  def set_total_size(self, n_kb_total):
     """
     Updates the total number of bytes to download and resets the number of bytes
     downloaded.
@@ -2142,7 +2289,7 @@ class download_progress (object) :
     self.n_kb_total = n_kb_total
     self.n_kb_elapsed = 0
 
-  def increment (self, n_kb) :
+  def increment(self, n_kb):
     """
     Increments the number of bytes downloaded.
 
@@ -2158,7 +2305,7 @@ class download_progress (object) :
     self.n_kb_elapsed += n_kb
     return self.show_progress()
 
-  def show_progress (self) :
+  def show_progress(self):
     """
     Prints the number of bytes downloaded out of the total.
 
@@ -2171,7 +2318,7 @@ class download_progress (object) :
     self.log.flush()
     return True
 
-  def percent_finished (self) :
+  def percent_finished(self):
     """
     Calculates the percent completion of download.
 
@@ -2182,19 +2329,19 @@ class download_progress (object) :
     assert (self.n_kb_total is not None)
     return 100 * min(1.0, self.n_kb_elapsed / self.n_kb_total)
 
-  def complete (self) :
+  def complete(self):
     """
     Prints a final message indicating download completion.
     """
     self.log.write("\rDownload complete")
 
-  def run_continuously (self) :
+  def run_continuously(self):
     """
     Placeholder for cases where the download is not being run asynchronously.
     """
     pass
 
-class download_target (object) :
+class download_target(object):
   """
   Flexible callable object for retrieving a file from a URL, with optional
   HTTPS authentication.  Designed to be runnable in a separate thread with
@@ -2204,7 +2351,7 @@ class download_target (object) :
   module, in which case we use 'curl' to download securely.  (This will not
   work on Windows, obviously.)
   """
-  def __init__ (self,
+  def __init__(self,
       url,
       file_name,
       use_curl=None, # SSL only
@@ -2217,31 +2364,31 @@ class download_target (object) :
     self.user = user
     self.password = password
     self.base_url = base_url
-    if (not None in [self.user, self.password]) :
+    if (not None in [self.user, self.password]):
       assert (self.base_url is not None)
       import socket
       if ((not self.use_curl) and (hasattr(socket, "ssl")) and
-          (hasattr(socket.ssl, "__call__"))) :
+          (hasattr(socket.ssl, "__call__"))):
         self.use_curl = False
       else :
         self.use_curl = True
 
-  def __call__ (self, log=None, progress_meter=None) :
-    if (log is None) :
+  def __call__(self, log=None, progress_meter=None):
+    if (log is None):
       log = null_out()
-    if (progress_meter is None) :
+    if (progress_meter is None):
       progress_meter = download_progress(log=log)
     from libtbx import easy_run
-    import urllib2
+    from six.moves import urllib
     file_name = self.file_name # return value
-    if (not self.use_curl) :
-      if (not None in [self.user, self.password]) :
-        passman = urllib2.HTTPPasswordMgrWithDefaultRealm()
+    if (not self.use_curl):
+      if (not None in [self.user, self.password]):
+        passman = urllib.request.HTTPPasswordMgrWithDefaultRealm()
         passman.add_password(None, self.base_url, self.user, self.password)
-        authhandler = urllib2.HTTPBasicAuthHandler(passman)
-        opener = urllib2.build_opener(authhandler)
-        urllib2.install_opener(opener)
-      req = urllib2.urlopen(self.url)
+        authhandler = urllib.request.HTTPBasicAuthHandler(passman)
+        opener = urllib.request.build_opener(authhandler)
+        urllib.request.install_opener(opener)
+      req = urllib.request.urlopen(self.url)
       info = req.info()
       n_kb_total = int(info['Content-length']) / 1024
       progress_meter.set_total_size(n_kb_total)
@@ -2252,7 +2399,7 @@ class download_target (object) :
       while True:
         chunk = req.read(chunksize)
         if not chunk: break
-        if not progress_meter.increment(n_kb_chunk) :
+        if not progress_meter.increment(n_kb_chunk):
           file_name = None
           break
         fp.write(chunk)
@@ -2260,14 +2407,14 @@ class download_target (object) :
       progress_meter.complete()
     else :
       progress_meter.run_continuously()
-      if (not None in [self.user, self.password]) :
+      if (not None in [self.user, self.password]):
         curl_args = "--user %s:%s" % (self.user, self.password)
       rc = easy_run.call("curl %s \"%s\" -o %s" % (curl_args, self.url,
         self.file_name))
       progress_meter.complete()
-      if (rc != 0) :
+      if (rc != 0):
         raise RuntimeError("curl exited with code %d" % rc)
-    if (file_name is None) :
+    if (file_name is None):
       return None
     return op.abspath(self.file_name)
 
@@ -2287,17 +2434,17 @@ def remove_path(path_name):
   Bypasses trash and deletes file or directory immediately.
   """
   try:
-    if op.isdir(path_name) :
+    if op.isdir(path_name):
       shutil.rmtree(path_name)
-    elif op.isfile(path_name) :
+    elif op.isfile(path_name):
       os.remove(path_name)
     else:
       raise Sorry('%s is not a file nor a directory.' % path_name)
   except OSError:
     raise Sorry('Unable to delete %s.' % path_name)
 
-def try_send_to_trash (path_name, delete_if_not_available=False,
-                       delete_immediately=False) :
+def try_send_to_trash(path_name, delete_if_not_available=False,
+                       delete_immediately=False):
   """
   Wrapper for deleting a path
   """
@@ -2315,14 +2462,24 @@ def try_send_to_trash (path_name, delete_if_not_available=False,
         raise Sorry("This function not supported because the required module is "+
           "not installed.")
     else :
-      send2trash.send2trash(path_name)
+      try:
+        send2trash.send2trash(path_name)
+      except Exception as e:
+        print("Unable to send the directory %s to trash" %(path_name))
+        return 1 # indicate failure
 
-def to_unicode(text, codec=None):
+if sys.hexversion >= 0x03000000:
+  unicode = str
+
+def to_unicode(text, codec=None, errors='replace'):
   '''
   Function for handling text when it is first encountered
-  Changes str type to unicode type
-  The input is returned unmodified if it is already unicode
-  Will convert other types (e.g. int, float) to str
+
+  Changes bytestring type (str or bytes in Python 2, bytes in Python 3) to
+  text string type (unicode in Python 2, str in Python 3)
+
+  The input is returned unmodified if it is already a text string
+  Will convert other types (e.g. int, float) to text string
   None is returned as None, not as u'None'
 
   For Linux/OS X, the default filesystem encoding is utf8.
@@ -2339,26 +2496,28 @@ def to_unicode(text, codec=None):
 
   if (isinstance(text, unicode)):
     return text
-  elif (isinstance(text, str)):
+  elif (isinstance(text, bytes)):
     new_text = text
     try:
-      new_text = text.decode(codec, errors='replace')
+      new_text = text.decode(codec, errors)
     except UnicodeDecodeError: # in case errors='strict'
       raise Sorry('Unable to decode text with %s' % codec)
-    finally:
-      return new_text
+    return new_text
   elif (text is not None):
     return unicode(text)
   else:
     return None
 
-def to_str(text, codec=None):
+def to_bytes(text, codec=None, errors='replace'):
   '''
   Function for handling text when it is passed to cctbx functions that expect
-  the str type
-  Changes unicode type to str type
-  The input is returned unmodified if it is already str
-  Will convert other types (e.g. int, float) to str
+  bytestrings
+
+  Changes text string type (unicode in Python 2, str in Python 3) to
+  bytestring type (str or bytes in Python 2, bytes in Python 3)
+
+  The input is returned unmodified if it is already a bytestring
+  Will convert other types (e.g. int, float) to bytestring
   None is returned as None, not as 'None'
 
   For Linux/OS X, the default filesystem encoding is utf8.
@@ -2373,63 +2532,331 @@ def to_str(text, codec=None):
     if (sys.platform == 'win32'):
       codec = 'mbcs'
 
-  if (isinstance(text, str)):
+  if (isinstance(text, bytes)):
     return text
   elif (isinstance(text, unicode)):
     new_text = text
     try:
-      new_text = text.encode(codec, errors='replace')
+      new_text = text.encode(codec, errors)
     except UnicodeEncodeError: # in case errors='strict'
       raise Sorry('Unable to encode text with %s' % codec)
-    finally:
-      return new_text
+    return new_text
   elif (text is not None):
-    return str(text)
+    return bytes(text)
   else:
     return None
 
-def guess_total_memory(meminfo_file='/proc/meminfo'):
-  import subprocess
-  if (sys.platform == 'win32'):
-    ps = subprocess.Popen(['wmic','OS','get','TotalVisibleMemorySize', '/Value'],
-     stdout=subprocess.PIPE).communicate()[0]
-    mem = float(ps.split("=")[1].strip())
-    return mem # trivially easy on Windows
+def to_str(text, codec=None, errors='replace'):
+  '''
+  Function for handling text in a way compatible with both Python 2 and 3 and
+  with Boost.
 
-  elif (sys.platform=='darwin'):
-    # Copied from https://apple.stackexchange.com/questions/4286/is-there-a-mac-os-x-terminal-version-of-the-free-command-in-linux-systems
-    import re
-    # Get process info
-    ps = subprocess.Popen(['ps', '-caxm', '-orss,comm'],
-       stdout=subprocess.PIPE).communicate()[0].decode()
+  Boost defines boost::python::str as Unicode text in Python 3 (str type) and
+  as text/byte string in Python 2 (also str type, or bytes type).
 
-    # Iterate processes
-    processLines = ps.split('\n')
-    sep = re.compile('[\s]+')
-    rssTotal = 0 # kB
-    for row in range(1,len(processLines)):
-        rowText = processLines[row].strip()
-        rowElements = sep.split(rowText)
-        try:
-            rss = float(rowElements[0]) * 1024
-        except Exception:
-            rss = 0 # ignore...
-        rssTotal += rss
+  This function just calls to_unicode and to_bytes to return the appropriate
+  type depending on the Python version
+  '''
+  if sys.hexversion >= 0x03000000:
+    return to_unicode(text, codec, errors)
+  else:
+    return to_bytes(text, codec, errors)
 
-    return rssTotal
+def guess_total_memory():
+  '''
+  Use psutil to return the total memory on a system in bytes.
+  '''
+  import psutil
+  return psutil.virtual_memory().total
 
-  elif os.path.isfile(meminfo_file):
-    for line in open(meminfo_file).readlines():
-      if line.lower().startswith("memtotal"):
-        spl=line.split()
-        if len(spl)!=3:
-          return None
-        try:
-          mem=int(spl[1])
-        except Exception:
-          return None
-        if spl[2].lower()=='kb':
-          mem=mem*1024
-        elif spl[2].lwer()=='mb':
-          mem=mem*1024*1024
-        return mem
+def kill_process_tree(pid):
+  """Kill a process together with all of its descendants.
+
+  Popen.kill() reaches only the direct child. When that child is a shell
+  or a .bat dispatcher, the program it launched survives and keeps the
+  inherited stdout pipe open, so a following communicate() never returns.
+
+  Parameters
+  ----------
+  pid : int
+    Process id of the root of the tree. A pid that no longer exists is
+    ignored. The root itself is not waited for, so the caller's
+    communicate() or wait() still reaps it and sees its exit status.
+  """
+  import psutil
+  try:
+    root = psutil.Process(pid)
+  except psutil.NoSuchProcess:
+    return
+  descendants = root.children(recursive=True)
+  for p in [root] + descendants:
+    try:
+      p.kill()
+    except psutil.NoSuchProcess:
+      pass
+  psutil.wait_procs(descendants, timeout=10)
+
+def peak_memory_usage():
+  '''
+  Peak (maximum) resident memory used by the current process so far, in
+  bytes, or None if it cannot be determined. Child processes are not included.
+  Linux and macOS: getrusage maxrss; Windows: PeakWorkingSetSize.
+  '''
+  try:
+    if sys.platform == 'win32':
+      import ctypes
+      from ctypes import wintypes
+      class PROCESS_MEMORY_COUNTERS(ctypes.Structure):
+        _fields_ = [
+          ('cb', wintypes.DWORD),
+          ('PageFaultCount', wintypes.DWORD),
+          ('PeakWorkingSetSize', ctypes.c_size_t),
+          ('WorkingSetSize', ctypes.c_size_t),
+          ('QuotaPeakPagedPoolUsage', ctypes.c_size_t),
+          ('QuotaPagedPoolUsage', ctypes.c_size_t),
+          ('QuotaPeakNonPagedPoolUsage', ctypes.c_size_t),
+          ('QuotaNonPagedPoolUsage', ctypes.c_size_t),
+          ('PagefileUsage', ctypes.c_size_t),
+          ('PeakPagefileUsage', ctypes.c_size_t)]
+      counters = PROCESS_MEMORY_COUNTERS()
+      counters.cb = ctypes.sizeof(counters)
+      get_current_process = ctypes.windll.kernel32.GetCurrentProcess
+      get_current_process.restype = wintypes.HANDLE
+      get_memory_info = ctypes.windll.psapi.GetProcessMemoryInfo
+      get_memory_info.argtypes = [wintypes.HANDLE,
+        ctypes.POINTER(PROCESS_MEMORY_COUNTERS), wintypes.DWORD]
+      get_memory_info.restype = wintypes.BOOL
+      if not get_memory_info(get_current_process(), ctypes.byref(counters),
+                             counters.cb):
+        return None
+      return counters.PeakWorkingSetSize
+    import resource
+    maxrss = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+    if sys.platform == 'darwin':
+      return maxrss # bytes
+    return maxrss * 1024 # kilobytes on Linux and other Unix
+  except Exception:
+    return None
+
+def human_readable_size(n_bytes):
+  '''
+  Memory size as string: MB below 1 GB, GB otherwise. "unknown" for None.
+  '''
+  if n_bytes is None:
+    return "unknown"
+  if n_bytes < 1024**3:
+    return "%.1f MB" % (n_bytes / 1024**2)
+  return "%.2f GB" % (n_bytes / 1024**3)
+
+MANGLE_LEN = 256 # magic constant from compile.c
+def mangle(name, klass):
+  '''
+  Since the compiler module is removed in Python 3, this is a copy of the
+  mangle function from compiler.misc.
+
+  This function is used for name mangling in libtbx/__init__.py for the
+  slots_getstate_setstate class.
+  '''
+  if not name.startswith('__'):
+    return name
+  if len(name) + 2 >= MANGLE_LEN:
+    return name
+  if name.endswith('__'):
+    return name
+  try:
+    i = 0
+    while klass[i] == '_':
+      i = i + 1
+  except IndexError:
+    return name
+  klass = klass[i:]
+
+  tlen = len(klass) + len(name)
+  if tlen > MANGLE_LEN:
+    klass = klass[:MANGLE_LEN-tlen]
+
+  return "_%s%s" % (klass, name)
+
+def path_is_git_lfs_pointer(path):
+  '''
+  Test if a file is a git lfs pointer. See
+  https://github.com/git-lfs/git-lfs/blob/master/docs/spec.md
+  '''
+  with open(path, 'rb') as f:
+    return f.read(12) == b'version http'
+
+def check_git_lfs_pointer_is_loaded(path):
+  '''
+  Prints a skip if the lfs pointer hasn't been loaded
+  '''
+  test = path_is_git_lfs_pointer(path)
+  if test:
+    print ("""
+Skipping. %s hasn't been loaded from git
+Run these commands to load the data:
+cd <repository name>
+git lfs install --local
+git lsf pull
+"""%path)
+  return not test
+
+def display_context(text, file_name = 'file name', n_context = 5,
+   search_word = None, required_word= None,
+   excluded_words = None, category = None,
+    quiet = None,
+   always_excluded_words = None):
+  ''' Search lines in text for search_word and select blocks of size
+    n_context on either side. If context_word appears, mark that line
+
+    params: text: block of text
+    params: n_context: number of lines on either side of search word to keep
+    params: search_word:  word to find
+    params: required_word: another word to find (must have both in block
+            if required_word is set)
+    params: excluded_words: if any are present in text_block, skip it
+    params: category: category to pass on in group_args
+    params: file_name: file_name (title or name of file) to pass on in group_args
+    params: always_excluded_words: add to excluded words
+  '''
+
+  text_block_list = []
+  from libtbx import group_args
+  lines = text.splitlines()
+  if not quiet:
+    print("\n"+79*"=")
+    print(
+    "Searching %s with Search word: %s  Required word: %s Excluded word: %s" %(
+           file_name, search_word, required_word, excluded_words))
+    print("\n"+79*"=")
+
+
+  if not excluded_words: excluded_words = []
+  if not always_excluded_words: always_excluded_words = []
+  max_working_lines = 2*n_context
+  working_lines = []
+  for i in range(len(lines)):
+    working_lines.append(lines[i])
+    if len(working_lines) > max_working_lines:
+      working_lines = working_lines[1:]
+    working_lines_text = "\n".join(working_lines)
+    if lines[i].find(search_word)>-1  and (
+       not lines[i].strip().startswith("#")):
+      text_block = ""
+      text_block_continuation = ""
+      first_line_number = max(0,i-n_context)
+      last_line_number = min(len(lines), i+n_context+1)
+      for ll in lines[first_line_number: last_line_number]:
+        if ll.find(search_word)> -1:
+          text_block += "  ** %s\n" %(ll)
+        else:
+          text_block += "     %s\n" %(ll)
+        if ll.endswith("\\"):
+          text_block_continuation += "%s" %(ll[:-1].strip())
+        else:
+          text_block_continuation += "%s\n" %(ll.strip())
+      skip = False
+      for x in excluded_words + always_excluded_words:
+        if text_block_continuation.find(x) > -1:
+          skip = True
+        if working_lines_text.find(x) > -1: # allow backwards further
+          skip = True
+      if skip:
+        continue
+      if required_word and  (text_block_continuation.find(required_word) < 0):
+        continue
+
+      if not quiet:
+        print("\n%s at line %s. Search word: %s  Required word: %s" %(
+          file_name, first_line_number+1, search_word, required_word))
+        print(text_block)
+      info = group_args(group_args_type = 'text block',
+        category = category,
+        file_name = file_name,
+        search_word = search_word,
+        required_word = required_word,
+        excluded_words = excluded_words,
+        always_excluded_words = always_excluded_words,
+        text_block = text_block,
+        line_number = i+1,
+        )
+      text_block_list.append(info)
+  return text_block_list
+
+class timer:
+  '''
+  Context manager for timing blocks of code
+  https://stackoverflow.com/questions/33987060/python-context-manager-that-measures-time
+
+  from libtbx.utils import timer
+
+  with timer():
+    <block of code to be timed>
+  '''
+  def __enter__(self):
+    self.time = time.perf_counter()
+    return self
+
+  def __exit__(self, type, value, traceback):
+    self.time = time.perf_counter() - self.time
+    print('Elapsed time (s): {}'.format(self.time))
+
+class Tracker(type):
+  '''
+  Track the number of calls and total time taken for each method of a class that
+  is invoked during the lifetime of a class instance. The tracking is safe with
+  respect to deep copies and selection-aware operations.
+  '''
+  def __new__(mcs, name, bases, namespace):
+    for attr_name, attr_value in list(namespace.items()):
+      if callable(attr_value) and not attr_name.startswith('_'):
+        namespace[attr_name] = mcs.wrap_method(attr_value, attr_name)
+    # Add method 1
+    def call_stats_sorted_and_rounded(self, ndigits=3, trim=True):
+      # Sort by total_time in descending order
+      sorted_items = sorted(
+        self._call_stats.items(), key=lambda x: x[1]['total_time'], reverse=True)
+      # Build OrderedDict, round total_time, and filter out zeros
+      sorted_rounded_dict = OrderedDict()
+      for key, value in sorted_items:
+        rounded_time = round(value['total_time'], ndigits)
+        if trim and rounded_time > 0.0:
+          sorted_rounded_dict[key] = {
+            'count': value['count'],
+            'total_time': rounded_time
+          }
+      return sorted_rounded_dict
+    namespace["call_stats_sorted_and_rounded"]=call_stats_sorted_and_rounded
+    # Add method 2
+    def show_call_stats_sorted_and_rounded(self, indent=2):
+      stats_dict = self.call_stats_sorted_and_rounded()
+      # Determine longest key for alignment
+      max_key_len = max(len(key) for key in stats_dict)
+      # Format each line with consistent alignment
+      pad = ' ' * indent
+      lines = []
+      for key, val in stats_dict.items():
+        key_formatted = f"{key}:".ljust(max_key_len + 2)  # +2 for colon and a space
+        count_formatted = f"count: {val['count']:<5}"     # left-align count in fixed width
+        time_formatted = f"total_time: {val['total_time']:.3f}"
+        lines.append(f"{pad}{key_formatted} {count_formatted} {time_formatted}")
+      return '\n'.join(lines)
+    namespace["show_call_stats_sorted_and_rounded"]=\
+      show_call_stats_sorted_and_rounded
+    #
+    return super().__new__(mcs, name, bases, namespace)
+
+  @staticmethod
+  def wrap_method(method, method_name):
+    @wraps(method)
+    def wrapper(self, *args, **kwargs):
+      start = time.perf_counter()
+      result = method(self, *args, **kwargs)
+      end = time.perf_counter()
+      if not hasattr(self, '_call_stats'):
+        self._call_stats = {}
+      stats = self._call_stats.setdefault(
+        method_name, {"count": 0, "total_time": 0.0})
+      stats["count"] += 1
+      stats["total_time"] += end - start
+      return result
+    return wrapper

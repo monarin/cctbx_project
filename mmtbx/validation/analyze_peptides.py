@@ -1,7 +1,7 @@
-from __future__ import division
+from __future__ import absolute_import, division, print_function
 import sys
 import mmtbx.rotamer
-from libtbx.utils import Sorry, Usage
+from libtbx.utils import Sorry
 
 def get_master_phil():
   import libtbx.phil
@@ -67,6 +67,9 @@ def analyze(pdb_hierarchy):
                       prev_atoms = prev_res.atoms()
                       prev_resname = prev_res.resname
                       prev_resid = prev_res.resid()
+                      if get_omega(prev_atoms=prev_atoms, atoms=atoms) is None:
+                        # incomplete backbone or chain break: no peptide bond
+                        continue
                       is_cis = is_cis_peptide(prev_atoms=prev_atoms,
                                               atoms=atoms)
                       is_trans = is_trans_peptide(prev_atoms=prev_atoms,
@@ -111,6 +114,7 @@ def get_omega(prev_atoms, atoms):
 
 def is_cis_peptide(prev_atoms, atoms):
   omega = get_omega(prev_atoms, atoms)
+  if(omega is None): return False
   if(omega > -30 and omega < 30):
     return True
   else:
@@ -118,6 +122,7 @@ def is_cis_peptide(prev_atoms, atoms):
 
 def is_trans_peptide(prev_atoms, atoms):
   omega = get_omega(prev_atoms, atoms)
+  if(omega is None): return False
   if( (omega > 150 and omega <= 180) or
       (omega >= -180 and omega < -150) ):
     return True
@@ -146,33 +151,7 @@ def show(
   print_list.sort(key=get_sort_key)
   if log is None:
     log = sys.stdout
-  print >> log, "#\n#peptide geometry analysis\n#"
-  print >> log, "residue1:residue2:classification"
+  print("#\n#peptide geometry analysis\n#", file=log)
+  print("residue1:residue2:classification", file=log)
   for line in print_list:
-    print >> log, line
-
-def run(args):
-  if (len(args) == 0 or "--help" in args or "--h" in args or "-h" in args):
-    raise Usage(usage())
-  import iotbx.pdb
-  import iotbx.phil
-  master_phil = get_master_phil()
-  args = list(args)
-  input_objects = iotbx.phil.process_command_line_with_files(
-    args=args,
-    master_phil=master_phil,
-    pdb_file_def="analyze_peptides.pdb")
-  work_params = input_objects.work.extract()
-  if len(work_params.analyze_peptides.pdb) != 1:
-    raise Usage(usage())
-  file_name = work_params.analyze_peptides.pdb[0]
-  pdb_io = iotbx.pdb.input(file_name)
-  pdb_hierarchy = pdb_io.construct_hierarchy()
-  pdb_hierarchy.reset_i_seq_if_necessary()
-  cis_peptides, trans_peptides, outliers = \
-    analyze(pdb_hierarchy=pdb_hierarchy)
-  show(cis_peptides=cis_peptides,
-       trans_peptides=trans_peptides,
-       outliers=outliers,
-       cis_only=work_params.analyze_peptides.cis_only)
-
+    print(line, file=log)

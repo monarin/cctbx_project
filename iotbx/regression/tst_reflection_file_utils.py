@@ -1,5 +1,6 @@
-from __future__ import division
+from __future__ import absolute_import, division, print_function
 import libtbx.load_env
+from six.moves import range
 if (libtbx.env.has_module("ccp4io")):
   from iotbx import reflection_file_reader
   from iotbx.reflection_file_utils import reflection_file_server, \
@@ -12,7 +13,7 @@ from cctbx import crystal
 from cctbx.array_family import flex
 from libtbx.test_utils import Exception_expected, show_diff
 from libtbx.utils import Sorry, null_out
-from cStringIO import StringIO
+from six.moves import cStringIO as StringIO
 import os
 
 def exercise_get_amplitudes_and_get_phases_deg():
@@ -455,7 +456,7 @@ def exercise_get_r_free_flags():
   exercise_flag_arrays = []
   exercise_flag_arrays.append(
     flex.int(list(flex.random_permutation(size=n)%10)))
-  exercise_flag_arrays.append(flex.int(xrange(n)))
+  exercise_flag_arrays.append(flex.int(range(n)))
   exercise_flag_arrays.append(flex.int(n, 0))
   for style in ["ccp4", "cns", "shelx", "bool"]:
     for i_exercise,exercise_flag_array in enumerate(exercise_flag_arrays):
@@ -501,7 +502,7 @@ def exercise_get_r_free_flags():
                   test_flag_value=trial_test_flag_value,
                   disable_suitability_test=False,
                   parameter_scope="r_free_flags")
-            except Sorry, e:
+            except Sorry as e:
               if (trial_label != "foo"):
                 assert i_exercise > 0
                 if (trial_label is None):
@@ -509,33 +510,32 @@ def exercise_get_r_free_flags():
 No array of R-free flags found.
 
 For manual selection define:
-  r_free_flags.label
   r_free_flags.test_flag_value
   r_free_flags.disable_suitability_test=True"""
                 else:
                   assert str(e) == \
                       "Not a suitable array of R-free flags:" \
-                    + " r_free_flags.label=free\n" \
+                    + " r_free_flags=free\n" \
                     + "To override the suitability test define:" \
                     + " r_free_flags.disable_suitability_test=True"
               else:
-                assert str(e) == "No matching array: r_free_flags.label=foo"
+                assert str(e) == "No matching array: r_free_flags=foo"
                 if (i_exercise == 0):
                   assert err.getvalue() == """\
 
-No matching array: r_free_flags.label=foo
+No matching array: r_free_flags=foo
 
 Possible choices:
   tmp.mtz:FreeRflags
 
-Please use r_free_flags.label
+Please use r_free_flags
 to specify an unambiguous substring of the target label.
 
 """
                 else:
                   assert err.getvalue() == """\
 
-No matching array: r_free_flags.label=foo
+No matching array: r_free_flags=foo
 
 """
               err = reflection_file_srv.err = StringIO()
@@ -568,7 +568,7 @@ No matching array: r_free_flags.label=foo
         test_flag_value=None,
         disable_suitability_test=False,
         parameter_scope="r_free_flags")
-    except Sorry, e:
+    except Sorry as e:
       assert str(e)=="Multiple equally suitable arrays of R-free flags found."
       assert err.getvalue() == """\
 
@@ -578,7 +578,7 @@ Possible choices:
   tmp.mtz:FreeRflags
   tmp.mtz:test
 
-Please use r_free_flags.label
+Please use r_free_flags
 to specify an unambiguous substring of the target label.
 
 """
@@ -602,7 +602,7 @@ to specify an unambiguous substring of the target label.
         test_flag_value=test_flag_value,
         disable_suitability_test=True,
         parameter_scope="r_free_flags")
-    except Sorry, e:
+    except Sorry as e:
       assert str(e) == "r_free_flags.disable_suitability_test=True:" \
         " Suitability test for R-free flags can only be disabled if both" \
         " r_free_flags.label and r_free_flags.test_flag_value are defined."
@@ -663,7 +663,7 @@ def exercise_get_experimental_phases():
       labels=None,
       ignore_all_zeros=True,
       parameter_scope="experimental_phases")
-  except Sorry, e:
+  except Sorry as e:
     assert str(e) == "No array of experimental phases found."
     assert err.getvalue() == """\
 
@@ -671,6 +671,51 @@ No array of experimental phases found.
 
 """
   else: raise Exception_expected
+
+def exercise_hklf_plus_ins_or_res():
+  import textwrap
+  from os import path
+  import shutil
+  from libtbx.test_utils import approx_equal
+
+  try:
+    hklf4 = ['   1   0   0    1.11    0.11',
+             '   0   1  -1    2.22    0.22',
+             '  -1   0   1    4.44    0.44']
+    hklf4 = [li + '\n' for li in hklf4]
+    ins = textwrap.dedent(
+    """\
+    TITL 03srv209 in Pbca
+    CELL 0.71073 7.35 9.541 12.842 90 90 90
+    ZERR 4 0.002 0.002 0.003 0 0 0
+    LATT 1
+    SYMM 0.5-X,-Y,0.5+Z
+    SYMM -X,0.5+Y,0.5-Z
+    SYMM 0.5+X,0.5-Y,-Z
+    SFAC C H O N
+    UNIT 32 40 16 8
+    HKLF 4
+    """)
+    folder = 'temp_data_hklf_plus_ins_res'
+    if not path.exists(folder):
+      os.mkdir(folder)
+    insfn = path.join(folder, '03srv209.ins')
+    hklfn = path.join(folder, '03srv209.hkl')
+    with open(insfn, 'w') as f:
+      f.write(ins)
+    with open(hklfn, 'w') as f:
+      f.writelines(hklf4)
+    rf = reflection_file_reader.any_reflection_file(hklfn+'=hklf+ins/res')
+    ma = rf.as_miller_arrays()[0]
+    cs = ma.crystal_symmetry()
+    assert cs.is_identical_symmetry(
+      crystal.symmetry(unit_cell='7.35 9.541 12.842 90 90 90',
+                       space_group_symbol='Pbca'))
+    assert all(ma.indices() == flex.miller_index([(1,0,0), (0,1,-1), (-1,0,1)]))
+    assert approx_equal(ma.data(), [1.11, 2.22, 4.44])
+    assert approx_equal(ma.sigmas(), [0.11, 0.22, 0.44])
+  finally:
+    shutil.rmtree(folder, ignore_errors=True)
 
 def exercise_extract_miller_array_from_file():
   from iotbx import reflection_file_utils as rfu
@@ -709,7 +754,7 @@ def exercise_extract_miller_array_from_file():
     mtz_dataset.mtz_object().write("tmp.mtz")
     try:
       rfu.extract_miller_array_from_file(file_name="tmp.mtz",type=tp, log=log)
-    except Sorry, e:
+    except Sorry as e:
       assert ("Multiple choices available." in str(e))
       sorry_counts += 1
   #
@@ -719,7 +764,7 @@ def exercise_extract_miller_array_from_file():
       miller_array=a3, column_root_label="A3")
     mtz_dataset.mtz_object().write("tmp.mtz")
     try: rfu.extract_miller_array_from_file(file_name="tmp.mtz",type=tp,log=log)
-    except Sorry, e:
+    except Sorry as e:
       assert ("Multiple choices available." in str(e))
       sorry_counts += 1
   #
@@ -728,7 +773,7 @@ def exercise_extract_miller_array_from_file():
     miller_array=a4, column_root_label="A4")
   mtz_dataset.mtz_object().write("tmp.mtz")
   try: rfu.extract_miller_array_from_file(file_name="tmp.mtz",log=log)
-  except Sorry, e:
+  except Sorry as e:
     assert ("Multiple choices available." in str(e))
     sorry_counts += 1
   #
@@ -739,7 +784,7 @@ def exercise_extract_miller_array_from_file():
   try:
     rfu.extract_miller_array_from_file(file_name="tmp.mtz",type="real",
       log=log)
-  except Sorry, e:
+  except Sorry as e:
     assert str(e)=="No suitable arrays."
     sorry_counts += 1
   #
@@ -750,7 +795,7 @@ def exercise_extract_miller_array_from_file():
   try:
     rfu.extract_miller_array_from_file(file_name="tmp.mtz",type="complex",
       log=log)
-  except Sorry, e:
+  except Sorry as e:
     assert str(e)=="No suitable arrays."
     sorry_counts += 1
   #
@@ -769,13 +814,13 @@ def exercise_extract_miller_array_from_file():
   try:
     rfu.extract_miller_array_from_file(file_name="tmp.mtz",
       label="A5,PHIA5", type="real", log=log)
-  except Sorry, e:
+  except Sorry as e:
     assert str(e)=="No suitable arrays."
     sorry_counts += 1
   #
   assert sorry_counts == 8
 
-def exercise_automation_wrappers () :
+def exercise_automation_wrappers():
   from iotbx.reflection_file_utils import process_raw_data, \
     change_space_group, load_f_obs_and_r_free
   from cctbx import sgtbx
@@ -823,20 +868,146 @@ def exercise_automation_wrappers () :
   assert (str(f_obs_new.space_group_info()) == "P 1 21 1")
   assert (approx_equal(f_obs_new.info().wavelength, 0.9792))
 
+def exercise_reconstructed_amplitudes():
+  # Anomalous amplitudes stored as F/SIGF/DANO/SIGDANO/ISYM columns (the
+  # CCP4 convention, e.g. mtzMADmod output) are fused by the MTZ reader into
+  # one anomalous array of observation type reconstructed_amplitude.  The
+  # automation wrapper process_raw_data must accept such an array and
+  # write_mtz_file must write it as F(+)/F(-) pairs plus merged F,SIGF, as
+  # it does for native F(+)/F(-) input.
+  from iotbx.reflection_file_utils import process_raw_data, \
+    load_f_obs_and_r_free
+  from cctbx.xray import observation_types
+  from libtbx.test_utils import approx_equal
+  in_file = "tmp_rfu_recon_in.mtz"
+  out_file = "tmp_rfu_recon_out.mtz"
+  out_file_merged = "tmp_rfu_recon_merged.mtz"
+  crystal_symmetry = crystal.symmetry(
+    unit_cell=(13,14,15,90,95,90),
+    space_group_symbol="P 2")
+  miller_set = miller.build_set(
+    crystal_symmetry=crystal_symmetry,
+    anomalous_flag=True,
+    d_min=2)
+  n_obs = miller_set.indices().size()
+  f_anom = miller_set.array(
+    data=flex.random_double(size=n_obs)*10+1,
+    sigmas=flex.random_double(size=n_obs)*0.5+0.1
+      ).set_observation_type_xray_amplitude()
+  assert f_anom.anomalous_flag()
+  # write the F/SIGF/DANO/SIGDANO/ISYM layout under the root label "F"
+  f_recon = f_anom.deep_copy().set_observation_type(
+    observation_types.reconstructed_amplitude())
+  assert f_recon.is_xray_reconstructed_amplitude_array()
+  r_free_flags = f_anom.average_bijvoet_mates().generate_r_free_flags(
+    fraction=0.1, format="ccp4")
+  mtz_dataset = f_recon.as_mtz_dataset(column_root_label="F")
+  mtz_dataset.add_miller_array(
+    miller_array=r_free_flags, column_root_label="FreeR_flag")
+  mtz_dataset.mtz_object().write(in_file)
+  assert mtz.object(in_file).column_labels() == [
+    "H","K","L","F","SIGF","DANOF","SIGDANOF","ISYMF","FreeR_flag"]
+  # read back: the five columns come back as one anomalous array
+  mtz_in = reflection_file_reader.any_reflection_file(file_name=in_file)
+  fused = None
+  for array in mtz_in.as_miller_arrays():
+    if (array.info().labels[0] == "F"):
+      fused = array
+  assert fused is not None
+  assert fused.anomalous_flag()
+  assert fused.is_xray_reconstructed_amplitude_array()
+  assert fused.sigmas() is not None
+  assert fused.info().label_string() == "F,SIGF,DANOF,SIGDANOF,ISYMF"
+  # the F,SIGF columns as written (mean amplitudes) are the reference for
+  # the merged data written below
+  f_mean_ref = None
+  for array in mtz_in.as_miller_arrays(reconstruct_amplitudes=False):
+    if (array.info().label_string() == "F,SIGF"):
+      f_mean_ref = array
+  assert f_mean_ref is not None
+  assert not f_mean_ref.anomalous_flag()
+  # R-free flags as the automation code obtains them
+  reflection_file_srv = reflection_file_server(
+    crystal_symmetry=crystal_symmetry,
+    force_symmetry=True,
+    reflection_files=[mtz_in])
+  flags, test_flag_value = reflection_file_srv.get_r_free_flags(
+    file_name=None,
+    label="FreeR_flag",
+    test_flag_value=None,
+    disable_suitability_test=False,
+    parameter_scope="r_free_flags")
+  assert flags.info().label_string() == "FreeR_flag"
+  assert test_flag_value == 0
+  processed = process_raw_data(
+    obs=fused,
+    r_free_flags=flags,
+    test_flag_value=test_flag_value,
+    log=StringIO(),
+    merge_anomalous=False)
+  assert (not processed.flags_are_new())
+  # the caller's array is not mutated
+  assert fused.is_xray_reconstructed_amplitude_array()
+  # decisive check: the merged F,SIGF columns are written next to the
+  # Bijvoet pairs, which must not clash with the pair column labels
+  processed.write_mtz_file(out_file, single_dataset=False)
+  assert (processed.data_labels() == "F(+),SIGF(+),F(-),SIGF(-)")
+  assert mtz.object(out_file).column_labels() == [
+    "H","K","L","F(+)","SIGF(+)","F(-)","SIGF(-)","F","SIGF","FreeR_flag"]
+  # the automation reader finds both the merged and the anomalous data
+  f_obs, r_free = load_f_obs_and_r_free(out_file)
+  assert (not f_obs.anomalous_flag())
+  assert (f_obs.info().label_string() == "F,SIGF")
+  assert (f_obs.is_xray_amplitude_array())
+  f_obs_anom, r_free_anom = load_f_obs_and_r_free(out_file,
+    anomalous_flag=True)
+  assert (f_obs_anom.anomalous_flag())
+  assert (f_obs_anom.info().label_string() == "F(+),SIGF(+),F(-),SIGF(-)")
+  # the merged F column is the mean of the Bijvoet mates, i.e. the F column
+  # of the input (stored in single precision); the sigmas differ by design
+  # and are not compared
+  f_mean_out = None
+  for array in reflection_file_reader.any_reflection_file(
+      file_name=out_file).as_miller_arrays():
+    if (array.info().label_string() == "F,SIGF"):
+      f_mean_out = array
+  assert f_mean_out is not None
+  ref, out = f_mean_ref.common_sets(other=f_mean_out)
+  assert ref.indices().size() > 0
+  assert ref.indices().size() == f_mean_ref.indices().size()
+  assert ref.indices().size() == f_mean_out.indices().size()
+  assert approx_equal(ref.data(), out.data(), eps=1e-3)
+  # merging the anomalous data on input
+  processed_merged = process_raw_data(
+    obs=fused,
+    r_free_flags=flags,
+    test_flag_value=test_flag_value,
+    log=StringIO(),
+    merge_anomalous=True)
+  assert (processed_merged.data_labels() == "F,SIGF")
+  assert (not processed_merged.f_obs.anomalous_flag())
+  for single_dataset in [True, False]:
+    processed_merged.write_mtz_file(out_file_merged,
+      single_dataset=single_dataset)
+    assert mtz.object(out_file_merged).column_labels() == [
+      "H","K","L","F","SIGF","FreeR_flag"]
+
 def exercise():
   if (mtz is None):
-    print "Skipping iotbx/tst_reflection_file_utils.py: ccp4io not available"
+    print("Skipping iotbx/tst_reflection_file_utils.py: ccp4io not available")
     return
+  exercise_hklf_plus_ins_or_res()
   exercise_get_amplitudes_and_get_phases_deg()
   exercise_get_xtal_data()
   exercise_get_r_free_flags()
   exercise_get_experimental_phases()
   exercise_extract_miller_array_from_file()
   exercise_automation_wrappers()
+  exercise_reconstructed_amplitudes()
 
 def run():
   exercise()
-  print "OK"
+  print("OK")
 
 if (__name__ == "__main__"):
   run()

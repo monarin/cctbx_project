@@ -1,4 +1,4 @@
-from __future__ import division
+from __future__ import absolute_import, division, print_function
 from cctbx import geometry_restraints
 import cctbx.geometry_restraints.flags
 import cctbx.geometry_restraints.energies
@@ -9,47 +9,49 @@ from libtbx import introspection
 from libtbx import adopt_init_args
 from libtbx import dict_with_default_0
 from libtbx.utils import Sorry
-import sys, math, StringIO
+import sys, math
+from six import StringIO
 import iotbx.pdb
 
-import boost.python
-boost.python.import_ext("scitbx_array_family_flex_ext")
+import boost_adaptbx.boost.python as bp
+from six.moves import range
+from six.moves import zip
+bp.import_ext("scitbx_array_family_flex_ext")
 from scitbx_array_family_flex_ext import reindexing_array
 
 from cctbx.geometry_restraints.linking_class import linking_class
 origin_ids = linking_class()
 from cctbx.geometry_restraints.base_geometry import Base_geometry
 
-#from mmtbx.geometry_restraints.hbond import get_simple_bonds
-
-# All proxies have attribute "origin_id" which should reflect the origin of
-# corresponding proxy. E.g. origin_id=0 (Default value) will correspond to the
-# most basic proxies, from covalent geometry. origin_id=1 will correspond to
-# h-bonds, h-angles restraints etc. Ideally, only this manager should be
-# aware of this separation. 'Knowledge' about origin_id values and their meaning
-# should NOT be used in any other place except when creating proxies!
-# Everything needed should be implemented as methods of this class.
-# Ideally, nobody should access proxies directly and call any of their methods.
-# So the list of origin_id:
-# bonds: 0 - covalent geometry
-#        1 - hydrogen bonds: both for protein SS and for NA basepairs
-#        2 - metal coordination
-#        3 - geometry_resraints.edits from users
-# angles: 0 - covalent geometry
-#         1 - angle restraints associated with NA basepair hydrogen bonds
-#         2 - metal coordination
-#         3 - geometry_resraints.edits from users
-# dihedral(torsion): 0 - covalent geometry
-#                    1 - C-beta restraints
-#                    2 - Torsion restraints on chi angles (side-chain rotamers)
-#                    3 - geometry_resraints.edits from users
-# chirality: 0 - covalent geometry
-# planarity: 0 - covalent geometry
-#            1 - planarity restraints for NA basepairs
-#            3 - geometry_resraints.edits from users
-# parallelity: 0 - stacking interaction for NA
-#              1 - restraint for NA basepairs
-#              3 - geometry_resraints.edits from users
+def create_side_chain_restraints(hierarchy, grm, log=None):
+  proxies=[]
+  for rg in hierarchy.residue_groups():
+    ags=rg.atom_groups()
+    names = []
+    for atom in rg.atoms():
+      if atom.element_is_hydrogen(): continue
+      if atom.name not in names:
+        names.append(atom.name)
+    pairs=[[],[]]
+    for name in names:
+      if name in [' CA ', ' N  ', ' C  ', ' O  ']: continue
+      for i, ag in enumerate(ags):
+        if not ag.altloc: continue
+        pairs[i].append(ag.get_atom(name.strip()).i_seq)
+    sigma=.2
+    if not pairs[0] or not pairs[1]: continue
+    if len(pairs[0])<3 or len(pairs[1])<3: continue
+    proxy=geometry_restraints.parallelity_proxy(
+              i_seqs=flex.size_t(pairs[0]),
+              j_seqs=flex.size_t(pairs[1]),
+              weight=1/(sigma**2),
+              target_angle_deg=0,
+              slack=0,
+              top_out=False,
+              limit=1,
+              origin_id=origin_ids.get_origin_id('side-chain parallelity'))
+    proxies.append(proxy)
+  return proxies
 
 class manager(Base_geometry):
 # This class is documented in
@@ -71,6 +73,7 @@ class manager(Base_geometry):
         nonbonded_buffer=1,
         angle_proxies=None,
         dihedral_proxies=None,
+        const_dihedral_proxies=None,
         reference_coordinate_proxies=None,
         reference_dihedral_manager=None,
         ncs_dihedral_manager=None,
@@ -83,7 +86,7 @@ class manager(Base_geometry):
         plain_pairs_radius=None,
         max_reasonable_bond_distance=None,
         min_cubicle_edge=5,
-        log=StringIO.StringIO()):
+        log=StringIO()):
     super(manager, self).__init__()
     if (site_symmetry_table is not None): assert crystal_symmetry is not None
     if (bond_params_table is not None and site_symmetry_table is not None):
@@ -92,9 +95,11 @@ class manager(Base_geometry):
       assert len(shell_sym_tables) > 0
       assert shell_sym_tables[0].size() == site_symmetry_table.indices().size()
     if (nonbonded_types is not None and site_symmetry_table is not None):
-      assert nonbonded_types.size() == site_symmetry_table.indices().size()
-    if (nonbonded_types is not None) and (nonbonded_charges is not None) :
-      assert (nonbonded_charges.size() == nonbonded_types.size())
+      assert nonbonded_types.size() == site_symmetry_table.indices().size(), "%d != %d" % (
+          nonbonded_types.size(), site_symmetry_table.indices().size())
+    if (nonbonded_types is not None) and (nonbonded_charges is not None):
+      assert nonbonded_charges.size() == nonbonded_types.size(), "%d != %d" % (
+          nonbonded_charges.size(), nonbonded_types.size())
     adopt_init_args(self, locals(), exclude=["log"])
     self.reset_internals()
 
@@ -108,7 +113,7 @@ class manager(Base_geometry):
   #   return state
 
   # def __setstate__(self, state):
-  #   state[ "log" ] = StringIO.StringIO( state[ "log" ] )
+  #   state[ "log" ] = StringIO( state[ "log" ] )
   #   self.__dict__.update( state )
 
   def reset_internals(self):
@@ -122,9 +127,27 @@ class manager(Base_geometry):
     self.effective_nonbonded_buffer = self.nonbonded_buffer
     self.n_updates_pair_proxies = 0
 
-  def replace_site_symmetry(self, new_site_symmetry_table):
+  def replace_site_symmetry(self, new_site_symmetry_table,
+                                  special_position_settings,
+                                  sites_cart):
     assert self.site_symmetry_table is not None
     self.site_symmetry_table = new_site_symmetry_table
+    # Recompute shell_sym_tables
+    asu_mappings = special_position_settings.asu_mappings(
+      buffer_thickness = self.max_reasonable_bond_distance*3 if \
+      self.max_reasonable_bond_distance is not None \
+      else 150) # arbitrary big number if not defined
+    asu_mappings.process_sites_cart(
+      original_sites      = sites_cart,
+      site_symmetry_table = self.site_symmetry_table)
+    bond_asu_table = crystal.pair_asu_table(asu_mappings = asu_mappings)
+    # Add all previously defined bonds
+    bond_asu_table.add_pair_sym_table(self.shell_sym_tables[0])
+    shell_asu_tables = crystal.coordination_sequences.shell_asu_tables(
+      pair_asu_table = bond_asu_table,
+      max_shell      = 3)
+    self.shell_sym_tables = [shell_asu_table.extract_pair_sym_table()
+      for shell_asu_table in shell_asu_tables]
     self.reset_internals()
 
   def simple_edge_list(self, omit_slack_greater_than=0):
@@ -242,7 +265,7 @@ class manager(Base_geometry):
     reduced_dihedral_proxies = get()
     #
     if not include_den_restraints:
-      return manager(
+      result = manager(
         crystal_symmetry=self.crystal_symmetry,
         site_symmetry_table=self.site_symmetry_table,
         bond_params_table=self.bond_params_table,
@@ -251,7 +274,7 @@ class manager(Base_geometry):
         dihedral_proxies=reduced_dihedral_proxies,
         ncs_dihedral_manager=self.ncs_dihedral_manager)
     else:
-      return manager(
+      result = manager(
         crystal_symmetry=self.crystal_symmetry,
         site_symmetry_table=self.site_symmetry_table,
         bond_params_table=self.bond_params_table,
@@ -261,6 +284,8 @@ class manager(Base_geometry):
         ncs_dihedral_manager=self.ncs_dihedral_manager,
         den_manager=self.den_manager,
         ramachandran_manager=self.ramachandran_manager)
+    result.set_source(source = self.get_source())
+    return result
 
   def sites_cart_used_for_pair_proxies(self):
     return self._sites_cart_used_for_pair_proxies
@@ -304,7 +329,7 @@ class manager(Base_geometry):
       new_site_symmetry_table = self.site_symmetry_table.deep_copy()
       new_site_symmetry_table.reserve(new_site_symmetry_table.indices().size()
                                     + n_additional_sites)
-      for i_seq in xrange(n_additional_sites):
+      for i_seq in range(n_additional_sites):
         new_site_symmetry_table.process(site_symmetry_table.get(i_seq))
       site_symmetry_table = new_site_symmetry_table
     bond_params_table = None
@@ -323,13 +348,13 @@ class manager(Base_geometry):
       assert nonbonded_types.size() == n_additional_sites
       nonbonded_types = self.nonbonded_types.concatenate(
         nonbonded_types)
-    if (self.nonbonded_charges is not None) :
-      if (nonbonded_charges is None) :
+    if (self.nonbonded_charges is not None):
+      if (nonbonded_charges is None):
         nonbonded_charges = flex.int(n_additional_sites, 0)
       assert (nonbonded_charges.size() == n_additional_sites)
       nonbonded_charges = self.nonbonded_charges.concatenate(
         nonbonded_charges)
-    return manager(
+    result = manager(
       crystal_symmetry=self.crystal_symmetry,
       model_indices=model_indices,
       conformer_indices=conformer_indices,
@@ -346,6 +371,7 @@ class manager(Base_geometry):
       nonbonded_buffer=self.nonbonded_buffer,
       angle_proxies=self.angle_proxies,
       dihedral_proxies=self.dihedral_proxies,
+      const_dihedral_proxies=self.const_dihedral_proxies,
       reference_coordinate_proxies=self.reference_coordinate_proxies,
       reference_dihedral_manager=self.reference_dihedral_manager,
       ramachandran_manager=self.ramachandran_manager,
@@ -354,7 +380,10 @@ class manager(Base_geometry):
       chirality_proxies=self.chirality_proxies,
       planarity_proxies=self.planarity_proxies,
       parallelity_proxies=self.parallelity_proxies,
-      plain_pairs_radius=self.plain_pairs_radius)
+      plain_pairs_radius=self.plain_pairs_radius,
+      max_reasonable_bond_distance=self.max_reasonable_bond_distance)
+    result.set_source(source = self.get_source())
+    return result
 
   def select(self, selection=None, iselection=None):
     assert [selection, iselection].count(None) == 1
@@ -396,12 +425,13 @@ class manager(Base_geometry):
         raise RuntimeError("Cannot determine n_seq.")
       if (len(n_seqs) != 1):
         raise RuntimeError("Selection size mismatches: %s." % str(n_seqs))
-      return n_seqs.keys()[0]
+      return list(n_seqs.keys())[0]  # FIXME this might break py2/3 compat unless there is only 1 key
 
     n_seq = get_n_seq()
 
-    selected_proxies = [None]*11
+    selected_proxies = [None]*12
     for i, proxies in enumerate([self.angle_proxies, self.dihedral_proxies,
+        self.const_dihedral_proxies,
         self.reference_coordinate_proxies, self.reference_dihedral_manager,
         self.ncs_dihedral_manager, self.den_manager, self.chirality_proxies,
         self.planarity_proxies, self.parallelity_proxies,
@@ -426,22 +456,28 @@ class manager(Base_geometry):
       nonbonded_buffer=self.nonbonded_buffer,
       angle_proxies=selected_proxies[0],
       dihedral_proxies=selected_proxies[1],
-      reference_coordinate_proxies=selected_proxies[2],
-      reference_dihedral_manager=selected_proxies[3],
-      ramachandran_manager=selected_proxies[9],
-      ncs_dihedral_manager=selected_proxies[4],
-      den_manager=selected_proxies[5],
-      chirality_proxies=selected_proxies[6],
-      planarity_proxies=selected_proxies[7],
-      parallelity_proxies=selected_proxies[8],
-      plain_pairs_radius=self.plain_pairs_radius)
+      const_dihedral_proxies=selected_proxies[2],
+      reference_coordinate_proxies=selected_proxies[3],
+      reference_dihedral_manager=selected_proxies[4],
+      ramachandran_manager=selected_proxies[10],
+      ncs_dihedral_manager=selected_proxies[5],
+      den_manager=selected_proxies[6],
+      chirality_proxies=selected_proxies[7],
+      planarity_proxies=selected_proxies[8],
+      parallelity_proxies=selected_proxies[9],
+      plain_pairs_radius=self.plain_pairs_radius,
+      max_reasonable_bond_distance=self.max_reasonable_bond_distance)
     result.set_source(source = self.get_source())
     return result
+
+  def shift_sites_cart(self, shift):
+    # just a stub from RSR. Proper treatment can be implemented here.
+    self.remove_reference_coordinate_restraints_in_place()
 
   def discard_symmetry(self, new_unit_cell):
     assert self.site_symmetry_table is not None #XXX lazy
     assert self.shell_sym_tables is not None #XXX lazy
-    return manager(
+    result = manager(
       crystal_symmetry=crystal.symmetry(
         unit_cell=new_unit_cell,
         space_group_symbol="P1"),
@@ -460,6 +496,7 @@ class manager(Base_geometry):
       nonbonded_buffer=self.nonbonded_buffer,
       angle_proxies=self.angle_proxies,
       dihedral_proxies=self.dihedral_proxies,
+      const_dihedral_proxies=self.const_dihedral_proxies,
       reference_coordinate_proxies=self.reference_coordinate_proxies,
       reference_dihedral_manager=self.reference_dihedral_manager,
       ramachandran_manager=self.ramachandran_manager,
@@ -468,7 +505,10 @@ class manager(Base_geometry):
       chirality_proxies=self.chirality_proxies,
       planarity_proxies=self.planarity_proxies,
       parallelity_proxies=self.parallelity_proxies,
-      plain_pairs_radius=self.plain_pairs_radius)
+      plain_pairs_radius=self.plain_pairs_radius,
+      max_reasonable_bond_distance=self.max_reasonable_bond_distance)
+    result.set_source(source = self.get_source())
+    return result
 
   def add_angles_in_place(self, additional_angle_proxies):
     self.angle_proxies.extend(additional_angle_proxies)
@@ -496,11 +536,13 @@ class manager(Base_geometry):
           origin_id=specific_origin_id)
     angles = self.angle_proxies.proxy_select(
       origin_id=specific_origin_id)
+    dihedrals = self.dihedral_proxies.proxy_select(
+      origin_id=specific_origin_id)
     planarity = self.planarity_proxies.proxy_select(
       origin_id=specific_origin_id)
     parallelity = self.parallelity_proxies.proxy_select(
       origin_id=specific_origin_id)
-    return bonds_simpe, bonds_asu, angles, planarity, parallelity
+    return bonds_simpe, bonds_asu, angles, dihedrals, planarity, parallelity
 
   def remove_user_supplied_restraints_in_place(self):
     """
@@ -530,6 +572,15 @@ class manager(Base_geometry):
       return self.angle_proxies.proxy_remove(origin_id=specific_origin_id)
     return None
 
+  def get_dihedral_proxies_without_user_supplied(self):
+    specific_origin_id = origin_ids.get_origin_id('edits')
+    if self.dihedral_proxies is not None:
+      return self.dihedral_proxies.proxy_remove(origin_id=specific_origin_id)
+    return None
+
+  def get_const_dihedral_proxies(self):
+    return self.const_dihedral_proxies
+
   def get_planarity_proxies_without_user_supplied(self):
     specific_origin_id = origin_ids.get_origin_id('edits')
     if self.planarity_proxies is not None:
@@ -554,7 +605,7 @@ class manager(Base_geometry):
 
   def remove_reference_coordinate_restraints_in_place(self,
       selection=None):
-    if (selection is not None) :
+    if (selection is not None):
       self.reference_coordinate_proxies = \
         self.reference_coordinate_proxies.proxy_remove(selection=selection)
     else :
@@ -581,8 +632,12 @@ class manager(Base_geometry):
       exclude_outliers=True,
       sigma=0.2,
       limit=1.0,
-      top_out=False):
+      top_out=False,
+      n_atoms_in_target_model=None,
+      reference_is_average_alt_confs=None,
+      ):
     assert [all_chain_proxies, pdb_hierarchy].count(None) == 1
+    assert [all_chain_proxies, n_atoms_in_target_model].count(None) == 1
     if all_chain_proxies is None:
       assert isinstance(selection, flex.size_t)
     from mmtbx.geometry_restraints.reference import add_coordinate_restraints, \
@@ -590,10 +645,17 @@ class manager(Base_geometry):
 
     if isinstance(selection, flex.size_t):
       isel = selection
+      bsel = flex.bool(n_atoms_in_target_model, isel)
       sites_cart=pdb_hierarchy.atoms().extract_xyz()
+      assert not reference_is_average_alt_confs
     else:
       # should be deleted if all_chain_proxies won't be used
-      sites_cart = all_chain_proxies.pdb_hierarchy.atoms().extract_xyz()
+      if reference_is_average_alt_confs:
+        hierarchy = all_chain_proxies.pdb_hierarchy.as_forward_compatible_hierarchy()
+        asel = hierarchy.average_alt_confs(pinch_limit=limit)
+        sites_cart = hierarchy.atoms().extract_xyz()
+      else:
+        sites_cart = all_chain_proxies.pdb_hierarchy.atoms().extract_xyz()
       new_selection = flex.bool(sites_cart.size(), True)
       if selection is not None:
         new_selection = all_chain_proxies.selection(selection)
@@ -602,13 +664,16 @@ class manager(Base_geometry):
             "selection string: %s)") % selection)
       # print >> self.log, "*** Restraining %d atoms to initial coordinates ***" % \
       #     new_selection.size()
-      if exclude_outliers:
-        new_selection = exclude_outliers_from_reference_restraints_selection(
-            pdb_hierarchy=all_chain_proxies.pdb_hierarchy,
-            restraints_selection=new_selection)
       isel = new_selection.iselection()
+    if exclude_outliers:
+      new_selection = exclude_outliers_from_reference_restraints_selection(
+          pdb_hierarchy=pdb_hierarchy if pdb_hierarchy is not None else all_chain_proxies.pdb_hierarchy,
+          restraints_selection=new_selection if all_chain_proxies is not None else bsel)
+      isel = new_selection.iselection()
+    if reference_is_average_alt_confs:
+      isel = asel
     proxies = add_coordinate_restraints(
-        sites_cart=sites_cart.select(isel),
+        sites_cart=sites_cart.select(isel) if n_atoms_in_target_model is None else sites_cart,
         selection=isel,
         sigma=sigma,
         limit=limit,
@@ -728,6 +793,9 @@ class manager(Base_geometry):
   def adopt_reference_dihedral_manager(self, manager):
     self.reference_dihedral_manager = manager
 
+  def remove_reference_dihedral_manager(self):
+    self.reference_dihedral_manager = None
+
   def remove_reference_dihedrals_in_place(self, selection):
     if self.reference_dihedral_manager is not None:
       self.reference_dihedral_manager.proxy_remove(selection=selection)
@@ -745,6 +813,10 @@ class manager(Base_geometry):
   def get_n_reference_dihedral_proxies(self):
     if self.reference_dihedral_manager is not None:
       return self.reference_dihedral_manager.get_n_proxies()
+
+  def get_n_reference_hbond_proxies(self):
+    return self._get_n_bond_proxies_origin(
+      origin_id=origin_ids.get_origin_id('reference hydrogen bonds'))
 
   def sync_reference_dihedral_with_ncs(self, log):
     if (self.reference_dihedral_manager is not None and
@@ -804,9 +876,9 @@ class manager(Base_geometry):
   def set_ramachandran_restraints(self, manager):
     self.ramachandran_manager=manager
 
-  def update_ramachandran_restraints_phi_psi_targets(self, sites_cart):
+  def update_ramachandran_restraints_phi_psi_targets(self, hierarchy):
     if(self.ramachandran_manager is not None):
-      self.ramachandran_manager.update_phi_psi_targets(sites_cart = sites_cart)
+      self.ramachandran_manager.update_phi_psi_targets(hierarchy = hierarchy)
 
   def remove_ramachandran_in_place(self):
     self.ramachandran_manager = None
@@ -825,9 +897,10 @@ class manager(Base_geometry):
         pdb_hierarchy=hierarchy,
         grm=self,
         log=log)
+    # print ('Total proxies:', len(hb_proxies))
     # for p in hb_proxies:
-    #   print p.i_seqs[0], p.i_seqs[1], hierarchy.atoms()[p.i_seqs[0]].id_str(), '<-->', hierarchy.atoms()[p.i_seqs[1]].id_str(),
-    #   print hierarchy.atoms()[p.i_seqs[0]].distance(hierarchy.atoms()[p.i_seqs[1]])
+    #   print (p.i_seqs[0], p.i_seqs[1], hierarchy.atoms()[p.i_seqs[0]].id_str(), '<-->', hierarchy.atoms()[p.i_seqs[1]].id_str())
+    #   print ("  ", hierarchy.atoms()[p.i_seqs[0]].distance(hierarchy.atoms()[p.i_seqs[1]]))
     self.add_new_hbond_restraints_in_place(
         proxies=hb_proxies,
         sites_cart=hierarchy.atoms().extract_xyz(),
@@ -836,13 +909,39 @@ class manager(Base_geometry):
     self.add_planarities_in_place(planarity_proxies)
     self.add_parallelities_in_place(parallelity_proxies)
 
-  def remove_secondary_structure_restraints(self):
-    # Not implemented. The problem here is to remove hbond restraints, which
-    # requires modification of pair_proxies and as complicated as addition
-    # of bond restraint.
-    raise NotImplementedError
+  def remove_secondary_structure_restraints(self, sites_cart):
+    bp_origin_id = origin_ids.get_origin_id('hydrogen bonds')
+    bonds_to_remove = []
+    self.reset_internals()
+    self.pair_proxies(sites_cart=sites_cart)
+    for proxy_type in self.get_all_bond_proxies():
+      for proxy in proxy_type:
+        if proxy.origin_id == bp_origin_id:
+          bonds_to_remove.append(proxy.i_seqs)
+    self.remove_bond_restraints_in_place(
+        bonded_pairs=bonds_to_remove,
+        sites_cart=sites_cart)
+    if self.angle_proxies is not None:
+      self.angle_proxies = self.angle_proxies.proxy_remove(
+          origin_id=origin_ids.get_origin_id('hydrogen bonds'))
+    if self.planarity_proxies is not None:
+      self.planarity_proxies = self.planarity_proxies.proxy_remove(
+          origin_id=origin_ids.get_origin_id('basepair planarity'))
+    if self.parallelity_proxies is not None:
+      self.parallelity_proxies = self.parallelity_proxies.proxy_remove(
+          origin_id=origin_ids.get_origin_id('basepair parallelity'))
+    if self.parallelity_proxies is not None:
+      self.parallelity_proxies = self.parallelity_proxies.proxy_remove(
+          origin_id=origin_ids.get_origin_id('basepair stacking'))
+    return None
 
-  def set_external_energy_function (self, energy_function) :
+  def add_parallelity_proxies_for_side_chain(self, hierarchy, log):
+    parallelity_proxies = create_side_chain_restraints( hierarchy=hierarchy,
+                                                        grm=self,
+                                                        log=log)
+    self.add_parallelities_in_place(parallelity_proxies)
+
+  def set_external_energy_function(self, energy_function):
     self.external_energy_function = energy_function
 
   def _get_n_bond_proxies_origin(self, origin_id):
@@ -872,7 +971,7 @@ class manager(Base_geometry):
     if pair_proxies is not None:
       if pair_proxies.bond_proxies is not None:
         return (pair_proxies.bond_proxies.simple,
-        pair_proxies.bond_proxies.asu)
+                pair_proxies.bond_proxies.asu)
 
   def get_covalent_angle_proxies(self):
     specific_origin_id = origin_ids.get_origin_id('covalent geometry')
@@ -894,12 +993,12 @@ class manager(Base_geometry):
     return len(self.angle_proxies.proxy_select(origin_id=specific_origin_id))
 
   def get_n_stacking_proxies(self):
-    specific_origin_id = origin_ids.get_origin_id('covalent geometry')
+    specific_origin_id = origin_ids.get_origin_id('basepair stacking')
     return len(self.parallelity_proxies.proxy_select(
       origin_id=specific_origin_id))
 
   def get_n_parallelity_bp_proxies(self):
-    specific_origin_id = origin_ids.get_origin_id('hydrogen bonds')
+    specific_origin_id = origin_ids.get_origin_id('basepair parallelity')
     return len(self.parallelity_proxies.proxy_select(
       origin_id=specific_origin_id))
 
@@ -909,17 +1008,16 @@ class manager(Base_geometry):
       origin_id=specific_origin_id))
 
   def get_n_planarity_bp_proxies(self):
-    specific_origin_id = origin_ids.get_origin_id('hydrogen bonds')
+    specific_origin_id = origin_ids.get_origin_id('basepair planarity')
     return len(self.planarity_proxies.proxy_select(
       origin_id=specific_origin_id))
 
-  def get_hbond_proxies_iseqs(self):
-    specific_origin_id = origin_ids.get_origin_id('hydrogen bonds')
+  def _bond_proxies_iseqs_by_origin_id(self, specific_origin_id):
     result = []
     try:
       pair_proxies = self.pair_proxies()
     except AssertionError as e:
-      # This is in case when somebody tries to access hbonds when
+      # This is in case when somebody tries to access proxies when
       # grm is not ready. See e.g. phenix/refinement/runtime.py
       # class refinement_status, grm.get_hbond_proxies_iseqs()
       if "pair_proxies not defined already." in e.args:
@@ -937,6 +1035,14 @@ class manager(Base_geometry):
         for p in asu_p:
           result.append((p.i_seq, p.j_seq))
     return result
+
+  def get_hbond_proxies_iseqs(self):
+    return self._bond_proxies_iseqs_by_origin_id(
+      origin_ids.get_origin_id('hydrogen bonds'))
+
+  def get_edits_bond_proxies_iseqs(self):
+    return self._bond_proxies_iseqs_by_origin_id(
+      origin_ids.get_origin_id('edits'))
 
   def new_included_bonded_atoms(self, proxies, sites_cart,
       site_symmetry_table, nonbonded_types, nonbonded_charges,
@@ -993,6 +1099,7 @@ class manager(Base_geometry):
     new_grm.add_new_bond_restraints_in_place(proxies, sites_cart,
       max_distance_between_connecting_atoms=max_distance_between_connecting_atoms,
       skip_max_proxy_distance_calculation=skip_max_proxy_distance_calculation)
+    new_grm.set_source(source = self.get_source())
     return new_grm
 
   def add_new_hbond_restraints_in_place(self, proxies, sites_cart,
@@ -1011,21 +1118,26 @@ class manager(Base_geometry):
     paired atoms is determined here, therefore the proxy.rt_mx_ji may be
     anything."""
     import time
+    if len(proxies) == 0:
+      return
     rt_mx_ji_options = [[] for x in proxies]
     # Get current max bond distance, copied from pair_proxies()
     t0 = time.time()
     bonded_distance_cutoff = max_distance_between_connecting_atoms
     sites_frac = self.crystal_symmetry.unit_cell().\
         fractionalize(sites_cart=sites_cart)
+    # max over all shells: a bond can be longer than any 1-4 pair (an H not
+    # yet placed, 6e8p)
     existing_max_bonded_distance = 0
     for shell_sym_table in self.shell_sym_tables:
-      existing_max_bonded_distance = flex.max_default(
+      existing_max_bonded_distance = max(existing_max_bonded_distance,
+          flex.max_default(
               values=crystal.get_distances(
                   pair_sym_table=shell_sym_table,
                   orthogonalization_matrix=self.crystal_symmetry.unit_cell() \
                       .orthogonalization_matrix(),
                   sites_frac=sites_frac),
-              default=0)
+              default=0))
     t1 = time.time()
     max_p_distance=0
     if not skip_max_proxy_distance_calculation:
@@ -1038,17 +1150,18 @@ class manager(Base_geometry):
           max_p_distance = distance_model
       bonded_distance_cutoff = max(bonded_distance_cutoff,
           max_p_distance)
-    bonded_distance_cutoff = max(
-        [existing_max_bonded_distance,
-        max_p_distance,
-        max_distance_between_connecting_atoms])
     bonded_distance_cutoff = min(bonded_distance_cutoff,
         max_distance_between_connecting_atoms)+0.1
+    # The asu buffer must cover existing bonds so that add_pair_sym_table
+    # below finds every bonded mate; bonded_distance_cutoff stays the limit
+    # for new bonds and must not grow with them.
+    buffer_thickness = max(bonded_distance_cutoff,
+        existing_max_bonded_distance)
     t2 = time.time()
-    # print "bonded_distance_cutoff:", bonded_distance_cutoff
+    # print("bonded_distance_cutoff", bonded_distance_cutoff)
     # make asu mappings
     all_asu_mappings = self.crystal_symmetry.special_position_settings().\
-        asu_mappings(buffer_thickness=bonded_distance_cutoff)
+        asu_mappings(buffer_thickness=buffer_thickness)
     all_asu_mappings.process_sites_cart(
       original_sites=sites_cart,
       site_symmetry_table=self.site_symmetry_table)
@@ -1058,16 +1171,17 @@ class manager(Base_geometry):
 
     t3 = time.time()
     proxies_i_seqs = {}
-    np = 0
     proxies_iselection = []
-    for p in proxies:
+    for np, p in enumerate(proxies):
+      # print('p iseqs', p.i_seqs)
       proxies_i_seqs[p.i_seqs] = np
-      np += 1
+      proxies_i_seqs[(p.i_seqs[1], p.i_seqs[0])] = np
       for i in list(p.i_seqs):
         if i not in proxies_iselection:
           proxies_iselection.append(i)
     # Not sure whether we want to sort it...
     # proxies_iselection = flex.size_t(sorted(proxies_iselection))
+    # print('proxies_i_seqs', proxies_i_seqs)
     proxies_iselection = flex.size_t(proxies_iselection)
     t4 = time.time()
 
@@ -1100,6 +1214,9 @@ class manager(Base_geometry):
       r_a_index[value] = index
     n_added_proxies = 0
     for pair in pair_generator:
+      # !!! Warning !!! pairs here may come reverted: (32,24) and (24,32) and
+      # they may result in different rt_mx_ji. Therefore in the next for cycle
+      # we need to make sure we are picking correct rt_mx_ji
       pair_in_origninal_indeces = (r_a_index[pair.i_seq], r_a_index[pair.j_seq])
       n_proxy = None
       # Is this pair should be restrained?
@@ -1111,34 +1228,53 @@ class manager(Base_geometry):
       if n_proxy is None:
         continue
       # Sanity check (not necessary because of 'continue' in previous line)
-      # print "n_proxy", n_proxy
+      # print "  n_proxy", n_proxy
       if n_proxy is not None:
-        # print "Adding to options,", n_proxy, rt_mx_ji_options
+        # print("Adding to options,", n_proxy, rt_mx_ji_options)
         #Trying to find rt_mx_ji for connecting atoms
         rt_mx_i = conn_asu_mappings.get_rt_mx_i(pair)
         rt_mx_j = conn_asu_mappings.get_rt_mx_j(pair)
         rt_mx_ji = rt_mx_i.inverse().multiply(rt_mx_j)
+        # reverted pair: its rt_mx_ji maps i onto j (3dgd ZN D 130 - HIS C 31)
+        if pair_in_origninal_indeces[0] != proxies[n_proxy].i_seqs[0]:
+          rt_mx_ji = rt_mx_ji.inverse()
         rt_mx_ji_options[n_proxy].append(rt_mx_ji)
-        # print "pair:",  pair.i_seq, pair.j_seq, "n_proxy ", n_proxy,rt_mx_ji
-    # print "rt_mx_ji_options:", rt_mx_ji_options
-    # for i, op in enumerate(rt_mx_ji_options):
-    #   print len(op)
-    # STOP()
+        # print("  pair:",  pair.i_seq, pair.j_seq, "n_proxy ", n_proxy,rt_mx_ji)
+    # print ("rt_mx_ji_options:", rt_mx_ji_options)
+    # for i, opts in enumerate(rt_mx_ji_options):
+    #   print("  ",i,' ', end='')
+    #   for o in opts:
+    #     print(o,",", end='')
+    #   print()
+    # print()
+    # print("STARTING TO PICK rt_mx_ji for proxies")
     for proxy, rt_mx_ji_option in zip(proxies, rt_mx_ji_options):
-      # print "rt_mx_ji_option", rt_mx_ji_option
-      # choose rt_mx_ji
+      # print("rt_mx_ji_options:",end='')
+      # for op in rt_mx_ji_option:
+      #   print (op,' | ' , end='')
+      # print()
+      # print("  choose rt_mx_ji")
       rt_mx_ji = None
-      if len(rt_mx_ji_option) >= 1:
+      if len(rt_mx_ji_option) == 1:
         rt_mx_ji = rt_mx_ji_option[0]
       if len(rt_mx_ji_option) > 1:
         # search for unit mx or pick the first one
         for rmj in rt_mx_ji_option:
           if rmj.is_unit_mx():
             rt_mx_ji = rmj
+        if rt_mx_ji is None:
+          # no unit mx found and we have >1 options, need to pick correct one
+          for rmj in rt_mx_ji_option:
+            t_rt_mx_i = all_asu_mappings.get_rt_mx(proxy.i_seqs[0], 0)
+            t_rt_mx_j = t_rt_mx_i.multiply(rmj)
+            j_sym = all_asu_mappings.find_i_sym(proxy.i_seqs[1], t_rt_mx_j)
+            # print('checking j_sym', j_sym, proxy.i_seqs[0], proxy.i_seqs[1])
+            if j_sym >= 0:
+              rt_mx_ji = rmj
       # Add new defined bond
-      # print "rt_mx_ji", rt_mx_ji
+      # print ("  chosen rt_mx_ji", rt_mx_ji)
       if rt_mx_ji is not None:
-        # print "Adding new bond:", proxy.i_seqs[0], proxy.i_seqs[1], rt_mx_ji
+        # print("  Adding new bond:", proxy.i_seqs[0], proxy.i_seqs[1], rt_mx_ji)
         all_bonds_asu_table.add_pair(
           i_seq=proxy.i_seqs[0],
           j_seq=proxy.i_seqs[1],
@@ -1157,12 +1293,20 @@ class manager(Base_geometry):
             )
         n_added_proxies += 1
     t6 = time.time()
+    # print('n_added_proxies', n_added_proxies)
     # update self.shell_sym_tables with new bonds
-    shell_asu_tables = crystal.coordination_sequences.shell_asu_tables(
-      pair_asu_table=all_bonds_asu_table,
+    # 1-3 and 1-4 pairs are derived from symmetry operations of the bonds
+    # and not from the asu mappings: the buffer covers bonded mates only,
+    # and a new bond makes 1-3 and 1-4 pairs that reach beyond it (1g6x:
+    # one of two copies of H of water bonded to water on 2-fold axis).
+    shell_sym_tables = crystal.coordination_sequences.shell_sym_tables(
+      full_pair_sym_table=all_bonds_asu_table.extract_pair_sym_table() \
+        .full_connectivity(site_symmetry_table=self.site_symmetry_table),
+      site_symmetry_table=self.site_symmetry_table,
       max_shell=3)
-    self.shell_sym_tables = [shell_asu_table.extract_pair_sym_table()
-      for shell_asu_table in shell_asu_tables]
+    self.shell_sym_tables = [
+      shell_sym_table.tidy(site_symmetry_table=self.site_symmetry_table)
+      for shell_sym_table in shell_sym_tables]
     self.reset_internals()
     # Run this function so that new pair_proxies are ready to go
     t61 = time.time()
@@ -1178,6 +1322,52 @@ class manager(Base_geometry):
     # print "t61: %f" % (t61-t6)
     # print "t7: %f" % (t7-t61)
     # STOP()
+
+  def remove_bond_restraints_in_place(self, bonded_pairs, sites_cart):
+    """ Removing bond restraints in place.
+    Current limitations:
+      * symmetry related cases (1' means symmetry mate of 1):
+        -: 2' --- 1 --- 2
+        -: 1' --- 1
+
+    Args:
+        bonded_pairs (list): list of bonded i_seqs to remove bonds, e.g.
+        [(0,1), (5,15)] for bonds between atoms 0--1 and 5--15 to be removed.
+    """
+    def _show_bpt(bpt):
+      print('bpt size:', bpt.size())
+      for i_seq in range(bpt.size()):
+        print('i_seq', i_seq)
+        d = bpt[i_seq]
+        for k in d.keys():
+          print('  j_seq: %d, %f' % (k, d[k].distance_ideal))
+
+    # print("1-2,"*30)
+    # print('BEGIN shell_sym_tables[0]')
+    # self.shell_sym_tables[0].show()
+    filtered_bonded_pairs = [sorted(x) for x in bonded_pairs if self.is_bonded_atoms(x[0], x[1])]
+    # print("Original BPT")
+    # _show_bpt(self.bond_params_table)
+
+    # Removing bonds from self.shell_sym_tables
+    asu_mappings = self.crystal_symmetry.special_position_settings().\
+        asu_mappings(buffer_thickness=5)
+    asu_mappings.process_sites_cart(
+        original_sites=sites_cart,
+        site_symmetry_table=self.site_symmetry_table)
+
+    pair_asu_table = crystal.pair_asu_table(asu_mappings=asu_mappings)
+    for i, j in filtered_bonded_pairs:
+      del self.shell_sym_tables[0][i][j]
+    pair_asu_table.add_pair_sym_table(self.shell_sym_tables[0])
+    shell_asu_tables = crystal.coordination_sequences.shell_asu_tables(
+      pair_asu_table=pair_asu_table,
+      max_shell=3)
+    self.shell_sym_tables = [shell_asu_table.extract_pair_sym_table()
+      for shell_asu_table in shell_asu_tables]
+
+    self.reset_internals()
+    self.pair_proxies(sites_cart=sites_cart)
 
   def is_bonded_atoms(self, i_seq, j_seq):
     i_s = i_seq
@@ -1425,7 +1615,8 @@ class manager(Base_geometry):
         normalization=False,
         external_energy_function=None,
         extension_objects=[],
-        site_labels=None):
+        site_labels=None,
+        normalization_exclude=None):
     if(external_energy_function is not None):
       assert self.external_energy_function is None
     else:
@@ -1490,7 +1681,8 @@ class manager(Base_geometry):
       gradients=gradients,
       disable_asu_cache=disable_asu_cache,
       normalization=normalization,
-      extension_objects=extension_objects)
+      extension_objects=extension_objects,
+      normalization_exclude=normalization_exclude)
 
   def harmonic_restraints(self, variables, type_indices, type_weights):
     assert self.shell_sym_tables is not None
@@ -1555,13 +1747,13 @@ class manager(Base_geometry):
                                  ref_site       = x[1])
     return gradients
 
-  def update_atom_nonbonded_type (self,
+  def update_atom_nonbonded_type(self,
         i_seq,
         nonbonded_type,
-        charge=0) :
-    if (self.nonbonded_types is not None) :
+        charge=0):
+    if (self.nonbonded_types is not None):
       self.nonbonded_types[i_seq] = nonbonded_type
-    if (self.nonbonded_charges is not None) :
+    if (self.nonbonded_charges is not None):
       self.nonbonded_charges[i_seq] = charge
 
   def write_geo_file(self,
@@ -1575,7 +1767,7 @@ class manager(Base_geometry):
       outf_descriptor = file_descriptor
     else:
       outf_descriptor = open(file_name, "w")
-    print >> outf_descriptor, header
+    print(header, file=outf_descriptor)
     self.show_sorted(
       sites_cart=sites_cart,
       site_labels=site_labels,
@@ -1588,26 +1780,38 @@ class manager(Base_geometry):
         sites_cart=None,
         site_labels=None,
         f=None):
-    default_origin_id = origin_ids.get_origin_id('covalent geometry')
+    from cctbx.geometry_restraints.auto_linking_types import covalent_headers
+    from cctbx.geometry_restraints.auto_linking_types import internal_labels
+    covalent_key = 'covalent geometry'
+    default_origin_id = origin_ids.get_origin_id(covalent_key)
     if (f is None): f = sys.stdout
     pair_proxies = self.pair_proxies(flags=flags, sites_cart=sites_cart)
     if (sites_cart is None):
       sites_cart = self._sites_cart_used_for_pair_proxies
 
     if pair_proxies.bond_proxies is not None:
+      #
+      # write covalent bonds
+      #
+      label='%s | %s |' % (covalent_headers[0], covalent_key)
+      tempbuffer = StringIO()
       pair_proxies.bond_proxies.show_sorted(
           by_value="residual",
           sites_cart=sites_cart,
           site_labels=site_labels,
-          f=f,
+          f=tempbuffer,
           origin_id=default_origin_id)
-      print >> f
-      for label, origin_id in [
-        ["Bond-like", origin_ids.get_origin_id('hydrogen bonds')],
-        ["Metal coordination", origin_ids.get_origin_id('metal coordination')],
-         ["User supplied restraints", origin_ids.get_origin_id('edits')],
-        ]:
-        tempbuffer = StringIO.StringIO()
+      if tempbuffer.getvalue().find(': 0')==-1:
+        print(label, tempbuffer.getvalue()[5:], file=f)
+      #
+      # write bonds with other origin_id
+      #
+      label=covalent_headers[0]
+      for key in origin_ids.get_bond_origin_id_labels():
+        origin_id=origin_ids.get_origin_id(key)
+        if origin_id==default_origin_id: continue
+        t_label=origin_ids.get_geo_file_header(key)
+        tempbuffer = StringIO()
         pair_proxies.bond_proxies.show_sorted(
             by_value="residual",
             sites_cart=sites_cart,
@@ -1615,78 +1819,253 @@ class manager(Base_geometry):
             f=tempbuffer,
             prefix="",
             origin_id=origin_id)
-        print >> f, label, tempbuffer.getvalue()[5:]
-
-    if (self.angle_proxies is not None):
-      self.angle_proxies.show_sorted(
-        by_value="residual",
-        sites_cart=sites_cart,
-        site_labels=site_labels,
-        f=f,
-        origin_id=default_origin_id)
-      print >> f
-      for label, origin_id in [
-        ["SS restraints around h-bond",
-         origin_ids.get_origin_id('hydrogen bonds')],
-        ['Metal coordination',
-         origin_ids.get_origin_id('metal coordination')],
-        ["User supplied restraints", origin_ids.get_origin_id('edits')],
-      ]:
-        tempbuffer = StringIO.StringIO()
-        self.angle_proxies.show_sorted(
+        if tempbuffer.getvalue().find(': 0')==-1:
+          print('%s | %s |' % (label, t_label), tempbuffer.getvalue()[5:], file=f)
+    #
+    # write of the other internals for each origin_id
+    #
+    for i, (proxies, keys, start) in enumerate([
+      (
+       self.angle_proxies, # self.get_all_angle_proxies(),
+       origin_ids.get_angle_origin_id_labels(),
+       11),
+      (
+       self.dihedral_proxies, # self.get_dihedral_proxies(),
+       origin_ids.get_dihedral_origin_id_labels(),
+       15),
+      (
+       self.chirality_proxies,
+       origin_ids.get_chiral_origin_id_labels(),
+       10),
+      (
+       self.planarity_proxies,
+       origin_ids.get_plane_origin_id_labels(),
+       10),
+      (
+       self.parallelity_proxies,
+       origin_ids.get_parallelity_origin_id_labels(),
+       12),
+      ]):
+      p_label=covalent_headers[i+1]
+      internals=internal_labels[i+1]
+      if (proxies is not None):
+        #
+        # "covalent" original ids
+        #
+        if p_label not in ['Parallelity']: # not default origin for parallelity
+          tempbuffer = StringIO()
+          proxies.show_sorted(
             by_value="residual",
             sites_cart=sites_cart,
             site_labels=site_labels,
             f=tempbuffer,
-            prefix="",
-            origin_id=origin_id)
-        print >> f, label, tempbuffer.getvalue()[5:]
-
+            origin_id=default_origin_id)
+          print('%s | %s | %s' % (tempbuffer.getvalue()[:start-1],
+                                  covalent_key,
+                                  tempbuffer.getvalue()[start:]),
+                file=f)
+        #
+        # other origin ids
+        #
+        for key in keys:
+          origin_id=origin_ids.get_origin_id(key)
+          if origin_id==default_origin_id: continue
+          label=origin_ids.get_geo_file_header(key, internals=internals)
+          if label is None: continue
+          tempbuffer = StringIO()
+          proxies.show_sorted(
+              by_value="residual",
+              sites_cart=sites_cart,
+              site_labels=site_labels,
+              f=tempbuffer,
+              prefix="",
+              origin_id=origin_id)
+          if len(tempbuffer.getvalue()) and tempbuffer.getvalue().find(': 0')==-1:
+            print('%s | %s | %s' % (p_label, label, tempbuffer.getvalue()[start:]),
+                  file=f)
+    #
+    # not parsed for geo viewer
+    #
     for p_label, proxies in [
-        ("Dihedral angle", self.get_dihedral_proxies()),
-        ("C-Beta improper torsion angle", self.get_c_beta_torsion_proxies()),
-        ("Side chain torsion angle", self.get_chi_torsion_proxies()),
         ("Reference torsion angle", self.reference_dihedral_manager),
-        ("NCS torsion angle", self.ncs_dihedral_manager),
-        ("", self.ramachandran_manager),
-        ("Chirality", self.chirality_proxies),
-        ("", self.planarity_proxies),
-        ("", self.parallelity_proxies)]:
+        ("NCS torsion angle",       self.ncs_dihedral_manager),
+        ("",                        self.ramachandran_manager),
+        ('Reference coordinate',    self.reference_coordinate_proxies),
+        ]:
       if proxies is not None:
-        proxies.show_sorted(
-            by_value="residual",
-            sites_cart=sites_cart,
-            site_labels=site_labels,
-            proxy_label=p_label,
-            f=f)
+        if hasattr(proxies, 'show_sorted'):
+          proxies.show_sorted(
+              by_value="residual",
+              sites_cart=sites_cart,
+              site_labels=site_labels,
+              proxy_label=p_label,
+              f=f)
+        else:
+          def dist2(xyz1, xyz2):
+            d2=0
+            for i in range(3):
+              d2+=(xyz1[i]-xyz2[i])**2
+            return d2
+          print('Harmonic | Reference coordinate | restraints :%d' % (len(proxies)),
+                file=f)
+          for proxy in proxies:
+            i_seq=proxy.i_seqs[0]
+            d2=dist2(proxy.ref_sites, sites_cart[i_seq])
+            print('bond %s, d2=%6.3fA, sigma=%7.3f, weight=%7.3f' % (
+              site_labels[i_seq],
+              d2,
+              # '(%9.5f, %9.5f, %9.5f)' % tuple(proxy.ref_sites),
+              1/proxy.weight**0.5,
+              proxy.weight,
+              ),
+              file=f,
+              )
+        print(file=f)
     #
     # Here should be showing DEN manager...
     #
     if (pair_proxies.nonbonded_proxies is not None):
+      tempbuffer = StringIO()
       pair_proxies.nonbonded_proxies.show_sorted(
         by_value="delta",
-        sites_cart=sites_cart, site_labels=site_labels, f=f,
+        sites_cart=sites_cart, site_labels=site_labels,
+        f=tempbuffer,
         suppress_model_minus_vdw_greater_than=None)
-      print >> f
+      start=10
+      print('%s| unspecified | %s' % (tempbuffer.getvalue()[:start],
+                                      tempbuffer.getvalue()[start:]
+                                     ),
+            file=f)
 
-  def nb_overlaps_info(
-    self,
-    sites_cart,
-    hd_sel,
-    macro_mol_sel=None,
-    site_labels=None):
-    """ non-bonded overlaps information """
-    from cctbx.geometry_restraints.nonbonded_overlaps import info
-    if not macro_mol_sel:
-      from cctbx.geometry_restraints.nonbonded_overlaps import get_macro_mol_sel
-      macro_mol_sel = get_macro_mol_sel(pdb_processed_file=self)
+  def _bond_generator(self):
+    # bonds for struct_conn and cif links: not the covalent geometry and not
+    # the capping H. A cap bond (origin 'capping', mmtbx.hydrogens.capping)
+    # joins an H to an atom of its own residue: it is no link and has no
+    # cif_link to write.
+    from cctbx.geometry_restraints.linking_class import linking_class
+    capping = linking_class().get_origin_id('capping')
+    simple, asu = self.get_all_bond_proxies()
+    simple = simple.get_proxies_without_origin_id(0)
+    asu = asu.get_proxies_without_origin_id(0)
+    for bond in list(simple)+list(asu):
+      if bond.origin_id == capping: continue
+      yield bond
 
-    return info(
-      geometry_restraints_manager=self,
-      macro_molecule_selection=macro_mol_sel,
-      sites_cart=sites_cart,
-      hd_sel=hd_sel,
-      site_labels=site_labels).result
+  def get_struct_conn_mmcif(self, hierarchy):
+    atoms = hierarchy.atoms()
+    def _atom_info(atom):
+      return [  # auth
+                atom.parent().resname.strip(),
+                atom.parent().parent().parent().id,
+                atom.parent().parent().resseq.strip(),
+                atom.name.strip(),
+                # label
+                atom.parent().resname.strip(),
+                hierarchy.get_label_asym_id(atom.parent().parent()),
+                hierarchy.get_label_seq_id(atom.parent()),
+                atom.name.strip(),
+                '.', # role
+               ]
+      return res
+    def _atom_info_grouped(bond):
+      row = []
+      if hasattr(bond, 'i_seqs'):
+        i1 = bond.i_seqs[0]
+        i2 = bond.i_seqs[1]
+      else:
+        i1 = bond.i_seq
+        i2 = bond.j_seq
+      row += _atom_info(atoms[i1])
+      row += _atom_info(atoms[i2])
+      #row.append('1_555') # symmetry!
+      return row
+    from cctbx.geometry_restraints.auto_linking_types import origin_ids
+    struct_conn_loop = iotbx.cif.model.loop(header=(
+      '_struct_conn.id',
+      '_struct_conn.conn_type_id',
+      '_struct_conn.ptnr1_auth_comp_id',
+      '_struct_conn.ptnr1_auth_asym_id',
+      '_struct_conn.ptnr1_auth_seq_id',
+      '_struct_conn.ptnr1_auth_atom_id',
+      '_struct_conn.ptnr1_label_comp_id',
+      '_struct_conn.ptnr1_label_asym_id',
+      '_struct_conn.ptnr1_label_seq_id',
+      '_struct_conn.ptnr1_label_atom_id',
+      '_struct_conn.ptnr1_role',
+      #'_struct_conn.ptnr1_symmetry',
+      '_struct_conn.ptnr2_auth_comp_id',
+      '_struct_conn.ptnr2_auth_asym_id',
+      '_struct_conn.ptnr2_auth_seq_id',
+      '_struct_conn.ptnr2_auth_atom_id',
+      '_struct_conn.ptnr2_label_comp_id',
+      '_struct_conn.ptnr2_label_asym_id',
+      '_struct_conn.ptnr2_label_seq_id',
+      '_struct_conn.ptnr2_label_atom_id',
+      '_struct_conn.ptnr2_role',
+      #'_struct_conn.ptnr2_symmetry',
+      '_struct_conn.details',
+      ))
+    for i, bond in enumerate(self._bond_generator()):
+      row = ['C%05d' % (i+1)]
+      origin_id_info = origin_ids[0].get(bond.origin_id, None)
+      assert origin_id_info
+      if origin_id_info[0]=='SS BOND': row.append('disulf')
+      elif origin_id_info[0]=='metal coordination': row.append('metalc')
+      elif origin_id_info[0]=='hydrogen bonds': row.append('hydrog')
+      else: row.append('covale')
+      row += _atom_info_grouped(bond)
+      if len(origin_id_info)>2 and origin_id_info[2]:
+        row.append(origin_id_info[2])
+      elif origin_id_info[1]: row.append(origin_id_info[1])
+      else: row.append('.') # details
+      struct_conn_loop.add_row(row)
+    return struct_conn_loop
+
+  def get_cif_link_entries(self, mon_lib_srv):
+    from cctbx.geometry_restraints.auto_linking_types import origin_ids
+    links = iotbx.cif.model.cif()
+    # not sure why this is the case but these are missing from origin_ids
+    done = ['POST-BETA-TRANS',
+            'PRE-BETA-TRANS',
+            'SSRAD',
+            'rna2p',
+            'rna3p',
+            ]
+    for i, bond in enumerate(self._bond_generator()):
+      row = ['C%05d' % (i+1)]
+      origin_id_info = origin_ids[0].get(bond.origin_id, None)
+      assert origin_id_info
+      key = origin_id_info[0].replace('link_', '')
+      link_key = 'link_%s' % origin_id_info[0]
+      if origin_id_info[0]=='SS BOND':
+        links['link_SS'] = mon_lib_srv.link_link_id_dict['SS'].as_cif_block()
+      elif origin_id_info[0]=='User supplied cif_link':
+        tlinks = []
+        for origin_id in origin_ids:
+          for oi, item in origin_id.items():
+            tlinks.append(item[0])
+          break
+        for tkey, item in sorted(mon_lib_srv.link_link_id_dict.items()):
+          if tkey in done: continue
+          done.append(tkey)
+          if tkey not in tlinks and 'link_%s' % tkey not in tlinks:
+            links['link_%s' % tkey] = item.as_cif_block()
+      elif key in mon_lib_srv.link_link_id_dict:
+        links['link_%s' % key] = mon_lib_srv.link_link_id_dict[key].as_cif_block()
+      elif origin_id_info[0] in ['hydrogen bonds',
+                                 'reference hydrogen bonds',
+                                 'edits',
+                                 'metal coordination',
+                                 'glycosidic custom',
+                                 'Misc. bond',
+                                 'water coordination',
+                                 ]:
+        # not writing cif_link for various reasons like programatic links
+        pass
+      else:
+        print(origin_id_info[0])
+        assert 0
+    return links
 
 def construct_non_crystallographic_conserving_bonds_and_angles(
       sites_cart,
@@ -1730,7 +2109,7 @@ def construct_non_crystallographic_conserving_bonds_and_angles(
   nonbonded_params = geometry_restraints.nonbonded_params()
   nonbonded_params.distance_table.setdefault(
     "Default")["Default"] = vdw_distance
-  return box.sites_cart, manager(
+  new_grm = manager(
     crystal_symmetry=box.crystal_symmetry(),
     site_symmetry_table=asu_mappings.site_symmetry_table(),
     bond_params_table=bond_params_table,
@@ -1739,6 +2118,7 @@ def construct_non_crystallographic_conserving_bonds_and_angles(
     nonbonded_types=nonbonded_types,
     nonbonded_function=geometry_restraints.prolsq_repulsion_function(),
     max_reasonable_bond_distance=max_reasonable_bond_distance)
+  return box.sites_cart, new_grm
 
 def format_distances_for_error_message(
       pair_sym_table,

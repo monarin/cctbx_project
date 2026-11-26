@@ -1,4 +1,4 @@
-from __future__ import division
+from __future__ import absolute_import, division, print_function
 
 from crys3d.hklview.frames import *
 from crys3d.hklview import view_2d
@@ -20,7 +20,7 @@ class twin_settings_window (settings_window) :
     sizer.Add(self.value_info_2, 0, wx.ALL|wx.ALIGN_CENTER_VERTICAL, 5)
 
   def update_reflection_info (self, hkl, d_min, value_1, value_2) :
-    print hkl, value_1, value_2
+    print(hkl, value_1, value_2)
     if (hkl is None) :
       self.hkl_info.SetValue("")
       self.d_min_info.SetValue("")
@@ -127,11 +127,11 @@ class ComparisonFrame (HKLViewFrame) :
     file_name_1 = wx.FileSelector("Reflections file 1",
       wildcard="Reflection files (*.mtz, *.sca, *.hkl)|*.mtz;*.sca;*.hkl",
       default_path="",
-      flags=wx.OPEN)
+      flags=wx.FD_OPEN)
     file_name_2 = wx.FileSelector("Reflections file 2",
       wildcard="Reflection files (*.mtz, *.sca, *.hkl)|*.mtz;*.sca;*.hkl",
       default_path="",
-      flags=wx.OPEN)
+      flags=wx.FD_OPEN)
     self.load_files(file_name_1, file_name_2)
 
   def load_files (self, file_name_1, file_name_2) :

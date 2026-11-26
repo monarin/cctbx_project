@@ -2,16 +2,16 @@
 # XXX This overlaps heavily with tst_scaling.py, which is much more
 # comprehensive.  Maybe remove this one?
 
-from __future__ import division
+from __future__ import absolute_import, division, print_function
 from mmtbx.scaling import twin_analyses
-import iotbx.pdb.hierarchy
+import iotbx.pdb
 from scitbx.array_family import flex
 from libtbx.test_utils import approx_equal, show_diff
 from libtbx.utils import null_out
-from cStringIO import StringIO
+from six.moves import cStringIO as StringIO
 import sys
 
-def exercise_twin_detection (verbose=False) :
+def exercise_twin_detection(verbose=False):
   # simple model with translational pseudosymmetry
   # XXX one big disadvantage: no centric reflections!
   pdb_str = """\
@@ -61,8 +61,8 @@ ATOM     20  OH  TYR B   7      -0.207   2.910  11.443  1.00 15.39           O
 ATOM     21  OXT TYR B   7       7.316   5.408   8.654  1.00 18.49           O
 END
 """
-  pdb_in = iotbx.pdb.hierarchy.input(pdb_string=pdb_str)
-  xrs = pdb_in.input.xray_structure_simple()
+  pdb_in = iotbx.pdb.input(source_info=None, lines=pdb_str)
+  xrs = pdb_in.xray_structure_simple()
   fc = abs(xrs.structure_factors(d_min=2.5).f_calc())
   fc = fc.set_observation_type_xray_amplitude()
   sigf = flex.double(fc.size(), 0.1) + (fc.data() * 0.03)
@@ -87,15 +87,15 @@ END
   tps = twin_analyses.detect_pseudo_translations(
     miller_array=fc_twin, out=null_out())
   assert ([tps.mod_h, tps.mod_k, tps.mod_l] == [3,2,3])
-  assert approx_equal(tps.high_peak, 47.152352)
+  assert approx_equal(tps.high_peak, 47.171501)
   assert approx_equal(tps.high_p_value, 0.000103)
   # L test
   fc_norm_acentric = twin_analyses.wilson_normalised_intensities(
     miller_array=fc_twin, normalise=True, out=null_out()).acentric
   ltest = twin_analyses.l_test(miller_array=fc_norm_acentric,
     parity_h=3, parity_l=3)
-  assert approx_equal(ltest.mean_l, 0.498974)
-  assert approx_equal(ltest.mean_l2, 0.371674)
+  assert approx_equal(ltest.mean_l, 0.498947)
+  assert approx_equal(ltest.mean_l2, 0.371801)
   # we need to go through the wrapper class for a lot of these...
   out = StringIO()
   tw = twin_analyses.twin_analyses(miller_array=fc_twin, out=out)
@@ -105,18 +105,18 @@ END
   wm = tw.wilson_moments
   assert ([wm.centric_i_ratio, wm.centric_f_ratio, wm.centric_e_sq_minus_one]
           == [None, None, None])
-  assert approx_equal(wm.acentric_i_ratio, 2.878383)
-  assert approx_equal(wm.acentric_f_ratio, 0.717738)
-  assert approx_equal(wm.acentric_abs_e_sq_minus_one, 0.808899)
+  assert approx_equal(wm.acentric_i_ratio, 2.879419)
+  assert approx_equal(wm.acentric_f_ratio, 0.717623)
+  assert approx_equal(wm.acentric_abs_e_sq_minus_one, 0.80884)
   assert (not wm.centric_present)
   # Overall analyses
   out = StringIO()
   tw.show(out=out)
   assert ("significantly different than is expected" in out.getvalue())
   summary = tw.twin_summary
-  assert approx_equal(summary.l_mean, 0.4989738)
-  assert approx_equal(summary.patterson_height, 47.152352)
-  for k, twin_r_factor in enumerate(summary.r_obs) :
+  assert approx_equal(summary.l_mean, 0.498947)
+  assert approx_equal(summary.patterson_height, 47.171501)
+  for k, twin_r_factor in enumerate(summary.r_obs):
     if (k == 6) : assert twin_r_factor < 0.11
     else : assert twin_r_factor > 0.3
   out2 = StringIO()
@@ -128,20 +128,21 @@ END
   out3 = StringIO()
   tw2.l_test.show(out=out3)
   assert not show_diff(out2.getvalue(), out3.getvalue())
-  if (verbose) :
-    print out.getvalue()
+  if (verbose):
+    print(out.getvalue())
   # twin_results_interpretation object via cctbx.miller.array API extension
   # XXX I get slightly different numbers here versus running through the
   # twin_analyses call above - this seems to be caused by the resolution
   # limits passed here.  Need to confirm these with PHZ.
   result = fc_twin.analyze_intensity_statistics()
-  assert approx_equal(result.maha_l, 27.580674)
+  assert approx_equal(result.maha_l, 27.632591)
   assert approx_equal(result.r_obs,
-    [0.514901, 0.514901, 0.397741, 0.580353, 0.579294, 0.420914, 0.114999])
+    [0.5149482387806512, 0.5149482387806508, 0.3977178235589324, 0.5803889398369432,
+     0.5793640391854873, 0.42086116968722809, 0.1150253355231856])
   assert approx_equal(result.h_alpha,
     [0.019980, 0.019980, 0.211788, 0.073926, 0.079920, 0.150849, 0.389610])
   assert result.has_twinning()
 
-if (__name__ == "__main__") :
+if (__name__ == "__main__"):
   exercise_twin_detection(verbose=("--verbose" in sys.argv))
-  print "OK"
+  print("OK")

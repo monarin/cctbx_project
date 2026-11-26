@@ -1,17 +1,18 @@
+"""Create MTZ file with Fmodel,Fcalc,Fbulk,Fmask,FOM,HL, resolution and more"""
 # LIBTBX_SET_DISPATCHER_NAME phenix.reciprocal_space_arrays
 
-from __future__ import division
+from __future__ import absolute_import, division, print_function
 import mmtbx.utils
 import mmtbx.f_model
 import mmtbx.model
 from iotbx import reflection_file_utils
 from iotbx import file_reader
 import iotbx.phil
-import iotbx.pdb
 from libtbx import runtime_utils
 from libtbx.utils import Sorry
-from cStringIO import StringIO
+from six.moves import cStringIO as StringIO
 import sys, os
+from iotbx import extract_xtal_data
 
 legend = """\
 
@@ -109,10 +110,10 @@ include scope libtbx.phil.interface.tracking_params
 """
 
 def defaults(log):
-  print >> log, "Default params::\n"
+  print("Default params::\n", file=log)
   parsed = iotbx.phil.parse(master_params_str, process_includes=True)
   parsed.show(prefix="  ", out=log)
-  print >> log
+  print(file=log)
   return parsed
 
 def extract_experimental_phases(experimental_phases, f_obs):
@@ -128,7 +129,7 @@ def extract_experimental_phases(experimental_phases, f_obs):
 
 def run(args, log = sys.stdout):
   if(len(args)==0):
-    print >> log, legend
+    print(legend, file=log)
     defaults(log=log)
     return
   #
@@ -138,7 +139,7 @@ def run(args, log = sys.stdout):
   params = processed_args.params.extract()
   reflection_files = processed_args.reflection_files
   if(len(reflection_files) == 0):
-    if (params.hkl_file is None) :
+    if (params.hkl_file is None):
       raise Sorry("No reflection file found.")
     else :
       hkl_in = file_reader.any_file(params.hkl_file, force_type="hkl")
@@ -146,7 +147,7 @@ def run(args, log = sys.stdout):
       reflection_files = [ hkl_in.file_object ]
   crystal_symmetry = processed_args.crystal_symmetry
   if(crystal_symmetry is None):
-    if (params.space_group is not None) and (params.unit_cell is not None) :
+    if (params.space_group is not None) and (params.unit_cell is not None):
       from cctbx import crystal
       crystal_symmetry = crystal.symmetry(
         space_group_info=params.space_group,
@@ -154,7 +155,7 @@ def run(args, log = sys.stdout):
     else :
       raise Sorry("No crystal symmetry found.")
   if(len(processed_args.pdb_file_names) == 0):
-    if (params.pdb_file is None) :
+    if (params.pdb_file is None):
       raise Sorry("No model file found.")
     else :
       pdb_file_names = [ params.pdb_file ]
@@ -166,34 +167,20 @@ def run(args, log = sys.stdout):
     force_symmetry   = True,
     reflection_files = reflection_files,
     err              = StringIO())
-  parameters = mmtbx.utils.data_and_flags_master_params().extract()
+  parameters = extract_xtal_data.data_and_flags_master_params().extract()
   parameters.labels = params.f_obs_label
   parameters.r_free_flags.label = params.r_free_flags_label
-  determine_data_and_flags_result = mmtbx.utils.determine_data_and_flags(
+  determine_data_and_flags_result = extract_xtal_data.run(
     reflection_file_server = rfs,
     parameters             = parameters,
-    keep_going             = True,
-    log                    = StringIO())
+    keep_going             = True)
   f_obs = determine_data_and_flags_result.f_obs
-  print "Input data:"
-  print "  Iobs or Fobs:", f_obs.info().labels
+  print("Input data:")
+  print("  Iobs or Fobs:", f_obs.info().labels)
   r_free_flags = determine_data_and_flags_result.r_free_flags
-  print "  Free-R flags:", r_free_flags.info().labels
+  print("  Free-R flags:", r_free_flags.info().labels)
   #
-  parameters = mmtbx.utils.experimental_phases_params.extract()
-  parameters.labels = params.hendrickson_lattman_coefficients_label
-  experimental_phases_result = mmtbx.utils.determine_experimental_phases(
-    reflection_file_server = rfs,
-    parameters             = parameters,
-    log                    = StringIO(),
-    parameter_scope        = "",
-    working_point_group    = None,
-    symmetry_safety_check  = True,
-    ignore_all_zeros       = True)
-  if(experimental_phases_result is not None):
-    print "  HL coefficients:", experimental_phases_result.info().labels
-  experimental_phases = extract_experimental_phases(
-    experimental_phases = experimental_phases_result, f_obs = f_obs)
+  experimental_phases = determine_data_and_flags_result.experimental_phases
   #
   if(r_free_flags is None):
     r_free_flags=f_obs.array(data=flex.bool(f_obs.data().size(), False))
@@ -201,18 +188,17 @@ def run(args, log = sys.stdout):
   pdb_inp = mmtbx.utils.pdb_inp_from_multiple_files(pdb_file_names, log=sys.stdout)
   model = mmtbx.model.manager(
     model_input      = pdb_inp,
-    process_input    = False,
     crystal_symmetry = crystal_symmetry,
     log              = sys.stdout)
   if(model.get_number_of_models()>1): #XXX support multi-models
     raise Sorry("Multiple model file not supported in this tool.")
   # XXX Twining not supported
   xray_structure = model.get_xray_structure()
-  if (not xray_structure.unit_cell().is_similar_to(f_obs.unit_cell())) :
+  if (not xray_structure.unit_cell().is_similar_to(f_obs.unit_cell())):
     raise Sorry("The unit cells in the model and reflections files are not "+
       "isomorphous.")
-  print "Input model:"
-  print "  number of atoms:", xray_structure.scatterers().size()
+  print("Input model:")
+  print("  number of atoms:", xray_structure.scatterers().size())
   fmodel = mmtbx.f_model.manager(
     xray_structure = xray_structure,
     r_free_flags   = r_free_flags,
@@ -221,11 +207,12 @@ def run(args, log = sys.stdout):
   fmodel.update_all_scales(
     update_f_part1 = True,
     remove_outliers = params.remove_f_obs_outliers,
-    bulk_solvent_and_scaling = params.bulk_solvent_and_scaling)
-  print "Overall statistics:"
+    bulk_solvent_and_scaling = params.bulk_solvent_and_scaling,
+    mosaic = params.bulk_solvent_and_scaling)
+  print("Overall statistics:")
   fmodel.info().show_all()
   #
-  print "Output data:"
+  print("Output data:")
   if(params.output_file_name is not None):
     output_file_name = params.output_file_name
   else:
@@ -237,41 +224,42 @@ def run(args, log = sys.stdout):
       hkl_file_prefix = hkl_file_bn[:hkl_file_bn.index(".")]
     except ValueError: hkl_file_prefix = hkl_file_bn
     output_file_name = "%s_%s.mtz"%(pdb_file_prefix, hkl_file_prefix)
-  print "  file name:", output_file_name
-  print "  to see the contnt of %s:"%output_file_name
-  print "    phenix.mtz.dump %s"%output_file_name
+  print("  file name:", output_file_name)
+  print("  to see the contnt of %s:"%output_file_name)
+  print("    phenix.mtz.dump %s"%output_file_name)
   out = open(output_file_name,"w")
   fmodel.export(out = out)
   out.close()
-  print "All done."
+  print("All done.")
   return output_file_name
 
-def validate_params (params) :
-  if (params.hkl_file is None) :
+def validate_params(params):
+  if (params.hkl_file is None):
     raise Sorry("No reflections file provided.")
-  elif (params.pdb_file is None) :
+  elif (params.pdb_file is None):
     raise Sorry("No model file provided.")
-  elif (params.output_file_name is None) :
+  elif (params.output_file_name is None):
     raise Sorry("No output file name provided.")
-  elif (params.f_obs_label is None) :
+  elif (params.f_obs_label is None):
     raise Sorry("No data label selected.")
-  elif (params.r_free_flags_label is None) :
+  elif (params.r_free_flags_label is None):
     raise Sorry("No R-free flags label selected.  This program requires R-free "+
       "flags to run and will not generate them automatically; use the "+
       "reflection file editor to add them to your data file.")
-  elif (params.space_group is None) or (params.unit_cell is None) :
+  elif (params.space_group is None) or (params.unit_cell is None):
     raise Sorry("Missing or incomplete symmetry information.")
   return True
 
-def finish_job (result) :
+def finish_job(result):
   output_files, stats = [], []
-  if (result is not None) and (os.path.isfile(result)) :
+  if (result is not None) and (os.path.isfile(result)):
     output_files.append((result, "Data and phases"))
   return output_files, stats
 
-class launcher (runtime_utils.target_with_save_result) :
-  def run (self) :
+class launcher(runtime_utils.target_with_save_result):
+  def run(self):
     return run(args=self.args, log=sys.stdout)
 
 if(__name__ == "__main__"):
   run(sys.argv[1:])
+

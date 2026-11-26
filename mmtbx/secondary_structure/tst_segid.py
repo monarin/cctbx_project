@@ -1,11 +1,13 @@
 
-from __future__ import division
+from __future__ import absolute_import, division, print_function
 import libtbx.load_env
 import sys
 from mmtbx.monomer_library import server
 from mmtbx.monomer_library import pdb_interpretation
-import StringIO
-from libtbx.utils import format_cpu_times
+from six.moves import cStringIO as StringIO
+from libtbx.utils import format_cpu_times, Sorry
+import iotbx.pdb
+from mmtbx.secondary_structure import nucleic_acids
 
 protein_pdb_str = """
 ATOM      1  N   SER C   2      34.351  13.914  38.850  1.00 25.20           N
@@ -747,37 +749,62 @@ def get_grm(pdb_str, mon_lib_srv, ener_lib, log):
 
 def exercise_protein(mon_lib_srv, ener_lib, log):
   grm = get_grm(protein_pdb_str.split('\n'), mon_lib_srv, ener_lib, log)
-  print grm.get_n_hbond_proxies(), "want 30"  # 31 hbonds, with segids 30
-  print grm.get_n_hangle_proxies(), "want 90"
+  print(grm.get_n_hbond_proxies(), "want 30")  # 31 hbonds, with segids 30
+  print(grm.get_n_hangle_proxies(), "want 90")
   assert grm.get_n_hbond_proxies() == 30  # 31 hbonds, with segids 30
   assert grm.get_n_hangle_proxies() == 90
 
 def exercise_rna(mon_lib_srv, ener_lib, log):
   grm = get_grm(rna_pdb_str.split('\n'), mon_lib_srv, ener_lib, log)
-  print grm.get_n_hbond_proxies(), "want 22"  # 22 hbonds, with segids
-  print grm.get_n_hangle_proxies(), "want 44"
+  print(grm.get_n_hbond_proxies(), "want 22")  # 22 hbonds, with segids
+  print(grm.get_n_hangle_proxies(), "want 44")
   assert grm.get_n_hbond_proxies() == 22
   assert grm.get_n_hangle_proxies() == 44
 
 def exercise_both(mon_lib_srv, ener_lib, log):
   grm = get_grm(protein_pdb_str.split('\n') + rna_pdb_str.split('\n'),
       mon_lib_srv, ener_lib, log)
-  print grm.get_n_hbond_proxies(), "want 52"
-  print grm.get_n_hangle_proxies(), "want 44+90=134" # 90 from protein
+  print(grm.get_n_hbond_proxies(), "want 52")
+  print(grm.get_n_hangle_proxies(), "want 44+90=134") # 90 from protein
   assert grm.get_n_hbond_proxies() == 52
   assert grm.get_n_hangle_proxies() == 134
 
 
+def exercise_saenger_class_mismatch():
+  # Wrong Saenger class for a base pair must produce an informative message.
+  h = iotbx.pdb.input(source_info=None,
+      lines=rna_pdb_str).construct_hierarchy()
+  ags = {}
+  for ag in h.atom_groups():
+    ags[(ag.parent().parent().id, ag.parent().resseq_as_int())] = ag
+  a1 = ags[('A', 1)].atoms()[0]  # DG A 1
+  a2 = ags[('B', 20)].atoms()[0] # DC B 20
+  assert ags[('A', 1)].resname.strip() == 'DG'
+  assert ags[('B', 20)].resname.strip() == 'DC'
+  hbonds = nucleic_acids.get_h_bonds_for_particular_basepair((a1, a2), 19)
+  assert len(hbonds) == 3, len(hbonds)
+  try:
+    nucleic_acids.get_h_bonds_for_particular_basepair((a1, a2), 20)
+  except Sorry as e:
+    msg = str(e)
+    assert "A-U" in msg, msg
+    assert "DG A   1" in msg, msg
+    assert "DC B  20" in msg, msg
+  else:
+    raise AssertionError("Sorry not raised for wrong Saenger class")
+
+
 if __name__ == "__main__":
   if (not libtbx.env.has_module(name="ksdssp")):
-    print "Skipping KSDSSP tests: ksdssp module not available."
+    print("Skipping KSDSSP tests: ksdssp module not available.")
   else:
     mon_lib_srv = server.server()
     ener_lib = server.ener_lib()
     # log = sys.stdout
-    log = StringIO.StringIO()
+    log = StringIO()
     exercise_protein(mon_lib_srv, ener_lib, log)
     exercise_rna(mon_lib_srv, ener_lib, log)
     exercise_both(mon_lib_srv, ener_lib, log)
-  print format_cpu_times()
-  print "OK"
+  exercise_saenger_class_mismatch()
+  print(format_cpu_times())
+  print("OK")

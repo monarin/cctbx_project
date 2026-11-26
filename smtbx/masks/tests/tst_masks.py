@@ -1,4 +1,4 @@
-from __future__ import division
+from __future__ import absolute_import, division, print_function
 
 from scitbx.lstbx import normal_eqns_solving
 from cctbx import miller
@@ -10,12 +10,13 @@ import libtbx.utils
 from smtbx import masks
 from smtbx.refinement import constraints
 import smtbx.utils
-import cStringIO
+from six.moves import cStringIO as StringIO
+from six.moves import range
 
 def exercise_masks():
   mt = flex.mersenne_twister(seed=0)
   xs_ref = structure.from_shelx(
-    file=cStringIO.StringIO(YAKRUY_ins))
+    file=StringIO(YAKRUY_ins))
   mi = xs_ref.crystal_symmetry().build_miller_set(
     d_min=0.5, anomalous_flag=False)
   fo = mi.structure_factors_from_scatterers(
@@ -23,8 +24,8 @@ def exercise_masks():
   k = 0.05 + 10 * mt.random_double()
   fo = fo.customized_copy(data=fo.data()*k)
   fo2 = fo.f_as_f_sq()
-  acetonitrile_sel = xs_ref.label_selection(
-    'N4', 'C20', 'C21', 'H211', 'H212', 'H213')
+  labels = ['N4', 'C20', 'C21', 'H211', 'H212', 'H213']
+  acetonitrile_sel = flex.bool([sc.label in labels for sc in xs_ref.scatterers()])
   xs_no_sol = xs_ref.deep_copy_scatterers().select(
     acetonitrile_sel, negate=True)
   # check what happens when no voids are found
@@ -40,7 +41,7 @@ def exercise_masks():
   assert mask.f_model() is None
   assert mask.modified_intensities() is None
   assert mask.f_000 is None
-  s = cStringIO.StringIO()
+  s = StringIO()
   mask.show_summary(log=s)
   assert not show_diff(s.getvalue(), """\
 use_set_completion: False
@@ -91,7 +92,7 @@ gridding: (30,45,54)
     assert modified_fo.r1_factor(mask.f_calc.common_set(modified_fo), k) < 0.006
     assert fo.common_set(fo2).r1_factor(f_model.common_set(fo2), k) < 0.006
 
-  s = cStringIO.StringIO()
+  s = StringIO()
   mask.show_summary(log=s)
   assert not show_diff(s.getvalue(), """\
 use_set_completion: True

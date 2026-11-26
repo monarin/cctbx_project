@@ -1,4 +1,4 @@
-from __future__ import division
+from __future__ import absolute_import, division, print_function
 from mmtbx.alignment import align
 from mmtbx.alignment import amino_acid_codes, blosum62, dayhoff_mdm78_similarity_scores, \
     blosum50_similarity_scores, pairwise_global, dayhoff, blosum50, blosum62, \
@@ -9,7 +9,26 @@ from libtbx.test_utils import approx_equal
 
 import operator
 import unittest
+from functools import reduce
+from six.moves import range
 
+def exercise_align_mask():
+  B="GCGAGATAAAGGGACCCATAAA" +"TGTCG"+ "TAGCATCGGGCTAATAGATAAGACACA"
+  A=                          "TGTCG"+  "AGCATCGGGCTAATAGATAAGACACA"
+  scores=[]
+  for i in range(len(A)):
+    masking_a=len(A)*[10]
+    masking_a[i]=1
+    obj = align(A,B,masking_a=masking_a)
+    print("score=%.1f" % obj.score())
+    alignment = obj.extract_alignment()
+    print(alignment.match_codes)
+    scores.append(obj.score())
+  print(scores)
+  assert scores==[2.0, 2.0, 3.0, 4.0, 5.0, 6.0, 5.0, 4.0, 3.0, 2.0, 2.0,
+                  2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0,
+                  2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0]
+  print("OK")
 def exercise_align():
   #
   i_seqs, j_seqs = align("EASYA",
@@ -55,6 +74,26 @@ def exercise_align():
   assert i_seqs == flex.size_t([0, 1, 2, 7, 8, 9]) and \
          j_seqs == flex.size_t([0, 1, 2, 8, 9, 10])
 
+def exercise_exact_mismatch_selection():
+  """ examples from exercise_aligh function
+  """
+  def get_mismatch_sel(s1, s2):
+    i, j = align(s1, s2).extract_alignment().exact_mismatch_selection()
+    return list(i), list(j)
+  i_seqs, j_seqs = get_mismatch_sel("EASYA",
+                                    "AETSYT")
+  assert i_seqs == [1,4] and j_seqs == [2,5]
+
+  i_seqs, j_seqs = get_mismatch_sel("EASY",
+                                    "KMST")
+  assert i_seqs == [0,1,3] and j_seqs == [0,1,3]
+
+  i_seqs, j_seqs = get_mismatch_sel("EASY",
+                                    "KMT")
+  assert i_seqs == [1,2,3] and j_seqs == [0,1,2]
+  i_seqs, j_seqs = get_mismatch_sel("EASY",
+                                    "EASY")
+  assert i_seqs == [] and j_seqs == []
 
 def exercise_2():
   A = "AAAGGTT"
@@ -62,26 +101,26 @@ def exercise_2():
   obj = align(A,B)
   obj.show_matrices()
 
-  print "score=%.1f" % obj.score()
+  print("score=%.1f" % obj.score())
   alignment = obj.extract_alignment()
-  print alignment.match_codes
-  print alignment.a
-  print alignment.identity_matches()
-  print alignment.b
+  print(alignment.match_codes)
+  print(alignment.a)
+  print(alignment.identity_matches())
+  print(alignment.b)
 
   # 1rra vs. 1bli
   A = "AESSADKFKRQHMDTEGPSKSSPTYCNQMMKRQGMTKGSCKPVNTFVHEPLEDVQAICSQGQVTCKNGRNNCHKSSSTLRITDCRLKGSSKYPNCDYTTTDSQKHIIIACDGNPYVPVHFDASV"
   B = "DNSRYTHFLTQHYDAKPQGRDDRYCESIMRRRGLTSPCKDINTFIHGNKRSIKAICENKNGNPHRENLRISKSSFQVTTCKLHGGSPWPPCQYRATAGFRNVVVACENGLPVHLDQSIFRRP".lower()
   obj = align(A,B,gap_opening_penalty=150,gap_extension_penalty=20,similarity_function="dayhoff",style="global")
 
-  print "\n1rra vs. 1bli; GLOBAL allignment; mdm78"
-  print "score=%.1f" % obj.score()
+  print("\n1rra vs. 1bli; GLOBAL allignment; mdm78")
+  print("score=%.1f" % obj.score())
   alignment = obj.extract_alignment()
 
-  print alignment.match_codes
-  print alignment.a
-  print alignment.dayhoff_matches()
-  print alignment.b
+  print(alignment.match_codes)
+  print(alignment.a)
+  print(alignment.dayhoff_matches())
+  print(alignment.b)
   assert approx_equal(alignment.calculate_sequence_identity(), 0.330645)
 
 
@@ -90,14 +129,14 @@ def exercise_2():
   B = "DNSRYTHFLTQHYDAKPQGRDDRYCESIMRRRGLTSPCKDINTFIHGNKRSIKAICENKNGNPHRENLRISKSSFQVTTCKLHGGSPWPPCQYRATAGFRNVVVACENGLPVHLDQSIFRRP"
   obj = align(A,B,gap_opening_penalty=150,gap_extension_penalty=20,similarity_function="dayhoff",style="local")
 
-  print "\n1rra vs. 1bli; LOCAL allignment; mdm78"
-  print "score=%.1f" % obj.score()
+  print("\n1rra vs. 1bli; LOCAL allignment; mdm78")
+  print("score=%.1f" % obj.score())
   alignment = obj.extract_alignment()
 
-  print alignment.match_codes
-  print alignment.a
-  print alignment.dayhoff_matches()
-  print alignment.b
+  print(alignment.match_codes)
+  print(alignment.a)
+  print(alignment.dayhoff_matches())
+  print(alignment.b)
   assert approx_equal(alignment.calculate_sequence_identity(), 0.341880)
 
 
@@ -107,14 +146,14 @@ def exercise_2():
   B = "DNSRYTHFLTQHYDAKPQGRDDRYCESIMRRRGLTSPCKDINTFIHGNKRSIKAICENKNGNPHRENLRISKSSFQVTTCKLHGGSPWPPCQYRATAGFRNVVVACENGLPVHLDQSIFRRP"
   obj = align(A,B,gap_opening_penalty=10,gap_extension_penalty=2,similarity_function="blosum50",style="global")
 
-  print "\n1rra vs. 1bli; GLOBAL allignment; blosum50"
-  print "score=%.1f" % obj.score()
+  print("\n1rra vs. 1bli; GLOBAL allignment; blosum50")
+  print("score=%.1f" % obj.score())
   alignment = obj.extract_alignment()
 
-  print alignment.match_codes
-  print alignment.a
-  print alignment.matches()
-  print alignment.b
+  print(alignment.match_codes)
+  print(alignment.a)
+  print(alignment.matches())
+  print(alignment.b)
   assert approx_equal(alignment.calculate_sequence_identity(), 0.362903)
 
   # 1rra vs. 1bli
@@ -122,16 +161,16 @@ def exercise_2():
   B = "DNSRYTHFLTQHYDAKPQGRDDRYCESIMRRRGLTSPCKDINTFIHGNKRSIKAICENKNGNPHRENLRISKSSFQVTTCKLHGGSPWPPCQYRATAGFRNVVVACENGLPVHLDQSIFRRP"
   obj = align(A,B,gap_opening_penalty=10,gap_extension_penalty=2,similarity_function="blosum50",style="local")
 
-  print "\n1rra vs. 1bli; LOCAL allignment; blosum50"
-  print "score=%.1f" % obj.score()
+  print("\n1rra vs. 1bli; LOCAL allignment; blosum50")
+  print("score=%.1f" % obj.score())
   alignment = obj.extract_alignment()
 
-  print alignment.match_codes
-  print alignment.a
-  print alignment.matches(similarity_function=blosum50, is_similar_threshold=0)
-  print alignment.b
+  print(alignment.match_codes)
+  print(alignment.a)
+  print(alignment.matches(similarity_function=blosum50, is_similar_threshold=0))
+  print(alignment.b)
   assert approx_equal(alignment.calculate_sequence_identity(), 0.368852)
-  print
+  print()
   alignment.pretty_print(
     matches = None,
     out = None,
@@ -150,7 +189,7 @@ def exercise_2():
   assert alignment.a == '-----------GTLIRVTPEQPTHAVCVLGTLTQLDICSSAPXXXTSFSINASPGVVVDI'
   assert alignment.b == 'GPLGSPEFMAQGTLIRVTPEQPTHAVCVLGTLTQLDICSSAPEDCTSFSINASPGVVVDI'
 
-  print "OK" # necessary for auto_build checking
+  print("OK") # necessary for auto_build checking
 
 def exercise_similarity_scores():
   from scitbx.array_family import flex
@@ -211,7 +250,9 @@ alltests = unittest.TestSuite(
   )
 
 def exercise():
+  exercise_align_mask()
   exercise_align()
+  exercise_exact_mismatch_selection()
   exercise_2()
   exercise_similarity_scores()
   exercise_ext

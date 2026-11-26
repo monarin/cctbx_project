@@ -1,4 +1,7 @@
-from __future__ import division
+"""
+Tools to obtain crystal_symmetry from any suitable object or string
+"""
+from __future__ import absolute_import, division, print_function
 import libtbx.load_env
 
 from iotbx.scalepack import crystal_symmetry_from_hkl as from_scalepack_hkl
@@ -14,7 +17,10 @@ from iotbx.cns import crystal_symmetry_from_sdb as from_cns_sdb
 from iotbx.pdb import crystal_symmetry_from_pdb as from_pdb
 from iotbx.solve import crystal_symmetry_from_inp as from_solve_inp
 from iotbx.xplor import crystal_symmetry_from_map as from_xplor_map
-from iotbx.ccp4_map import crystal_symmetry_from_ccp4_map as from_ccp4_map
+try:
+  from iotbx.mrcfile import crystal_symmetry_from_ccp4_map as from_ccp4_map
+except ImportError:
+  from_ccp4_map = None
 from iotbx.cif import crystal_symmetry_from_cif as from_cif
 from cctbx import crystal
 from libtbx.path import canonical_path

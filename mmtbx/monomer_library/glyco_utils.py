@@ -1,8 +1,8 @@
-
-from __future__ import division
+from __future__ import absolute_import, division, print_function
 from string import digits
 from cctbx import geometry_restraints
 from libtbx.utils import Sorry
+from six.moves import range
 
 beta_1_4 = """
 data_link_BETA1-4
@@ -110,24 +110,24 @@ class glyco_link_class:
       outl += "\n"
     return outl
 
-  def is_correct(self):
+  def is_correct(self, verbose=False):
     if (self.anomeric_carbon is None or
         self.link_oxygen is None or
         self.ring_oxygen is None or
         #ring_carbon is None or
         self.link_carbon is None
         ):
-      if 0:
-        print '''
-  self.anomeric_carbon %s
-  self.link_oxygen     %s
-  self.ring_carbon     %s
-  self.link_carbon     %s
-''' % (self.anomeric_carbon.quote(),
-       self.link_oxygen.quote(),
-       self.ring_oxygen.quote(),
-       self.link_carbon.quote(),
-       )
+      if verbose:
+        attrs = [
+          'anomeric_carbon',
+          'link_oxygen',
+          'ring_oxygen',
+          'link_carbon',
+          ]
+        for attr in attrs:
+          atom = getattr(self, attr)
+          if atom: atom = atom.quote()
+          print('  %-15s : %s' % (attr, atom))
       return False
     return True
 
@@ -145,17 +145,24 @@ class glyco_link_class:
         i_seqs.append(getattr(atom, "i_seq"))
     return i_seqs
 
-  def get_isomer(self):
+  def get_isomer(self, verbose=False):
     isomer = get_alpha_beta(self.anomeric_carbon.parent().resname)
+    if verbose: print('1 isomer',isomer)
     if isomer is None: isomer = "?"
+    if verbose: print('2 isomer',isomer)
     if self.anomeric_carbon.name.strip()[-1] in digits:
       isomer += self.anomeric_carbon.name.strip()[-1]
+      if verbose: print('3 isomer',isomer)
     else:
       isomer += " %s " % self.anomeric_carbon.name.strip()
+      if verbose: print('4 isomer',isomer)
     if self.link_oxygen.name.strip()[-1] in digits:
       isomer += "-%s" % self.link_oxygen.name.strip()[-1]
+      if verbose: print('5 isomer',isomer)
     else:
       isomer += "- %s " % self.link_oxygen.name.strip()
+      if verbose: print('6 isomer',isomer)
+    if verbose: print('get_isomer',isomer)
     return isomer
 
   def get_code(self):
@@ -238,23 +245,24 @@ class glyco_link_class:
       "_chem_link_chir.volume_sign",
       ))
     value = get_chiral_sign(self.anomeric_carbon.parent().resname)
-    if value>0:
+    if value is not None and value>0:
       value = "positiv"
     else:
       value = "negativ"
     names = self.get_chiral_i_seqs(return_names=True)
-    loop.add_row((code,
-                  "2",
-                  names[0].strip(),
-                  "1",
-                  names[1].strip(),
-                  "2",
-                  names[2].strip(),
-                  "2",
-                  names[3].strip(),
-                  value,
-                  ))
-    cif_block.add_loop(loop)
+    if names is not None: # no ring carbon (3evj NAG A 2 has no C2)
+      loop.add_row((code,
+                    "2",
+                    names[0].strip(),
+                    "1",
+                    names[1].strip(),
+                    "2",
+                    names[2].strip(),
+                    "2",
+                    names[3].strip(),
+                    value,
+                    ))
+      cif_block.add_loop(loop)
     return cif_block
 
 def get_distance2(a1, a2):
@@ -314,8 +322,10 @@ def get_any_linking_carbon(atom_group1, atom_group2, bonds, verbose=False):
         oxygens.append(ba)
         residues.append(ba.parent())
     if len(oxygens)==2: # anomeric carbon not linkable
-      assert 0
-      return None
+      outl = 'Anomeric carbon "%s" has two oxygens. Need to remove non-ring O.' % (
+        atom.quote(),
+        )
+      raise Sorry(outl)
     if linking:
       return atom, True
 
@@ -373,15 +383,18 @@ def get_C1_carbon(atom_group1,
 ##                )
   return None
 
-def get_ring_oxygen(anomeric_carbon, bonds):
+def get_ring_oxygen(anomeric_carbon, bonds, element='O'):
   for ba in bonds.get(anomeric_carbon.i_seq, []):
-    if ba.element.strip() not in ["O"]: continue
+    if ba.element.strip() not in [element]: continue
     # check in same atom group
     if ba.parent().id_str() == anomeric_carbon.parent().id_str():
       return ba
     # check in same residue group
     if ba.parent().parent().id_str() == anomeric_carbon.parent().parent().id_str():
       return ba
+
+def get_ring_oxygen_substitute(anomeric_carbon, bonds):
+  return get_ring_oxygen(anomeric_carbon, bonds, element='C')
 
 def get_ring_carbon(anomeric_carbon, bonds):
   for ba in bonds.get(anomeric_carbon.i_seq, []):
@@ -401,10 +414,10 @@ def get_anomeric_hydrogen(anomeric_carbon, bonds):
 
 def get_link_oxygen(anomeric_carbon, bonds, verbose=False):
   if verbose:
-    print anomeric_carbon.quote()
-    print bonds.get(anomeric_carbon.i_seq)
+    print(anomeric_carbon.quote())
+    print(bonds.get(anomeric_carbon.i_seq))
   for ba in bonds.get(anomeric_carbon.i_seq, []):
-    if verbose: print ba.quote()
+    if verbose: print(ba.quote())
     if ba.element.strip() not in ["O"]: continue
     if ba.parent().id_str() != anomeric_carbon.parent().id_str():
       return ba
@@ -495,13 +508,17 @@ def get_glyco_link_atoms(atom_group1,
   if anomeric_carbon is None:
     assert 0
     return None
-  if verbose: print 'anomeric_carbon',anomeric_carbon.quote()
+  if verbose: print('anomeric_carbon',anomeric_carbon.quote())
   ring_oxygen = get_ring_oxygen(anomeric_carbon, bonds)
-  if verbose: print 'ring_oxygen',ring_oxygen.quote()
+  if verbose:
+    try: print('ring_oxygen',ring_oxygen.quote())
+    except AttributeError: print('ring_oxygen',ring_oxygen)
+  if ring_oxygen is None:
+    ring_oxygen = get_ring_oxygen_substitute(anomeric_carbon, bonds)
   ring_carbon = get_ring_carbon(anomeric_carbon, bonds)
-  if verbose: print 'ring_carbon',ring_carbon.quote()
+  if verbose: print('ring_carbon',ring_carbon.quote())
   anomeric_hydrogen = get_anomeric_hydrogen(anomeric_carbon, bonds)
-  if verbose: print 'anomeric_hydrogen',anomeric_hydrogen
+  if verbose: print('anomeric_hydrogen',anomeric_hydrogen)
   link_oxygen = get_link_oxygen(anomeric_carbon, bonds, verbose=verbose)
   if link_oxygen is None:
     link_oxygen = get_link_oxygen_on_distance(anomeric_carbon,
@@ -509,7 +526,7 @@ def get_glyco_link_atoms(atom_group1,
                                               atom_group2)
   if link_oxygen is None:
     return None
-  if verbose: print 'link_oxygen',link_oxygen.quote()
+  if verbose: print('link_oxygen',link_oxygen.quote())
   link_carbon = get_link_carbon(anomeric_carbon, link_oxygen, bonds)
   if link_carbon is None and link_carbon_dist:
     link_carbon = get_link_carbon_on_distance(anomeric_carbon,
@@ -517,13 +534,13 @@ def get_glyco_link_atoms(atom_group1,
                                               atom_group2,
       )
   if verbose:
-    try: print 'link_carbon',link_carbon.quote()
-    except Exception: print
+    try: print('link_carbon',link_carbon.quote())
+    except Exception: print()
 
   link_phi_carbon = get_link_phi_carbon(link_carbon, bonds)
   if verbose:
-    try: print 'link_phi_carbon',link_phi_carbon.quote(), link_phi_carbon.name, ba.element.strip()
-    except Exception: print
+    try: print('link_phi_carbon',link_phi_carbon.quote(), link_phi_carbon.name, ba.element.strip())
+    except Exception: print()
 
   gla = glyco_link_class(anomeric_carbon,
                          ring_oxygen,
@@ -543,18 +560,22 @@ def apply_glyco_link_using_proxies_and_atoms(atom_group1,
                                              geometry_proxy_registries,
                                              rt_mx_ji,
                                              link_carbon_dist=2.0,
+                                             origin_id=None,
                                              ):
+  origin_ids = geometry_restraints.linking_class.linking_class()
   def _add_bond(i_seqs,
                 bond_params_table,
                 bond_asu_table,
                 value,
                 esd,
                 rt_mx_ji,
+                origin_id,
                 ):
     proxy = geometry_restraints.bond_simple_proxy(
       i_seqs=i_seqs,
       distance_ideal=value,
-      weight=1/esd**2)
+      weight=1/esd**2,
+      origin_id=origin_id)
     bond_params_table.update(i_seq=i_seqs[0],
                              j_seq=i_seqs[1],
                              params=proxy)
@@ -564,19 +585,21 @@ def apply_glyco_link_using_proxies_and_atoms(atom_group1,
       rt_mx_ji=rt_mx_ji,
       )
   #
-  def _add_angle(i_seqs, geometry_proxy_registries, value, esd):
+  def _add_angle(i_seqs, geometry_proxy_registries, value, esd, origin_id):
     proxy = geometry_restraints.angle_proxy(
       i_seqs=i_seqs,
       angle_ideal=value,
-      weight=1/esd**2)
+      weight=1/esd**2,
+      origin_id=origin_id)
     geometry_proxy_registries.angle.add_if_not_duplicated(proxy=proxy)
   #
-  def _add_chiral(i_seqs, geometry_proxy_registries, value, esd, both_signs=False):
+  def _add_chiral(i_seqs, geometry_proxy_registries, value, esd, origin_id, both_signs=False):
     proxy = geometry_restraints.chirality_proxy(
       i_seqs=i_seqs,
       volume_ideal=value,
       both_signs=both_signs,
       weight=1/esd**2,
+      origin_id=origin_id,
       )
     geometry_proxy_registries.chirality.add_if_not_duplicated(proxy=proxy)
 
@@ -588,8 +611,6 @@ def apply_glyco_link_using_proxies_and_atoms(atom_group1,
 
   ########
   from mmtbx.monomer_library import glyco_utils
-#  anomeric_carbon, link_oxygen, ring_oxygen, ring_carbon, link_carbon, anomeric_hydrogen = \
-#      glyco_utils.get_glyco_link_atoms(atom_group1, atom_group2)
   gla = glyco_utils.get_glyco_link_atoms(atom_group1,
                                          atom_group2,
                                          link_carbon_dist=link_carbon_dist,
@@ -632,10 +653,19 @@ anomeric carbon.
              gla.link_carbon.quote(),
              gla)
              )
+  # the anomeric H from the restraint bonds: get_anomeric_hydrogen takes the
+  # first H within link_carbon_dist, and H added by reduce2 all sit at one
+  # point (6b0k 9RN: H1 is on C2, the C1 H is H9)
+  c = gla.anomeric_carbon
+  hs = [a for a in c.parent().atoms() if a.element.strip() in ('H', 'D')
+        and bond_params_table.lookup(c.i_seq, a.i_seq) is not None]
+  gla.anomeric_hydrogen = hs[0] if len(hs) == 1 else None
+  origin_id = origin_ids.get('link_%s' % gla.get_isomer(), None)
+  if not origin_id: origin_id=origin_ids['glycosidic custom']
   i_seqs = [gla.anomeric_carbon.i_seq, gla.link_oxygen.i_seq]
   bond_i_seqs = i_seqs
   # bonds
-  _add_bond(i_seqs, bond_params_table, bond_asu_table, 1.439, 0.02, rt_mx_ji)
+  _add_bond(i_seqs, bond_params_table, bond_asu_table, 1.439, 0.02, rt_mx_ji, origin_id)
   # angles
   for i_atoms, value, esd in [
       [[gla.link_carbon, gla.link_oxygen,     gla.anomeric_carbon],   108.7,  3.],
@@ -645,21 +675,23 @@ anomeric carbon.
     ]:
     if None in i_atoms: continue
     i_seqs = [atom.i_seq for atom in i_atoms]
-    _add_angle(i_seqs, geometry_proxy_registries, value, esd)
-  # chiral
+    _add_angle(i_seqs, geometry_proxy_registries, value, esd, origin_id)
+  # chiral; only the ring carbon can be missing here (is_correct checks the
+  # rest): 3evj NAG A 2 has no C2. Restrain the link without it.
+  note = None
   i_seqs = gla.get_chiral_i_seqs()
   if i_seqs is None:
-    raise Sorry("""Unable to determine the linking chiral atoms for atom groups
-    group 1
-%s
-    group 2
-%s
-    """ % (atom_group_output(atom_group1), atom_group_output(atom_group2)
-    )
-    )
-  value = get_chiral_sign(gla.anomeric_carbon.parent().resname)
-  if value:
-    esd = 0.02
-    _add_chiral(i_seqs, geometry_proxy_registries, value, esd)
+    note = 'link chirality not restrained: ring carbon bonded to %s missing' % (
+      gla.anomeric_carbon.name.strip())
+  else:
+    value = get_chiral_sign(gla.anomeric_carbon.parent().resname)
+    if value:
+      esd = 0.02
+      _add_chiral(i_seqs, geometry_proxy_registries, value, esd, origin_id)
 
-  return gla.get_isomer(), gla.as_cif(), bond_i_seqs
+  return gla.get_isomer(), gla.as_cif(), bond_i_seqs, note
+
+def is_standard_glyco_link(key, link):
+  if key.find("ALPHA")>-1 or key.find("BETA")>-1:
+    return True
+  return False

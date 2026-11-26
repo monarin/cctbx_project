@@ -1,14 +1,13 @@
+"""Read PDB file and build restraints for refinement (useful for trouble-shooting)"""
 # LIBTBX_SET_DISPATCHER_NAME phenix.pdb_interpretation
-from __future__ import division
-import sys
+# LIBTBX_SET_DISPATCHER_NAME mmtbx.pdb_interpretation
+from __future__ import absolute_import, division, print_function
 from iotbx.file_reader import any_file
+import sys
 
 def get_master_phil():
   import iotbx.phil
   return iotbx.phil.parse("""\
-atom_selection = None
-  .type = str
-  .help = "Limit all analysis of restraints to this selection only."
 strict_processing = False
   .type = bool
 build_geometry_restraints_manager = True
@@ -47,12 +46,13 @@ def run(args):
   mon_lib_srv = mmtbx.monomer_library.server.server()
   ener_lib = mmtbx.monomer_library.server.ener_lib()
   for file_name in work_params.restraints_cif_file_name:
-    print "Processing CIF file: %s" % show_string(file_name)
+    print("Processing CIF file: %s" % show_string(file_name))
     af = any_file(file_name = file_name)
-    for srv in [mon_lib_srv, ener_lib]:
+    for i, srv in enumerate([mon_lib_srv, ener_lib]):
       srv.process_cif_object(
         cif_object=af.file_object.model(),
-        file_name=af.file_name)
+        file_name=af.file_name,
+        process_tor=not i)
   #
   import mmtbx.monomer_library.pdb_interpretation
   from libtbx.utils import Sorry
@@ -63,7 +63,6 @@ def run(args):
       ener_lib=ener_lib,
       params=work_params.pdb_interpretation,
       file_name=file_name,
-      atom_selection_string=work_params.atom_selection,
       strict_conflict_handling=work_params.strict_processing,
       substitute_non_crystallographic_unit_cell_if_necessary=True,
       max_atoms=work_params.max_atoms,
@@ -80,7 +79,7 @@ def run(args):
     if (work_params.build_xray_structure):
       processed_pdb_file.xray_structure()
     processed_pdb_files.append(processed_pdb_file)
-  print
+  print()
   if (   work_params.write_geo_files
       or work_params.write_tardy_geo_files):
     import os.path as op
@@ -104,18 +103,18 @@ def run(args):
       geo = processed_pdb_file.geometry_restraints_manager()
       if (work_params.write_geo_files):
         geo_file_name = op.basename(pdb_file_name) + ".geo"
-        print "Writing file: %s" % show_string(geo_file_name)
+        print("Writing file: %s" % show_string(geo_file_name))
         write_geo(label="", geo=geo, geo_file_name=geo_file_name)
-        print
+        print()
       if (work_params.write_tardy_geo_files):
         geo_file_name = op.basename(pdb_file_name) + ".tardy.geo"
-        print "Writing file: %s" % show_string(geo_file_name)
+        print("Writing file: %s" % show_string(geo_file_name))
         tardy_tree = geo.construct_tardy_tree(sites_cart=sites_cart)
         reduced_geo = geo.reduce_for_tardy(tardy_tree=tardy_tree)
         write_geo(label="tardy ", geo=reduced_geo, geo_file_name=geo_file_name)
-        print
+        print()
   return processed_pdb_files
 
 if (__name__ == "__main__"):
-  import sys
   run(args=sys.argv[1:])
+

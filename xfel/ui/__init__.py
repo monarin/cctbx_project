@@ -1,49 +1,103 @@
-from __future__ import division
+from __future__ import absolute_import, division, print_function
 import os
 from iotbx.phil import parse
 from libtbx.utils import Sorry
 
 master_phil_str = """
-dispatcher = cctbx.xfel.xtc_process
+dispatcher = cctbx.xfel.process
   .type = str
-  .help = Which program to run. cxi.xtc_process is for module only based processing, \
-          such as mod_hitfind. cctbx.xfel.xtc_process uses the DIALS back end.
+  .help = Which program to run. cctbx.xfel.process should be used in most cases.
 dry_run = False
   .type = bool
   .help = If True, the program will create the trial directory but not submit the job, \
           and will show the command that would have been executed.
-experiment = ""
-  .type = str
-  .help = Experiment name, eg cxid9114
+monitoring_mode = False
+  .type = bool
+  .help = If True, will hide the submit jobs buttons and remove tabs for configuring \
+          Trials and Datasets.
+facility {
+  name = lcls *standalone
+    .type = choice
+    .help = Facility for the XFEL gui. LCLS configures the GUI to use LCLS services \
+            for data monitoring, job submission, and so forth. Standlone runs the \
+            GUI for all other data sources.
+  lcls {
+    experiment = ""
+      .type = str
+      .help = Experiment name, eg cxid9114
+    web {
+      location = "SLAC"
+        .type = str
+        .help = Where to look for XTC streams. Can be SLAC, SLACFFB (active experiment \
+                only, retired), SRCF_FFB (active experiment only), SDF or NERSC \
+                (contact LCLS staff to arrange file mover for SDF or NERSC).
+      user = ""
+        .type = str
+        .help = Username for LCLS run database web service
+      password = ""
+        .type = str
+        .help = Web password. Will be cached in plain text!
+      enforce80 = False
+        .type = bool
+        .help = report only on stream 81, FEE spectrometer
+      enforce81 = False
+        .type = bool
+        .help = report only on stream 81, FEE spectrometer
+    }
+    use_ffb = False
+      .type = bool
+      .help = Run on the ffb if possible. Only for active users!
+    dump_shots = False
+      .type = bool
+      .help = Write images to disk whether they index or not. \
+              Helpful for tuning spotfinding and indexing parameters, and necessary \
+              for the "Should have indexed" feature of the Run Stats tab.
+  }
+  standalone {
+    data_dir = None
+      .type = path
+      .help = Folder to monitor for new data
+    monitor_for = *files folders
+      .type = choice
+      .help = Whether to monitor for new files or new folders with files in them
+    folders {
+      method = *status_file n_files
+        .type = choice
+        .help = How to determine if a run is complete. status_file: look for a \
+                status.txt file. n_files: run is complete when at least \
+                n_files_needed files are found
+      n_files_needed = 0
+        .type = int
+        .help = If criteria is n_files, this is how many files are needed \
+                before a run is complete
+    }
+    files {
+      last_modified = 0
+        .type = float
+        .help = This is the miniumum number of seconds since a file was last \
+                modified before the run is complete
+      minimum_file_size = 0
+        .type = int
+        .help = Minimum file size (in bytes) before the run is complete
+    }
+    template = None
+      .type = str
+      .help = File matching pattern for new data. Example: *.h5
+    composite_files = True
+      .type = bool
+      .help = If True, files are submitted as individual runs. Otherwise, groups \
+              of files are submitted as single runs
+  }
+}
 output_folder = ""
   .type = path
   .help = Processing results will go in this folder
-web {
-  user = ""
-    .type = str
-    .help = Username for LCLS run database web service
-  password = ""
-    .type = str
-    .help = Web password. Will be cached in plain text!
-  enforce80 = False
-    .type = bool
-    .help = report only on stream 81, FEE spectrometer
-  enforce81 = False
-    .type = bool
-    .help = report only on stream 81, FEE spectrometer
-}
-average_raw_data = False
-  .type = bool
-  .help = If True, don't use any psana corrections (dark, common mode, etc.)
-use_ffb = False
-  .type = bool
-  .help = Run on the ffb if possible. Only for active users!
-dump_shots = False
-  .type = bool
-  .help = Write images to disk whether they index or not.
-  .help = Helpful for tuning spotfinding and indexing parameters, and necessary
-  .help = for the "Should have indexed" feature of the Run Stats tab.
-include scope xfel.command_line.cxi_mpi_submit.mp_phil_scope
+job_count_warning = 50
+  .type = int
+  .help = Ask for confirmation before saving or activating a dataset that would \
+          submit at least this many jobs. None disables the check.
+
+include scope xfel.command_line.submit_job.mp_phil_scope
 """
 db_phil_str = """
 experiment_tag = None
@@ -67,36 +121,208 @@ db {
     .type = bool
     .expert_level = 2
     .help = Print to the terminal all database queries
+  port = 3306
+    .type = int
+    .help = Port number to be used for connection
+  logging_batch_size = 3
+    .type = int
+    .help = Number of images to log at once. Increase if using many (thousands) of processors.
+  server {
+    basedir = None
+      .type = path
+      .help = Root folder for mysql database
+
+    prompt_for_root_password = False
+      .type = bool
+      .help = Whether to always ask for the root password. Note, root password is always \
+              needed when the database is initialized.
+
+    root_user = 'root'
+      .type = str
+      .help = username for root
+      .expert_level = 2
+
+    root_password = None
+      .type = str
+      .help = Password for root user
+      .expert_level = 2
+  }
 }
 """
 master_phil_scope = parse(master_phil_str + db_phil_str, process_includes=True)
 
 settings_dir = os.path.join(os.path.expanduser('~'), '.cctbx.xfel')
-settings_file = os.path.join(settings_dir, 'settings.phil')
 
 known_dials_dispatchers = {
   'cctbx.xfel.xtc_process': 'xfel.command_line.xtc_process',
   'cctbx.xfel.process': 'xfel.command_line.xfel_process',
-  'dials.stills_process': 'dials.command_line.stills_process'
+  'dials.stills_process': 'dials.command_line.stills_process',
+  'cctbx.xfel.small_cell_process': 'xfel.small_cell.command_line.xfel_small_cell_process',
+  'cctbx.xfel.time_varying_refinement': 'xfel.command_line.time_varying_refinement',
+  'cctbx.xfel.merge': 'xfel.merging.application.phil.phil'
 }
 
-def load_cached_settings():
-  if os.path.exists(settings_file):
-    user_phil = parse(file_name = settings_file)
-    return master_phil_scope.fetch(source = user_phil).extract()
-  else:
-    return master_phil_scope.extract()
+def load_phil_scope_from_dispatcher(dispatcher):
+  import importlib
+  module = importlib.import_module(known_dials_dispatchers[dispatcher])
+  importlib.reload(module)
+  phil_scope = module.phil_scope
+  return phil_scope
 
-def save_cached_settings(params):
-  if not os.path.exists(settings_dir):
-    os.makedirs(settings_dir)
+# --- Project (settings bundle) management -----------------------------------
+# A "project" is a complete settings bundle stored as settings_<name>.phil in
+# settings_dir. Each bundle is a full configuration (db, output folder, mp
+# options, facility and experiment_tag), so switching projects swaps everything
+# at once. There is no separate settings.phil: the "current" project is simply
+# the most recently modified bundle, and saving a project bumps its timestamp so
+# it becomes current for the next launch.
+
+# The project this process is working in. None until determined from disk (most
+# recently modified bundle) or set explicitly via set_current_project.
+_current_project = None
+
+def check_project_name(name):
+  ''' Raise Sorry unless name can be the <name> of a settings_<name>.phil
+      file: non-empty, no directory separators, not hidden. '''
+  if not name or name != os.path.basename(name) or name.startswith('.'):
+    raise Sorry('"%s" is not a valid project name: it must not be empty, contain '
+                'a directory separator or start with a dot.' % name)
+
+def settings_file_for_project(name):
+  ''' Return the path to the settings bundle for the named project. '''
+  return os.path.join(settings_dir, 'settings_%s.phil' % name)
+
+def list_settings_projects():
+  ''' Return the sorted names of the settings bundles (settings_<name>.phil)
+      found in settings_dir, or an empty list if there are none. '''
+  if not os.path.isdir(settings_dir):
+    return []
+  projects = []
+  for fname in os.listdir(settings_dir):
+    if fname.startswith('settings_') and fname.endswith('.phil'):
+      projects.append(fname[len('settings_'):-len('.phil')])
+  return sorted(projects)
+
+def set_current_project(name):
+  ''' Record the project this process is working in, so subsequent saves target
+      its bundle. '''
+  global _current_project
+  _current_project = name
+
+def get_current_project():
+  ''' Return the current project name: whichever project has been explicitly
+      selected this session (set_current_project), or, failing that, the most
+      recently modified settings bundle on disk. Returns None if no bundles
+      exist. '''
+  if _current_project is not None:
+    return _current_project
+  projects = list_settings_projects()
+  if not projects:
+    return None
+  return max(projects,
+             key=lambda n: os.path.getmtime(settings_file_for_project(n)))
+
+def read_settings_file(settings_file, scope=None, extract=True):
+  ''' Fetch the settings in settings_file, or none if it is None, into scope
+      (the master scope by default). Returns the params, or the fetched scope
+      if extract=False. '''
+  if scope is None:
+    scope = master_phil_scope
+  if settings_file is None:
+    return scope.extract() if extract else scope
+
+  print('Load settings from', settings_file)
+  user_phil = parse(file_name = settings_file)
+  scope, unused = scope.fetch(source = user_phil, track_unused_definitions=True)
+  if not extract:
+    return scope
+  params = scope.extract()
+  if len(unused) > 0:
+    from .phil_patch import sync_phil
+    sync_phil(params, unused)
+  return params
+
+def write_settings_file(settings_file, params):
+  ''' Write params to settings_file as a diff against the master scope. '''
+  target_dir = os.path.dirname(settings_file)
+  if target_dir and not os.path.exists(target_dir):
+    os.makedirs(target_dir)
 
   working_phil = master_phil_scope.format(python_object = params)
   diff_phil = master_phil_scope.fetch_diff(source = working_phil)
 
   try:
-    f = open(settings_file.encode('utf8'), 'wb')
-    f.write(diff_phil.as_str())
-    f.close()
+    with open(settings_file, 'w') as f:
+      f.write(diff_phil.as_str())
   except IOError:
     raise Sorry('Unable to write %s.' % settings_file)
+
+def load_project_settings(name, scope=None, extract=True):
+  ''' Load the settings bundle for the named project, returning params (or the
+      fetched scope if extract=False). '''
+  settings_file = settings_file_for_project(name)
+  if not os.path.exists(settings_file):
+    raise Sorry('No settings bundle found for project "%s" (%s).' % (name, settings_file))
+  return read_settings_file(settings_file, scope, extract)
+
+def save_project_settings(params, name):
+  ''' Write params to the named project's settings bundle (settings_<name>.phil). '''
+  check_project_name(name)
+  write_settings_file(settings_file_for_project(name), params)
+
+legacy_project = 'default'
+
+def import_legacy_settings():
+  ''' Before projects, the one configuration lived in settings.phil. When it
+      is newer than every bundle, copy it to the bundle of the "default"
+      project, which the copy's modification time then makes current. The
+      original stays for older installs sharing the directory. Returns the
+      project name when a copy was made. '''
+  legacy = os.path.join(settings_dir, 'settings.phil')
+  if not os.path.exists(legacy):
+    return None
+  mtime = os.path.getmtime(legacy)
+  for name in list_settings_projects():
+    if os.path.getmtime(settings_file_for_project(name)) >= mtime:
+      return None
+  import shutil
+  shutil.copyfile(legacy, settings_file_for_project(legacy_project))
+  print('Imported %s as project "%s"' % (legacy, legacy_project))
+  return legacy_project
+
+def cached_settings_file():
+  ''' The file load_cached_settings reads and save_cached_settings writes:
+      the CCTBX_XFEL_SETTINGS override if set, else the current project's
+      bundle, else None when there is no project. '''
+  settings_file = os.environ.get('CCTBX_XFEL_SETTINGS')
+  if settings_file is not None:
+    return settings_file
+  project = get_current_project()
+  if project is None:
+    return None
+  return settings_file_for_project(project)
+
+def load_cached_settings(scope=None, extract=True):
+  ''' Load the current project's settings bundle (the most recently modified
+      settings_<name>.phil), pinning it as the current project. CCTBX_XFEL_SETTINGS,
+      if set, overrides this with an explicit file to load. Returns default
+      params if no bundle is found. '''
+  if os.environ.get('CCTBX_XFEL_SETTINGS') is None:
+    import_legacy_settings()
+    # Pin the project so saves go to it, whichever bundle is newest later
+    set_current_project(get_current_project())
+  settings_file = cached_settings_file()
+  if settings_file is not None and not os.path.exists(settings_file):
+    settings_file = None
+  return read_settings_file(settings_file, scope, extract)
+
+def save_cached_settings(params):
+  ''' Persist params to the current project's bundle, so the next launch restores
+      it (and so this project becomes the most recently modified, i.e. current).
+      CCTBX_XFEL_SETTINGS, if set, overrides the destination with an explicit
+      file. '''
+  settings_file = cached_settings_file()
+  if settings_file is None:
+    raise Sorry('No project selected. Use "Save Project As..." to name a '
+                'project before saving settings.')
+  write_settings_file(settings_file, params)

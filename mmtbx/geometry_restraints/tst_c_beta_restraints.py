@@ -1,4 +1,4 @@
-from __future__ import division
+from __future__ import absolute_import, division, print_function
 from cctbx.array_family import flex
 from mmtbx.geometry_restraints import c_beta
 import mmtbx.model
@@ -124,6 +124,7 @@ END
 def exercise_1():
   pdb_inp = iotbx.pdb.input(lines=flex.std_string(pdb_str_1.splitlines()), source_info=None)
   model = mmtbx.model.manager(model_input = pdb_inp)
+  model.process(make_restraints=True)
   grm = model.get_restraints_manager().geometry
   pdb_hierarchy = model.get_hierarchy()
   sites_cart = model.get_sites_cart()
@@ -210,9 +211,9 @@ def exercise_4():
   assert c_beta_restrs.size()==10
   assert c_beta_skip == {}
 
-if (__name__ == "__main__") :
+if (__name__ == "__main__"):
   exercise_1()
   exercise_2()
   exercise_3()
   exercise_4()
-  print "OK"
+  print("OK")

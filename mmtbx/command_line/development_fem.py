@@ -1,11 +1,10 @@
+"""Calculate FEM maps"""
 # LIBTBX_SET_DISPATCHER_NAME phenix.fem
 # LIBTBX_SET_DISPATCHER_NAME phenix.feature_enhanced_map
 
-from __future__ import division
+from __future__ import absolute_import, division, print_function
 import mmtbx.command_line
 import mmtbx.maps
-import iotbx.phil
-import iotbx.pdb
 from scitbx.array_family import flex
 from libtbx import runtime_utils
 import os.path
@@ -15,7 +14,7 @@ import random
 import mmtbx.maps.fem
 import mmtbx.masks
 
-def get_master_phil () :
+def get_master_phil():
   return mmtbx.command_line.generate_master_phil_with_inputs(
     phil_string="""
 random_seed=2679941
@@ -81,6 +80,9 @@ Calculate a "feature-enhanced" 2mFo-DFc map.
   xray_structure = cmdline.xray_structure
   f_obs = cmdline.f_obs
   r_free_flags = cmdline.r_free_flags
+  if not r_free_flags:
+    from libtbx.utils import Sorry
+    raise Sorry("Please supply a file with r_free flags for FEM")
   manage_random_seed(random_seed=params.random_seed)
   cs=f_obs.crystal_symmetry()
   mask_params = mmtbx.masks.mask_master_params.extract()
@@ -106,16 +108,17 @@ Calculate a "feature-enhanced" 2mFo-DFc map.
     orig_label         = "2mFo-DFc")
   return os.path.abspath(mtz_file_name)
 
-class launcher (runtime_utils.target_with_save_result) :
-  def run (self) :
+class launcher(runtime_utils.target_with_save_result):
+  def run(self):
     os.mkdir(self.output_dir)
     os.chdir(self.output_dir)
     return run(args=self.args, log=sys.stdout)
 
-def validate_params (params) :
+def validate_params(params):
   return mmtbx.command_line.validate_input_params(params)
 
 if(__name__ == "__main__"):
   t0 = time.time()
   run(sys.argv[1:])
-  print "Time: %6.4f"%(time.time()-t0)
+  print("Time: %6.4f"%(time.time()-t0))
+

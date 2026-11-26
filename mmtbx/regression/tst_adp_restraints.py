@@ -1,4 +1,4 @@
-from __future__ import division
+from __future__ import absolute_import, division, print_function
 from mmtbx import monomer_library
 import mmtbx.monomer_library.server
 from mmtbx.monomer_library import pdb_interpretation
@@ -29,7 +29,7 @@ def run():
   xray_structure.scatterers().flags_set_grad_u_iso(sel.iselection())
   for use_hd in [True, False]:
     energies_adp = cctbx.adp_restraints.energies_iso(
-      geometry_restraints_manager=grm,
+      plain_pair_sym_table=grm.plain_pair_sym_table,
       xray_structure=xray_structure,
       use_hd = use_hd,
       use_u_local_only = False,
@@ -43,4 +43,4 @@ def run():
 
 if (__name__ == "__main__"):
   run()
-  print format_cpu_times()
+  print(format_cpu_times())

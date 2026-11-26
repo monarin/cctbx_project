@@ -1,11 +1,18 @@
 #ifndef CCTBX_MAPTBX_CONNECTIVITY_H
 #define CCTBX_MAPTBX_CONNECTIVITY_H
 
-#include <scitbx/array_family/accessors/c_grid.h>
 
+// This needed for grid_symop.h inclusion for some reason
+#include <cctbx/sgtbx/direct_space_asu/proto/asymmetric_unit.h>
+
+#include <scitbx/array_family/accessors/c_grid.h>
+#include <cctbx/sgtbx/space_group_type.h>
+#include <mmtbx/masks/grid_symop.h>
+#include <cctbx/maptbx/asymmetric_map.h>
 
 namespace cctbx { namespace maptbx {
 
+using scitbx::af::int3;
 //! Map connectivity analysis.
 
 
@@ -19,13 +26,229 @@ private:
   af::shared<scitbx::vec3<int> > region_maximum_coors;
   int n_regions;
   bool border_wrapping;
+  bool preprocess_shallow;
+  std::vector<cctbx::sgtbx::grid_symop> symops;
+  int3 uc_dims;
+  // Grid directions along which a voxel is tested for being shallow.
+  std::vector<int3> shallow_directions;
+
+  // Three grid axes: all that is known without symmetry.
+  void set_shallow_directions()
+  {
+    shallow_directions.clear();
+    shallow_directions.push_back(int3(1,0,0));
+    shallow_directions.push_back(int3(0,1,0));
+    shallow_directions.push_back(int3(0,0,1));
+  }
+
+  // Grid axes and all their symmetry copies (up to the sign). Three axes are
+  // not a symmetric set if the space group has 3- or 6-fold axes (the
+  // operation -y,x-y,z maps b onto -(a+b)); shallow voxels found along the
+  // axes only would then be different in symmetry-related places.
+  void set_shallow_directions(
+    cctbx::sgtbx::space_group const& space_group,
+    int3 const& n)
+  {
+    set_shallow_directions();
+    for(std::size_t i=0; i<space_group.order_z(); ++i) {
+      sgtbx::grid_symop s(space_group(i), n);
+      for(unsigned char c=0; c<3; ++c) {
+        int3 d(s(0,c), s(1,c), s(2,c));
+        int sign = 1;
+        for(unsigned char r=0; r<3; ++r) {
+          if(d[r] != 0) { if(d[r] < 0) sign = -1; break; }
+        }
+        for(unsigned char r=0; r<3; ++r) d[r] *= sign;
+        bool is_new = true;
+        for(std::size_t j=0; j<shallow_directions.size(); ++j) {
+          int3 const& e = shallow_directions[j];
+          if(e[0]==d[0] && e[1]==d[1] && e[2]==d[2]) { is_new = false; break; }
+        }
+        if(is_new) shallow_directions.push_back(d);
+      }
+    }
+  }
+
+  // Map value at a grid point that may be outside of the map: wrapped if
+  // the map is periodic, below the threshold otherwise.
+  template <typename MapType>
+  MapType
+  value_or_below_threshold(
+    af::ref<MapType, af::c_grid<3> > const& map_data,
+    MapType const& threshold,
+    int x, int y, int z) const
+  {
+    int p[3] = {x, y, z};
+    for(int a=0; a<3; a++) {
+      int n = map_dimensions[a];
+      if(p[a] < 0 || p[a] >= n) {
+        if(!border_wrapping) return threshold-1;
+        p[a] = ((p[a] % n) + n) % n;
+      }
+    }
+    return map_data(p[0], p[1], p[2]);
+  }
+
+
+  inline
+  bool within_cell(scitbx::vec3<int> &c)
+  {
+    return c[0]>=0 && c[1]>=0 && c[2]>=0 &&
+      c[0]<map_dimensions[0] && c[1]<map_dimensions[1] && c[2]<map_dimensions[2];
+  }
+
+  int
+  get_six_neighbours_sg(
+    int const& x,
+    int const& y,
+    int const& z,
+    af::shared<scitbx::vec3<int> > neighbours)
+  {
+    // border_wrapping is not used here, because we have a sg defined and
+    // always 'wrap' using sg.
+    // x+-1
+    neighbours[0][0] = x+1;
+    neighbours[1][0] = x-1;
+    neighbours[0][1] = neighbours[1][1] = y;
+    neighbours[0][2] = neighbours[1][2] = z;
+    // y+-1
+    neighbours[2][1] = y+1;
+    neighbours[3][1] = y-1;
+    neighbours[2][0] = neighbours[3][0] = x;
+    neighbours[2][2] = neighbours[3][2] = z;
+    // z+-1
+    neighbours[4][2] = z+1;
+    neighbours[5][2] = z-1;
+    neighbours[4][0] = neighbours[5][0] = x;
+    neighbours[4][1] = neighbours[5][1] = y;
+    int n = 6;
+
+    // now checking/moving them to an appropriate place
+    for (int i=0; i<n; i++)
+    {
+      size_t symop=0;
+      while (!within_cell(neighbours[i]) && symop<symops.size())
+      {
+        int3 sym_pos = symops[symop].apply_to(neighbours[i]);
+        scitbx::int3 pos_in_cell(sym_pos);
+        translate_into_cell(pos_in_cell, uc_dims);
+        neighbours[i] = (pos_in_cell);
+        symop++;
+        // int reg_on_map = map_new(pos_in_cell);
+        // std::cout << "    sym: " << sym_pos << " -> " << pos_in_cell
+        //           << " region " << reg_on_map << "\n";
+      }
+    }
+
+    return n;
+  }
+
+  std::vector<sgtbx::grid_symop> grid_symops(const asymmetric_map &amap) const
+  {
+    sgtbx::space_group group = amap.space_group();
+    unsigned short order = group.order_z();
+    CCTBX_ASSERT( order>0 );
+    const int3 n = amap.unit_cell_grid_size();
+    CCTBX_ASSERT( n[0]>0 && n[1]>0 && n[2] >0 );
+    std::vector<sgtbx::grid_symop> symops;
+    symops.reserve(order);
+    for(size_t i=0; i<order; ++i)
+    {
+      sgtbx::grid_symop grsym( group(i), n );
+      symops.push_back(grsym);
+    }
+    CCTBX_ASSERT( symops.size() == order );
+    return symops;
+  }
+
+  void
+  get_six_neighbours_asu(
+      int3 pos,
+      af::shared<int3> neighbours,
+      const asymmetric_map &amap)
+  {
+    // std::cout << "  pos " << pos << " -> ";
+    // border_wrapping is not used here, because we have a sg defined and
+    // always 'wrap' using sg.
+
+    int3 asu_begin = amap.box_begin();
+    int3 asu_end = amap.box_end();
+    int3 uc_d = amap.unit_cell_grid_size();
+    std::vector<sgtbx::grid_symop> symops = grid_symops(amap);
+
+    // init the neighbours
+    for (int i=0; i<6; i++) neighbours[i] = pos;
+    // x+-1
+    neighbours[0][0] += 1;
+    neighbours[1][0] -= 1;
+    // // y+-1
+    neighbours[2][1] += 1;
+    neighbours[3][1] -= 1;
+    // // z+-1
+    neighbours[4][2] += 1;
+    neighbours[5][2] -= 1;
+    // int n = 6;
+
+    for (int i=0; i<6; i++) {
+      bool in_asu = neighbours[i].all_ge(asu_begin) && neighbours[i].all_le(asu_end);
+      if (!in_asu) {
+        // somehow move this one to asu...
+        int3 asu_pos = neighbours[i];
+        // int nsym = 0;
+        // while (nsym < symops.size() && ! (asu_pos.all_ge(asu_begin) && asu_pos.all_le(asu_end))) {
+        //   asu_pos = symops[nsym].apply_to(neighbours[i]);
+        //   scitbx::int3 pos_in_cell(asu_pos);
+        //   translate_into_cell(pos_in_cell,uc_d);
+        //   std::cout << "!!! " << asu_pos << "("<< pos_in_cell << ")"<< "!!! ";
+        //   nsym++;
+        // }
+        // CCTBX_ASSERT(asu_pos.all_ge(asu_begin) && asu_pos.all_le(asu_end));
+        int n_res = 0;
+        for (int nsym=0; nsym<symops.size(); nsym++) {
+          asu_pos = symops[nsym].apply_to(neighbours[i]);
+          scitbx::int3 pos_in_cell(asu_pos);
+          translate_into_cell(pos_in_cell,uc_d);
+          int3 pic(pos_in_cell);
+          if (pic.all_ge(asu_begin) && pic.all_le(asu_end)) n_res +=1;
+          // std::cout << "!!! " << asu_pos << "("<< pos_in_cell << ")"<< "!!! ";
+        }
+        neighbours[i] = asu_pos;
+        // std::cout << "\nn_res " << n_res << "\n";
+      }
+      // std::cout << "    " << neighbours[i] << " " << in_asu << " ";
+    }
+    // std::cout << "\n";
+
+    // // now checking/moving them to an appropriate place
+    // for (int i=0; i<n; i++)
+    // {
+    //   size_t symop=0;
+    //   while (!within_cell(neighbours[i]) && symop<symops.size())
+    //   {
+    //     int3 sym_pos = symops[symop].apply_to(neighbours[i]);
+    //     scitbx::int3 pos_in_cell(sym_pos);
+    //     translate_into_cell(pos_in_cell, uc_dims);
+    //     neighbours[i] = (pos_in_cell);
+    //     symop++;
+    //     // int reg_on_map = map_new(pos_in_cell);
+    //     // std::cout << "    sym: " << sym_pos << " -> " << pos_in_cell
+    //     //           << " region " << reg_on_map << "\n";
+    //   }
+    // }
+
+    // return n;
+    // return 6;
+  }
+
+
 
   int
   get_six_neighbours(
     int const& x,
     int const& y,
     int const& z,
-    af::shared<scitbx::vec3<int> > neighbours)
+    af::shared<scitbx::vec3<int> > neighbours,
+    bool pad_with_negative=false)
   // returns number of neigbours, coordinates are in neighbours, should be
   // at least 6 long
   {
@@ -54,24 +277,49 @@ private:
         neighbours[n] = scitbx::vec3<int>(x+1, y, z);
         n++;
       }
+      else if (pad_with_negative) {
+        neighbours[n] = scitbx::vec3<int>(-1, -1, -1);
+        n++;
+      }
       if (x-1>=0) {
         neighbours[n] = scitbx::vec3<int>(x-1, y, z);
         n++;
       }
+      else if (pad_with_negative) {
+        neighbours[n] = scitbx::vec3<int>(-1, -1, -1);
+        n++;
+      }
+
       if (y+1<map_dimensions[1]) {
         neighbours[n] = scitbx::vec3<int>(x, y+1, z);
+        n++;
+      }
+      else if (pad_with_negative) {
+        neighbours[n] = scitbx::vec3<int>(-1, -1, -1);
         n++;
       }
       if (y-1>=0) {
         neighbours[n] = scitbx::vec3<int>(x, y-1, z);
         n++;
       }
+      else if (pad_with_negative) {
+        neighbours[n] = scitbx::vec3<int>(-1, -1, -1);
+        n++;
+      }
       if (z+1<map_dimensions[2]) {
         neighbours[n] = scitbx::vec3<int>(x, y, z+1);
         n++;
       }
+      else if (pad_with_negative) {
+        neighbours[n] = scitbx::vec3<int>(-1, -1, -1);
+        n++;
+      }
       if (z-1>=0) {
         neighbours[n] = scitbx::vec3<int>(x, y, z-1);
+        n++;
+      }
+      else if (pad_with_negative) {
+        neighbours[n] = scitbx::vec3<int>(-1, -1, -1);
         n++;
       }
     }
@@ -98,20 +346,92 @@ private:
   }
 
 public:
+  int preprocessing_changed_voxels;
+  int preprocessing_n_passes;
+
   template <typename MapType>
   connectivity(
-    af::const_ref<MapType, af::flex_grid<> > const& map_data,
+    af::ref<MapType, af::c_grid<3> > map_data,
     MapType const& threshold,
-    bool wrapping=true)
+    bool wrapping=true,
+    bool preprocess_against_shallow=false) //: sg(cctbx::sgtbx::space_group("P 1"))
   {
-    CCTBX_ASSERT(map_data.accessor().nd() == 3);
-    CCTBX_ASSERT(map_data.accessor().all().all_gt(0));
-    map_dimensions = af::adapt(map_data.accessor().all());
+    set_shallow_directions();
+    compute(map_data, threshold, wrapping, preprocess_against_shallow);
+  }
+
+  //! Same for a whole unit cell map that obeys space_group symmetry.
+  /*! The space group is used by preprocess_against_shallow only: with it
+      the map stays symmetric after shallow voxels are removed.
+   */
+  template <typename MapType>
+  connectivity(
+    af::ref<MapType, af::c_grid<3> > map_data,
+    MapType const& threshold,
+    bool wrapping,
+    bool preprocess_against_shallow,
+    cctbx::sgtbx::space_group const& space_group)
+  {
+    af::tiny<int, 3> n = map_data.accessor();
+    set_shallow_directions(space_group, int3(n[0], n[1], n[2]));
+    compute(map_data, threshold, wrapping, preprocess_against_shallow);
+  }
+
+  template <typename MapType>
+  void
+  compute(
+    af::ref<MapType, af::c_grid<3> > map_data,
+    MapType const& threshold,
+    bool wrapping,
+    bool preprocess_against_shallow)
+  {
+    //new code
+    // std::cout << "Old constructor.\n";
+    // cctbx::sgtbx::space_group dummy_sg = cctbx::sgtbx::space_group("P 1");
+    // sg = dummy_sg;
+    // old code
+    map_dimensions = map_data.accessor();
     border_wrapping=wrapping;
+    preprocess_shallow=preprocess_against_shallow;
     int pointer_empty=0, pointer_current=0, cur_reg = 0;
-    af::const_ref<MapType, af::c_grid<3> > data_ref(
-        map_data.begin(),
-        af::c_grid<3>(af::adapt(map_data.accessor().all())));
+    af::shared<scitbx::vec3<int> > neighbours(6);
+    preprocessing_changed_voxels = 0;
+    preprocessing_n_passes = 0;
+    if (preprocess_shallow) {
+      int n_changed;
+      do {
+        n_changed = 0;
+        for (int i = 0; i < map_dimensions[0]; i++) {
+          for (int j = 0; j < map_dimensions[1]; j++) {
+            for (int k = 0; k < map_dimensions[2]; k++) {
+              if (map_data(i,j,k) > threshold) {
+                // Shallow: both neighbours along some direction are at or
+                // below the threshold. Removing a voxel can only make other
+                // voxels shallow, so the result does not depend on the order
+                // voxels are visited in.
+                bool keep=true;
+                std::size_t l=0;
+                while (keep && l<shallow_directions.size()) {
+                  int3 const& d = shallow_directions[l];
+                  MapType v1 = value_or_below_threshold(
+                    map_data, threshold, i+d[0], j+d[1], k+d[2]);
+                  MapType v2 = value_or_below_threshold(
+                    map_data, threshold, i-d[0], j-d[1], k-d[2]);
+                  if (v1 <= threshold && v2 <= threshold) keep=false;
+                  l += 1;
+                }
+                if (!keep) {
+                  map_data(i,j,k) = threshold-1;
+                  n_changed += 1;
+                }
+              }
+            }
+          }
+        }
+        preprocessing_changed_voxels += n_changed;
+        preprocessing_n_passes += 1;
+      } while (n_changed > 0);
+    }
     // estimating size of working array tempcoors. If this code fails with
     // segmentation fault or reveal a bug, here is the first place to look.
     // To make sure the cause is not here, just make tempcoors of map_data
@@ -124,7 +444,6 @@ public:
     af::shared<scitbx::vec3<int> > tempcoors(needed_size);
     // af::shared<scitbx::vec3<int> > tempcoors(needed_size);
     map_new.resize(af::c_grid<3>(map_dimensions), -1);
-    af::shared<scitbx::vec3<int> > neighbours(6);
     region_vols.push_back(0);
     region_maximum_values.push_back(-10000000);
     region_maximum_coors.push_back(scitbx::vec3<int>(0,0,0));
@@ -134,12 +453,12 @@ public:
       for (int j = 0; j < map_dimensions[1]; j++) {
         for (int k = 0; k < map_dimensions[2]; k++) {
           if (map_new(i,j,k)<0) {
-            if (data_ref(i,j,k) > threshold) {
+            if (map_data(i,j,k) > threshold) {
               // got a new point, start filling
               cur_reg += 1;
               tempcoors[0] = scitbx::vec3<int> (i,j,k);
               map_new(i,j,k) = cur_reg;
-              MapType cur_max_value = data_ref(i,j,k);
+              MapType cur_max_value = map_data(i,j,k);
               scitbx::vec3<int> cur_max (i,j,k);
               cur_reg_vol = 1;
               pointer_empty = 1;
@@ -152,26 +471,26 @@ public:
                 for (int l = 0; l < n_neib; l++) {
                   //processing neighbours
                   if (map_new(af::adapt(neighbours[l]))<0) {
-                    if (data_ref(af::adapt(neighbours[l])) > threshold) {
+                    if (map_data(af::adapt(neighbours[l])) > threshold) {
                       map_new(af::adapt(neighbours[l])) = cur_reg;
                       cur_reg_vol += 1;
                       tempcoors[pointer_empty] = neighbours[l];
                       pointer_empty += 1;
                       if (pointer_empty >= needed_size) pointer_empty = 0;
-                      if (data_ref(af::adapt(neighbours[l])) > cur_max_value)
+                      if (map_data(af::adapt(neighbours[l])) > cur_max_value)
                       {
-                        cur_max_value = data_ref(af::adapt(neighbours[l]));
+                        cur_max_value = map_data(af::adapt(neighbours[l]));
                         cur_max = neighbours[l];
                       }
                     }
                     else {
                       map_new(af::adapt(neighbours[l])) = 0;
                       v0 += 1;
-                      if (data_ref(af::adapt(neighbours[l])) >
+                      if (map_data(af::adapt(neighbours[l])) >
                           region_maximum_values[0])
                       {
                         region_maximum_values[0] =
-                            data_ref(af::adapt(neighbours[l]));
+                            map_data(af::adapt(neighbours[l]));
                         region_maximum_coors[0] = neighbours[l];
                       }
                     }
@@ -187,9 +506,9 @@ public:
             else {
               map_new(i,j,k) = 0;
               v0 += 1;
-              if (data_ref(i,j,k) > region_maximum_values[0])
+              if (map_data(i,j,k) > region_maximum_values[0])
               {
-                region_maximum_values[0] = data_ref(i,j,k);
+                region_maximum_values[0] = map_data(i,j,k);
                 region_maximum_coors[0] = scitbx::vec3<int>(i,j,k);
               }
             }
@@ -199,6 +518,347 @@ public:
     }
     region_vols[0] = v0;
     n_regions = cur_reg;
+  }
+
+  template <typename MapType>
+  connectivity(
+    asymmetric_map &amap,
+    MapType const& threshold,
+    bool preprocess_against_shallow=false)
+
+  {
+    std::cout << "Asymmetric map constructor.\n";
+
+    typedef scitbx::af::nested_loop<scitbx::int3> grid_iterator_t;
+    typedef scitbx::af::ref<double, asymmetric_map::asu_grid_t  >  data_ref_t;
+    data_ref_t amap_data=amap.data_ref();
+
+    cctbx::sgtbx::space_group sg = amap.space_group();
+
+    std::cout << "  amap box begin/end    " << amap.box_begin() << ";" << amap.box_end() << "\n";
+
+    // map_dimensions = map_data.accessor();
+    // border_wrapping=wrapping;
+    preprocess_shallow=preprocess_against_shallow;
+    int pointer_empty=0, pointer_current=0, cur_reg = 0;
+    af::shared<scitbx::vec3<int> > neighbours(6);
+    preprocessing_changed_voxels = 0;
+    preprocessing_n_passes = 0;
+    int n0=0, n1=0;
+    if (preprocess_shallow) {
+      int n_changed;
+      do {
+        n_changed = 0;
+        // for (int i = 0; i < map_dimensions[0]; i++) {
+        //   for (int j = 0; j < map_dimensions[1]; j++) {
+        //     for (int k = 0; k < map_dimensions[2]; k++) {
+        for(grid_iterator_t i3=amap.grid_begin(); !i3.over(); i3.incr() ) {
+          int3 pos = i3();
+          if (amap_data(pos) > threshold) {
+            n1 += 1;
+            af::shared<int3> neigh(6);
+
+            // std::cout << "    data "<< amap_data(pos) << " > thresh\n";
+            get_six_neighbours_asu(pos, neigh, amap);
+
+            // CCTBX_ASSERT(n_neib == 6);
+            // bool keep=true;
+            // int l=0;
+            // while (keep && l<3) {
+            //   MapType v1 = (neighbours[l*2][0]>=0) ? map_data(af::adapt(neighbours[l*2])) : threshold-1;
+            //   MapType v2 = (neighbours[l*2+1][0]>=0) ? map_data(af::adapt(neighbours[l*2+1])) : threshold-1;
+            //   if (v1 <= threshold && v2 <= threshold) keep=false;
+            //   l += 1;
+            // }
+            // if (!keep) {
+            //   map_data(i,j,k) = threshold-1;
+            //   n_changed += 1;
+            // }
+          } else n0+=1;
+        }
+        preprocessing_changed_voxels += n_changed;
+        preprocessing_n_passes += 1;
+      } while (n_changed > 0);
+    }
+    std::cout << "  C++ n0 " << n0 << "\n";
+    std::cout << "  C++ n1 " << n1 << "\n";
+
+  }
+
+  template <typename MapType>
+  connectivity(
+    af::ref<MapType, af::c_grid<3> > map_data
+    // MapType const& threshold
+    // const cctbx::sgtbx::space_group &space_group,
+    // const cctbx::sgtbx::space_group_type & space_group,
+    // int3 uc_dimensions,
+    // bool wrapping=true,
+    // bool preprocess_against_shallow=false
+    )
+  {
+    // addition
+    std::cout << "Symmetry-aware constructor.\n";
+
+    // uc_dims = uc_dimensions;
+    // // sg = space_group;
+    // unsigned short order = space_group.order_z();
+    // CCTBX_ASSERT( order>0 );
+    // // const int3 n = map_dimensions;
+    // // CCTBX_ASSERT( n[0]>0 && n[1]>0 && n[2] >0 );
+    // // std::vector<cctbx::sgtbx::grid_symop> symops;
+    // symops.reserve(order);
+    // for(size_t i=0; i<order; ++i)
+    // {
+    //   sgtbx::grid_symop grsym( space_group(i), uc_dims );
+    //   symops.push_back(grsym);
+    // }
+    // CCTBX_ASSERT( symops.size() == order );
+    // // end addition
+
+
+    // map_dimensions = map_data.accessor();
+    // border_wrapping=wrapping;
+    // preprocess_shallow=preprocess_against_shallow;
+    // int pointer_empty=0, pointer_current=0, cur_reg = 0;
+    // af::shared<scitbx::vec3<int> > neighbours(6);
+    // preprocessing_changed_voxels = 0;
+    // preprocessing_n_passes = 0;
+    // if (preprocess_shallow) {
+    //   int n_changed;
+    //   do {
+    //     n_changed = 0;
+    //     for (int i = 0; i < map_dimensions[0]; i++) {
+    //       for (int j = 0; j < map_dimensions[1]; j++) {
+    //         for (int k = 0; k < map_dimensions[2]; k++) {
+    //           if (map_data(i,j,k) > threshold) {
+    //             int n_neib = get_six_neighbours_sg(i,j,k, neighbours);
+    //             CCTBX_ASSERT(n_neib == 6);
+    //             bool keep=true;
+    //             int l=0;
+    //             while (keep && l<3) {
+    //               MapType v1 = (neighbours[l*2][0]>=0) ? map_data(af::adapt(neighbours[l*2])) : threshold-1;
+    //               MapType v2 = (neighbours[l*2+1][0]>=0) ? map_data(af::adapt(neighbours[l*2+1])) : threshold-1;
+    //               if (v1 <= threshold && v2 <= threshold) keep=false;
+    //               l += 1;
+    //             }
+    //             if (!keep) {
+    //               map_data(i,j,k) = threshold-1;
+    //               n_changed += 1;
+    //             }
+    //           }
+    //         }
+    //       }
+    //     }
+    //     preprocessing_changed_voxels += n_changed;
+    //     preprocessing_n_passes += 1;
+    //   } while (n_changed > 0);
+    // }
+    // // estimating size of working array tempcoors. If this code fails with
+    // // segmentation fault or reveal a bug, here is the first place to look.
+    // // To make sure the cause is not here, just make tempcoors of map_data
+    // // size and delete boundaries check (~L122, L143, look for
+    // // if ( ... >= needed_size)
+    // int maxside = ((map_dimensions[0]>map_dimensions[1]) ?
+    //                     map_dimensions[0] : map_dimensions[1]);
+    // maxside = maxside>map_dimensions[2] ? maxside : map_dimensions[2];
+    // int needed_size = 4*4*maxside*maxside;
+    // af::shared<scitbx::vec3<int> > tempcoors(needed_size);
+    // // af::shared<scitbx::vec3<int> > tempcoors(needed_size);
+    // map_new.resize(af::c_grid<3>(map_dimensions), -1);
+    // region_vols.push_back(0);
+    // region_maximum_values.push_back(-10000000);
+    // region_maximum_coors.push_back(scitbx::vec3<int>(0,0,0));
+    // int v0 = 0, cur_reg_vol;
+
+    // for (int i = 0; i < map_dimensions[0]; i++) {
+    //   for (int j = 0; j < map_dimensions[1]; j++) {
+    //     for (int k = 0; k < map_dimensions[2]; k++) {
+    //       if (map_new(i,j,k)<0) {
+    //         if (map_data(i,j,k) > threshold) {
+    //           // got a new point, start filling
+    //           cur_reg += 1;
+    //           tempcoors[0] = scitbx::vec3<int> (i,j,k);
+    //           map_new(i,j,k) = cur_reg;
+    //           MapType cur_max_value = map_data(i,j,k);
+    //           scitbx::vec3<int> cur_max (i,j,k);
+    //           cur_reg_vol = 1;
+    //           pointer_empty = 1;
+    //           pointer_current = 0;
+    //           while (pointer_empty != pointer_current) {
+    //             int n_neib = get_six_neighbours_sg(tempcoors[pointer_current][0],
+    //                                tempcoors[pointer_current][1],
+    //                                tempcoors[pointer_current][2],
+    //                                neighbours);
+    //             for (int l = 0; l < n_neib; l++) {
+    //               //processing neighbours
+    //               if (map_new(af::adapt(neighbours[l]))<0) {
+    //                 if (map_data(af::adapt(neighbours[l])) > threshold) {
+    //                   map_new(af::adapt(neighbours[l])) = cur_reg;
+    //                   cur_reg_vol += 1;
+    //                   tempcoors[pointer_empty] = neighbours[l];
+    //                   pointer_empty += 1;
+    //                   if (pointer_empty >= needed_size) pointer_empty = 0;
+    //                   if (map_data(af::adapt(neighbours[l])) > cur_max_value)
+    //                   {
+    //                     cur_max_value = map_data(af::adapt(neighbours[l]));
+    //                     cur_max = neighbours[l];
+    //                   }
+    //                 }
+    //                 else {
+    //                   map_new(af::adapt(neighbours[l])) = 0;
+    //                   v0 += 1;
+    //                   if (map_data(af::adapt(neighbours[l])) >
+    //                       region_maximum_values[0])
+    //                   {
+    //                     region_maximum_values[0] =
+    //                         map_data(af::adapt(neighbours[l]));
+    //                     region_maximum_coors[0] = neighbours[l];
+    //                   }
+    //                 }
+    //               }
+    //             }
+    //             pointer_current += 1;
+    //             if (pointer_current >= needed_size) pointer_current = 0;
+    //           }
+    //           region_vols.push_back(cur_reg_vol);
+    //           region_maximum_values.push_back(cur_max_value);
+    //           region_maximum_coors.push_back(cur_max);
+    //         }
+    //         else {
+    //           map_new(i,j,k) = 0;
+    //           v0 += 1;
+    //           if (map_data(i,j,k) > region_maximum_values[0])
+    //           {
+    //             region_maximum_values[0] = map_data(i,j,k);
+    //             region_maximum_coors[0] = scitbx::vec3<int>(i,j,k);
+    //           }
+    //         }
+    //       }
+    //     }
+    //   }
+    // }
+    // region_vols[0] = v0;
+    // n_regions = cur_reg;
+  }
+
+
+  void experiment_with_symmetry(cctbx::sgtbx::space_group &space_group, int3 uc_dims)
+  {
+    std::cout << "Start experiment\n";
+    unsigned short order = space_group.order_z();
+    CCTBX_ASSERT( order>0 );
+    const int3 n = map_dimensions;
+    CCTBX_ASSERT( n[0]>0 && n[1]>0 && n[2] >0 );
+    std::vector<cctbx::sgtbx::grid_symop> symops;
+    symops.reserve(order);
+    for(size_t i=0; i<order; ++i)
+    {
+      sgtbx::grid_symop grsym( space_group(i), uc_dims );
+      symops.push_back(grsym);
+    }
+    std::cout << "SG order:" << order << "\n";
+    CCTBX_ASSERT( symops.size() == order );
+
+    std::vector<int3> coords;
+    // coords.reserve(3);
+    // int3 c0(0,0,17);
+    // int3 c1(33,0,0);
+    // int3 c2(0,33,0);
+
+    int3 c0(1,0,17);
+    int3 c1(2,0,17);
+    int3 c2(3,0,17);
+
+    coords.push_back(c0);
+    coords.push_back(c1);
+    coords.push_back(c2);
+
+    for (int i=0; i<3; i++)
+    {
+      std::cout << "original coords: " << coords[i] << "\n";
+      for(size_t symop=0; symop<symops.size(); symop++)
+      {
+        int3 sym_pos = symops[symop].apply_to(coords[i]);
+        scitbx::int3 pos_in_cell(sym_pos);
+        translate_into_cell(pos_in_cell, uc_dims);
+        int reg_on_map = map_new(pos_in_cell);
+        std::cout << "    sym: " << sym_pos << " -> " << pos_in_cell
+                  << " region " << reg_on_map << "\n";
+      }
+    }
+  }
+
+  /*
+  Regions related by space group symmetry get the same number. The map must
+  be the whole unit cell. New numbers are 1..M, in the order of the smallest
+  old number of each set of related regions; 0 (below threshold) stays 0.
+  Volumes are recomputed; maximum values and their coordinates are cleared.
+
+  A symmetry operation maps a region onto a region, so it is enough to look
+  where one point of each region goes. Sets of related regions are found
+  with union-find, so the result does not depend on the order in which
+  regions and operations are visited.
+  */
+  void merge_symmetry_related_regions(
+    cctbx::sgtbx::space_group const& space_group)
+  {
+    const int3 n = map_dimensions;
+    CCTBX_ASSERT(n[0]>0 && n[1]>0 && n[2]>0);
+    CCTBX_ASSERT(space_group.order_z()>0);
+    int n_regions = static_cast<int>(region_vols.size());
+    std::size_t size = map_new.size();
+    std::size_t nz = static_cast<std::size_t>(n[2]);
+    std::size_t ny = static_cast<std::size_t>(n[1]);
+    int* labels = map_new.begin();
+    // one point of each region
+    std::vector<long> first(n_regions, -1);
+    for(std::size_t i = 0; i < size; i++) {
+      int l = labels[i];
+      CCTBX_ASSERT(l >= 0 && l < n_regions);
+      if(first[l] < 0) first[l] = static_cast<long>(i);
+    }
+    // sets of regions related by symmetry
+    std::vector<int> parent(n_regions);
+    for(int l = 0; l < n_regions; l++) parent[l] = l;
+    for(std::size_t k = 1; k < space_group.order_z(); k++) {
+      sgtbx::grid_symop op(space_group(k), n);
+      for(int l = 1; l < n_regions; l++) {
+        if(first[l] < 0) continue;
+        std::size_t p = static_cast<std::size_t>(first[l]);
+        int3 j(static_cast<int>(p / (ny*nz)),
+               static_cast<int>((p / nz) % ny),
+               static_cast<int>(p % nz));
+        scitbx::int3 q(op.apply_to(j));
+        translate_into_cell(q, n);
+        int l2 = map_new(q[0], q[1], q[2]);
+        if(l2 <= 0) continue; // the map does not obey the symmetry here
+        int r1 = l, r2 = l2;
+        while(parent[r1] != r1) r1 = parent[r1];
+        while(parent[r2] != r2) r2 = parent[r2];
+        if(r1 == r2) continue;
+        if(r1 < r2) parent[r2] = r1;
+        else        parent[r1] = r2;
+      }
+    }
+    // new numbers
+    std::vector<int> new_label(n_regions, 0);
+    int n_new = 0;
+    for(int l = 1; l < n_regions; l++) {
+      if(first[l] < 0) continue;
+      int r = l;
+      while(parent[r] != r) r = parent[r];
+      if(new_label[r] == 0) new_label[r] = ++n_new; // r <= l: seen first
+      new_label[l] = new_label[r];
+    }
+    region_vols.resize(n_new+1);
+    region_maximum_values.resize(0);
+    region_maximum_coors.resize(0);
+    for(int i = 0; i <= n_new; i++) region_vols[i] = 0;
+    for(std::size_t i = 0; i < size; i++) {
+      int l = new_label[labels[i]];
+      labels[i] = l;
+      region_vols[l] += 1;
+    }
   }
 
   af::versa<int, af::c_grid<3> > result() {return map_new;}

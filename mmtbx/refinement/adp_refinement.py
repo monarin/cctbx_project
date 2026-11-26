@@ -1,4 +1,4 @@
-from __future__ import division
+from __future__ import absolute_import, division, print_function
 import mmtbx.refinement.group
 from mmtbx.refinement import minimization
 from mmtbx.refinement import print_statistics
@@ -18,8 +18,8 @@ def show_times(out = None):
   if(out is None): out = sys.stdout
   total = time_adp_refinement_py
   if(total > 0.01):
-     print >> out, "ADP refinement:"
-     print >> out, "  time spent in adp_refinement.py          = %-7.2f" % time_adp_refinement_py
+     print("ADP refinement:", file=out)
+     print("  time spent in adp_refinement.py          = %-7.2f" % time_adp_refinement_py, file=out)
   return total
 
 group_adp_master_params = iotbx.phil.parse("""\
@@ -262,27 +262,43 @@ class refine_adp(object):
             nproc=None):
     adopt_init_args(self, locals())
     d_min = fmodels.fmodel_xray().f_obs().d_min()
+    #
+    # Figure out if need to optimize weights or skip it
+    #
+    optimize_adp_weight = self.target_weights.twp.optimize_adp_weight
+    if(optimize_adp_weight):
+      r_work = self.fmodels.fmodel_xray().r_work()
+      r_free = self.fmodels.fmodel_xray().r_free()
+      if ((r_free < r_work or (r_free-r_work)<0.01) and
+          (not all_params.target_weights.force_optimize_weights)) :
+        optimize_adp_weight = False
     # initialize with defaults...
-    if(target_weights is not None):
-      import mmtbx.refinement.weights_params
-      wcp = mmtbx.refinement.weights_params.tw_customizations_params.extract()
-      for w_s_c in wcp.weight_selection_criteria:
-        if(d_min >= w_s_c.d_min and d_min < w_s_c.d_max):
-          r_free_range_width = w_s_c.r_free_range_width
-          r_free_r_work_gap = w_s_c.r_free_minus_r_work
-          mean_diff_b_iso_bonded_fraction = w_s_c.mean_diff_b_iso_bonded_fraction
-          min_diff_b_iso_bonded = w_s_c.min_diff_b_iso_bonded
-          break
-      # ...then customize
-      wsc = all_params.target_weights.weight_selection_criteria
-      if(wsc.r_free_minus_r_work is not None):
-        r_free_r_work_gap = wsc.r_free_minus_r_work
-      if(wsc.r_free_range_width is not None):
-        r_free_range_width = wsc.r_free_range_width
-      if(wsc.mean_diff_b_iso_bonded_fraction is not None):
-        mean_diff_b_iso_bonded_fraction = wsc.mean_diff_b_iso_bonded_fraction
-      if(wsc.min_diff_b_iso_bonded is not None):
-        min_diff_b_iso_bonded = wsc.min_diff_b_iso_bonded
+    if(self.fmodels.fmodel_xray().f_obs().d_min()<3): # This logic is only good for high_res
+      if(target_weights is not None):
+        import mmtbx.refinement.weights_params
+        wcp = mmtbx.refinement.weights_params.tw_customizations_params.extract()
+        for w_s_c in wcp.weight_selection_criteria:
+          if(d_min >= w_s_c.d_min and d_min < w_s_c.d_max):
+            r_free_range_width = w_s_c.r_free_range_width
+            r_free_r_work_gap = w_s_c.r_free_minus_r_work
+            mean_diff_b_iso_bonded_fraction = w_s_c.mean_diff_b_iso_bonded_fraction
+            min_diff_b_iso_bonded = w_s_c.min_diff_b_iso_bonded
+            break
+        # ...then customize
+        wsc = all_params.target_weights.weight_selection_criteria
+        if(wsc.r_free_minus_r_work is not None):
+          r_free_r_work_gap = wsc.r_free_minus_r_work
+        if(wsc.r_free_range_width is not None):
+          r_free_range_width = wsc.r_free_range_width
+        if(wsc.mean_diff_b_iso_bonded_fraction is not None):
+          mean_diff_b_iso_bonded_fraction = wsc.mean_diff_b_iso_bonded_fraction
+        if(wsc.min_diff_b_iso_bonded is not None):
+          min_diff_b_iso_bonded = wsc.min_diff_b_iso_bonded
+    else: # Worse than 3A: better yet ad hoc criteria.
+      r_free_r_work_gap = 6
+      r_free_range_width = 1.5
+      mean_diff_b_iso_bonded_fraction = 0.2
+      min_diff_b_iso_bonded = 20
     #
     print_statistics.make_sub_header(text="Individual ADP refinement", out = log)
     assert fmodels.fmodel_xray().xray_structure is model.get_xray_structure()
@@ -298,17 +314,18 @@ class refine_adp(object):
     w      = flex.double()
     if(self.target_weights is not None):
       fmth ="    R-FACTORS      <Bi-Bj>  <B>   WEIGHT       TARGETS"
-      print >> self.log, fmth
-      print >> self.log, " work  free  delta                           data restr"
+      print(fmth, file=self.log)
+      print(" work  free  delta                           data restr", file=self.log)
     else:
-      print >> self.log, "Unresrained refinement..."
+      print("Unresrained refinement...", file=self.log)
     self.save_scatterers = self.fmodels.fmodel_xray().xray_structure.\
         deep_copy_scatterers().scatterers()
     if(self.target_weights is not None):
       default_weight = self.target_weights.adp_weights_result.wx*\
           self.target_weights.adp_weights_result.wx_scale
-      if(self.target_weights.twp.optimize_adp_weight):
+      if(optimize_adp_weight):
         wx_scale = [0.03,0.125,0.5,1.,1.5,2.,2.5,3.,3.5,4.,4.5,5.]
+
         trial_weights = list( flex.double(wx_scale)*self.target_weights.adp_weights_result.wx )
         self.wx_scale = 1
       else:
@@ -323,7 +340,7 @@ class refine_adp(object):
     if nproc is None:
       nproc =  all_params.main.nproc
     parallel = False
-    if (len(trial_weights) > 1) and ((nproc is Auto) or (nproc > 1)) :
+    if (len(trial_weights) > 1) and ((nproc is Auto) or (nproc > 1)):
       parallel = True
       from libtbx import easy_mp
       stdout_and_results = easy_mp.pool_map(
@@ -337,8 +354,8 @@ class refine_adp(object):
         result = self.try_weight(weight, print_stats=True)
         trial_results.append(result)
     for result in trial_results :
-      if(result is not None) and (result.r_work is not None) :
-        if (parallel) :
+      if(result is not None) and (result.r_work is not None):
+        if (parallel):
           result.show(out=self.log)
         rw     .append(result.r_work)
         rf     .append(result.r_free)
@@ -346,7 +363,8 @@ class refine_adp(object):
         deltab .append(result.delta_b)
         w      .append(result.weight)
     #
-    if(len(trial_weights)>1):
+    accepted_result = None
+    if(len(trial_weights)>1 and rw.size()>0):
       # filter by rfree-rwork
       rw,rf,rfrw,deltab,w = self.score(rw=rw,rf=rf,rfrw=rfrw,deltab=deltab,w=w,
         score_target=rfrw,score_target_value=r_free_r_work_gap,
@@ -358,9 +376,9 @@ class refine_adp(object):
       delta_b_target = max(min_diff_b_iso_bonded, flex.mean(self.fmodels.
         fmodel_xray().xray_structure.extract_u_iso_or_u_equiv()*
           adptbx.u_as_b(1))*mean_diff_b_iso_bonded_fraction)
-      print >> log, "  max suggested <Bi-Bj> for this run: %7.2f"%delta_b_target
-      print >> log, "  max allowed Rfree-Rwork gap: %5.1f"%r_free_r_work_gap
-      print >> log, "  range of equivalent Rfree: %5.1f"%r_free_range_width
+      print("  max suggested <Bi-Bj> for this run: %7.2f"%delta_b_target, file=log)
+      print("  max allowed Rfree-Rwork gap: %5.1f"%r_free_r_work_gap, file=log)
+      print("  range of equivalent Rfree: %5.1f"%r_free_range_width, file=log)
       rw,rf,rfrw,deltab,w = self.score(rw=rw,rf=rf,rfrw=rfrw,deltab=deltab,w=w,
         score_target=deltab,score_target_value=delta_b_target)
       # select the result with lowest rfree
@@ -370,16 +388,17 @@ class refine_adp(object):
       #
       w_best = w[0]
       rw_best = rw[0]
-      print >> self.log, "Best ADP weight: %8.3f"%w_best
+      print("Best ADP weight: %8.3f"%w_best, file=self.log)
       #
       self.target_weights.adp_weights_result.wx = w_best
       self.target_weights.adp_weights_result.wx_scale = 1
       best_u_star = None
       best_u_iso = None
       for result in trial_results :
-        if(abs(result.weight-w_best)<=1.e-8) :
+        if(abs(result.weight-w_best)<=1.e-8):
           best_u_star = result.u_star
           best_u_iso = result.u_iso
+          accepted_result = result
           break
       if(best_u_iso is None) : # XXX this probably shouldn't happen...
         self.fmodels.fmodel_xray().xray_structure.replace_scatterers(
@@ -394,7 +413,7 @@ class refine_adp(object):
       self.fmodels.update_xray_structure(
         xray_structure = self.fmodels.fmodel_xray().xray_structure,
         update_f_calc  = True)
-      print >> self.log, "Accepted refinement result:"
+      print("Accepted refinement result:", file=self.log)
       # reset alpha/beta parameters - if this is not done, the assertion
       # below will fail
       fmodels.create_target_functors()
@@ -404,6 +423,12 @@ class refine_adp(object):
         # this needs to be done again again, just in case
         fmodels.create_target_functors()
       self.show(weight=w_best)
+    if(accepted_result is None):
+      for result in trial_results:
+        if(result is not None):
+          accepted_result = result
+          break
+    self._show_n_iterations(accepted_result)
     self.fmodels.fmodel_xray().xray_structure.tidy_us()
     self.fmodels.update_xray_structure(
       xray_structure = self.fmodels.fmodel_xray().xray_structure,
@@ -415,7 +440,7 @@ class refine_adp(object):
     self.model.set_xray_structure(self.fmodels.fmodel_xray().xray_structure)
 
   # XXX parallelized
-  def try_weight (self, weight, print_stats=False) :
+  def try_weight(self, weight, print_stats=False):
     if(self.target_weights is not None):
       self.fmodels.fmodel_xray().xray_structure.replace_scatterers(
         self.save_scatterers.deep_copy())
@@ -424,23 +449,24 @@ class refine_adp(object):
         update_f_calc  = True)
       self.target_weights.adp_weights_result.wx = weight
       self.target_weights.adp_weights_result.wx_scale = self.wx_scale
-    minimized = self.minimize()
+    n_iterations, n_fun = self.minimize()
     wt = weight*self.wx_scale
-    result = self.show(weight=wt, print_stats=print_stats)
+    result = self.show(weight=wt, print_stats=print_stats,
+      n_iterations=n_iterations, n_fun=n_fun)
     return result
 
   def show(self, weight = None, prefix = "", show_neutron=True,
-      print_stats=True):
+      print_stats=True, n_iterations=None, n_fun=None):
     deltab = self.model.rms_b_iso_or_b_equiv_bonded()
     r_work = self.fmodels.fmodel_xray().r_work()*100.
     r_free = self.fmodels.fmodel_xray().r_free()*100.
     mean_b = flex.mean(
       self.model.get_xray_structure().extract_u_iso_or_u_equiv())*adptbx.u_as_b(1)
     if(deltab is None):
-      print >> self.log, "  r_work=%5.2f r_free=%5.2f"%(r_work, r_free)
+      print("  r_work=%5.2f r_free=%5.2f"%(r_work, r_free), file=self.log)
       return None
     neutron_r_work = neutron_r_free = None
-    if (show_neutron) and (self.fmodels.fmodel_neutron() is not None) :
+    if (show_neutron) and (self.fmodels.fmodel_neutron() is not None):
       neutron_r_work = self.fmodels.fmodel_neutron().r_work()*100.
       neutron_r_free = self.fmodels.fmodel_neutron().r_free()*100.
     xrs = self.fmodels.fmodel_xray().xray_structure
@@ -454,8 +480,10 @@ class refine_adp(object):
       neutron_r_work=neutron_r_work,
       neutron_r_free=neutron_r_free,
       u_star=xrs.scatterers().extract_u_star(),
-      u_iso=xrs.scatterers().extract_u_iso())
-    if (print_stats) :
+      u_iso=xrs.scatterers().extract_u_iso(),
+      n_iterations=n_iterations,
+      n_fun=n_fun)
+    if (print_stats):
       result.show(out=self.log)
     return result
 
@@ -489,21 +517,37 @@ class refine_adp(object):
     w      = w     .select(sel)
     return rw, rf, rfrw, deltab, w
 
+  def _show_n_iterations(self, result):
+    # Number of ADP-refinement minimizer iterations for the accepted weight.
+    # Reported in the main process (after weight selection) so it survives the
+    # weight-optimization + nproc>1 path, where minimizations run in pool_map
+    # workers whose stdout is discarded.
+    if(result is None): return
+    import mmtbx.refinement
+    mmtbx.refinement.show_number_of_minimizer_iterations(
+      n_iterations = getattr(result, "n_iterations", None),
+      n_fun        = getattr(result, "n_fun", None),
+      log          = self.log)
+
   def minimize(self):
     utils.assert_xray_structures_equal(
       x1 = self.fmodels.fmodel_xray().xray_structure,
       x2 = self.model.get_xray_structure())
     self.model.set_refine_individual_adp()
-    self.run_lbfgs()
+    minimized = self.run_lbfgs()
     self.model.set_xray_structure(self.fmodels.fmodel_xray().xray_structure)
     #assert minimized.xray_structure is self.model.get_xray_structure()
     #utils.assert_xray_structures_equal(
     #  x1 = minimized.xray_structure,
     #  x2 = self.model.get_xray_structure())
-    #return minimized
+    n_iterations, n_fun = None, None
+    mm = getattr(minimized, "minimizer", None)
+    if(mm is not None):
+      n_iterations, n_fun = mm.iter(), mm.nfun()
+    return n_iterations, n_fun
 
   def run_lbfgs(self):
-    if(self.model.get_ncs_groups() is None or
+    if(not self.model.ncs_constraints_present() or
        not self.all_params.ncs.constraints.apply_to_adp):
       lbfgs_termination_params = scitbx.lbfgs.termination_parameters(
         max_iterations = self.individual_adp_params.iso.max_number_of_iterations)
@@ -539,20 +583,22 @@ class refine_adp(object):
         prefix        = "NCS constrained ADP refinement").minimized
       self.model.set_xray_structure(fmodel.xray_structure)
     else: raise RuntimeError("Bad ncs options.")
+    return minimized
 
-class weight_result (object) :
-  def __init__ (self, r_work, r_free, delta_b, mean_b, weight, xray_target,
-      neutron_r_work, neutron_r_free, u_star, u_iso) :
+class weight_result(object):
+  def __init__(self, r_work, r_free, delta_b, mean_b, weight, xray_target,
+      neutron_r_work, neutron_r_free, u_star, u_iso,
+      n_iterations=None, n_fun=None):
     adopt_init_args(self, locals())
     self.r_gap = r_free - r_work
 
-  def show (self, out, prefix="") :
+  def show(self, out, prefix=""):
     if (out is None) : return
     if(len(prefix.strip())>0): prefix += " "
     format = prefix+"%5.2f %5.2f %6.2f %6.3f  %6.3f %6.3f   %6.3f"
-    print >> out, format % (self.r_work, self.r_free, self.r_gap, self.delta_b,
-      self.mean_b, self.weight, self.xray_target)
-    if (self.neutron_r_work is not None) :
-      print >> out, ""
-      print >> out, "Neutron data: r_work=%5.2f r_free=%5.2f"%(
-        self.neutron_r_work, self.neutron_r_free)
+    print(format % (self.r_work, self.r_free, self.r_gap, self.delta_b,
+      self.mean_b, self.weight, self.xray_target), file=out)
+    if (self.neutron_r_work is not None):
+      print("", file=out)
+      print("Neutron data: r_work=%5.2f r_free=%5.2f"%(
+        self.neutron_r_work, self.neutron_r_free), file=out)

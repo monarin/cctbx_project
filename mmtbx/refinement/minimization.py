@@ -1,4 +1,4 @@
-from __future__ import division, absolute_import
+from __future__ import absolute_import, division, print_function
 from cctbx import xray
 from cctbx import crystal
 from cctbx.array_family import flex
@@ -59,15 +59,8 @@ class lbfgs(object):
     elif(refine_adp and target_weights is not None):
       self.weights = target_weights.adp_weights_result
     else:
-      from phenix.refinement import weight_xray_chem
-      self.weights = weight_xray_chem.weights(wx       = 1,
-                                              wx_scale = 1,
-                                              angle_x  = None,
-                                              wn       = 1,
-                                              wn_scale = 1,
-                                              angle_n  = None,
-                                              w        = 0,
-                                              wxn      = 1)
+      from mmtbx.refinement import weights
+      self.weights = weights.weights(wx = 1, wx_scale = 1, w = 0)
     if(self.collect_monitor):
       self.monitor = monitor(
         weights        = self.weights,
@@ -79,18 +72,28 @@ class lbfgs(object):
         refine_occ     = False)
     if(self.collect_monitor): self.monitor.collect()
     self.neutron_refinement = (self.fmodels.fmodel_n is not None)
-    self.x = flex.double(self.xray_structure.n_parameters(), 0)
     self.riding_h_manager = self.model.riding_h_manager
+    self.riding_h = self.riding_h_manager is not None and self.refine_xyz
+    if(self.riding_h):
+      self.setup_riding_h()
+    self.x = flex.double(self.xray_structure.n_parameters(), 0)
     self._scatterers_start = self.xray_structure.scatterers()
+    #lbfgs_core_params = scitbx.lbfgs.core_parameters(
+    #  stpmin = 1.e-9,
+    #  stpmax = adptbx.b_as_u(10))
     self.minimizer = scitbx.lbfgs.run(
       target_evaluator          = self,
       termination_params        = lbfgs_termination_params,
       use_fortran               = use_fortran,
+    #  core_params = lbfgs_core_params,
+    #  gradient_only=True,
       exception_handling_params = scitbx.lbfgs.exception_handling_parameters(
                          ignore_line_search_failed_step_at_lower_bound = True))
     self.apply_shifts()
     del self._scatterers_start
     self.compute_target(compute_gradients = False,u_iso_refinable_params = None)
+    if(self.riding_h):
+      self.restore_riding_h_flags()
     if(self.refine_adp and self.fmodels.fmodel_neutron() is None):
       self.xray_structure.tidy_us()
       self.fmodels.update_xray_structure(
@@ -102,9 +105,66 @@ class lbfgs(object):
     self.fmodels.create_target_functors()
 # QBLIB INSERT
     if(self.qblib_params is not None and self.qblib_params.qblib):
-       print >>self.qblib_params.qblib_log,'{:-^80}'.format("")
-       print >>self.qblib_params.qblib_log
+       print('{:-^80}'.format(""), file=self.qblib_params.qblib_log)
+       print(file=self.qblib_params.qblib_log)
 # QBLIB END
+
+  def setup_riding_h(self):
+    """
+    Prepare the riding H model for coordinate refinement.
+
+    Riding H atoms are not parameters: apply_shifts ignores their shifts and
+    places them on their parents, and compute_target transfers their
+    gradients onto the parents. The X-ray gradients of the H atoms are needed
+    for that transfer, so every riding H atom carries a site gradient flag
+    for the duration of the minimization; restore_riding_h_flags undoes
+    that. An H atom the manager does not parameterize (water, a parent with
+    a missing neighbor) is an ordinary atom refined by its own flags.
+    """
+    scatterers = self.xray_structure.scatterers()
+    self.riding_selection = self.riding_h_manager.riding_selection()
+    assert self.riding_selection.size() == scatterers.size()
+    grad_site = flex.bool([sc.flags.grad_site() for sc in scatterers])
+    self.riding_h_flags_added = (
+      self.riding_selection & ~grad_site).iselection()
+    scatterers.flags_set_grad_site(iselection = self.riding_h_flags_added)
+    # The parameters are the sites of these atoms, three per atom.
+    self.sites_in_x = grad_site | self.riding_selection
+    assert self.xray_structure.n_parameters() == 3*self.sites_in_x.count(True)
+    self.h_in_x = self.riding_selection.select(self.sites_in_x)
+
+  def restore_riding_h_flags(self):
+    scatterers = self.xray_structure.scatterers()
+    for i_seq in self.riding_h_flags_added:
+      scatterers[i_seq].flags.set_grad_site(False)
+
+  def riding_h_gradients(self, gradients):
+    """
+    Transfer the gradients of the riding H atoms onto their parents.
+
+    Parameters
+    ----------
+    gradients : flex.double
+        The gradients packed as self.g: three per atom with a site gradient
+        flag, in atom order.
+
+    Returns
+    -------
+    flex.double
+        The gradients packed the same way, with the H gradients transferred
+        onto the parents and the H entries set to zero: the derivative of the
+        target with the H atoms following their parents.
+    """
+    n = self.xray_structure.scatterers().size()
+    site_gradients = flex.vec3_double(n, [0,0,0])
+    site_gradients.set_selected(self.sites_in_x, flex.vec3_double(gradients))
+    reduced = self.riding_h_manager.gradients_reduced_cpp(
+      gradients    = site_gradients,
+      sites_cart   = self.xray_structure.sites_cart(),
+      hd_selection = self.riding_selection)
+    site_gradients = flex.vec3_double(n, [0,0,0])
+    site_gradients.set_selected(~self.riding_selection, reduced)
+    return site_gradients.select(self.sites_in_x).as_double()
 
   def apply_shifts(self):
     if(self.refine_adp):
@@ -112,31 +172,16 @@ class lbfgs(object):
         shifts    = self.x,
         min_value = self.u_min,
         max_value = self.u_max)
-    #
-    if(self.riding_h_manager is not None and self.refine_xyz):
-      # temporary array with zero shifts for all atoms
-      tmp = flex.vec3_double(self._scatterers_start.size(), [0,0,0])
-      # Set shifts according to self.x
-      tmp = tmp.set_selected(self.model.refinement_flags.sites_individual,
-        flex.vec3_double(self.x))
-      # Set shifts of H atoms to zero (they will be idealized later anyway)
-      shifts_h = flex.vec3_double(self.riding_h_manager.hd_selection.count(True),
-        [0,0,0])
-      tmp = tmp.set_selected(self.riding_h_manager.hd_selection, shifts_h)
-      # Select entries for shifted atoms only (e.g. if there is xyz selection)
-      tmp_x = tmp.select(self.model.refinement_flags.sites_individual)
-      # orig
-      #tmp = tmp.set_selected(self.riding_h_manager.not_hd_selection,
-      #  flex.vec3_double(self.x))
-      # Set entries in self.x corresponding to H atoms to 0
-      self.x.set_selected(flex.bool(self.x.size()), tmp_x.as_double())
-      # orig
-      #self.x.set_selected(flex.bool(self.x.size()), tmp.as_double())
-
+    shifts = self.x
+    if(self.riding_h):
+      # The riding H atoms are not parameters: their shifts are ignored.
+      shifts = flex.vec3_double(self.x)
+      shifts.set_selected(self.h_in_x, [0,0,0])
+      shifts = shifts.as_double()
     apply_shifts_result = xray.ext.minimization_apply_shifts(
       unit_cell      = self.xray_structure.unit_cell(),
       scatterers     = self._scatterers_start,
-      shifts         = self.x)
+      shifts         = shifts)
     scatterers_shifted = apply_shifts_result.shifted_scatterers
     if(self.refine_xyz):
       site_symmetry_table = self.xray_structure.site_symmetry_table()
@@ -148,13 +193,13 @@ class lbfgs(object):
             site_frac        = scatterers_shifted[i_seq].site,
             site_label       = scatterers_shifted[i_seq].label,
             tolerance        = self.correct_special_position_tolerance)
-        except Exception, e:
-          print >> self.log, str(e)
+        except Exception as e:
+          print(str(e), file=self.log)
     self.xray_structure.replace_scatterers(scatterers = scatterers_shifted)
     #
-    if(self.riding_h_manager is not None and self.refine_xyz):
+    if(self.riding_h):
       sites_cart = self.xray_structure.sites_cart()
-      self.riding_h_manager.idealize(sites_cart = sites_cart)
+      self.riding_h_manager.idealize_riding_h_positions(sites_cart=sites_cart)
       self.xray_structure.set_sites_cart(sites_cart=sites_cart)
     #
     if(self.refine_adp):
@@ -207,9 +252,9 @@ class lbfgs(object):
             )
           try:
             qblib_call.run()
-          except Exception, e:
+          except Exception as e:
             if e.__class__.__name__=="QB_none_fatal_error":
-              raise Sorry(e.message)
+              raise Sorry(str(e))
             else:
               raise e
 
@@ -232,6 +277,8 @@ class lbfgs(object):
           scatterers     = self.xray_structure.scatterers(),
           xray_gradients = self.g,
           site_gradients = sgc*self.weights.w)
+    if(self.riding_h and compute_gradients):
+      self.g = self.riding_h_gradients(gradients = self.g)
     if(self.refine_adp and self.restraints_manager is not None and
        self.restraints_manager.geometry is not None
        and self.weights.w > 0.0 and self.iso_restraints is not None):
@@ -266,16 +313,16 @@ class lbfgs(object):
 
   def callback_after_step(self, minimizer):
     if (self.verbose > 0):
-      print "refinement.minimization step: f,iter,nfun:",
-      print self.f,minimizer.iter(),minimizer.nfun()
+      print("refinement.minimization step: f,iter,nfun:", end=' ')
+      print(self.f,minimizer.iter(),minimizer.nfun())
 
   def compute_functional_and_gradients(self):
     u_iso_refinable_params = self.apply_shifts()
     self.compute_target(compute_gradients     = True,
                         u_iso_refinable_params = u_iso_refinable_params)
     if (self.verbose > 1):
-      print "xray.minimization line search: f,rms(g):",
-      print self.f, math.sqrt(flex.mean_sq(self.g))
+      print("xray.minimization line search: f,rms(g):", end=' ')
+      print(self.f, math.sqrt(flex.mean_sq(self.g)))
     return self.f, self.g
 
 class monitor(object):
@@ -331,51 +378,51 @@ class monitor(object):
 
   def show(self, message = "", log = None):
     if(log is None): log = sys.stdout
-    print >> log, "|-"+message+"-"*(79-len("| "+message+"|"))+"|"
+    print("|-"+message+"-"*(79-len("| "+message+"|"))+"|", file=log)
     if(self.fmodels.fmodel_neutron() is not None):
-      print >> log, "|"+" "*33+"x-ray data:"+" "*33+"|"
-    print >> log, "| start r-factor (work) = %s      final r-factor "\
-     "(work) = %s          |"%(self.rxw[0], self.rxw[1])
-    print >> log, "| start r-factor (free) = %s      final r-factor "\
-     "(free) = %s          |"%(self.rxf[0], self.rxf[1])
+      print("|"+" "*33+"x-ray data:"+" "*33+"|", file=log)
+    print("| start r-factor (work) = %s      final r-factor "\
+     "(work) = %s          |"%(self.rxw[0], self.rxw[1]), file=log)
+    print("| start r-factor (free) = %s      final r-factor "\
+     "(free) = %s          |"%(self.rxf[0], self.rxf[1]), file=log)
     if(self.fmodels.fmodel_neutron() is not None):
-      print >> log, "|"+" "*32+"neutron data:"+" "*32+"|"
-      print >> log, "| start r-factor (work) = %s      final r-factor "\
-      "(work) = %s          |"%(self.rnw[0], self.rnw[1])
-      print >> log, "| start r-factor (free) = %s      final r-factor "\
-      "(free) = %s          |"%(self.rnf[0], self.rnf[1])
-    print >> log, "|"+"-"*77+"|"
+      print("|"+" "*32+"neutron data:"+" "*32+"|", file=log)
+      print("| start r-factor (work) = %s      final r-factor "\
+      "(work) = %s          |"%(self.rnw[0], self.rnw[1]), file=log)
+      print("| start r-factor (free) = %s      final r-factor "\
+      "(free) = %s          |"%(self.rnf[0], self.rnf[1]), file=log)
+    print("|"+"-"*77+"|", file=log)
     #
     if(self.fmodels.fmodel_neutron() is None):
       for i_seq, stage in enumerate(["start", "final"]):
         if(self.refine_xyz):
-          print >>log,"| T_%s = wxc * wxc_scale * Exray + wc * Echem"%stage+" "*30+"|"
-          print >>log, self.xray_line(i_seq)
+          print("| T_%s = wxc * wxc_scale * Exray + wc * Echem"%stage+" "*30+"|", file=log)
+          print(self.xray_line(i_seq), file=log)
         elif(self.refine_adp):
-          print >>log,"| T_%s = wxu * wxu_scale * Exray + wu * Eadp"%stage+" "*31+"|"
-          print >>log, self.xray_line(i_seq)
+          print("| T_%s = wxu * wxu_scale * Exray + wu * Eadp"%stage+" "*31+"|", file=log)
+          print(self.xray_line(i_seq), file=log)
         elif(self.refine_occ):
-          print >> log, "| T_%s = 1.0 * 1.0 * Exray"%stage+" "*43+"|"
-          print >>log, self.xray_line(i_seq)
-        if(i_seq == 0): print >> log, "|"+" "*77+"|"
+          print("| T_%s = 1.0 * 1.0 * Exray"%stage+" "*43+"|", file=log)
+          print(self.xray_line(i_seq), file=log)
+        if(i_seq == 0): print("|"+" "*77+"|", file=log)
     #
     if(self.fmodels.fmodel_neutron() is not None):
       for i_seq, stage in enumerate(["start", "final"]):
         if(self.refine_xyz):
-          print >>log,"| T_%s = wnxc * (wxc_scale * Exray + wnc_scale * Eneutron) + wc * Echem"%stage+" "*4+"|"
-          print >>log, self.neutron_line(i_seq)
+          print("| T_%s = wnxc * (wxc_scale * Exray + wnc_scale * Eneutron) + wc * Echem"%stage+" "*4+"|", file=log)
+          print(self.neutron_line(i_seq), file=log)
         elif(self.refine_adp):
-          print >>log,"| T_%s = wnxu * (wxu_scale * Exray + wnu_scale * Eneutron) + wu * Eadp"%stage+" "*5+"|"
-          print >>log, self.neutron_line(i_seq)
+          print("| T_%s = wnxu * (wxu_scale * Exray + wnu_scale * Eneutron) + wu * Eadp"%stage+" "*5+"|", file=log)
+          print(self.neutron_line(i_seq), file=log)
         elif(self.refine_occ):
-          print >> log, "| T_%s = 1.0 * (1.0 * Exray + 1.0 * Eneutron)"%stage+" "*30+"|"
-          print >>log, self.neutron_line(i_seq)
-        if(i_seq == 0): print >> log, "|"+" "*77+"|"
+          print("| T_%s = 1.0 * (1.0 * Exray + 1.0 * Eneutron)"%stage+" "*30+"|", file=log)
+          print(self.neutron_line(i_seq), file=log)
+        if(i_seq == 0): print("|"+" "*77+"|", file=log)
     #
-    print >> log, "|"+"-"*77+"|"
-    print >> log, "| number of iterations = %s    |    number of function "\
-                  "evaluations = %s   |"%(self.iter, self.nfun)
-    print >> log, "|"+"-"*77+"|"
+    print("|"+"-"*77+"|", file=log)
+    print("| number of iterations = %s    |    number of function "\
+                  "evaluations = %s   |"%(self.iter, self.nfun), file=log)
+    print("|"+"-"*77+"|", file=log)
     log.flush()
 
   def neutron_line(self, i_seq):
@@ -413,11 +460,18 @@ class run_constrained(object):
                refine_sites           = False,
                refine_u_iso           = False,
                refine_transformations = False):
+    #
+    # XXX Same needs to be done for refine_u_iso
+    #
+    refine_selection = None
+    if(refine_sites):
+      refine_selection = model.refinement_flags.sites_individual.iselection()
+    #
     tg_object = mmtbx.refinement.minimization_ncs_constraints.\
       target_function_and_grads_reciprocal_space(
         fmodel                    = fmodel,
         ncs_restraints_group_list = model.get_ncs_groups(),
-        refine_selection          = None,
+        refine_selection          = refine_selection, # XXX
         restraints_manager        = model.restraints_manager,
         iso_restraints            = params.adp_restraints.iso,
         data_weight               = target_weight,
@@ -428,7 +482,7 @@ class run_constrained(object):
        target_and_grads_object      = tg_object,
        xray_structure               = fmodel.xray_structure,
        ncs_restraints_group_list    = model.get_ncs_groups(),
-       refine_selection             = None,
+       refine_selection             = refine_selection, # XXX
        finite_grad_differences_test = False,
        max_iterations               = params.main.max_number_of_iterations,
        refine_sites                 = refine_sites,

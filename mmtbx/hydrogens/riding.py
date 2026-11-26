@@ -1,4 +1,4 @@
-from __future__ import division
+from __future__ import absolute_import, division, print_function
 from libtbx import group_args
 from scitbx import matrix
 from cctbx.array_family import flex
@@ -12,10 +12,15 @@ class manager(object):
       pdb_hierarchy,
       geometry_restraints,
       use_ideal_bonds_angles = True,
-      process_manager        = True):
+      process_manager        = True,
+      use_ideal_dihedral = False,
+      ignore_h_with_dof  = False,
+      mon_lib_srv        = None):
     self.pdb_hierarchy = pdb_hierarchy
     self.geometry_restraints = geometry_restraints
     self.use_ideal_bonds_angles = use_ideal_bonds_angles
+    self.ignore_h_with_dof = ignore_h_with_dof
+    self.mon_lib_srv = mon_lib_srv
     #
     self.hd_selection = self.pdb_hierarchy.atom_selection_cache().\
       selection("element H or element D")
@@ -25,13 +30,18 @@ class manager(object):
     if process_manager is True:
       connectivity_manager = connectivity.determine_connectivity(
         pdb_hierarchy       = self.pdb_hierarchy,
-        geometry_restraints = geometry_restraints)
+        geometry_restraints = geometry_restraints,
+        mon_lib_srv         = self.mon_lib_srv)
       h_connectivity = connectivity_manager.h_connectivity
       diagnostics_connectivity = connectivity_manager.get_diagnostics()
       parameterization_manager = parameterization.manager(
         h_connectivity         = h_connectivity,
         sites_cart             = self.pdb_hierarchy.atoms().extract_xyz(),
-        use_ideal_bonds_angles = use_ideal_bonds_angles)
+        use_ideal_bonds_angles = use_ideal_bonds_angles,
+        site_labels         = [atom.id_str().replace('pdb=','').replace('"','')
+                                  for atom in pdb_hierarchy.atoms()],
+        use_ideal_dihedral = use_ideal_dihedral,
+        ignore_h_with_dof  = self.ignore_h_with_dof)
       self.h_parameterization = parameterization_manager.h_parameterization
       self.parameterization_cpp = self.get_parameterization_cpp(
         h_parameterization = self.h_parameterization)
@@ -54,7 +64,8 @@ class manager(object):
       pdb_hierarchy = pdb_hierarchy,
       geometry_restraints = geometry_restraints,
       use_ideal_bonds_angles = self.use_ideal_bonds_angles,
-      process_manager = False)
+      process_manager = False,
+      mon_lib_srv = self.mon_lib_srv)
     new_manager.h_parameterization = new_h_parameterization
     new_manager.parameterization_cpp = \
       self.get_parameterization_cpp(h_parameterization = new_h_parameterization)
@@ -70,16 +81,23 @@ class manager(object):
       pdb_hierarchy = self.pdb_hierarchy.deep_copy(),
       geometry_restraints = self.geometry_restraints,
       use_ideal_bonds_angles = self.use_ideal_bonds_angles,
-      process_manager = False)
+      process_manager = False,
+      mon_lib_srv = self.mon_lib_srv)
     # Properties from current manager
     n_atoms = new_manager.pdb_hierarchy.atoms_size()
     iselection_original = new_manager.pdb_hierarchy.atoms().extract_i_seq()
     # Properties for the new (selected) manager
-    new_hierachy = new_manager.pdb_hierarchy.deep_copy().select(selection)
+    #new_hierachy = new_manager.pdb_hierarchy.deep_copy()
+    new_hierachy = new_manager.pdb_hierarchy.select(selection)
+    #new_hierachy.select(selection)
+
+    new_geometry_restraints = new_manager.geometry_restraints.select(selection)
+    pdb_atoms = new_hierachy.atoms()
+    pdb_atoms.reset_i_seq()
     hd_selection_new = new_hierachy.atom_selection_cache().\
           selection("element H or element D")
-    new_geometry_restraints = new_manager.geometry_restraints.select(selection)
     new_manager.pdb_hierarchy = new_hierachy
+
     new_manager.hd_selection = hd_selection_new
     new_manager.not_hd_selection = ~hd_selection_new
     new_manager.geometry_restraints = new_geometry_restraints
@@ -154,14 +172,44 @@ class manager(object):
         parameterization_cpp.append(hp)
     return parameterization_cpp
 
+  def riding_selection(self):
+    """
+    Select the H atoms that ride: those with a parameterization.
+
+    The other H atoms (hd_selection is all H and D) have no parent to follow,
+    such as water H or the H of an atom whose heavy neighbor is missing, and
+    a minimizer must refine them as ordinary atoms instead of freezing them.
+
+    Returns
+    -------
+    flex.bool
+        One flag per atom of the hierarchy, True for a riding H.
+    """
+    result = flex.bool(self.pdb_hierarchy.atoms_size(), False)
+    for rc in self.parameterization_cpp:
+      result[rc.ih] = True
+    return result
+
   def refinable_parameters_init(self):
     return flex.double(self.n_parameters(), 0)
 
   def n_parameters(self):
     return self.not_hd_selection.count(True)*3
 
-  def idealize(self, sites_cart=None, pdb_hierarchy=None, xray_structure=None):
+  def idealize_riding_h_positions(self,
+               sites_cart = None,
+               pdb_hierarchy = None,
+               xray_structure = None,
+               selection_bool = None):
     assert [sites_cart, pdb_hierarchy, xray_structure].count(None) in [2,3]
+    # prevent idealization if refinement flag for xyz is False
+    if selection_bool:
+      para_cpp = list()
+      for p in self.parameterization_cpp:
+        if selection_bool[p.ih]:
+          para_cpp.append(p)
+      self.parameterization_cpp = para_cpp
+    #
     if(xray_structure is not None):
       sites_cart = xray_structure.sites_cart()
       apply_new_H_positions(
@@ -215,15 +263,15 @@ class manager(object):
   It is not worrysome if a few atoms are listed here; but it is always helpful
   to check the environment of these H atoms, as it might hint to missing atoms
   or restraints.\n"""
-      print >> log, m
-      print >> log, '  Number of H atoms not used in the riding H procedure: ', \
-        number, '\n'
+      print(m, file=log)
+      print('  Number of H atoms not used in the riding H procedure: ', \
+        number, '\n', file=log)
       for ih in unk_list:
         atom = atoms[ih]
         labels = atom.fetch_labels()
         if (labels.resname in ['DOD', 'WAT', 'HOH']):
           continue
-        print >> log, '\t', atom.id_str()
+        print('\t', atom.id_str(), file=log)
 
   def diagnostics(self, sites_cart, threshold):
     h_distances = {}

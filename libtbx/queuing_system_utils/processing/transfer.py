@@ -1,14 +1,13 @@
-from __future__ import division
-from __future__ import with_statement
+from __future__ import absolute_import, division, print_function, with_statement
 
-import cPickle as pickle
+from six.moves import cPickle as pickle
 
 class TemporaryFile(object):
   """
   Sends data by writing out a temporary file
   """
 
-  SCRIPT= "( target, args, kwargs ) = pickle.load( open( \"%s\" ) )"
+  SCRIPT= "( target, args, kwargs ) = pickle.load( open( \"%s\", \"rb\" ) )"
 
   def __init__(self, name, target, args, kwargs):
 
@@ -51,4 +50,3 @@ class Stdin(object):
   def files(self):
 
     return []
-

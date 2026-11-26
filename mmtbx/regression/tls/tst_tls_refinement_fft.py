@@ -1,4 +1,4 @@
-from __future__ import division
+from __future__ import absolute_import, division, print_function
 from mmtbx.tls import tools
 import mmtbx.f_model
 import mmtbx.model
@@ -11,6 +11,7 @@ import libtbx.load_env
 import random
 import sys, os
 import iotbx.pdb
+from six.moves import zip
 
 def exercise_2(eps = 1.e-6):
 ###> Get started from PDB
@@ -19,9 +20,8 @@ def exercise_2(eps = 1.e-6):
   pdb_file = libtbx.env.find_in_repositories(
     relative_path="phenix_regression/pdb/phe_abc_tlsanl_out_geometry_minimized.pdb",
     test=os.path.isfile)
-  model = mmtbx.model.manager(
-      model_input=iotbx.pdb.input(file_name=pdb_file),
-      build_grm=True)
+  model = mmtbx.model.manager(model_input=iotbx.pdb.input(file_name=pdb_file))
+  model.process(make_restraints=True)
   model.setup_scattering_dictionaries(scattering_table="wk1995")
   model.get_xray_structure().convert_to_isotropic()
   u_iso_start = model.get_xray_structure().extract_u_iso_or_u_equiv()
@@ -30,7 +30,7 @@ def exercise_2(eps = 1.e-6):
   selections = []
   selection_strings = ["chain A", "chain B", "chain C"]
   for string in selection_strings:
-      selections.append(model.selection(selstr = string))
+      selections.append(model.selection(string = string))
 ################
   selection = flex.bool(model.get_number_of_atoms(), True)
   class refinement_flags: pass
@@ -111,7 +111,7 @@ def exercise_2(eps = 1.e-6):
   fmodel.update_xray_structure(xray_structure = xray_structure,
                                update_f_calc  = True)
   fmodel.info(free_reflections_per_bin=250, max_number_of_bins=30).show_all()
-  print "*"*80
+  print("*"*80)
 ###> TLS refinement against xray data
   if (not "--comprehensive" in sys.argv[1:]):
           number_of_macro_cycles   = 1
@@ -122,7 +122,7 @@ def exercise_2(eps = 1.e-6):
 
   for start_tls_value in [None]:#[0.0, tlsosA, None]:
   #for start_tls_value in [None]:
-      print " \n "+str(start_tls_value) + " \n "
+      print(" \n "+str(start_tls_value) + " \n ")
       fmodel_cp = fmodel.deep_copy()
       #for sc in fmodel_cp.xray_structure.scatterers():
       #  sc.flags.set_use_u_aniso(True)
@@ -155,8 +155,8 @@ def exercise_2(eps = 1.e-6):
          for m1,m2 in zip(u_cart_answer, u_cart):
              counter += 1
              if(counter < 10):
-                print "1=" + format % (m1[0],m1[1],m1[2],m1[3],m1[4],m1[5])
-                print "2=" + format % (m2[0],m2[1],m2[2],m2[3],m2[4],m2[5])
+                print("1=" + format % (m1[0],m1[1],m1[2],m1[3],m1[4],m1[5]))
+                print("2=" + format % (m2[0],m2[1],m2[2],m2[3],m2[4],m2[5]))
              assert approx_equal(m1,m2, tolerance)
 
 def exercise(args):
@@ -170,13 +170,13 @@ def exercise(args):
   if (random_seed is None):
     random_seed = flex.get_random_seed()
   while True:
-    print "random_seed:", random_seed
+    print("random_seed:", random_seed)
     random.seed(random_seed)
     flex.set_random_seed(value=random_seed)
     exercise_2()
     if (not forever): break
     random_seed += 1
-  print format_cpu_times()
+  print(format_cpu_times())
 
 if (__name__ == "__main__"):
   exercise(sys.argv[1:])

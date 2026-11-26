@@ -12,7 +12,8 @@ By default, only events whose timestamps match are passed through to
 downwind modules.  If @c negate is @c True, mismatching events are
 selected instead.  Events with missing timestamps are always skipped.
 """
-from __future__ import division
+from __future__ import absolute_import, division, print_function
+from six.moves import range
 
 __version__ = "$Revision$"
 
@@ -48,8 +49,8 @@ class mod_filter(object):
     self.negate = cspad_tbx.getOptBool(negate)
 
     if (timestamps_path is not None):
-      p_old = re.compile("\d{4}-\d{2}-\d{2}T\d{2}:\d{2}Z\d{2}\.\d{3}")
-      p_new = re.compile("\d{17}")
+      p_old = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}Z\d{2}\.\d{3}")
+      p_new = re.compile(r"\d{17}")
       f = open(timestamps_path, "r")
       self.timestamps_list = []
       for line in f.readlines():
@@ -107,7 +108,7 @@ class mod_filter(object):
              positive if @p l > @p r
     """
 
-    for i in xrange(2):
+    for i in range(2):
       if (l[i] < r[i]):
         return -1
       if (l[i] > r[i]):

@@ -182,7 +182,7 @@ namespace gltbx { namespace boost_python {
           item = PyList_GET_ITEM(py_arg_ptr_, 0);
 #ifdef IS_PY3K
           if (!(PyBytes_Check(item) || PyUnicode_Check(item))) throw_must_be();
-          if (PyUnicode_Check(item)) is_unicode = true;
+          if (PyUnicode_Check(item)) is_unicode = false;
 #else
           if (!PyString_Check(item)) throw_must_be();
 #endif
@@ -194,7 +194,7 @@ namespace gltbx { namespace boost_python {
 #ifdef IS_PY3K
       else if (is_const_ && (PyBytes_Check(py_arg_ptr_) || PyUnicode_Check(py_arg_ptr_))) {
         item = py_arg_ptr_;
-        if (PyUnicode_Check(item)) is_unicode = true;
+        if (PyUnicode_Check(item)) is_unicode = false;
 #else
       else if (is_const_ && PyString_Check(py_arg_ptr_)) {
         item = py_arg_ptr_;
@@ -207,7 +207,7 @@ namespace gltbx { namespace boost_python {
       if (item != 0) {
 #ifdef IS_PY3K
         if (is_unicode)
-          item_size = PyUnicode_GET_SIZE(item);
+          item_size = PyUnicode_GET_LENGTH(item);
         else
           item_size = PyBytes_GET_SIZE(item);
 #else
@@ -238,7 +238,7 @@ namespace gltbx { namespace boost_python {
           data_[i] = static_cast<T>(item_char_pointer[i]);
         }
       }
-      for(ssize_t i=item_size;i<data_size_;i++) {
+      for(py_ssize_t i=item_size;i<data_size_;i++) {
         data_[i] = static_cast<T>(0);
       }
     }
@@ -251,7 +251,7 @@ namespace gltbx { namespace boost_python {
     {
       namespace bp = boost::python;
 #ifdef IS_PY3K
-      bp::object new_item((bp::handle<>(PyUnicode_FromStringAndSize(
+      bp::object new_item((bp::handle<>(PyBytes_FromStringAndSize(
 #else
       bp::object new_item((bp::handle<>(PyString_FromStringAndSize(
 #endif

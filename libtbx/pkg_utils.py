@@ -2,16 +2,19 @@
 #
 # To let libtbx modules specify and satisfy their requirements and capabilities.
 
-from __future__ import division, absolute_import, print_function
+from __future__ import absolute_import, division, print_function
 
 import contextlib
+import itertools
 import os
 import sys
+import subprocess
 
 import libtbx.load_env
 
 try:
-  import pip
+  pip_version_cmd = [sys.executable, '-c', 'import pip; print(pip.__version__)']
+  pip_version_str = subprocess.check_output(pip_version_cmd).decode().strip()
   import pkg_resources
 
   # Don't run if pip version < 9.0.0.
@@ -19,18 +22,22 @@ try:
   # But in the interest of not upsetting legacy build systems let's be cautious.
   if not all(symbol in dir(pkg_resources) for symbol in
              ('parse_version', 'require', 'DistributionNotFound', 'VersionConflict')) \
-     or pkg_resources.parse_version(pip.__version__) < pkg_resources.parse_version('9.0.0'):
-    pip = None
+     or pkg_resources.parse_version(pip_version_str) < pkg_resources.parse_version('9.0.0'):
+    use_pip = False
     pkg_resources = None
-  if pip:
-    if pkg_resources.parse_version(pip.__version__) >= pkg_resources.parse_version('10.0.0'):
-      import pip._internal
-      pip_main = pip._internal.main
-    else:
-      pip_main = pip.main
 except ImportError:
-  pip = None
+  use_pip = False
   pkg_resources = None
+
+# Try to find packaging. As of Oct 2022 this should be provided explicitly when
+# the conda env is created. Not safe to import the vendored version from pip;
+# see https://github.com/pypa/setuptools/issues/3297
+try:
+  import packaging
+  from packaging.requirements import Requirement
+except ImportError:
+  Requirement = None
+  packaging = None
 
 try:
   import setuptools
@@ -59,7 +66,7 @@ def require(pkgname, version=None):
                      eg. '<2', or both, eg. '>=4.5,<4.6'.
      :return: True when the requirement is met, False otherwise.'''
 
-  if not pip:
+  if not use_pip:
     _notice("  WARNING: Can not verify python package requirements - pip/setuptools out of date",
             "  Please update pip and setuptools by running:", "",
             "    libtbx.python -m pip install pip setuptools --upgrade", "",
@@ -69,11 +76,20 @@ def require(pkgname, version=None):
   if not version:
     version = ''
 
-  # package name without feature specification
-  basepkgname = pkgname.split('[')[0]
+  requirement = Requirement(pkgname+version)
 
-  requirestring = pkgname + version
-  baserequirestring = basepkgname + version
+  # Check if we have an environment marker in the request
+  if requirement.marker and not requirement.marker.evaluate():
+    # We skip dependencies that don't match our current environment
+    return True
+  # Erase the marker from any further output
+  requirement.marker = None
+
+  # package name without feature specification
+  basepkgname = requirement.name
+
+  requirestring = str(requirement)
+  baserequirestring = requirement.name + str(requirement.specifier)
   try:
     try:
       print("requires %s, has %s" % (requirestring, pkg_resources.require(requirestring)[0].version))
@@ -122,8 +138,20 @@ def require(pkgname, version=None):
             package=pkgname, currentversion=currentversion, requirement=version, action=action)
     return False
 
+  if libtbx.env.build_options.use_conda:
+    _notice("    WARNING: Can not {action} package {package} automatically.", "",
+            "You are in a conda environment. Please {action} manually.",
+            package=pkgname, currentversion=currentversion, requirement=version, action=action)
+    return False
+
   print("attempting {action} of {package}...".format(action=action, package=pkgname))
-  exit_code = pip_main(['install', requirestring])
+  has_req_tracker = os.environ.get('PIP_REQ_TRACKER')
+  pip_install_cmd = [sys.executable, '-m', 'pip', 'install', requirestring]
+  pip_install_result = subprocess.run(pip_install_cmd)
+  exit_code = pip_install_result.returncode
+  if not has_req_tracker:
+    # clean up environment after pip call for next invocation
+    os.environ.pop('PIP_REQ_TRACKER', None)
   if exit_code == 0:
     print("{action} successful".format(action=action))
     return True
@@ -133,19 +161,22 @@ def require(pkgname, version=None):
 
 @contextlib.contextmanager
 def _silence():
-  '''Helper context which shuts up stdout and stderr.'''
+  '''Helper context which shuts up stdout.'''
+  if os.name == "nt":
+    # Can't silence using this method on Windows. Just leave it.
+    # new windows console in python >= 3.6 does not work with os.dup2
+    # https://bugs.python.org/issue30555
+    yield
+    return
+  sys.stdout.flush()
   try:
     oldstdout = os.dup(sys.stdout.fileno())
-    oldstderr = os.dup(sys.stderr.fileno())
     dest_file = open(os.devnull, 'w')
     os.dup2(dest_file.fileno(), sys.stdout.fileno())
-    os.dup2(dest_file.fileno(), sys.stderr.fileno())
     yield
   finally:
     if oldstdout is not None:
       os.dup2(oldstdout, sys.stdout.fileno())
-    if oldstderr is not None:
-      os.dup2(oldstderr, sys.stderr.fileno())
     if dest_file is not None:
       dest_file.close()
 
@@ -183,15 +214,20 @@ def define_entry_points(epdict, **kwargs):
                        "define_entry_points() per calling package" % caller)
   _defined_entrypoints.add(caller)
 
-  # Temporarily change to build/ directory. This is where a directory named
-  # libtbx.{caller}.egg-info will be created containing the entry point info.
+  print("Updating entry points for {caller}".format(caller=caller))
+  for ep in epdict:
+    print("  {n} entries for entry point {ep}".format(ep=ep, n=len(epdict[ep])))
+
+  # Temporarily change to {libtbx.env.build_path}/lib directory. This
+  # is where a directory named libtbx.{caller}.egg-info will be
+  # created containing the entry point info.
   try:
     curdir = os.getcwd()
-    os.chdir(abs(libtbx.env.build_path))
+    os.chdir(os.path.join(abs(libtbx.env.build_path), 'lib'))
     # Now trick setuptools into thinking it is in control here.
     try:
       argv_orig = sys.argv
-      sys.argv = ['setup.py', 'develop']
+      sys.argv = ['setup.py', 'egg_info']
       # And make it run quietly
       with _silence():
         setuptools.setup(
@@ -204,3 +240,67 @@ def define_entry_points(epdict, **kwargs):
       sys.argv = argv_orig
   finally:
     os.chdir(curdir)
+
+
+def _merge_requirements(requirements, new_req):
+  # type: (List[packaging.requirements.Requirement], packaging.requirements.Requirement) -> None
+  """Merge a new requirement with a list.
+
+  If it exists in an identical form (name, marker) then the
+  specifiers and extras will be merged, otherwise it will be added.
+
+  If the environment markers are different it will assume that they
+  are mutually exclusive - entries will only be merged if identical, which
+  could cause problems with duplicate requirement entries if not filtered
+  by pass status later.
+
+  URL field is also not handled, as unsure how to merge these if they differ.
+
+  Args:
+    requirements (List[packaging.requirements.Requirement]): Existing.
+    new_req (packaging.requirements.Requirement): New requirement
+  """
+  assert new_req.url is None, "URL requirement fields not handled/tested"
+  matches = [
+    x
+    for x in requirements
+    if x.name == new_req.name
+    and x.marker == new_req.marker
+  ]
+  if len(matches) > 0:
+    if len(matches) > 1:
+      print("Warning: More than one match for requirement", new_req, ": ", matches)
+    match = matches[0]
+  else:
+    match = None
+
+  if match:
+    match.specifier = match.specifier & new_req.specifier
+    match.modules = match.modules | new_req.modules
+    match.extras = match.extras | new_req.extras
+  else:
+    requirements.append(new_req)
+
+
+def collate_python_requirements(modules):
+  # type: (List[libtbx.env_config.module]) -> List[packaging.requirements.Requirement]
+  """Combine python requirements from a module list.
+
+  An attempt will be made to merge any joint requirements. The requirement
+  objects will have an added property 'modules', which is a set of module
+  names that formed the requirement.
+
+  Attr:
+      modules (Iterable[libtbx.env_config.module]): The module list
+
+  Returns:
+      List[packaging.requirements.Requirement]: The merged requirements
+  """
+  requirements = []
+  for module, spec in itertools.chain(*[[(x.name, y) for y in x.python_required] for x in modules if hasattr(x, "python_required")]):
+    requirement = Requirement(spec)
+    # Track where dependencies came from
+    requirement.modules = {module}
+    # Attempt to merge this with any other requirements to avoid double-specifying
+    _merge_requirements(requirements, requirement)
+  return requirements

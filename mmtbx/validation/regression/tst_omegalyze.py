@@ -1,9 +1,13 @@
-from __future__ import division
+from __future__ import absolute_import, division, print_function
 from mmtbx.validation import omegalyze
-from libtbx.test_utils import show_diff
+from libtbx.test_utils import show_diff, approx_equal
 from iotbx import pdb
+from iotbx.data_manager import DataManager
+from libtbx.test_utils import convert_string_to_cif_long
 import libtbx.load_env
 import os
+import json
+import time
 
 ref_omegalyze_give_text = """residues:type:omega:conformation:mc_bmax
  A  40  PHE to  A  41  PRO: Pro     : -14.27:Cis     :28.76
@@ -35,7 +39,7 @@ def exercise_omegalyze():
     relative_path="phenix_regression/pdb/2hr0.pdb",
     test=os.path.isfile)
   if (regression_pdb is None):
-    print "Skipping exercise_omegalyze(): input pdb (2hr0.pdb) not available"
+    print("Skipping exercise_omegalyze(): input pdb (2hr0.pdb) not available")
     return
   #-----
   pdb_io = pdb.input(regression_pdb)
@@ -45,16 +49,91 @@ def exercise_omegalyze():
   text_test = omegalyze_test_string()
   outliers = omegalyze.omegalyze(
     pdb_hierarchy=hierarchy,
-    nontrans_only="True",
+    nontrans_only=True,
     out=text_test,
     quiet=False)
   outliers.show_old_output(out=text_test, verbose=True)
 
   assert not show_diff(text_test.output , ref_omegalyze_give_text)
 
+def exercise_omegalyze_json(test_mmcif=False):
+  regression_pdb = libtbx.env.find_in_repositories(
+    relative_path="phenix_regression/pdb/2hr0.pdb",
+    test=os.path.isfile)
+  if (regression_pdb is None):
+    print("Skipping exercise_omegalyze(): input pdb (2hr0.pdb) not available")
+    return
+  #-----
+  dm = DataManager()
+  if test_mmcif:
+    with open(regression_pdb) as f:
+      pdb_2hr0_str = f.read()
+    pdb_2hr0_str = convert_string_to_cif_long(pdb_2hr0_str, chain_addition="LONGCHAIN")
+    dm.process_model_str("1", pdb_2hr0_str)
+    m = dm.get_model("1")
+    #print(pdb_2hr0_str)
+  else:
+    m = dm.get_model(regression_pdb)
+
+  omegalyze_json = omegalyze.omegalyze(pdb_hierarchy=m.get_hierarchy(), nontrans_only=True).as_JSON()
+  omjson_dict = json.loads(omegalyze_json)
+  #import pprint
+  #pprint.pprint(omjson_dict)
+  assert len(omjson_dict['flat_results'])==9, "tst_omegalyze json output not returning correct number of nontrans residues, now: "+str(len(omjson_dict['flat_results']))
+  assert approx_equal(omjson_dict['flat_results'][0]['omega'], -14.27418253081719), "tst_omegalyze json output first calculated omega dihedral angle not matching previous value, now: "+str(omjson_dict['flat_results'][0]['omega'])
+  assert omjson_dict['flat_results'][0]['omega_type']=='Cis', "tst_omegalyze json output first omega_type not matching previous value, now: "+str(omjson_dict['flat_results'][0]['omega_type'])
+  assert approx_equal(omjson_dict['flat_results'][0]['highest_mc_b'], 28.76), "tst_omegalyze json output first calculated highest_mc_b not matching previous value, now: "+str(omjson_dict['flat_results'][0]['highest_mc_b'])
+  assert approx_equal(omjson_dict['flat_results'][8]['omega'], 8.043663329121266), "tst_omegalyze json output last calculated omega dihedral angle not matching previous value, now: "+str(omjson_dict['flat_results'][8]['omega'])
+  assert omjson_dict['flat_results'][8]['omega_type']=='Cis', "tst_omegalyze json output last omega_type not matching previous value, now: "+str(omjson_dict['flat_results'][8]['omega_type'])
+
+  from mmtbx.validation import test_utils
+  #assert count(omjson_dict['hierarchical_results'], "PRO")==3, "tst_omegalyze json hierarchical output number of Pro omega outliers changed"
+  assert test_utils.count_dict_values(omjson_dict['hierarchical_results'], "Cis")==5, "tst_omegalyze json hierarchical output total number of omega Cis outliers changed to: "+str(test_utils.count_dict_values(omjson_dict['hierarchical_results'], "Cis"))
+  assert test_utils.count_dict_values(omjson_dict['hierarchical_results'], "Twisted")==4, "tst_omegalyze json hierarchical output total number of omega Twisted outliers changed to: "+str(test_utils.count_dict_values(omjson_dict['hierarchical_results'], "Twisted"))
+  assert omjson_dict['summary_results'][""]['num_cis_proline']==3, "tst_omegalyze json summary results num cis prolines changed to: " + str(omjson_dict['summary_results'][""]['num_cis_proline'])
+  return omjson_dict
+
+def exercise_omegalyze_pdb_vs_cif():
+  """PDB and mmCIF input must give the same answer.
+
+  Deliberately does NOT use phenix_regression. The absolute counts in the json exercise
+  are properties of that specific structure and still need that repository, but "do the
+  two input formats agree" can be answered by any model, so this uses a cctbx-owned one
+  and therefore runs in a cctbx-only build.
+
+  That matters because the old form of this check crashed rather than skipped: the
+  phenix_regression guard did a bare `return`, and the caller then subscripted the None
+  it got back, reporting a TypeError instead of a missing input file.
+  """
+  model_file = libtbx.env.find_in_repositories(
+    relative_path="mmtbx/regression/pdbs/p9.pdb",
+    test=os.path.isfile)
+  if (model_file is None):
+    print("Skipping exercise_omegalyze_pdb_vs_cif(): p9.pdb not available")
+    return
+  with open(model_file) as f:
+    pdb_str = f.read()
+  dm = DataManager()
+  dm.process_model_str("pdb", pdb_str)
+  from_pdb = json.loads(omegalyze.omegalyze(pdb_hierarchy=dm.get_model("pdb").get_hierarchy(), nontrans_only=False).as_JSON())
+  dm.process_model_str("cif", convert_string_to_cif_long(
+    pdb_str, chain_addition="LONGCHAIN"))
+  from_cif = json.loads(omegalyze.omegalyze(pdb_hierarchy=dm.get_model("cif").get_hierarchy(), nontrans_only=False).as_JSON())
+  assert len(from_pdb['flat_results']) > 0, \
+    "omegalyze produced nothing for p9.pdb, so the comparison below is vacuous"
+  assert from_pdb['summary_results'] == from_cif['summary_results'], \
+    "omegalyze summary results differ between pdb and cif input"
+
 def run():
+  t0 = time.time()
   exercise_omegalyze()
-  print "OK"
+  exercise_omegalyze_pdb_vs_cif()
+  om_dict = exercise_omegalyze_json()
+  om_dict_cif = exercise_omegalyze_json(test_mmcif=True)
+  # Both are None without phenix_regression; the check above covers that case.
+  if om_dict is not None and om_dict_cif is not None:
+    assert om_dict['summary_results'] == om_dict_cif['summary_results'], "tst_omegalyze summary results changed between pdb and cif version"
+  print("OK. Time: %8.3f"%(time.time()-t0))
 
 if (__name__ == "__main__"):
   run()

@@ -1,6 +1,7 @@
 #ifndef SCITBX_ARRAY_FAMILY_BOOST_PYTHON_FLEX_PICKLE_SINGLE_BUFFERED_H
 #define SCITBX_ARRAY_FAMILY_BOOST_PYTHON_FLEX_PICKLE_SINGLE_BUFFERED_H
 
+#include <stdint.h>
 #include <boost/python/tuple.hpp>
 #include <boost/python/extract.hpp>
 #include <boost/python/detail/api_placeholder.hpp>
@@ -67,7 +68,13 @@ namespace scitbx { namespace af { namespace boost_python {
       {
         SCITBX_ASSERT(a_size == 0);
 #ifdef IS_PY3K
-        str_ptr = PyBytes_AsString(state);
+        if(PyUnicode_Check(state)) {
+          str_ptr = PyUnicode_AsUTF8(state);
+        }
+        else {
+          SCITBX_ASSERT(PyBytes_Check(state));
+          str_ptr = PyBytes_AsString(state);
+        }
 #else
         str_ptr = PyString_AsString(state);
 #endif
@@ -164,6 +171,30 @@ namespace scitbx { namespace af { namespace boost_python {
   {
     BOOST_STATIC_CONSTANT(std::size_t,
       value = (2*pickle_size_per_element<double>::value));
+  };
+
+  template <>
+  struct pickle_size_per_element<int16_t>
+  {
+    BOOST_STATIC_CONSTANT(std::size_t, value = (sizeof(int16_t)+1));
+  };
+
+  template <>
+  struct pickle_size_per_element<uint16_t>
+  {
+    BOOST_STATIC_CONSTANT(std::size_t, value = (sizeof(uint16_t)+1));
+  };
+
+  template <>
+  struct pickle_size_per_element<int8_t>
+  {
+    BOOST_STATIC_CONSTANT(std::size_t, value = (sizeof(int8_t)+1));
+  };
+
+  template <>
+  struct pickle_size_per_element<uint8_t>
+  {
+    BOOST_STATIC_CONSTANT(std::size_t, value = (sizeof(uint8_t)+1));
   };
 
   template <typename ElementType,

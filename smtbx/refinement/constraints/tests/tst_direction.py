@@ -1,12 +1,12 @@
-from __future__ import division
-from cctbx.array_family import flex
-from cctbx import uctbx, xray, crystal
-from smtbx.refinement import constraints
-from scitbx.matrix import col
-from scitbx.matrix import row
-from libtbx.test_utils import approx_equal
+from __future__ import absolute_import, division, print_function
 
 def exercise_direction():
+  from cctbx.array_family import flex
+  from cctbx import uctbx, xray, crystal
+  from smtbx.refinement import constraints
+  from scitbx.matrix import col, row
+  from libtbx.test_utils import approx_equal
+
   uc = uctbx.unit_cell((1, 2, 3))
   xs = xray.structure(
     crystal_symmetry=crystal.symmetry(
@@ -45,10 +45,6 @@ def exercise_direction():
   assert approx_equal(n, n1, eps=1e-15)
   assert approx_equal(n, nc, eps=1e-15)
 
-
-def run():
-  exercise_direction()
-  print 'OK'
-
 if __name__ == '__main__':
-  run()
+  exercise_direction()
+  print('OK')

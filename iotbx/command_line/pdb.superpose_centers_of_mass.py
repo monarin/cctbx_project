@@ -1,4 +1,6 @@
-from __future__ import division
+"""Superpose center of mass of model on center of mass of another model"""
+
+from __future__ import absolute_import, division, print_function
 from iotbx import pdb
 import iotbx.phil
 from iotbx.option_parser import option_parser
@@ -77,7 +79,7 @@ def run(args, command_name="iotbx.pdb.superpose_centers_of_mass"):
     if (not arg_is_processed):
       try:
         params = parameter_interpreter.process(arg=arg)
-      except Sorry, e:
+      except Sorry as e:
         if (not os.path.isfile(arg)): raise
         raise Sorry("Unknown file format: %s" % arg)
       else:
@@ -110,7 +112,7 @@ def run(args, command_name="iotbx.pdb.superpose_centers_of_mass"):
       command_line.symmetry.space_group_info()
   phil_params = master_params.format(python_object=params)
   phil_params.show()
-  print "#phil __OFF__"
+  print("#phil __OFF__")
   #
   # Final checks.
   #
@@ -127,23 +129,23 @@ def run(args, command_name="iotbx.pdb.superpose_centers_of_mass"):
   sites_carts = []
   centers_of_mass = []
   for param_group in [params.reference, params.other]:
-    pdb_obj = pdb.hierarchy.input(file_name=param_group.file_name)
-    pdb_obj.atoms = pdb_obj.hierarchy.atoms()
+    pdb_obj = pdb.input(file_name=param_group.file_name)
+    pdb_obj.atoms = pdb_obj.construct_hierarchy().atoms()
     pdb_objs.append(pdb_obj)
     sites_carts.append(pdb_obj.atoms.extract_xyz())
     sites_sel = sites_carts[-1]
     if (param_group.atom_selection is not None):
-      sel = pdb_obj.hierarchy.atom_selection_cache().selection(
+      sel = pdb_obj.construct_hierarchy().atom_selection_cache().selection(
         param_group.atom_selection)
       sites_sel = sites_sel.select(sel)
-    print "Number of selected sites:", sites_sel.size()
+    print("Number of selected sites:", sites_sel.size())
     centers_of_mass.append(sites_sel.mean())
   #
   # Consolidation of crystal symmetries.
   #
   crystal_symmetry = command_line.symmetry
   for pdb_obj in pdb_objs:
-    crystal_symmetry_from_pdb = pdb_obj.input.crystal_symmetry()
+    crystal_symmetry_from_pdb = pdb_obj.crystal_symmetry()
     if (crystal_symmetry_from_pdb is not None):
       crystal_symmetry = crystal_symmetry.join_symmetry(
         other_symmetry=crystal_symmetry_from_pdb,
@@ -182,24 +184,24 @@ def run(args, command_name="iotbx.pdb.superpose_centers_of_mass"):
     centers_frac[1],
     match_symmetry.continuous_shift_flags)
   sym_op = cb_op_to_ref.inverse().apply(dist_info.sym_op())
-  print "Rotation in fractional space:", sym_op.r().as_xyz()
+  print("Rotation in fractional space:", sym_op.r().as_xyz())
   sym_op = sym_op.as_rational().as_float() \
          + matrix.col(dist_info.continuous_shifts())
-  print "Translation in fractional space: (%s)" % (
-    ", ".join(["%.6g" % t for t in sym_op.t]))
+  print("Translation in fractional space: (%s)" % (
+    ", ".join(["%.6g" % t for t in sym_op.t])))
   #
   centers_frac = [sym_ref.unit_cell().fractionalize(center_cart)
     for center_cart in centers_of_mass]
   sym_center_frac = sym_op * centers_frac[1]
   sym_center_cart = crystal_symmetry.unit_cell().orthogonalize(sym_center_frac)
-  print "Centers of mass:"
-  print "               Reference: (%s)" % ", ".join(["%8.2f" % v
-    for v in centers_of_mass[0]])
-  print "          Original other: (%s)" % ", ".join(["%8.2f" % v
-    for v in centers_of_mass[1]])
-  print "  Symmetry related other: (%s)" % ", ".join(["%8.2f" % v
-    for v in sym_center_cart])
-  print "Cartesian distance between centers of mass: %.4f" % dist_info.dist()
+  print("Centers of mass:")
+  print("               Reference: (%s)" % ", ".join(["%8.2f" % v
+    for v in centers_of_mass[0]]))
+  print("          Original other: (%s)" % ", ".join(["%8.2f" % v
+    for v in centers_of_mass[1]]))
+  print("  Symmetry related other: (%s)" % ", ".join(["%8.2f" % v
+    for v in sym_center_cart]))
+  print("Cartesian distance between centers of mass: %.4f" % dist_info.dist())
   #
   # Internal consistency check (in input setting).
   #
@@ -220,7 +222,7 @@ def run(args, command_name="iotbx.pdb.superpose_centers_of_mass"):
   #
   # Write (selected) transformed coordinates.
   #
-  pdb_hierarchy = pdb_objs[1].hierarchy
+  pdb_hierarchy = pdb_objs[1].construct_hierarchy()
   if (params.output.atom_selection is not None):
     sel = pdb_hierarchy.atom_selection_cache().selection(
       params.output.atom_selection)

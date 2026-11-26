@@ -1,4 +1,4 @@
-from __future__ import division
+from __future__ import absolute_import, division, print_function
 
 from libtbx import easy_run
 import time
@@ -663,26 +663,6 @@ END
 """
 
   result_pdb_str = """\
-HELIX    1   1 ALA A   16  THR A   18  5                                   3
-HELIX    2   2 ASP A   37  GLY A   48  1                                  12
-HELIX    3   3 SER A   57  GLY A   65  1                                   9
-HELIX    4   4 ASN A  119  PHE A  133  1                                  15
-HELIX    5   5 PRO A  134  ARG A  136  5                                   3
-HELIX    6   6 GLY A  138  ALA A  152  1                                  15
-HELIX    7   7 ASP A  165  VAL A  178  1                                  14
-HELIX    8   8 ASP A  181  ARG A  191  1                                  11
-HELIX    9   9 SER A  192  ASP A  194  5                                   3
-HELIX   10  10 SER A  195  GLN A  209  1                                  15
-HELIX   11  11 ALA A  216  ALA A  225  1                                  10
-HELIX   12  12 SER A  228  GLY A  233  1                                   6
-HELIX   13  13 ARG A  235  GLY A  251  1                                  17
-HELIX   14  14 SER A  252  ALA A  260  1                                   9
-HELIX   15  15 SER A  263  LEU A  275  1                                  13
-SHEET    1   A 5 ARG A  13  ASP A  14  0
-SHEET    2   A 5 LEU A  27  SER A  30 -1  O  ARG A  29   N  ARG A  13
-SHEET    3   A 5 VAL A 156  HIS A 159  1  O  VAL A 156   N  PHE A  28
-SHEET    4   A 5 ASP A  51  ASP A  54  1  N  ALA A  51   O  LEU A 157
-SHEET    5   A 5 ASP A  74  LEU A  77  1  O  HIS A  74   N  VAL A  52
 CRYST1  113.068  113.068   53.292  90.00  90.00  90.00 I 41
 SCALE1      0.008844  0.000000  0.000000        0.00000
 SCALE2      0.000000  0.008844  0.000000        0.00000
@@ -812,7 +792,6 @@ HETATM  121  O   HOH A 538       1.073  55.236   2.188  1.00 56.32           O
 HETATM  122  O   HOH A 539       5.912  53.669  23.394  1.00 76.65           O
 HETATM  123  O   HOH A 540      15.986  47.456 -16.281  1.00 62.61           O
 HETATM  124  O   HOH A 541      16.397  56.900  23.573  1.00 58.46           O
-TER
 END
 """
 
@@ -823,8 +802,8 @@ END
       "iotbx.pdb.sort_atoms",
       "%s.pdb" % prefix,
       ])
-  print cmd
-  easy_run.call(cmd)
+  print(cmd)
+  assert not easy_run.call(cmd)
   assert os.path.isfile("%s_sorted.pdb" % prefix)
   out_f = open("%s_sorted.pdb" % prefix, 'r')
   out_str = out_f.read()
@@ -834,5 +813,5 @@ END
 if (__name__ == "__main__"):
   t0 = time.time()
   exercise_1()
-  print "Time: %6.4f"%(time.time()-t0)
-  print "OK"
+  print("Time: %6.4f"%(time.time()-t0))
+  print("OK")

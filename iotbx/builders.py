@@ -1,4 +1,6 @@
-from __future__ import division
+"""Tools for creating crystal_symmetry, x-ray structure, twinning objects
+"""
+from __future__ import absolute_import, division, print_function
 
 import libtbx
 import scitbx.math
@@ -9,6 +11,7 @@ from cctbx import sgtbx
 from cctbx import adp_restraints, geometry_restraints
 
 import libtbx.load_env
+import six
 if (libtbx.env.has_module(name="smtbx")):
   from smtbx.refinement.restraints import adp_restraints as smtbx_adp_restraints
 else:
@@ -129,6 +132,7 @@ class restrained_crystal_structure_builder(crystal_structure_builder):
     adp_restraint_types = {
       'adp_similarity': smtbx_adp_restraints.adp_similarity_restraints,
       'rigid_bond': smtbx_adp_restraints.rigid_bond_restraints,
+      'rigu': smtbx_adp_restraints.rigu_restraints,
       'isotropic_adp': smtbx_adp_restraints.isotropic_adp_restraints,
       'fixed_u_eq_adp': smtbx_adp_restraints.fixed_u_eq_adp_restraints,
       'adp_u_eq_similarity': smtbx_adp_restraints.adp_u_eq_similarity_restraints,
@@ -137,6 +141,7 @@ class restrained_crystal_structure_builder(crystal_structure_builder):
     adp_restraint_types_requiring_connectivity_only = {
       'adp_similarity': smtbx_adp_restraints.adp_similarity_restraints,
       'rigid_bond': smtbx_adp_restraints.rigid_bond_restraints,
+      'rigu': smtbx_adp_restraints.rigu_restraints,
     }
   else:
     adp_restraint_types = {}
@@ -157,6 +162,7 @@ class restrained_crystal_structure_builder(crystal_structure_builder):
       'bond_similarity': geometry_restraints.shared_bond_similarity_proxy(),
       'adp_similarity': adp_restraints.shared_adp_similarity_proxy(),
       'rigid_bond': adp_restraints.shared_rigid_bond_proxy(),
+      'rigu': adp_restraints.shared_rigu_proxy(),
       'isotropic_adp': adp_restraints.shared_isotropic_adp_proxy(),
       'fixed_u_eq_adp': adp_restraints.shared_fixed_u_eq_adp_proxy(),
       'adp_u_eq_similarity': adp_restraints.shared_adp_u_eq_similarity_proxy(),
@@ -243,12 +249,12 @@ class restrained_crystal_structure_builder(crystal_structure_builder):
   def restraints_manager(self):
     from smtbx.refinement.restraints import manager
     kwds = dict([ ("%s_proxies" % name, value)
-                  for name, value in self.proxies().iteritems() ])
+                  for name, value in six.iteritems(self.proxies()) ])
     return manager(**kwds)
 
   def proxies(self):
     return dict([
-      (proxy_type, proxies) for proxy_type, proxies in self._proxies.iteritems()
+      (proxy_type, proxies) for proxy_type, proxies in six.iteritems(self._proxies)
       if len(proxies) != 0])
 
 class reflection_data_source_builder(object):

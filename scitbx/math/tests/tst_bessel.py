@@ -1,9 +1,16 @@
-from __future__ import absolute_import, division
+"""
+math.tests.tst_bessel
+
+"""
+
+from __future__ import absolute_import, division, print_function
 import scitbx.math
 from scitbx.stdlib import math
 from scitbx.array_family import flex
 from libtbx.test_utils import approx_equal
 import sys
+from six.moves import range
+from six.moves import zip
 
 def exercise_interfaces():
   assert approx_equal(scitbx.math.spherical_bessel(1, 2), 0.43539777498)
@@ -38,7 +45,7 @@ def tst_sph_bessel_j1():
   for xx,ff in zip(x,f1):
     assert abs( ff-j1(xx) )/abs(ff) < 1e-5
     #print xx, ff, j1(xx), abs( ff-j1(xx) )/abs(ff)
-  print "OK"
+  print("OK")
 
 def tst_bessel_J():
   x1 = 5.00000000e-02
@@ -64,7 +71,7 @@ def tst_bessel_J():
 
 def exercise():
   if (not hasattr(scitbx.math, "spherical_bessel")):
-    print "Skipping tst_bessel.py: functions not available."
+    print("Skipping tst_bessel.py: functions not available.")
     return
   exercise_interfaces()
   exercise_results()
@@ -72,13 +79,13 @@ def exercise():
 def run(args):
   assert len(args) == 0
   exercise()
-  print "OK"
+  print("OK")
 
 if (__name__ == "__main__"):
   # XXX Test disabled: "Floating-point error" crash, pending future investigation.
-  sys.exit(0)
-  if 'test_j1' in sys.argv[1:]:
-    tst_sph_bessel_j1()
-    tst_bessel_J()
-    exit()
-  run(args=sys.argv[1:])
+  if 0:
+    if 'test_j1' in sys.argv[1:]:
+      tst_sph_bessel_j1()
+      tst_bessel_J()
+      exit()
+    run(args=sys.argv[1:])

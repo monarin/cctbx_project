@@ -1,4 +1,4 @@
-from __future__ import division
+from __future__ import absolute_import, division, print_function
 import iotbx.phil
 from cctbx.array_family import flex
 from libtbx import easy_pickle
@@ -109,7 +109,7 @@ class den_restraints(object):
                params,
                pdb_hierarchy_ref=None,
                log=None,
-               den_proxies=None) :
+               den_proxies=None):
     if(log is None): log = sys.stdout
     self.log = log
     self.den_proxies = den_proxies
@@ -126,8 +126,8 @@ class den_restraints(object):
     segids = flex.std_string([ a.segid for a in atom_labels ])
     self.use_model_segid = not segids.all_eq('    ')
     if pdb_hierarchy_ref is None:
-      print >> self.log, "No input DEN reference model...restraining model "+ \
-        "to starting structure"
+      print("No input DEN reference model...restraining model "+ \
+        "to starting structure", file=self.log)
       self.pdb_hierarchy_ref = pdb_hierarchy
       self.restrain_to_starting_model = True
       self.use_ref_segid = self.use_model_segid
@@ -145,8 +145,8 @@ class den_restraints(object):
     elif self.use_model_segid and (not self.use_ref_segid):
       raise Sorry("Working model contains SEGIDs that do not match "+\
                   "the reference model.")
-    import boost.python
-    self.ext = boost.python.import_ext("mmtbx_den_restraints_ext")
+    import boost_adaptbx.boost.python as bp
+    self.ext = bp.import_ext("mmtbx_den_restraints_ext")
     self.params = params
     self.kappa = params.kappa
     self.kappa_burn_in_cycles = params.kappa_burn_in_cycles
@@ -223,8 +223,8 @@ class den_restraints(object):
       reference_txt = "starting"
     else:
       reference_txt = "reference"
-    print >> self.log, "Finding DEN atom pairs from %s model..." % \
-      reference_txt
+    print("Finding DEN atom pairs from %s model..." % \
+      reference_txt, file=self.log)
     atom_pairs = {}
     distance_hash = {}
     atom_pairs_test = {}
@@ -235,14 +235,9 @@ class den_restraints(object):
     residue_range = \
       self.sequence_separation_limit - self.sequence_separation_low
     for chain in pdb_hierarchy.models()[0].chains():
-      found_conformer = None
-      for conformer in chain.conformers():
-        if not conformer.is_protein() and not conformer.is_na():
-          continue
-        elif found_conformer is None:
-          found_conformer = conformer
-        else:
-          print >> self.log, "warning, multiple conformers found, using first"
+      found_conformer = chain.conformers()[0]
+      if not chain.is_protein() and not chain.is_na():
+        continue
       if found_conformer is not None:
         atom_pairs[chain.id] = []
         atom_pairs_test[chain.id] = []
@@ -274,7 +269,7 @@ class den_restraints(object):
   # have matching atom pairs in the working model
   def remove_non_matching_pairs(self):
     self.den_pair_count = 0
-    print >> self.log, "Removing non-matching pairs..."
+    print("Removing non-matching pairs...", file=self.log)
     temp_atom_pairs = {}
     for chain in self.ref_atom_pairs.keys():
       temp_atom_pairs[chain] = []
@@ -292,26 +287,21 @@ class den_restraints(object):
   def count_atoms_per_chain(self, pdb_hierarchy):
     atoms_per_chain = {}
     for chain in pdb_hierarchy.models()[0].chains():
-      found_conformer = False
-      for conformer in chain.conformers():
-        if not conformer.is_protein() and not conformer.is_na():
-          continue
-        else:
-          found_conformer = True
-      if found_conformer:
-        if self.exclude_hydrogens:
-          counter = 0
-          for atom in chain.atoms():
-            if not atom.element_is_hydrogen():
-              counter += 1
-          atoms_per_chain[chain.id] = counter
-        else:
-          atoms_per_chain[chain.id] = chain.atoms_size()
+      if not chain.is_protein() and not chain.is_na():
+        continue
+      if self.exclude_hydrogens:
+        counter = 0
+        for atom in chain.atoms():
+          if not atom.element_is_hydrogen():
+            counter += 1
+        atoms_per_chain[chain.id] = counter
+      else:
+        atoms_per_chain[chain.id] = chain.atoms_size()
     return atoms_per_chain
 
   def select_random_den_restraints(self):
     from cctbx.array_family import flex
-    print >> self.log, "Selecting random DEN pairs..."
+    print("Selecting random DEN pairs...", file=self.log)
     random_pairs = {}
     for chain in self.ref_atom_pairs.keys():
       random_pairs[chain] = []
@@ -397,7 +387,7 @@ class den_restraints(object):
 
   def build_den_restraints(self):
     den_weight = self.weight*(1.0/(self.sigma**2))
-    print >> self.log, "building DEN restraints..."
+    print("building DEN restraints...", file=self.log)
     for chain in self.den_atom_pairs.keys():
       for pair in self.den_atom_pairs[chain]:
         i_seq_a = self.i_seq_hash_ref[self.name_hash[pair[0]]]
@@ -453,15 +443,15 @@ class den_restraints(object):
     return grid
 
   def show_den_summary(self, sites_cart):
-    print >> self.log, "DEN restraints summary:"
-    print >> self.log, "\ntotal number of DEN restraints: %s\n" % \
-      len(self.den_proxies)
-    print >> self.log, "%s | %s | %s | %s | %s " % \
+    print("DEN restraints summary:", file=self.log)
+    print("\ntotal number of DEN restraints: %s\n" % \
+      len(self.den_proxies), file=self.log)
+    print("%s | %s | %s | %s | %s " % \
       ("    atom 1     ",
        "    atom 2     ",
        "model dist",
        "  eq dist ",
-       "eq dist start")
+       "eq dist start"), file=self.log)
     for dp in self.den_proxies:
       i_seqs = dp.i_seqs
       a_xyz = sites_cart[i_seqs[0]]
@@ -476,17 +466,16 @@ class den_restraints(object):
         name2 = self.name_hash[i_seqs[1]][:-4]
       else:
         name2 = self.name_hash[i_seqs[1]]
-      print >> self.log, \
-        "%s | %s |   %6.3f   |   %6.3f   |   %6.3f  " % \
+      print("%s | %s |   %6.3f   |   %6.3f   |   %6.3f  " % \
         (name1,
          name2,
          distance,
          dp.eq_distance,
-         dp.eq_distance_start)
+         dp.eq_distance_start), file=self.log)
 
   def output_kinemage(self, sites_cart):
     from mmtbx.kinemage import validation
-    f = file("den_restraints.kin", "w")
+    f = open("den_restraints.kin", "w")
     vec_header = "@kinemage\n"
     vec_header += "@vectorlist {DEN} color= magenta master= {DEN}\n"
     f.write(vec_header)
@@ -519,7 +508,7 @@ class den_restraints(object):
     #   f.write(vec)
     f.close()
 
-  def proxy_select (self, n_seq, selection) :
+  def proxy_select(self, n_seq, selection):
     assert (self.den_proxies is not None)
     return den_restraints(
       pdb_hierarchy=self.pdb_hierarchy,

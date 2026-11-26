@@ -16,18 +16,21 @@ crystal.symmetry(
   unit_cell=(76.4, 76.4, 180.94, 90, 90, 120),
   space_group_symbol="P3(2)21")
 """
-from __future__ import division
+from __future__ import absolute_import, division, print_function
 
 from cctbx import crystal
+from six.moves import range
 
 def extract_from(file_name=None, file=None, max_characters=1000000):
   assert [file_name, file].count(None) == 1
   if (file is None):
     file = open(file_name)
-  unit_cell = [None for i in xrange(6)]
+  lines = file.readlines()
+  file.close()
+  unit_cell = [None for i in range(6)]
   space_group_symbol = None
   n_characters = 0
-  for line in file:
+  for line in lines:
     if (max_characters != 0):
       n_characters += len(line)
       if (n_characters > max_characters): break

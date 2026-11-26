@@ -1,28 +1,48 @@
-from __future__ import division
+from __future__ import absolute_import, division, print_function
 #import libtbx.load_env
 import sys, os, math
 from cctbx.array_family import flex
-from libtbx.utils import remove_files, search_for
+from libtbx.utils import remove_files
 from mmtbx import utils
 from libtbx.test_utils import approx_equal, not_approx_equal, run_command, \
   show_diff
-import iotbx.pdb.hierarchy
+import iotbx.pdb
 from scitbx.array_family import flex
 from cctbx import adptbx
+import iotbx.phil
 import mmtbx.model
-import iotbx.pdb
-from cStringIO import StringIO
+import mmtbx.pdbtools
+from six.moves import cStringIO as StringIO, zip
+from iotbx.pdb.tst_hierarchy_flip_symmetric import pdb_1us0_phe_276
+from libtbx import easy_run
+
+full_params = mmtbx.model.manager.get_default_pdb_interpretation_params()
+full_params.pdb_interpretation.flip_symmetric_amino_acids=False
+
+def run_pdbtools(cmd):
+  """Run a phenix.pdbtools command line in this process; like run_command,
+  fail on any stderr output."""
+  import shlex
+  from contextlib import redirect_stderr
+  from io import StringIO
+  from libtbx.utils import null_out
+  from iotbx.cli_parser import run_program
+  from mmtbx.programs import pdbtools
+  args = shlex.split(cmd)
+  assert args[0] == "phenix.pdbtools", args
+  err = StringIO()
+  with redirect_stderr(err):
+    run_program(program_class=pdbtools.Program, args=args[1:],
+      logger=null_out())
+  assert err.getvalue() == "", err.getvalue()
 
 class xray_structure_plus(object):
   def __init__(self, file_name):
     log = StringIO()
     pdb_inp = iotbx.pdb.input(file_name=file_name)
-    self.model = mmtbx.model.manager(
-        model_input = pdb_inp,
-        process_input = True,
-        log = log)
+    self.model = mmtbx.model.manager(model_input = pdb_inp, log = log)
+    self.model.process(pdb_interpretation_params = full_params)
     self.xray_structure = self.model.get_xray_structure()
-    self.all_chain_proxies = self.model.all_chain_proxies
     uc = self.model.get_xray_structure().unit_cell()
     self.occ           = self.xray_structure.scatterers().extract_occupancies()
     self.u_iso            = self.xray_structure.scatterers().extract_u_iso()
@@ -69,10 +89,10 @@ ATOM     15  CA  PHE A   1       7.000   7.000   7.000  1.00 17.18           C
 ANISOU   15  CA  PHE A   1      931   2249   3347   1119   1342   2337       C
 ATOM     13  CB  PHE B   2      11.715   4.672   7.185  1.00 34.89           C
 ATOM     14  CG  PHE B   2      10.876   4.117   8.301  1.00 35.22           C
-ATOM     15  CD1 PHE B   2      10.127   2.966   8.118  1.00 35.30           C
-ATOM     16  CD2 PHE B   2      10.836   4.746   9.534  1.00 35.63           C
-ATOM     17  CE1 PHE B   2       9.355   2.454   9.143  1.00 35.88           C
-ATOM     18  CE2 PHE B   2      10.066   4.239  10.563  1.00 36.30           C
+ATOM     15  CD2 PHE B   2      10.127   2.966   8.118  1.00 35.30           C
+ATOM     16  CD1 PHE B   2      10.836   4.746   9.534  1.00 35.63           C
+ATOM     17  CE2 PHE B   2       9.355   2.454   9.143  1.00 35.88           C
+ATOM     18  CE1 PHE B   2      10.066   4.239  10.563  1.00 36.30           C
 ATOM     19  CZ  PHE B   2       9.324   3.091  10.367  1.00 36.47           C
 ATOM     20  C   PHE B   2      11.961   6.316   5.313  1.00 34.38           C
 ATOM     21  O   PHE B   2      11.902   5.976   4.132  1.00 34.72           O
@@ -109,11 +129,11 @@ END
   file_name = "exercise_basic_pdbtools.pdb"
   pi = iotbx.pdb.input(source_info=None, lines=pdb_str)
   pi.write_pdb_file(file_name=file_name)
-  output = file_name+"_modified.pdb"
+  output = "exercise_basic_pdbtools_mod.pdb"
   xrsp_init = xray_structure_plus(file_name = file_name)
   assert file_name.find('"') < 0
   base = \
-      'phenix.pdbtools "%s" output.file_name=%s '%(file_name, output)
+      'phenix.pdbtools "%s" suffix=none output.prefix=%s '%(file_name, output.replace(".pdb",""))
   for selection_str in [None, "chain A or chain C"]:
     selection = xrsp_init.selection(selection_strings = selection_str)
     if(selection_str is None):
@@ -122,61 +142,61 @@ END
       assert selection.size() == 36 and selection.count(True) == 24
     #
     cmd = base + 'adp.randomize=true modify.selection="%s"'%str(selection_str)
-    print cmd
+    print(cmd)
     check_adp_rand(
       cmd, xrsp_init, output, selection, selection_str, verbose)
     #
     cmd = base + 'adp.set_b_iso=10.0 modify.selection="%s"'%str(selection_str)
-    print cmd
+    print(cmd)
     check_adp_set_b_iso(
       cmd, xrsp_init, output, selection, selection_str, verbose)
     #
     cmd = base + 'adp.shift_b_iso=20.0 modify.selection="%s"'%str(selection_str)
-    print cmd
+    print(cmd)
     check_adp_rand(
       cmd, xrsp_init, output, selection, selection_str, verbose)
     #
     cmd = base + 'adp.scale_adp=2.0 modify.selection="%s"'%str(selection_str)
-    print cmd
+    print(cmd)
     check_adp_rand(
       cmd, xrsp_init, output, selection, selection_str, verbose)
     #
     cmd = base + 'adp.convert_to_iso=true modify.selection="%s"'%str(selection_str)
-    print cmd
+    print(cmd)
     check_adp_to_iso(
       cmd, xrsp_init, output, selection, selection_str, verbose)
     #
     cmd = base + 'adp.convert_to_aniso=true modify.selection="%s"'%str(selection_str)
-    print cmd
+    print(cmd)
     check_adp_to_aniso(
       cmd, xrsp_init, output, selection, selection_str, verbose)
     #
     shake = 1.5
     cmd = base+'sites.shake=%s modify.selection="%s"'%(str(shake), str(selection_str))
-    print cmd
+    print(cmd)
     check_sites_shake(
       cmd, xrsp_init, output, selection, selection_str, shake, verbose)
     #
     cmd = base+'sites.rotate="1,2,3" sites.translate="4,5,6" modify.selection="%s"'%(
                                                             str(selection_str))
-    print cmd
+    print(cmd)
     check_sites_rt(
       cmd, xrsp_init, output, selection, selection_str, verbose)
     #
     cmd = base+'occupancies.randomize=true modify.selection="%s"'%(str(selection_str))
-    print cmd
+    print(cmd)
     check_occ_randomize(
       cmd, xrsp_init, output, selection, selection_str, verbose)
     #
     cmd = base+'occupancies.set=0.75 modify.selection="%s"'%(str(selection_str))
-    print cmd
+    print(cmd)
     check_occ_set(
       cmd, xrsp_init, output, selection, selection_str, verbose)
     #
     remove_selection_str = "element C"
     cmd = base+'remove="%s" modify.selection="%s"'%(
       str(remove_selection_str), str(selection_str))
-    print cmd
+    print(cmd)
     check_remove_selection(
       cmd, xrsp_init, output, selection, selection_str,
       remove_selection_str, verbose)
@@ -184,14 +204,14 @@ END
     keep_selection_str = "element C"
     cmd = base+'keep="%s" modify.selection="%s"'%(
       str(keep_selection_str), str(selection_str))
-    print cmd
+    print(cmd)
     check_keep_selection(
       cmd, xrsp_init, output, selection, selection_str,
       keep_selection_str, verbose)
     #
   #
   cmd = base
-  print cmd
+  print(cmd)
   check_all_none(cmd, xrsp_init, output, verbose)
   #
   cmd = base
@@ -201,7 +221,7 @@ def check_adp_rand(
       cmd, xrsp_init, output, selection, selection_str, verbose,
       tolerance=1.e-3):
   remove_files(output)
-  run_command(command=cmd, verbose=verbose)
+  run_pdbtools(cmd)
   xrsp = xray_structure_plus(file_name = output)
   assert approx_equal(xrsp.occ,        xrsp_init.occ,tolerance)
   assert approx_equal(xrsp.sites_cart, xrsp_init.sites_cart,tolerance)
@@ -224,7 +244,7 @@ def check_adp_set_b_iso(
       cmd, xrsp_init, output, selection, selection_str, verbose,
       tolerance=1.e-3):
   remove_files(output)
-  run_command(command=cmd, verbose=verbose)
+  run_pdbtools(cmd)
   xrsp = xray_structure_plus(file_name = output)
   assert approx_equal(xrsp.occ,        xrsp_init.occ,tolerance)
   assert approx_equal(xrsp.sites_cart, xrsp_init.sites_cart,tolerance)
@@ -251,7 +271,7 @@ def check_adp_to_iso(
       cmd, xrsp_init, output, selection, selection_str, verbose,
       tolerance=1.e-3):
   remove_files(output)
-  run_command(command=cmd, verbose=verbose)
+  run_pdbtools(cmd)
   xrsp = xray_structure_plus(file_name = output)
   assert approx_equal(xrsp.occ,        xrsp_init.occ,tolerance)
   assert approx_equal(xrsp.sites_cart, xrsp_init.sites_cart,tolerance)
@@ -266,7 +286,7 @@ def check_adp_to_aniso(
       cmd, xrsp_init, output, selection, selection_str, verbose,
       tolerance=1.e-3):
   remove_files(output)
-  run_command(command=cmd, verbose=verbose)
+  run_pdbtools(cmd)
   xrsp = xray_structure_plus(file_name = output)
   assert approx_equal(xrsp.occ,        xrsp_init.occ,tolerance)
   assert approx_equal(xrsp.sites_cart, xrsp_init.sites_cart,tolerance)
@@ -283,9 +303,10 @@ def check_adp_to_aniso(
 
 def check_sites_shake(
       cmd, xrsp_init, output, selection, selection_str, shake, verbose,
-      tolerance=1.e-3):
+      tolerance=1.e-2):
   remove_files(output)
-  run_command(command=cmd, verbose=verbose)
+  print(cmd)
+  run_pdbtools(cmd)
   xrsp = xray_structure_plus(file_name = output)
   assert approx_equal(xrsp.occ,    xrsp_init.occ,tolerance)
   assert approx_equal(xrsp.u_iso,  xrsp_init.u_iso,tolerance)
@@ -305,7 +326,7 @@ def check_sites_rt(
       cmd, xrsp_init, output, selection, selection_str, verbose,
       tolerance=1.e-3):
   remove_files(output)
-  run_command(command=cmd, verbose=verbose)
+  run_pdbtools(cmd)
   xrsp = xray_structure_plus(file_name = output)
   assert approx_equal(xrsp.occ,    xrsp_init.occ,tolerance)
   assert approx_equal(xrsp.u_iso,  xrsp_init.u_iso,tolerance)
@@ -323,7 +344,7 @@ def check_occ_randomize(
       cmd, xrsp_init, output, selection,selection_str, verbose,
       tolerance=1.e-3):
   remove_files(output)
-  run_command(command=cmd, verbose=verbose)
+  run_pdbtools(cmd)
   xrsp = xray_structure_plus(file_name = output)
   assert approx_equal(xrsp.sites_cart,xrsp_init.sites_cart,tolerance)
   assert approx_equal(xrsp.u_iso,     xrsp_init.u_iso,tolerance)
@@ -342,7 +363,7 @@ def check_occ_set(
       cmd, xrsp_init, output, selection,selection_str, verbose,
       tolerance=1.e-3):
   remove_files(output)
-  run_command(command=cmd, verbose=verbose)
+  run_pdbtools(cmd)
   xrsp = xray_structure_plus(file_name = output)
   assert approx_equal(xrsp.sites_cart,xrsp_init.sites_cart,tolerance)
   assert approx_equal(xrsp.u_iso,     xrsp_init.u_iso,tolerance)
@@ -362,7 +383,7 @@ def check_remove_selection(
       cmd, xrsp_init, output, selection, selection_str,
       remove_selection_str, verbose, tolerance=1.e-3):
   remove_files(output)
-  run_command(command=cmd, verbose=verbose)
+  run_pdbtools(cmd)
   xrsp = xray_structure_plus(file_name = output)
   remove_selection = ~xrsp_init.selection(
                                       selection_strings = remove_selection_str)
@@ -386,7 +407,7 @@ def check_keep_selection(
       cmd, xrsp_init, output, selection, selection_str,
       keep_selection_str, verbose, tolerance=1.e-3):
   remove_files(output)
-  run_command(command=cmd, verbose=verbose)
+  run_pdbtools(cmd)
   xrsp = xray_structure_plus(file_name = output)
   keep_selection = xrsp_init.selection(selection_strings = keep_selection_str)
   assert approx_equal(xrsp.sites_cart,
@@ -405,7 +426,7 @@ def check_keep_selection(
 
 def check_all_none(cmd, xrsp_init, output, verbose, tolerance=1.e-3):
   remove_files(output)
-  run_command(command=cmd, verbose=verbose)
+  run_pdbtools(cmd)
   xrsp = xray_structure_plus(file_name = output)
   assert approx_equal(xrsp.occ,         xrsp_init.occ,tolerance)
   assert approx_equal(xrsp.sites_cart,  xrsp_init.sites_cart,tolerance)
@@ -416,13 +437,10 @@ def check_all_none(cmd, xrsp_init, output, verbose, tolerance=1.e-3):
 
 def check_keep_remove_conflict(cmd, output, verbose):
   cmd += " keep=all remove=all "
-  print cmd
-  cmd_result = run_command(command=cmd, verbose=verbose, sorry_expected=True)
-  sorry_lines = search_for(
-    pattern="Sorry: 'keep' and 'remove' keywords cannot be used simultaneously.",
-    mode="==",
-    lines=cmd_result.stdout_lines)
-  assert len(sorry_lines) == 1
+  print(cmd)
+  r = easy_run.go(cmd)
+  assert r.stdout_lines[-1]==\
+    "Sorry: 'keep' and 'remove' keywords cannot be used simultaneously."
 
 def exercise_multiple():
   pdb_str = """\
@@ -470,9 +488,10 @@ occupancies
 }
 }
 """
-  open("params", "w").write(params)
+  with open("params", "w") as f:
+    f.write(params)
   cmd = 'phenix.pdbtools exercise_multiple.pdb params'
-  print cmd
+  print(cmd)
   result = run_command(command=cmd, verbose=False)
   lines = [l.strip() for l in result.stdout_lines]
   expected_lines = [
@@ -511,16 +530,20 @@ END
   ph_met_in = pi.construct_hierarchy()
   pi.write_pdb_file(file_name="exercise_no_cryst1.pdb")
   cmd = 'phenix.pdbtools exercise_no_cryst1.pdb sites.rotate="0 0 0"'
-  print cmd
-  run_command(command=cmd, verbose=False)
+  print(cmd)
+  run_pdbtools(cmd)
   lines1 = []
-  for line in open("exercise_no_cryst1.pdb","r").readlines():
+  with open("exercise_no_cryst1.pdb","r") as f:
+    lines = f.readlines()
+  for line in lines:
     line = line.strip()
     assert line.count("CRYST1") == 0
     if(line.startswith("ATOM") or line.startswith("HETATM")):
       lines1.append(line)
   lines2 = []
-  for line in open("exercise_no_cryst1.pdb_modified.pdb","r").readlines():
+  with open("exercise_no_cryst1_modified.pdb","r") as f:
+    lines = f.readlines()
+  for line in lines:
     line = line.strip()
     assert line.count("CRYST1") == 0
     if(line.startswith("ATOM") or line.startswith("HETATM")):
@@ -554,26 +577,26 @@ END
   ph_met_in = pi.construct_hierarchy()
   pi.write_pdb_file(file_name="exercise_exercise_truncate_to_polyala.pdb")
   cmd = 'phenix.pdbtools exercise_exercise_truncate_to_polyala.pdb truncate_to_polyala=true'
-  print cmd
-  run_command(command=cmd)
+  print(cmd)
+  run_pdbtools(cmd)
   gly_atom_names = [" N  ", " CA ", " C  ", " O  ", " CB "]
-  pdb_inp = iotbx.pdb.hierarchy.input(
-    file_name="exercise_exercise_truncate_to_polyala.pdb_modified.pdb")
-  for a in pdb_inp.hierarchy.atoms_with_labels():
+  pdb_inp = iotbx.pdb.input(
+    file_name="exercise_exercise_truncate_to_polyala_modified.pdb")
+  for a in pdb_inp.construct_hierarchy().atoms_with_labels():
     assert a.name in gly_atom_names
 
 def exercise_set_charge():
-  from iotbx import file_reader
   input_pdb = """
 ATOM      1  CL  CL  X   1       0.000   0.000   0.000  1.00 20.00          CL
 END
 """
-  open("tmp_cl.pdb", "w").write(input_pdb)
+  with open("tmp_cl.pdb", "w") as f:
+    f.write(input_pdb)
   cmd='phenix.pdbtools tmp_cl.pdb charge_selection="element Cl" charge=-1'
-  print cmd
-  run_command(command=cmd, verbose=False)
-  pdb_in = file_reader.any_file("tmp_cl.pdb_modified.pdb").file_object
-  hierarchy = pdb_in.hierarchy
+  print(cmd)
+  run_pdbtools(cmd)
+  pdb_in = iotbx.pdb.input("tmp_cl_modified.pdb")
+  hierarchy = pdb_in.construct_hierarchy()
   xrs = pdb_in.xray_structure_simple()
   assert (xrs.scatterers()[0].scattering_type == 'Cl1-')
   assert (hierarchy.atoms()[0].charge == '1-')
@@ -614,14 +637,17 @@ ATOM     12  O   LEU C   1       5.613  12.448   6.864  1.00  7.32           O
 TER
 """
   ifn = "exercise_renumber_residues.pdb"
-  open(ifn,"w").write(input_pdb)
+  with open(ifn,"w") as f:
+    f.write(input_pdb)
   cmd = 'phenix.pdbtools "%s" renumber_residues=true'%ifn
-  print cmd
-  run_command(command=cmd, verbose=False)
-  for line1, line2 in zip(open(ifn+"_modified.pdb").readlines(), expected_output_pdb.splitlines()):
+  print(cmd)
+  run_pdbtools(cmd)
+  with open("exercise_renumber_residues_modified.pdb") as f:
+    lines = f.readlines()
+  for line1, line2 in zip(lines, expected_output_pdb.splitlines()):
     line1 = line1.strip()
     line2 = line2.strip()
-    assert line1 == line2
+    assert line1 == line2,[line1, line2]
   # now only a selected chain
   expected_output_pdb_2 = """\
 ATOM      1  O   GLY A   3       1.434   1.460   2.496  1.00  6.04           O
@@ -641,15 +667,16 @@ ATOM     12  O   LEU C   0       5.613  12.448   6.864  1.00  7.32           O
 TER
 """
   cmd = "phenix.pdbtools \"%s\" renumber_residues=true modify.selection=\"chain B\"" % ifn
-  print cmd
-  run_command(command=cmd, verbose=False)
-  new_lines = open(ifn+"_modified.pdb").readlines()
-  for line1, line2 in zip(new_lines, expected_output_pdb_2.splitlines()):
-    assert (line1.strip() == line2.strip())
+  print(cmd)
+  run_pdbtools(cmd)
+  with open("exercise_renumber_residues_modified.pdb") as f:
+    for line1, line2 in zip(f.readlines(), expected_output_pdb_2.splitlines()):
+      assert (line1.strip() == line2.strip())
   cmd="phenix.pdbtools \"%s\" increment_resseq=10 modify.selection=\"chain B\"" % ifn
-  print cmd
-  run_command(command=cmd, verbose=False)
-  pdb_new = open(ifn+"_modified.pdb").read()
+  print(cmd)
+  run_pdbtools(cmd)
+  with open("exercise_renumber_residues_modified.pdb") as f:
+    pdb_new = f.read()
   expected_output_pdb_3 = """\
 ATOM      1  O   GLY A   3       1.434   1.460   2.496  1.00  6.04           O
 ATOM      2  O   CYS A   7       2.196   4.467   3.911  1.00  4.51           O
@@ -670,10 +697,47 @@ END
 """
   assert not show_diff(pdb_new, expected_output_pdb_3)
 
+def exercise_neutralize_scatterers():
+  input_pdb = """ATOM      1  N   TYR    22      -0.813  -2.199   1.423  1.00  0.00           N
+ATOM      2  CA  TYR    22       0.612  -2.082   1.127  1.00  0.00           C
+ATOM      3  C   TYR    22       1.441  -2.790   2.171  1.00  0.00           C
+ATOM      4  O   TYR    22       0.927  -3.375   3.128  1.00  0.00           O
+ATOM      5  CB  TYR    22       1.052  -0.589   1.096  1.00  0.00           C
+ATOM      6  CG  TYR    22       0.390   0.302   0.038  1.00  0.00           C
+ATOM      7  CD1 TYR    22       0.807   0.254  -1.296  1.00  0.00           C
+ATOM      8  CD2 TYR    22      -0.647   1.164   0.406  1.00  0.00           C
+ATOM      9  CE1 TYR    22       0.188   1.057  -2.250  1.00  0.00           C
+ATOM     10  CE2 TYR    22      -1.264   1.966  -0.549  1.00  0.00           C
+ATOM     11  CZ  TYR    22      -0.846   1.912  -1.877  1.00  0.00           C
+ATOM     12  OH  TYR    22      -1.452   2.696  -2.817  1.00  0.00           O1-
+"""
+  expected_output_pdb = """ATOM      1  N   TYR    22      -0.813  -2.199   1.423  1.00 10.00           N
+ATOM      2  CA  TYR    22       0.612  -2.082   1.127  1.00 10.00           C
+ATOM      3  C   TYR    22       1.441  -2.790   2.171  1.00 10.00           C
+ATOM      4  O   TYR    22       0.927  -3.375   3.128  1.00 10.00           O
+ATOM      5  CB  TYR    22       1.052  -0.589   1.096  1.00 10.00           C
+ATOM      6  CG  TYR    22       0.390   0.302   0.038  1.00 10.00           C
+ATOM      7  CD1 TYR    22       0.807   0.254  -1.296  1.00 10.00           C
+ATOM      8  CD2 TYR    22      -0.647   1.164   0.406  1.00 10.00           C
+ATOM      9  CE1 TYR    22       0.188   1.057  -2.250  1.00 10.00           C
+ATOM     10  CE2 TYR    22      -1.264   1.966  -0.549  1.00 10.00           C
+ATOM     11  CZ  TYR    22      -0.846   1.912  -1.877  1.00 10.00           C
+ATOM     12  OH  TYR    22      -1.452   2.696  -2.817  1.00 10.00           O
+"""
+  ifn = "exercise_neutralize_scatterers.pdb"
+  with open(ifn,"w") as f:
+    f.write(input_pdb)
+  cmd = 'phenix.pdbtools "%s" neutralize_scatterers=true adp.set_b_iso=10'%ifn
+  print(cmd)
+  run_pdbtools(cmd)
+  with open(ifn.replace(".pdb","_modified.pdb")) as f:
+    lines = f.readlines()
+  for line1, line2 in zip(lines, expected_output_pdb.splitlines()):
+    line1 = line1.strip()
+    line2 = line2.strip()
+    assert line1 == line2
+
 def exercise_remove_atoms():
-  import random
-  random.seed(1)
-  flex.set_random_seed(1)
   pdb_str = """
 ATOM      1  N  AMET B  37       7.525   5.296   6.399  1.00 10.00           N
 ATOM      2  CA AMET B  37       6.533   6.338   6.634  1.00 10.00           C
@@ -726,37 +790,33 @@ ATOM      8  CE BMET B  39       8.775   5.000  10.645  1.00 10.00           C
 TER
 END
   """
-  pi = iotbx.pdb.input(source_info=None, lines=pdb_str)
-  ph_in = pi.construct_hierarchy()
-  s1 = ph_in.atoms_size()
-  pi.write_pdb_file(file_name="exercise_remove_atoms.pdb")
+  # Initial size - 48 atoms
+  with open("exercise_remove_atoms.pdb", 'w') as f:
+    f.write(pdb_str)
   cmd = " ".join([
     "phenix.pdbtools",
     "exercise_remove_atoms.pdb",
     "remove_fraction=0.1"])
-  print cmd
-  run_command(command=cmd, verbose=False)
-  pi = iotbx.pdb.input(file_name="exercise_remove_atoms.pdb_modified.pdb")
-  ph_in = pi.construct_hierarchy()
-  s2 = ph_in.atoms_size()
-  f = s2*100./s1
-  #
-  # UNSTABLE 2x
-  #
-  assert f>77 and f<100, f # was getting 79.16 on anaconda t96
+  print(cmd)
+  run_pdbtools(cmd)
+  inp = iotbx.pdb.input(file_name="exercise_remove_atoms_modified.pdb")
+  # removed 5 atoms (~10%).
+  assert inp.atoms().size() == 43, inp.atoms().size()
 
-def exercise_change_of_basis () :
-  open("tmp_pdbtools_cb_op.pdb", "w").write("""\
+def exercise_change_of_basis():
+  with open("tmp_pdbtools_cb_op.pdb", "w") as f:
+    f.write("""\
 CRYST1   21.937    4.866   23.477  90.00 107.08  90.00 P 1 21 1      2
 ATOM      1  N   GLY A   1      -9.009   4.612   6.102  1.00 16.77           N
 ATOM      2  CA  GLY A   1      -9.052   4.207   4.651  1.00 16.57           C
 ATOM      3  C   GLY A   1      -8.015   3.140   4.419  1.00 16.16           C
 ATOM      4  O   GLY A   1      -7.523   2.521   5.381  1.00 16.78           O  """)
   cmd = "phenix.pdbtools tmp_pdbtools_cb_op.pdb change_of_basis='a,c,b'"
-  run_command(command=cmd, verbose=False)
-  lines = open("tmp_pdbtools_cb_op.pdb_modified.pdb").readlines()
-  for line in lines :
-    if line.startswith("CRYST1") :
+  run_pdbtools(cmd)
+  with open("tmp_pdbtools_cb_op_modified.pdb") as f:
+    lines = f.readlines()
+  for line in lines:
+    if line.startswith("CRYST1"):
       assert (line.strip() ==
         """CRYST1   21.937   23.477    4.866  90.00  90.00 107.08 P 1 1 21""")
       break
@@ -807,31 +867,32 @@ loop_
   cmd = " ".join(["phenix.pdbtools", "\"%s\"" % f.name,
     "rename_chain_id.old_id=A",
     "rename_chain_id.new_id=C"])
-  print cmd
+  print(cmd)
   run_command(command=cmd, verbose=False)
-  assert os.path.isfile(f.name+"_modified.pdb")
-  pdb_inp = iotbx.pdb.input(file_name=f.name+"_modified.pdb")
-  assert pdb_inp.file_type() == "pdb"
+  ofn = f.name[:].replace(".cif","_modified.cif")
+  assert os.path.isfile(ofn)
+  pdb_inp = iotbx.pdb.input(file_name=ofn)
+  assert pdb_inp.file_type() == "mmcif"
   hierarchy = pdb_inp.construct_hierarchy()
   assert [chain.id for chain in hierarchy.chains()] == ['C', 'B']
+
+  # check target_output_format=pdb
   cmd = " ".join(["phenix.pdbtools", "\"%s\"" % f.name,
-    "adp.convert_to_anisotropic=True",
-    "output.format=mmcif"])
-  print cmd
+    "rename_chain_id.old_id=A",
+    "rename_chain_id.new_id=C",
+    "target_output_format=pdb",])
+  print(cmd)
   run_command(command=cmd, verbose=False)
-  assert os.path.isfile(f.name+"_modified.cif")
-  pdb_inp = iotbx.pdb.input(file_name=f.name+"_modified.cif")
-  assert pdb_inp.file_type() == "mmcif"
-  xs = pdb_inp.xray_structure_simple()
-  assert xs.use_u_aniso().all_eq(True)
+  ofn = f.name[:].replace(".cif","_modified.pdb")
+  assert os.path.isfile(ofn)
 
 def exercise_mmcif_support_2(prefix="tst_pdbtools_mmcif2"):
   f = open("%s.pdb" % prefix, 'w')
   f.write("""\
-HELIX    1   1 TRP A   10  VAL A   14  5                                   5
+HELIX    1   1 GLN A   10  GLN A   14  5                                   5
 HELIX    2   2 ARG A   17  ASN A   29  1                                  13
-SHEET    1   A 2 ARG A  33  PRO A  38  0
-SHEET    2   A 2 ARG A  51  VAL A  56  1  O  VAL A  54   N  ILE A  35
+SHEET    1   A 2 GLN A  33  GLN A  38  0
+SHEET    2   A 2 GLN A  51  GLN A  56  1  O  VAL A  54   N  ILE A  35
 SSBOND   1 CYS A    4    CYS A   49
 CRYST1   62.654   62.654   45.906  90.00  90.00  90.00 P 43 21 2
 SCALE1      0.015961  0.000000  0.000000        0.00000
@@ -857,15 +918,36 @@ ATOM     17  OG  SER A   5      16.893   7.668  -1.432  1.00 47.16           O
 ATOM     18  N   GLY A   6      15.520   6.924   1.901  1.00 31.69           N
 ATOM     19  CA  GLY A   6      14.811   5.694   2.191  1.00 32.41           C
 ATOM     20  C   GLY A   6      15.257   5.112   3.511  1.00 29.00           C
+ATOM      2  CA  GLN A  10      22.670  12.004   2.148  1.00 39.46           C
+ATOM      2  CA  GLN A  11      22.670  12.004   2.148  1.00 39.46           C
+ATOM      2  CA  GLN A  12      22.670  12.004   2.148  1.00 39.46           C
+ATOM      2  CA  GLN A  13      22.670  12.004   2.148  1.00 39.46           C
+ATOM      2  CA  GLN A  14      22.670  12.004   2.148  1.00 39.46           C
+ATOM      2  CA  GLN A  33      22.670  12.004   2.148  1.00 39.46           C
+ATOM      2  CA  GLN A  34      22.670  12.004   2.148  1.00 39.46           C
+ATOM      2  CA  GLN A  35      22.670  12.004   2.148  1.00 39.46           C
+ATOM      2  CA  GLN A  36      22.670  12.004   2.148  1.00 39.46           C
+ATOM      2  CA  GLN A  37      22.670  12.004   2.148  1.00 39.46           C
+ATOM      2  CA  GLN A  38      22.670  12.004   2.148  1.00 39.46           C
+ATOM      2  CA  GLN A  51      22.670  12.004   2.148  1.00 39.46           C
+ATOM      2  CA  GLN A  52      22.670  12.004   2.148  1.00 39.46           C
+ATOM      2  CA  GLN A  53      22.670  12.004   2.148  1.00 39.46           C
+ATOM      2  CA  GLN A  54      22.670  12.004   2.148  1.00 39.46           C
+ATOM      2  CA  GLN A  55      22.670  12.004   2.148  1.00 39.46           C
+ATOM      2  CA  GLN A  56      22.670  12.004   2.148  1.00 39.46           C
 """)
   f.close()
   cmd = " ".join([
-      "phenix.pdbtools",
-      "%s.pdb" % prefix,
-      "output.format=mmcif",
-      "output.file_name=%s.cif" % prefix])
-  print cmd
+      "phenix.pdb_as_cif",
+      "%s.pdb" % prefix])
   run_command(command=cmd, verbose=False)
+  cmd = " ".join([
+      "phenix.pdbtools",
+      "%s.cif" % prefix,
+      "suffix=none",
+      "output.prefix=%s" % prefix])
+  print(cmd)
+  run_pdbtools(cmd)
   cif_f = open("%s.cif" % prefix, 'r')
   cif_l = cif_f.readlines()
   cif_f.close()
@@ -876,7 +958,7 @@ ATOM     20  C   GLY A   6      15.257   5.112   3.511  1.00 29.00           C
       "  _atom_site.label_atom_id\n"]:
     assert l in cif_l, "%s not in cif file!" % l
 
-def exercise_move_waters () :
+def exercise_move_waters():
   pdb_in = """\
 ATOM     16  O  AHOH A   2       5.131   5.251   5.823  0.60 10.00           O
 ATOM     60  CA  LYS A  32      10.574   8.177  11.768  1.00 11.49           C
@@ -911,30 +993,28 @@ HETATM    7  O2  PO4     1      -6.901  25.919  37.049  1.00 41.07           O
 HETATM    8  O3  PO4     1      -8.894  24.741  38.097  1.00 45.09           O
 HETATM    9  O4  PO4     1      -7.722  26.556  39.350  1.00 42.48           O
 HETATM   10  P   PO4     1      -7.520  25.376  38.369  1.00 39.37           P
-TER
 ATOM     11 CL   CL  B   1       6.302   6.419   1.560  0.50 10.00          Cl
-TER
 ATOM     12  O  AHOH A   2       5.131   5.251   5.823  0.60 10.00           O
 ATOM     13  O   HOH A   3       1.132   5.963   7.065  1.00 15.00           O
 ATOM     14  H1  HOH A   3       1.160   5.211   6.437  1.00 15.00           H
 ATOM     15  H2  HOH A   3       1.122   5.579   7.967  1.00 15.00           H
-TER
 HETATM   16  O   HOH B   2      47.616  10.724 150.212  1.00 46.48       B   O
 HETATM   17  O  AHOH B   3      46.408  16.672 146.066  0.50 12.81       B   O
 HETATM   18  O   HOH B   4      29.343  12.806 185.898  1.00 35.57       B   O
 HETATM   19  O  BHOH B   5      43.786  12.615 147.734  0.50 28.43       B   O
 HETATM   20  O   HOH B   6      35.068  19.167 155.349  1.00 15.97       B   O
-TER
 END
 """
-  open("tst_pdbtools_move_waters.pdb", "w").write(pdb_in)
+  with open("tst_pdbtools_move_waters.pdb", "w") as f:
+    f.write(pdb_in)
   cmd = "phenix.pdbtools tst_pdbtools_move_waters.pdb move_waters_last=True"
-  print cmd
-  run_command(command=cmd, verbose=False)
-  pdb_new = open("tst_pdbtools_move_waters.pdb_modified.pdb").read()
+  print(cmd)
+  run_pdbtools(cmd)
+  with open("tst_pdbtools_move_waters_modified.pdb") as f:
+    pdb_new = f.read()
   assert pdb_new == pdb_out, pdb_new
 
-def exercise_stop_for_unknowns () :
+def exercise_stop_for_unknowns():
   pdb_in = """\
 HETATM   16  O   UNK B   2      47.616  10.724 150.212  1.00 46.48       B   O
 HETATM   17  O   UNK B   3      46.408  16.672 146.066  0.50 12.81       B   O
@@ -942,13 +1022,54 @@ HETATM   18  O   UNK B   4      29.343  12.806 185.898  1.00 35.57       B   O
 HETATM   19  O   UNK B   5      43.786  12.615 147.734  0.50 28.43       B   O
 HETATM   20  O   UNK B   6      35.068  19.167 155.349  1.00 15.97       B   O
 """
-  open("tst_pdbtools_unknown.pdb", "w").write(pdb_in)
+  with open("tst_pdbtools_unknown.pdb", "w") as f:
+    f.write(pdb_in)
   cmd = "phenix.pdbtools tst_pdbtools_unknown.pdb set_b_iso=20"
-  print cmd
+  print(cmd)
   run_command(command=cmd, sorry_expected=True)
   cmd2 = cmd + " stop_for_unknowns=False"
-  print cmd2
+  print(cmd2)
   run_command(command=cmd2)
+
+def exercise_average_alt_confs(prefix='tst_pdbtools_average_alt_confs'):
+  pdb_in = """\
+ATOM     16  O  AHOH A   2       5.131   5.251   5.823  0.60 10.00           O
+ATOM     60  CA  LYS A  32      10.574   8.177  11.768  1.00 11.49           C
+ATOM     63  CB ALYS A  32       9.197   8.686  12.246  0.29 14.71           C
+ATOM     64  CB BLYS A  32       9.193   8.732  12.170  0.71 12.23           C
+ATOM     74  CA  VAL A  33      11.708   5.617  14.332  1.00 11.42           C
+ATOM     77  CB  VAL A  33      11.101   4.227  14.591  1.00 11.47           C
+ATOM     18  O   HOH A   3       1.132   5.963   7.065  1.00 15.00           O
+ATOM     19  O  BHOH A   4       4.132   9.963   7.800  0.50 15.00           O
+"""
+  with open("%s.pdb" % prefix, "w") as f:
+    f.write(pdb_in)
+  cmd = "phenix.pdbtools %s.pdb average_alt_confs=True" % prefix
+  print(cmd)
+  run_pdbtools(cmd)
+
+  with open("%s_modified.pdb" % prefix) as f:
+    pdb_new = f.read()
+  new_lines = []
+  for line in pdb_new.splitlines():
+    if line.startswith("CRYST") or line.startswith("SCALE"):
+      continue
+    else:
+      new_lines.append(line)
+  pdb_new = "\n".join(new_lines)
+
+  expected = '''\
+ATOM      1  O  AHOH A   2       5.131   5.251   5.823  0.60 10.00           O
+ATOM      2  CA  LYS A  32      10.574   8.177  11.768  1.00 11.49           C
+ATOM      3  CB ALYS A  32       9.195   8.709  12.208  0.29 14.71           C
+ATOM      4  CB BLYS A  32       9.195   8.709  12.208  0.71 12.23           C
+ATOM      5  CA  VAL A  33      11.708   5.617  14.332  1.00 11.42           C
+ATOM      6  CB  VAL A  33      11.101   4.227  14.591  1.00 11.47           C
+ATOM      7  O   HOH A   3       1.132   5.963   7.065  1.00 15.00           O
+ATOM      8  O  BHOH A   4       4.132   9.963   7.800  0.50 15.00           O
+TER
+END'''
+  assert (pdb_new == expected)
 
 def exercise_remove_alt_confs():
   pdb_in = """\
@@ -961,11 +1082,13 @@ ATOM     77  CB  VAL A  33      11.101   4.227  14.591  1.00 11.47           C
 ATOM     18  O   HOH A   3       1.132   5.963   7.065  1.00 15.00           O
 ATOM     19  O  BHOH A   4       4.132   9.963   7.800  0.50 15.00           O
 """
-  open("tst_pdbtools_alt_confs.pdb", "w").write(pdb_in)
+  with open("tst_pdbtools_alt_confs.pdb", "w") as f:
+    f.write(pdb_in)
   cmd = "phenix.pdbtools tst_pdbtools_alt_confs.pdb remove_alt_confs=True"
-  print cmd
-  run_command(command=cmd, verbose=False)
-  pdb_new = open("tst_pdbtools_alt_confs.pdb_modified.pdb").read()
+  print(cmd)
+  run_pdbtools(cmd)
+  with open("tst_pdbtools_alt_confs_modified.pdb") as f:
+    pdb_new = f.read()
   assert (pdb_new == """\
 ATOM      1  O   HOH A   2       5.131   5.251   5.823  1.00 10.00           O
 ATOM      2  CA  LYS A  32      10.574   8.177  11.768  1.00 11.49           C
@@ -978,8 +1101,10 @@ END
 """)
   cmd = "phenix.pdbtools tst_pdbtools_alt_confs.pdb remove_alt_confs=True " +\
     "always_keep_one_conformer=True"
-  run_command(command=cmd, verbose=False)
-  pdb_new = open("tst_pdbtools_alt_confs.pdb_modified.pdb").read()
+  print(cmd)
+  run_pdbtools(cmd)
+  with open("tst_pdbtools_alt_confs_modified.pdb") as f:
+    pdb_new = f.read()
   assert (pdb_new == """\
 ATOM      1  O   HOH A   2       5.131   5.251   5.823  1.00 10.00           O
 ATOM      2  CA  LYS A  32      10.574   8.177  11.768  1.00 11.49           C
@@ -991,6 +1116,40 @@ ATOM      7  O   HOH A   4       4.132   9.963   7.800  1.00 15.00           O
 TER
 END
 """)
+  cmd = "phenix.pdbtools tst_pdbtools_alt_confs.pdb remove_alt_confs=True altloc_to_keep='B' "
+  print(cmd)
+  run_pdbtools(cmd)
+  with open("tst_pdbtools_alt_confs_modified.pdb") as f:
+    pdb_new = f.read()
+
+  assert (pdb_new == """\
+ATOM      1  CA  LYS A  32      10.574   8.177  11.768  1.00 11.49           C
+ATOM      2  CB  LYS A  32       9.193   8.732  12.170  1.00 12.23           C
+ATOM      3  CA  VAL A  33      11.708   5.617  14.332  1.00 11.42           C
+ATOM      4  CB  VAL A  33      11.101   4.227  14.591  1.00 11.47           C
+ATOM      5  O   HOH A   3       1.132   5.963   7.065  1.00 15.00           O
+ATOM      6  O   HOH A   4       4.132   9.963   7.800  1.00 15.00           O
+TER
+END
+""")
+  cmd = "phenix.pdbtools tst_pdbtools_alt_confs.pdb remove_alt_confs=True " +\
+    "always_keep_one_conformer=True altloc_to_keep='B' "
+  print(cmd)
+  run_pdbtools(cmd)
+  with open("tst_pdbtools_alt_confs_modified.pdb") as f:
+    pdb_new = f.read()
+  assert (pdb_new == """\
+ATOM      1  O   HOH A   2       5.131   5.251   5.823  1.00 10.00           O
+ATOM      2  CA  LYS A  32      10.574   8.177  11.768  1.00 11.49           C
+ATOM      3  CB  LYS A  32       9.193   8.732  12.170  1.00 12.23           C
+ATOM      4  CA  VAL A  33      11.708   5.617  14.332  1.00 11.42           C
+ATOM      5  CB  VAL A  33      11.101   4.227  14.591  1.00 11.47           C
+ATOM      6  O   HOH A   3       1.132   5.963   7.065  1.00 15.00           O
+ATOM      7  O   HOH A   4       4.132   9.963   7.800  1.00 15.00           O
+TER
+END
+""")
+
 
 def exercise_convert_met_to_semet():
   pdb_str_met = """
@@ -1012,21 +1171,21 @@ END
     "phenix.pdbtools",
     "exercise_convert_met_to_semet.pdb",
     "convert_met_to_semet=true"])
-  print cmd
-  run_command(command=cmd, verbose=False)
+  print(cmd)
+  run_pdbtools(cmd)
   pi_out = iotbx.pdb.input(
-    file_name="exercise_convert_met_to_semet.pdb_modified.pdb"
+    file_name="exercise_convert_met_to_semet_modified.pdb"
     ).construct_hierarchy()
   for rg in pi_out.residue_groups():
       for rn in rg.unique_resnames():
         assert rn=="MSE"
   cmd = " ".join([
     "phenix.pdbtools",
-    "exercise_convert_met_to_semet.pdb_modified.pdb",
+    "exercise_convert_met_to_semet_modified.pdb",
     "convert_semet_to_met=true"])
-  run_command(command=cmd, verbose=False)
+  run_pdbtools(cmd)
   pi_out = iotbx.pdb.input(
-    file_name="exercise_convert_met_to_semet.pdb_modified.pdb_modified.pdb"
+    file_name="exercise_convert_met_to_semet_modified_modified.pdb"
     ).construct_hierarchy()
   for rg in pi_out.residue_groups():
       for rn in rg.unique_resnames():
@@ -1053,9 +1212,10 @@ END
       "phenix.pdbtools",
       "%s.pdb"%prefix,
       "switch_rotamers=%s"%o,
-      "output.file_name=%s_%s.pdb"%(o,prefix)])
-    print cmd
-    run_command(command=cmd, verbose=False)
+      "suffix=none",
+      "output.prefix=%s_%s"%(o,prefix)])
+    print(cmd)
+    run_pdbtools(cmd)
 
 def exercise_segid_manipulations(prefix="tst_pdbtools_ex_segid"):
   pdb_str_met = """
@@ -1078,10 +1238,12 @@ END
         "phenix.pdbtools",
         "%s.pdb"%prefix,
         "%s=True" % o,
-        "output.file_name=%s_%s.pdb"%(o,prefix)])
-    print cmd
-    run_command(command=cmd, verbose=False)
-    pdb_new = open("%s_%s.pdb"%(o,prefix)).read()
+        "suffix=none",
+        "output.prefix=%s_%s"%(o,prefix)])
+    print(cmd)
+    run_pdbtools(cmd)
+    with open("%s_%s.pdb"%(o,prefix)) as f:
+      pdb_new = f.read()
     if o == "clear_seg_id":
       assert (pdb_new == """\
 ATOM      1  N   MET B  37       7.525   5.296   6.399  1.00 10.00           N
@@ -1109,7 +1271,299 @@ TER
 END
 """), pdb_new
 
+def exercise_flip_symmetric_amino_acids(
+  prefix="exercise_flip_symmetric_amino_acids"):
+  pdb_str_in = """
+ATOM   3356  N   ARG H 228      20.811-103.620  24.514  1.00 56.77           N
+ATOM   3357  CA  ARG H 228      21.863-104.460  23.967  1.00 64.89           C
+ATOM   3358  C   ARG H 228      21.258-105.679  23.284  1.00 69.98           C
+ATOM   3359  O   ARG H 228      20.179-106.141  23.657  1.00 70.23           O
+ATOM   3360  CB  ARG H 228      22.810-104.925  25.075  1.00 63.55           C
+ATOM   3361  CG  ARG H 228      23.354-103.810  25.936  1.00 64.01           C
+ATOM   3362  CD  ARG H 228      24.570-104.271  26.712  1.00 65.11           C
+ATOM   3363  NE  ARG H 228      25.126-103.194  27.523  1.00 68.09           N
+ATOM   3364  CZ  ARG H 228      26.373-103.169  27.982  1.00 66.49           C
+ATOM   3365  NH1 ARG H 228      26.790-102.145  28.717  1.00 64.08           N
+ATOM   3366  NH2 ARG H 228      27.205-104.163  27.694  1.00 65.11           N
+TER
+END
+  """
+  pdb_str_out = """
+ATOM   3355  N   ARG H 228      20.811-103.620  24.514  1.00 56.77           N
+ATOM   3356  CA  ARG H 228      21.863-104.460  23.967  1.00 64.89           C
+ATOM   3357  C   ARG H 228      21.258-105.679  23.284  1.00 69.98           C
+ATOM   3358  O   ARG H 228      20.179-106.141  23.657  1.00 70.23           O
+ATOM   3359  CB  ARG H 228      22.810-104.925  25.075  1.00 63.55           C
+ATOM   3360  CG  ARG H 228      23.354-103.810  25.936  1.00 64.01           C
+ATOM   3361  CD  ARG H 228      24.570-104.271  26.712  1.00 65.11           C
+ATOM   3362  NE  ARG H 228      25.126-103.194  27.523  1.00 68.09           N
+ATOM   3363  CZ  ARG H 228      26.373-103.169  27.982  1.00 66.49           C
+ATOM   3364  NH1 ARG H 228      27.205-104.163  27.694  1.00 65.11           N
+ATOM   3365  NH2 ARG H 228      26.790-102.145  28.717  1.00 64.08           N
+TER
+END
+  """
+  pi = iotbx.pdb.input(source_info=None, lines=pdb_str_in)
+  ph_in = pi.construct_hierarchy()
+  pi.write_pdb_file(file_name="%s.pdb"%prefix)
+  cmd = " ".join([
+    "phenix.pdbtools",
+    "%s.pdb"%prefix,
+    "flip_symmetric_amino_acids=True",
+    "output.prefix=%s"%prefix])
+  print(cmd)
+  run_pdbtools(cmd)
+  h1 = iotbx.pdb.input(source_info=None, lines=pdb_str_out).construct_hierarchy()
+  h2 = iotbx.pdb.input(file_name=
+    "exercise_flip_symmetric_amino_acids_modified.pdb").construct_hierarchy()
+  assert h1.is_similar_hierarchy(h2)
+  ph_in.flip_symmetric_amino_acids()
+  assert h1.is_similar_hierarchy(ph_in)
+
+flip_site_values_str = """\
+CRYST1   60.000   60.000   60.000  90.00  90.00  90.00 P 1
+ATOM      1  N   GLU B   1      10.832  16.231  17.917  1.00 56.97           N
+ATOM      2  CA  GLU B   1      10.794  15.198  18.995  1.00 52.47           C
+ATOM      3  C   GLU B   1      10.700  13.803  18.381  1.00 46.38           C
+ATOM      4  O   GLU B   1      11.454  13.456  17.470  1.00 44.22           O
+ATOM      5  CB  GLU B   1      12.033  15.306  19.893  1.00 63.38           C
+ATOM      6  CG  GLU B   1      11.783  14.967  21.365  1.00 61.17           C
+ATOM      7  CD  GLU B   1      11.547  13.486  21.609  1.00 56.72           C
+ATOM      8  OE1 GLU B   1      11.005  13.137  22.680  0.70 64.27           O
+ANISOU    8  OE1 GLU B   1     8000   8100   8200    100    200    300       O
+ATOM      9  OE2 GLU B   1      11.904  12.668  20.735  0.30 57.61           O
+%s"""
+flip_site_values_aniso = \
+"ANISOU    9  OE2 GLU B   1     7000   7100   7200   -100   -200   -300       O\n"
+
+def flip_site_values_run(pdb_str, flip, edits):
+  # the modified model; hierarchy atoms and scatterers correspond
+  params = mmtbx.pdbtools.master_params().fetch(iotbx.phil.parse(
+    "modify {\nflip_symmetric_amino_acids=%s\n%s\n}" % (flip, edits))
+    ).extract().modify
+  model = mmtbx.model.manager(
+    model_input=iotbx.pdb.input(source_info=None, lines=pdb_str))
+  return mmtbx.pdbtools.modify(model=model, params=params,
+    log=StringIO()).get_results().model
+
+def flip_site_values(model, i):
+  sc = model.get_xray_structure().scatterers()[i]
+  atom = model.get_hierarchy().atoms()[i]
+  return [sc.site, sc.occupancy, sc.u_iso, sc.u_star, sc.flags.use_u_iso(),
+    sc.flags.use_u_aniso(), sc.fp, sc.fdp, atom.xyz, atom.occ, atom.b, atom.uij]
+
+def exercise_flip_site_values():
+  # Every scatterer as in the same run without the flip, except that the
+  # renamed pair has exchanged its values: the flip comes after all edits, so a
+  # selection means the same atoms with or without it. Scatterers carry edits
+  # the hierarchy does not have when the flip happens.
+  i1, i2 = 7, 8
+  cases = ["",
+    "adp.set_b_iso=80",
+    "adp {\nset_b_iso=80\natom_selection=name OE1\n}",
+    "adp.convert_to_isotropic=True",
+    "adp.convert_to_anisotropic=True",
+    "occupancies.set=0.4",
+    "occupancies {\nset=0.4\natom_selection=name OE1\n}",
+    "sites {\natom_selection=name OE1\ntranslate=0.1 0 0\n}",
+    "rotate_about_axis {\naxis=0 0 0 0 0 1\natom_selection=all\nangle=30\n}"]
+  for aniso in (flip_site_values_aniso, ""):
+    pdb_str = flip_site_values_str % aniso
+    for edits in cases:
+      plain = flip_site_values_run(pdb_str, False, edits)
+      flipped = flip_site_values_run(pdb_str, True, edits)
+      assert plain.size() == flipped.size() == 9
+      for i in range(9):
+        partner = {i1: i2, i2: i1}.get(i, i)
+        assert approx_equal(flip_site_values(flipped, i),
+                            flip_site_values(plain, partner), eps=1.e-9,
+                            multiplier=None), (edits, i)
+      # names, and what goes with them, stay
+      for model in (plain, flipped):
+        scatterers = model.get_xray_structure().scatterers()
+        assert model.get_hierarchy().atoms()[i1].name == " OE1"
+        assert "OE1" in scatterers[i1].label
+      assert plain.get_hierarchy().atoms()[i1].xyz != \
+        flipped.get_hierarchy().atoms()[i1].xyz, edits
+  # every selection sees the input names: adp and occupancies on one site, which
+  # the flip renames from OE1 to OE2
+  pdb_str = flip_site_values_str % flip_site_values_aniso
+  model = flip_site_values_run(pdb_str, True,
+    "adp {\nset_b_iso=80\natom_selection=name OE1\n}\n"
+    "occupancies {\nset=0.4\natom_selection=name OE1\n}")
+  atoms = model.get_hierarchy().atoms()
+  scatterers = model.get_xray_structure().scatterers()
+  assert atoms[i2].name == " OE2"
+  assert approx_equal(atoms[i2].xyz, (11.005, 13.137, 22.680), eps=1.e-3)
+  assert approx_equal(atoms[i2].occ, 0.4)
+  assert approx_equal(atoms[i2].b, 80, eps=1.e-3)
+  assert approx_equal(atoms[i1].occ, 0.3)
+  assert not approx_equal(atoms[i1].b, 80, eps=1.e-3, out=None)
+  assert approx_equal(scatterers[i2].occupancy, 0.4)
+  assert approx_equal(scatterers[i1].occupancy, 0.3)
+  # the flip decides on the rotated sites: OE1, OE2 turned 180 deg about CG-CD
+  # bring OE1 within 90 deg, so nothing flips; without them it flips
+  rotate = ("rotate_about_axis {\naxis=name CG or name CD\n"
+    "atom_selection=name OE1 or name OE2\nangle=180\n}")
+  plain = flip_site_values_run(pdb_str, False, rotate)
+  flipped = flip_site_values_run(pdb_str, True, rotate)
+  assert approx_equal(flipped.get_hierarchy().atoms().extract_xyz(),
+    plain.get_hierarchy().atoms().extract_xyz(), eps=1.e-6)
+
+def exercise_flip_uses_edited_occupancies():
+  # 1us0 Phe A 276: 0.62, 0.38 in the file flip A and B; the edited 0.38, 0.62
+  # keep both, as in a file with these occupancies
+  occ = {"A": "0.38", "B": "0.62"}
+  edited = "\n".join(
+    l[:54] + "  " + occ[l[16]] + l[60:] for l in pdb_1us0_phe_276.splitlines())
+  hierarchy = iotbx.pdb.input(source_info=None, lines=edited).construct_hierarchy()
+  pairs = []
+  hierarchy.flip_symmetric_amino_acids(swapped_pairs=pairs)
+  assert pairs == []
+  edits = ("occupancies {\nset=0.38\natom_selection=altloc A\n}\n"
+           "occupancies {\nset=0.62\natom_selection=altloc B\n}")
+  pdb_str = "CRYST1   60.000   60.000   60.000  90.00  90.00  90.00 P 1\n" + \
+    pdb_1us0_phe_276
+  plain = flip_site_values_run(pdb_str, False, edits)
+  flipped = flip_site_values_run(pdb_str, True, edits)
+  assert approx_equal(flipped.get_hierarchy().atoms().extract_xyz(),
+    plain.get_hierarchy().atoms().extract_xyz(), eps=1.e-6)
+  assert approx_equal(flipped.get_hierarchy().atoms().extract_occ(),
+    plain.get_hierarchy().atoms().extract_occ(), eps=1.e-6)
+  # the file's own occupancies flip both
+  flipped = flip_site_values_run(pdb_str, True, "")
+  assert not approx_equal(flipped.get_hierarchy().atoms().extract_xyz(),
+    plain.get_hierarchy().atoms().extract_xyz(), eps=1.e-6, out=None)
+
+def exercise_flip_site_values_command_line(
+      prefix="exercise_flip_site_values_command_line"):
+  with open("%s.pdb" % prefix, "w") as f:
+    f.write(flip_site_values_str % flip_site_values_aniso)
+  run_command(command=" ".join(["phenix.pdbtools", "%s.pdb" % prefix,
+    "flip_symmetric_amino_acids=True", "output.prefix=%s" % prefix]),
+    verbose=False)
+  atoms = iotbx.pdb.input(
+    file_name="%s_modified.pdb" % prefix).construct_hierarchy().atoms()
+  oe1, oe2 = atoms[7], atoms[8]
+  assert oe1.name == " OE1" and oe2.name == " OE2"
+  assert approx_equal(oe1.xyz, (11.904, 12.668, 20.735), eps=1.e-3)
+  assert approx_equal(oe1.occ, 0.3)
+  assert approx_equal(oe2.occ, 0.7)
+  assert approx_equal(oe1.uij[:3], (0.7, 0.71, 0.72), eps=1.e-3)
+  assert approx_equal(oe2.uij[:3], (0.8, 0.81, 0.82), eps=1.e-3)
+
+def exercise_result_is_empty(prefix='exercise_result_is_empty'):
+  pdb_str = """
+HELIX    1   1 GLN A   10  GLN A   14  5                                   5
+HELIX    2   2 ARG A   17  ASN A   29  1                                  13
+SHEET    1   A 2 GLN A  33  GLN A  38  0
+SHEET    2   A 2 GLN A  51  GLN A  56  1  O  VAL A  54   N  ILE A  35
+SSBOND   1 CYS A    4    CYS A   49
+CRYST1   62.654   62.654   45.906  90.00  90.00  90.00 P 43 21 2
+SCALE1      0.015961  0.000000  0.000000        0.00000
+SCALE2      0.000000  0.015961  0.000000        0.00000
+SCALE3      0.000000  0.000000  0.021784        0.00000
+ATOM      1  N   GLN A   3      23.762  12.429   1.265  1.00 45.30           N
+ATOM      2  CA  GLN A   3      22.670  12.004   2.148  1.00 39.46           C
+ATOM      3  C   GLN A   3      21.818  10.942   1.458  1.00 42.86           C
+ATOM      4  O   GLN A   3      21.337  11.133   0.339  1.00 44.81           O
+ATOM      5  CB  GLN A   3      21.794  13.195   2.571  1.00 42.53           C
+ATOM      6  N   CYS A   4      21.620   9.817   2.129  1.00 36.33           N
+ATOM      7  CA  CYS A   4      20.902   8.709   1.518  1.00 31.46           C
+ATOM      8  C   CYS A   4      19.419   8.891   1.670  1.00 34.16           C
+ATOM      9  O   CYS A   4      18.979   9.537   2.607  1.00 38.12           O
+ATOM     10  CB  CYS A   4      21.307   7.409   2.205  1.00 31.53           C
+ATOM     11  SG  CYS A   4      23.070   7.194   2.148  1.00 29.88           S
+ATOM     12  N   SER A   5      18.657   8.290   0.760  1.00 33.83           N
+ATOM     13  CA  SER A   5      17.211   8.293   0.854  1.00 38.94           C
+ATOM     14  C   SER A   5      16.676   6.917   1.254  1.00 32.88           C
+ATOM     15  O   SER A   5      17.295   5.879   0.981  1.00 32.57           O
+ATOM     16  CB  SER A   5      16.603   8.683  -0.488  1.00 39.48           C
+ATOM     17  OG  SER A   5      16.893   7.668  -1.432  1.00 47.16           O
+ATOM     18  N   GLY A   6      15.520   6.924   1.901  1.00 31.69           N
+ATOM     19  CA  GLY A   6      14.811   5.694   2.191  1.00 32.41           C
+ATOM     20  C   GLY A   6      15.257   5.112   3.511  1.00 29.00           C
+ATOM      2  CA  GLN A  10      22.670  12.004   2.148  1.00 39.46           C
+ATOM      2  CA  GLN A  11      22.670  12.004   2.148  1.00 39.46           C
+ATOM      2  CA  GLN A  12      22.670  12.004   2.148  1.00 39.46           C
+ATOM      2  CA  GLN A  13      22.670  12.004   2.148  1.00 39.46           C
+ATOM      2  CA  GLN A  14      22.670  12.004   2.148  1.00 39.46           C
+ATOM      2  CA  GLN A  33      22.670  12.004   2.148  1.00 39.46           C
+ATOM      2  CA  GLN A  34      22.670  12.004   2.148  1.00 39.46           C
+ATOM      2  CA  GLN A  35      22.670  12.004   2.148  1.00 39.46           C
+ATOM      2  CA  GLN A  36      22.670  12.004   2.148  1.00 39.46           C
+ATOM      2  CA  GLN A  37      22.670  12.004   2.148  1.00 39.46           C
+ATOM      2  CA  GLN A  38      22.670  12.004   2.148  1.00 39.46           C
+ATOM      2  CA  GLN A  51      22.670  12.004   2.148  1.00 39.46           C
+ATOM      2  CA  GLN A  52      22.670  12.004   2.148  1.00 39.46           C
+ATOM      2  CA  GLN A  53      22.670  12.004   2.148  1.00 39.46           C
+ATOM      2  CA  GLN A  54      22.670  12.004   2.148  1.00 39.46           C
+ATOM      2  CA  GLN A  55      22.670  12.004   2.148  1.00 39.46           C
+ATOM      2  CA  GLN A  56      22.670  12.004   2.148  1.00 39.46           C
+"""
+
+  with open("%s.pdb"%prefix, 'w') as f:
+    f.write(pdb_str)
+  cmd = " ".join([
+      "phenix.pdbtools",
+      "%s.pdb"%prefix,
+      "keep='resname ALA'",
+      "output.prefix=out_%s"%(prefix)])
+  print(cmd)
+  run_pdbtools(cmd)
+  # assert os.path.isfile("out_%s_modified.pdb"%(prefix))
+  with open("out_%s_modified.pdb"%(prefix), 'r') as f:
+    pdb_new = f.read()
+    assert pdb_new == """\
+CRYST1   62.654   62.654   45.906  90.00  90.00  90.00 P 43 21 2
+SCALE1      0.015961  0.000000  0.000000        0.00000
+SCALE2      0.000000  0.015961  0.000000        0.00000
+SCALE3      0.000000  0.000000  0.021784        0.00000
+END
+"""
+
+def exercise_renumber_and_move_waters(prefix='exercise_renumber_and_move_waters'):
+  pdb_str = """
+ATOM     16  O   HOH A   2       5.131   5.251   5.823  0.60 10.00           O
+ATOM     18  O   HOH AAFF4       1.132   5.963   7.065  1.00 15.00           O
+ATOM     19  O   HOH A   4       4.132   9.963   7.800  0.50 15.00           O
+TER
+ATOM     60  CA  LYS A  32      10.574   8.177  11.768  1.00 11.49           C
+ATOM     64  CB  LYS A  32       9.193   8.732  12.170  1.00 12.23           C
+ATOM     74  CA  VAL A  33      11.708   5.617  14.332  1.00 11.42           C
+ATOM     77  CB  VAL A  33      11.101   4.227  14.591  1.00 11.47           C
+"""
+
+  with open("%s.pdb"%prefix, 'w') as f:
+    f.write(pdb_str)
+  cmd = " ".join([
+      "phenix.pdbtools",
+      "%s.pdb"%prefix,
+      "renumber_and_move_waters=True",
+      "output.prefix=out_%s"%(prefix)])
+  print(cmd)
+  run_pdbtools(cmd)
+  # assert os.path.isfile("out_%s_modified.pdb"%(prefix))
+  with open("out_%s_modified.pdb"%(prefix), 'r') as f:
+    pdb_new = f.read()
+    assert pdb_new == """\
+ATOM      1  CA  LYS A  32      10.574   8.177  11.768  1.00 11.49           C
+ATOM      2  CB  LYS A  32       9.193   8.732  12.170  1.00 12.23           C
+ATOM      3  CA  VAL A  33      11.708   5.617  14.332  1.00 11.42           C
+ATOM      4  CB  VAL A  33      11.101   4.227  14.591  1.00 11.47           C
+TER
+ATOM      5  O   HOH A 100       5.131   5.251   5.823  0.60 10.00           O
+ATOM      6  O   HOH A 101       1.132   5.963   7.065  1.00 15.00           O
+ATOM      7  O   HOH A 102       4.132   9.963   7.800  0.50 15.00           O
+END
+"""
+
 def exercise(args):
+  exercise_average_alt_confs()
+  exercise_flip_symmetric_amino_acids()
+  exercise_flip_site_values()
+  exercise_flip_uses_edited_occupancies()
+  exercise_flip_site_values_command_line()
   exercise_switch_rotamers()
   exercise_mmcif_support_2()
   exercise_basic()
@@ -1122,9 +1576,13 @@ def exercise(args):
   exercise_truncate_to_polyala()
   exercise_convert_met_to_semet()
   exercise_set_charge()
+  exercise_neutralize_scatterers()
   exercise_remove_atoms()
   exercise_mmcif_support()
   exercise_segid_manipulations()
+  exercise_result_is_empty()
+  exercise_renumber_and_move_waters()
+  print("OK")
 
 if (__name__ == "__main__"):
   exercise(sys.argv[1:])

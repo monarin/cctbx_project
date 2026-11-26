@@ -1,8 +1,9 @@
-from __future__ import division
-from mmtbx.secondary_structure import build as ssb
+from __future__ import absolute_import, division, print_function
+from mmtbx.secondary_structure.build import ss_idealization as ssb
 import iotbx.pdb
 from libtbx.test_utils import approx_equal
 from scitbx.array_family import flex
+from six.moves import zip
 
 
 t_pdb_str = """\
@@ -441,7 +442,7 @@ def exercise_r_t_matrices():
                       (1.6740, -1.2223, -2.0756),
                       eps = 0.0001)
   try: ssb.get_r_t_matrices_from_structure(t_pdb_str)
-  except Exception, e:
+  except Exception as e:
     assert str(e) == "pdb_str should contain at least 2 residues"
 
 def exercise_secondary_structure_from_sequence():
@@ -463,11 +464,6 @@ def exercise_secondary_structure_from_sequence():
       for rg1, rg2 in zip(c1.residue_groups(), c2.residue_groups()):
         rg1.is_similar_hierarchy(  other=rg2)
         rg1.is_identical_hierarchy(other=rg2)
-  f1 = correct_h.extract_xray_structure(crystal_symmetry=cs).structure_factors(
-    algorithm="direct", d_min=2).f_calc().data()
-  f2 = test_h.extract_xray_structure(crystal_symmetry=cs).structure_factors(
-    algorithm="direct", d_min=2).f_calc().data()
-  assert approx_equal(f1, f2)
   assert test_h.as_str() == correct_h.as_str()
   #correct_h.write_pdb_file(file_name="tst_1_ex_last_correct.pdb")
   #test_h.write_pdb_file(file_name="tst_1_ex_last_out.pdb")
@@ -477,7 +473,7 @@ def exercise_secondary_structure_from_sequence():
   assert approx_equal(test_h.atoms().extract_xyz(),
                       correct_h.atoms().extract_xyz(), eps=0.002)
   try: ssb.secondary_structure_from_sequence(alpha_pdb_str, sequence="")
-  except Exception, e:
+  except Exception as e:
     assert str(e) == "sequence should contain at least one residue."
 
 

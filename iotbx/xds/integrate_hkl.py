@@ -1,4 +1,5 @@
-from __future__ import division
+from __future__ import absolute_import, division, print_function
+from six.moves import range
 
 class reader:
   """A class to read the INTEGRATE.HKL file used in XDS"""
@@ -31,7 +32,8 @@ class reader:
       True/False Is the file an INTEGRATE.HKL file
 
     '''
-    return open(filename, 'r').read(26) == '!OUTPUT_FILE=INTEGRATE.HKL'
+    with open(filename, 'r') as fh:
+      return fh.read(26) == '!OUTPUT_FILE=INTEGRATE.HKL'
 
   def read_file(self, filename):
     """Read the INTEGRATE.HKL file.
@@ -49,7 +51,8 @@ class reader:
       raise IOError("{0} is not an INTEGRATE.HKL file".format(filename))
 
     # Read the lines from the file
-    lines = open(filename, 'r').readlines()
+    with open(filename, 'r') as fh:
+      lines = fh.readlines()
 
     # Loop through the lines in the file. First off, parse the header
     # lines until we reach !END_OF_HEADER. Then parse the data lines
@@ -168,7 +171,7 @@ class reader:
     """
     # Split the tokens
     tokens = line.split()
-    tokens = map(int, tokens[0:3]) + map(float, tokens[3:])
+    tokens = [int(t) for t in tokens[0:3]] + [float(t) for t in tokens[3:]]
 
     # Get the reflection information and append to the lists
     self.hkl.append(tuple(tokens[0:3]))
@@ -190,7 +193,8 @@ class reader:
                        crystal_symmetry=None,
                        force_symmetry=False,
                        merge_equivalents=True,
-                       base_array_info=None):
+                       base_array_info=None,
+                       anomalous=None):
     if (base_array_info is None):
       base_array_info = miller.array_info(source_type="xds_integrate_hkl")
     from cctbx.array_family import flex
@@ -199,7 +203,7 @@ class reader:
       unit_cell=self.unit_cell,
       space_group_info=sgtbx.space_group_info(number=self.space_group))
     indices = flex.miller_index(self.hkl)
-    miller_set = miller.set(crystal_symmetry, indices)
+    miller_set = miller.set(crystal_symmetry, indices, anomalous_flag=anomalous)
     return (miller.array(
       miller_set, data=flex.double(self.iobs), sigmas=flex.double(self.sigma))
             .set_info(base_array_info.customized_copy(

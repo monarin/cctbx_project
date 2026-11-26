@@ -12,6 +12,9 @@
 
 #include <simtbx/nanoBragg/nanoBragg.h>
 
+#if PY_MAJOR_VERSION >= 3
+#define IS_PY3K
+#endif
 
 
 using namespace boost::python;
@@ -25,7 +28,7 @@ namespace boost_python { namespace {
   testuple()
   {
     double test = NAN;
-    return boost::python::make_tuple(isnan(test),2,3,4);
+    return boost::python::make_tuple(boost::math::isnan(test),2,3,4);
   }
 
   /* getter/setter functions for convenient python-side members
@@ -191,14 +194,14 @@ namespace boost_python { namespace {
 
 
   /* number of unit cells along edge in each cell axis direction */
-  static scitbx::vec3<int> get_Nabc(nanoBragg const& nanoBragg) {
-      scitbx::vec3<int> value;
-      value[0]=static_cast<int>(nanoBragg.Na);
-      value[1]=static_cast<int>(nanoBragg.Nb);
-      value[2]=static_cast<int>(nanoBragg.Nc);
+  static scitbx::vec3<double> get_Nabc(nanoBragg const& nanoBragg) {
+      scitbx::vec3<double> value;
+      value[0]=static_cast<double>(nanoBragg.Na);
+      value[1]=static_cast<double>(nanoBragg.Nb);
+      value[2]=static_cast<double>(nanoBragg.Nc);
       return value;
   }
-  static void   set_Nabc(nanoBragg& nanoBragg, scitbx::vec3<int> const& value) {
+  static void   set_Nabc(nanoBragg& nanoBragg, scitbx::vec3<double> const& value) {
       nanoBragg.Na = value[0];
       nanoBragg.Nb = value[1];
       nanoBragg.Nc = value[2];
@@ -549,7 +552,13 @@ namespace boost_python { namespace {
       /* need to update everything? */
       nanoBragg.init_detector();
   }
-
+  static vec3 get_pix0_vector(nanoBragg const& nanoBragg) {
+      vec3 value;
+      value[0]=1000*nanoBragg.pix0_vector[1];
+      value[1]=1000*nanoBragg.pix0_vector[2];
+      value[2]=1000*nanoBragg.pix0_vector[3];
+      return value;
+  }
   /* the direction vector of detector_twotheta rotation axis (about the sample), default is (0,1,0) */
   static vec3 get_twotheta_axis(nanoBragg const& nanoBragg) {
       vec3 value;
@@ -1047,8 +1056,8 @@ printf("DEBUG: pythony_stolFbg[1]=(%g,%g)\n",nanoBragg.pythony_stolFbg[1][0],nan
   static void   set_mosaic_spread_deg(nanoBragg& nanoBragg, double const& value) {
       nanoBragg.mosaic_spread = value/RTD;
       /* need to re-create mosaic domain table */
-      //nanoBragg.init_mosaicity();
-      //nanoBragg.init_steps();
+      nanoBragg.init_mosaicity();
+      nanoBragg.init_steps();
       //nanoBragg.show_mosaic_blocks();
   }
   /* number of discrete mosaic domains, default: 1 or 2 ; you will want more */
@@ -1058,13 +1067,55 @@ printf("DEBUG: pythony_stolFbg[1]=(%g,%g)\n",nanoBragg.pythony_stolFbg[1][0],nan
   static void   set_mosaic_domains(nanoBragg& nanoBragg, int const& value) {
       nanoBragg.mosaic_domains = value;
       /* need to re-create mosaic domain table */
-      //nanoBragg.init_mosaicity();
-      //nanoBragg.init_steps();
+      nanoBragg.init_mosaicity();
+      nanoBragg.init_steps();
       //nanoBragg.show_mosaic_blocks();
   }
 
 
 
+  /* rotate a vector using a 9-element unitary matrix */
+  vec3 rotate_umat_nks(const double *v, const double umat[9]) {
+
+    double uxx,uxy,uxz,uyx,uyy,uyz,uzx,uzy,uzz;
+
+    /* for clarity, assign matrix x-y coordinate */
+    uxx = umat[0];
+    uxy = umat[1];
+    uxz = umat[2];
+    uyx = umat[3];
+    uyy = umat[4];
+    uyz = umat[5];
+    uzx = umat[6];
+    uzy = umat[7];
+    uzz = umat[8];
+
+    /* rotate the vector (x=1,y=2,z=3) */
+    return vec3 (uxx*v[1] + uxy*v[2] + uxz*v[3],
+                 uyx*v[1] + uyy*v[2] + uyz*v[3],
+                 uzx*v[1] + uzy*v[2] + uzz*v[3]);
+  }
+  static af::shared<mat3> get_mosaic_domains_abc_phi_0(nanoBragg const& X){
+
+    /* return individual mosaic domain orientations */
+    /* only defined (NKS) for the phi==0 case */
+    SCITBX_ASSERT(X.mosaic_spread > 0 || X.mosaic_domains==1);
+    af::shared<mat3> result = af::shared<mat3>();
+    vec3 a,b,c;                  // cell vectors in meters
+    for(int mos_tic=0;mos_tic<X.mosaic_domains;++mos_tic) {
+                                /* apply mosaic rotation with zero phi rotation */
+                                if( X.mosaic_spread > 0.0 )
+                                {
+                                    a = rotate_umat_nks(X.a0,&X.mosaic_umats[mos_tic*9]);
+                                    b = rotate_umat_nks(X.b0,&X.mosaic_umats[mos_tic*9]);
+                                    c = rotate_umat_nks(X.c0,&X.mosaic_umats[mos_tic*9]);
+                                }
+      result.push_back(
+        mat3(1e10*a[0],1e10*a[1],1e10*a[2],1e10*b[0],1e10*b[1],1e10*b[2],1e10*c[0],1e10*c[1],1e10*c[2])
+      );
+    }
+    return result;
+  }
 
   /* spindle starting angle phi, in deg */
   static double get_phi_deg(nanoBragg const& nanoBragg) {
@@ -1196,6 +1247,71 @@ printf("DEBUG: pythony_stolFbg[1]=(%g,%g)\n",nanoBragg.pythony_stolFbg[1][0],nan
   }
 
 
+  static PyObject*
+  raw_pixels_unsigned_short_as_python_bytes( nanoBragg const& nB,
+    double intfile_scale, int const&debug_x, int const& debug_y) {
+    std::basic_ostringstream<char> os;
+    const double* floatimage = nB.raw_pixels.begin();
+    double max_value = (double)std::numeric_limits<unsigned short int>::max();
+    double saturation = floor(max_value - 1 );
+    /* output as ints */
+
+    unsigned short int intimage;
+    double max_I = nB.max_I;
+    double max_I_x = nB.max_I_x;
+    double max_I_y = nB.max_I_y;
+    if(intfile_scale <= 0.0){
+        /* need to auto-scale */
+        int i=0;
+        for(int spixel=0;spixel<nB.spixels;++spixel)
+        {
+            for(int fpixel=0;fpixel<nB.fpixels;++fpixel)
+            {
+                if(fpixel==debug_x && spixel==debug_y) printf("DEBUG: pixel # %d at (%d,%d) has value %g\n",i,fpixel,spixel,floatimage[i]);
+                if(i==0 || max_I < floatimage[i])
+                {
+                    max_I = floatimage[i];
+                    max_I_x = fpixel;
+                    max_I_y = spixel;
+                }
+                ++i;
+            }
+        }
+        if(nB.verbose) printf("providing default scaling: max_I = %g @ (%g %g)\n",max_I,max_I_x,max_I_y);
+        intfile_scale = 1.0;
+        if(max_I>0.0) intfile_scale = 55000.0/(max_I);
+    }
+    if(nB.verbose) printf("scaling data by: intfile_scale = %g\n",intfile_scale);
+    double sum = 0.0;
+    max_I = 0.0;
+    int i = 0;
+    for(int spixel=0;spixel<nB.spixels;++spixel)
+    {
+        for(int fpixel=0;fpixel<nB.fpixels;++fpixel)
+        {
+            /* no noise, just use intfile_scale */
+            intimage = (unsigned short int) (std::min(saturation, floatimage[i]*intfile_scale ));
+            os.write((char *) &intimage, sizeof(unsigned short int));
+
+            if(nB.verbose>90) printf("DEBUG #%d %g -> %g -> %d\n",i,floatimage[i],floatimage[i]*intfile_scale,intimage);
+
+            if((double) intimage > max_I || i==0) {
+                max_I = (double) intimage;
+                max_I_x = fpixel;
+                max_I_y = spixel;
+            }
+            if(fpixel==debug_x && spixel==debug_y) printf("DEBUG: pixel # %d at (%d,%d) has int value %d\n",i,fpixel,spixel,intimage);
+
+            sum += intimage;
+            ++i;
+        }
+    }
+  #ifdef IS_PY3K
+    return PyBytes_FromStringAndSize(os.str().c_str(), os.str().size());
+  #else
+    return PyString_FromStringAndSize(os.str().c_str(), os.str().size());
+  #endif
+  }
 
 
   void
@@ -1220,6 +1336,7 @@ printf("DEBUG: pythony_stolFbg[1]=(%g,%g)\n",nanoBragg.pythony_stolFbg[1][0],nan
       .value("Square",SQUARE)
       .value("Round",ROUND)
       .value("Gauss",GAUSS)
+      .value("Gauss_argchk",GAUSS_ARGCHK)
       .value("Tophat",TOPHAT)
       .value("Fiber",FIBER)
       .value("Unknown",UNKNOWN)
@@ -1239,15 +1356,16 @@ printf("DEBUG: pythony_stolFbg[1]=(%g,%g)\n",nanoBragg.pythony_stolFbg[1][0],nan
       /* constructor that takes a dxtbx detector and beam model */
       .def(init<const dxtbx::model::Detector&,
                 const dxtbx::model::Beam&,
-                int>(
+                int, int>(
         (arg_("detector"),
          arg_("beam"),
-         arg_("verbose")=0),
+         arg_("verbose")=0,
+         arg_("panel_id")=0),
         "nanoBragg simulation initialized from dxtbx detector and beam objects"))
 
        /* constructor that takes any and all parameters with sensible defaults */
       .def(init<scitbx::vec2<int>,
-                scitbx::vec3<int>,
+                scitbx::vec3<double>,
                 cctbx::uctbx::unit_cell,
                 vec3,
                 vec2,
@@ -1260,7 +1378,7 @@ printf("DEBUG: pythony_stolFbg[1]=(%g,%g)\n",nanoBragg.pythony_stolFbg[1][0],nan
                 int,
                 int>(
         (arg_("detpixels_slowfast")=scitbx::vec2<int>(1024,1024),
-         arg_("Ncells_abc")=scitbx::vec3<int>(1,1,1),
+         arg_("Ncells_abc")=scitbx::vec3<double>(1,1,1),
          arg_("unit_cell_Adeg")=cctbx::uctbx::unit_cell(scitbx::af::double6(78.0,78.0,38.0,90.0,90.0,90.0)),
          arg_("misset_deg")=vec3(0.0,0.0,0.0),
          arg_("beam_center_mm")=vec2(NAN,NAN),
@@ -1409,6 +1527,10 @@ printf("DEBUG: pythony_stolFbg[1]=(%g,%g)\n",nanoBragg.pythony_stolFbg[1][0],nan
 
       /* specify convention? Custom, MOSFLM, XDS, DENZO, ADXV, DIALS */
 
+      /* dxtbx origin vector getter */
+      .add_property("pix0_vector_mm", /* No setter allowed for pix0 */
+                     make_function(&get_pix0_vector,rbv()),
+                     "Current state of the internal origin vector (in mm) pointing to the first pixel in memory")
       /* unit vectors specifying coordinate system */
       .add_property("fdet_vector",
                      make_function(&get_fdet_vector,rbv()),
@@ -1634,12 +1756,14 @@ printf("DEBUG: pythony_stolFbg[1]=(%g,%g)\n",nanoBragg.pythony_stolFbg[1][0],nan
       .add_property("mosaic_spread_deg",
                      make_function(&get_mosaic_spread_deg,rbv()),
                      make_function(&set_mosaic_spread_deg,dcp()),
-                     "crystal mosaic spread spherical cap range, not radius (deg)")
+                     "crystal mosaic spread spherical cap radius, not range (deg)")
       /* number of discrete mosaic domains to generate, speed is inversely proportional to this */
       .add_property("mosaic_domains",
                      make_function(&get_mosaic_domains,rbv()),
                      make_function(&set_mosaic_domains,dcp()),
                      "number of discrete mosaic domains to generate, speed is inversely proportional to this")
+      .def          ("get_mosaic_domains_abc_phi_0",&get_mosaic_domains_abc_phi_0,
+                     "get an array of 3x3 matrices giving the a,b,c vectors of each mosaic domain at phi 0")
       .def          ("show_mosaic_blocks",
                      &nanoBragg::show_mosaic_blocks,
                      "print out individual mosaic domain orientations")
@@ -1785,12 +1909,16 @@ printf("DEBUG: pythony_stolFbg[1]=(%g,%g)\n",nanoBragg.pythony_stolFbg[1][0],nan
                      make_setter(&nanoBragg::psf_radius,dcp()),
                      "override size of kernel used to compute PSF.  Set to zero for automatic (the default).")
 
-
       /* 2D flex array representing pixel values in expected photons, not neccesarily integers */
       .add_property("raw_pixels",
                      make_getter(&nanoBragg::raw_pixels,rbv()),
                      make_setter(&nanoBragg::raw_pixels,dcp()),
                      "2D flex array representing floating-point pixel values, this is expected photons before you call add_noise(), which converts it into detector pixel values, or ADU")
+
+     .add_property("cbf_int",
+                     make_getter(&nanoBragg::cbf_int,rbv()),
+                     make_setter(&nanoBragg::cbf_int,dcp()),
+                     "Write the cbf file using to_cbf with int32 precision")
 
       /* print to screen a summary of all initialized parameters */
       .def("show_params",&nanoBragg::show_params,
@@ -1812,9 +1940,24 @@ printf("DEBUG: pythony_stolFbg[1]=(%g,%g)\n",nanoBragg.pythony_stolFbg[1][0],nan
       .def("add_nanoBragg_spots_nks",&nanoBragg::add_nanoBragg_spots_nks,
        "actually run the spot simulation, going pixel-by-pixel over the region-of-interest, restricted options, plus OpenMP")
 
+      .add_property("device_Id",
+                     make_getter(&nanoBragg::device_Id,rbv()),
+                     make_setter(&nanoBragg::device_Id,dcp()),
+                     "Which GPU device to simulate on (only relevant for CUDA enabled builds). ")
+
+#ifdef NANOBRAGG_HAVE_CUDA
+      /* actual run of the spot simulation, CUDA version */
+      .def("add_nanoBragg_spots_cuda",&nanoBragg::add_nanoBragg_spots_cuda,
+       "actually run the spot simulation, going pixel-by-pixel over the region-of-interest, CUDA version")
+#endif
+
+    .def("set_dxtbx_detector_panel", &nanoBragg::set_dxtbx_detector_panel,
+        (arg_("panel"), arg_("s0_vector")),
+        "Updates the pixel array geometry using a dxtbx panel model (panel dimension should be conserved)")
+
       /* actual run of the background simulation */
       .def("add_background",&nanoBragg::add_background,
-        (arg_("oversample")=-1,arg_("source")=-1),
+        (arg_("oversample")=-1,arg_("override_source")=-1),
        "run the non-Bragg simulation, adding background from speficied amorphous materials")
 
       /* retrieve radial-median filtered average background from the image */
@@ -1828,12 +1971,26 @@ printf("DEBUG: pythony_stolFbg[1]=(%g,%g)\n",nanoBragg.pythony_stolFbg[1][0],nan
        "blur the image with specified point-spread function, may be done before or after adding noise")
 
       /* actual run of the noise simulation */
-      .def("add_noise",&nanoBragg::add_noise,
+      .def("add_noise",static_cast<void(nanoBragg::*)()>(&nanoBragg::add_noise),
        "apply specified Poisson, calibration, flicker and read-out noise to the pixels")
 
       .def("to_smv_format",&nanoBragg::to_smv_format,
-        (arg_("fileout"),arg_("intfile_scale")=0,arg_("debug_x")=-1,arg("debug_y")=-1),
-        "interally produce an SMV-format image file on disk from the raw pixel array\nintfile_scale is applied before rounding off to integral pixel values")
+        (arg_("fileout"),arg_("intfile_scale")=0,arg_("debug_x")=-1,arg_("debug_y")=-1),
+        "write an SMV-format image file to disk from the raw pixel array\n"
+        "intfile_scale: multiplicative factor applied to raw pixels before rounding off to integral pixel values\n"
+        "     intfile_scale > 0 : specify a value for the multiplicative factor\n"
+        "     intfile_scale = 1 : do not apply a factor\n"
+        "     intfile_scale = 0 (default): compute a reasonable scale factor to set max pixel to 55000; same value given by get_intfile_scale()"
+        )
+      .def("get_intfile_scale",&nanoBragg::get_intfile_scale,
+        (arg_("intfile_scale")=0),
+        "expose the intfile_scale multiplier to raw pixels that is normally hidden within the to_smv_format interface.\n"
+        "user can apply the return value to the output pixels using to_smv_format(<value>) or to_cbf(<value>)\n"
+        "     intfile_scale = 0 (default): compute a reasonable scale factor to set max pixel to 55000"
+        )
+      .def("raw_pixels_unsigned_short_as_python_bytes",&raw_pixels_unsigned_short_as_python_bytes,
+        (arg_("intfile_scale")=0,arg_("debug_x")=-1,arg("debug_y")=-1),
+        "get the unsigned short raw pixels as a Python bytes object.  Intfile_scale is applied before rounding off to integral pixel values")
       .def("to_smv_format_streambuf",&nanoBragg::to_smv_format_streambuf,
         (arg_("output"),arg_("intfile_scale")=0,arg_("debug_x")=-1,arg("debug_y")=-1),
         "provide the integer buffer only to be used in Python for SMV-format output.  Intfile_scale is applied before rounding off to integral pixel values")

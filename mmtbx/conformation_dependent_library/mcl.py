@@ -1,10 +1,12 @@
-from __future__ import division
+from __future__ import absolute_import, division, print_function
 import sys
 import time
 
 from cctbx.array_family import flex
 from scitbx.math import superpose
 from mmtbx.conformation_dependent_library import mcl_sf4_coordination
+from six.moves import range
+from mmtbx.conformation_dependent_library import metal_coordination_library
 
 def get_pdb_hierarchy_from_restraints(code):
   from mmtbx.monomer_library import server
@@ -48,37 +50,98 @@ def update(grm,
            log=sys.stdout,
            verbose=False,
            ):
-  # SF4
-  rc = mcl_sf4_coordination.get_sulfur_iron_cluster_coordination(
-    pdb_hierarchy=pdb_hierarchy,
-    nonbonded_proxies=grm.pair_proxies(
-      sites_cart=pdb_hierarchy.atoms().extract_xyz()).nonbonded_proxies,
-    verbose=verbose,
-  )
+  def _atom_id(a, show_i_seq=False):
+    if show_i_seq:
+      return '%s (%5d)' % (a.id_str(), a.i_seq)
+    else:
+      return '%s' % (a.id_str())
   if link_records is None: link_records={}
   link_records.setdefault('LINK', [])
-  bproxies, aproxies = mcl_sf4_coordination.get_all_proxies(rc)
-  if len(bproxies):
-    print >> log, "  SF4/F3S coordination"
-    atoms = pdb_hierarchy.atoms()
-    sf4_coordination = {}
-    for bp in bproxies:
-      sf4_ag = atoms[bp.i_seqs[0]].parent()
-      sf4_coordination.setdefault(sf4_ag.id_str(), [])
-      sf4_coordination[sf4_ag.id_str()].append((atoms[bp.i_seqs[0]],
-                                                atoms[bp.i_seqs[1]]))
-      link = (atoms[bp.i_seqs[0]], atoms[bp.i_seqs[1]], 'x,y,z')
-      if link not in link_records: link_records['LINK'].append(link)
-    for sf4, aas in sorted(sf4_coordination.items()):
-      print >> log, '    %s' % sf4
-      for aa in sorted(aas):
-        print >> log, '       %s - %s' % (aa[0].id_str(), aa[1].id_str())
-    print >> log
-  grm.add_new_bond_restraints_in_place(
-    proxies=bproxies,
-    sites_cart=pdb_hierarchy.atoms().extract_xyz(),
-  )
-  grm.add_angles_in_place(aproxies)
+  hooks = [
+    ["Iron sulfur cluster coordination",
+     mcl_sf4_coordination.get_sulfur_iron_cluster_coordination,
+     mcl_sf4_coordination.get_all_proxies,
+      ],
+    ['Zn2+ tetrahedral coordination',
+     metal_coordination_library.get_metal_coordination_proxies,
+     metal_coordination_library.get_proxies_zn,
+      ],
+    # ['Mg2+ Nucleotide coordination',
+    #  metal_coordination_library.get_metal_coordination_proxies,
+    #  metal_coordination_library.get_proxies_mg_nuc,
+    #   ],
+    ]
+  outl = ''
+  outl_debug = ''
+
+  sites_c = pdb_hierarchy.atoms().extract_xyz()
+  nb_proxies = grm.pair_proxies(
+        sites_cart=sites_c).nonbonded_proxies
+  for label, get_coordination, get_all_proxies in hooks:
+    rc = get_coordination(
+      pdb_hierarchy=pdb_hierarchy,
+      nonbonded_proxies=nb_proxies,
+      verbose=verbose,
+    )
+    bproxies, aproxies = get_all_proxies(rc)
+    if bproxies is None: continue
+    if len(bproxies):
+      outl += '    %s\n' % label
+      atoms = pdb_hierarchy.atoms()
+      sf4_coordination = {}
+      for bp in bproxies:
+        sf4_ag = atoms[bp.i_seqs[0]].parent()
+        sf4_coordination.setdefault(sf4_ag.id_str(), [])
+        sf4_coordination[sf4_ag.id_str()].append((atoms[bp.i_seqs[0]],
+                                                  atoms[bp.i_seqs[1]]))
+        link = (atoms[bp.i_seqs[0]], atoms[bp.i_seqs[1]], 'x,y,z')
+        if link not in link_records: link_records['LINK'].append(link)
+      for sf4, aas in sorted(sf4_coordination.items()):
+        outl += '%spdb="%s"\n' % (' '*6, sf4)
+        outl_debug += '%spdb="%s"\n' % (' '*6, sf4)
+        for aa in aas:
+          outl += '%s%s - %s\n' % (' '*8, _atom_id(aa[0]), _atom_id(aa[1]))
+          outl_debug += '%s%s - %s\n' % (' '*8,
+                                         _atom_id(aa[0], True),
+                                         _atom_id(aa[1], True))
+    if bproxies:
+      if verbose:
+        atoms = pdb_hierarchy.atoms()
+        for bp in bproxies:
+          print(bp.i_seqs,
+                atoms[bp.i_seqs[0]].quote(),
+                atoms[bp.i_seqs[1]].quote(),
+                bp.rt_mx_ji,
+                )
+      try:
+        grm.add_new_bond_restraints_in_place(
+          proxies=bproxies,
+          sites_cart=pdb_hierarchy.atoms().extract_xyz(),
+        )
+      except RuntimeError as e:
+        print('\n\n%s' % outl_debug)
+        raise e
+    #
+    done = []
+    remove = []
+    for i, angle in enumerate(aproxies):
+      i_seqs = list(angle.i_seqs)
+      i_seqs.sort()
+      if i_seqs in done:
+        remove.append(i)
+      else:
+        done.append(i_seqs)
+    if remove:
+      remove.reverse()
+      for r in remove:
+        del aproxies[r]
+    #
+    if aproxies:
+      outl += '%s%s' % (' '*6, 'Number of angles added : %d\n' % len(aproxies))
+    grm.add_angles_in_place(aproxies)
+  if outl:
+    print('  Dynamic metal coordination', file=log)
+    print(outl, file=log)
 
 def _extract_sites_cart(ag, element=None):
   selection = []
@@ -101,8 +164,8 @@ def superpose_ideal_residue_coordinates(pdb_hierarchy,
                     'F3S' : 'S',
                     #'F4S' : 'S', # not done yet
                     #'CLF' : 'Fe', # too flexible
+                    'DVT' : 'V',
                     }
-  from iotbx import pdb
   from mmtbx.monomer_library import pdb_interpretation
   t0=time.time()
   rmsd_list = {}
@@ -154,7 +217,37 @@ def superpose_ideal_residue_coordinates(pdb_hierarchy,
     outl += '\n  Time to superpose : %0.2fs\n' % (time.time()-t0)
   return outl
 
+def superpose_ideal_ligand_on_poor_ligand(ideal_hierarchy,
+                                          poor_hierarchy,
+                                          ):
+  """Function superpose an ideal ligand onto the mangled ligand from a
+     ligand fitting procedure
+
+  Args:
+      ideal_hierarchy (pdb_hierarchy): Ideal ligand
+      poor_hierarchy (pdb_hierarchy): Poor ligand with correct c.o.m. and same
+        atom names in order. Could become more sophisticated.
+  """
+  sites_moving = flex.vec3_double()
+  sites_fixed = flex.vec3_double()
+  for atom1, atom2 in zip(ideal_hierarchy.atoms(), poor_hierarchy.atoms()):
+    assert atom1.name==atom2.name, '%s!=%s' % (atom1.quote(),atom2.quote())
+    sites_moving.append(atom1.xyz)
+    sites_fixed.append(atom2.xyz)
+  lsq_fit = superpose.least_squares_fit(
+        reference_sites = sites_fixed,
+        other_sites     = sites_moving)
+  sites_new = ideal_hierarchy.atoms().extract_xyz()
+  sites_new = lsq_fit.r.elems * sites_new + lsq_fit.t.elems
+  # rmsd = sites_fixed.rms_difference(lsq_fit.other_sites_best_fit())
+  ideal_hierarchy.atoms().set_xyz(sites_new)
+  return ideal_hierarchy
+
 if __name__=="__main__":
-  args = sys.argv[1:]
-  del sys.argv[1:]
-  run(*tuple(args))
+  from iotbx import pdb
+  ideal_inp=pdb.pdb_input(sys.argv[1])
+  ideal_hierarchy = ideal_inp.construct_hierarchy()
+  poor_inp=pdb.pdb_input(sys.argv[2])
+  poor_hierarchy = poor_inp.construct_hierarchy()
+  ideal_hierarchy = superpose_ideal_ligand_on_poor_ligand(ideal_hierarchy, poor_hierarchy)
+  ideal_hierarchy.write_pdb_file('new.pdb')

@@ -1,17 +1,19 @@
-from __future__ import division
+from __future__ import absolute_import, division, print_function
 from cctbx.array_family import flex
 from cctbx import miller, crystal
-import cPickle as pickle
-from mod_leastsqr import leastsqr_handler
-from mod_results import postref_results
+from six.moves import cPickle as pickle
+from .mod_leastsqr import leastsqr_handler
+from .mod_results import postref_results
 from cctbx.crystal import symmetry
 from scitbx.matrix import sqr
 from cctbx import statistics
-from mod_partiality import partiality_handler
-from mod_lbfgs_partiality import lbfgs_partiality_handler
-from mod_mx import mx_handler
+from .mod_partiality import partiality_handler
+from .mod_lbfgs_partiality import lbfgs_partiality_handler
+from .mod_mx import mx_handler
 import math, os
-from mod_input import read_frame
+from .mod_input import read_frame
+from six.moves import range
+from six.moves import zip
 
 class postref_handler(object):
   """
@@ -56,7 +58,7 @@ class postref_handler(object):
         beam = experiments[0].beam
         crystal_symmetry = crystal.symmetry(
             unit_cell=dials_crystal.get_unit_cell().parameters(),
-            space_group_symbol=iparams.target_space_group)
+            space_group_symbol=str(iparams.target_space_group))
         miller_set_all=miller.set(
                     crystal_symmetry=crystal_symmetry,
                     indices=observations_pickle['miller_index'],
@@ -76,7 +78,7 @@ class postref_handler(object):
         crystal_init_orientation = crystal_orientation(O*R, basis_type.direct)
       else:
         txt_exception += exp_json_file+' not found'
-        print txt_exception
+        print(txt_exception)
         return None, txt_exception
     else:
       #for cctbx.xfel proceed as usual
@@ -97,8 +99,8 @@ class postref_handler(object):
       fx = 1 - iparams.polarization_horizontal_fraction
       fy = 1 - fx
       if fx > 1.0 or fx < 0:
-        print 'Horizontal polarization fraction is not correct. The value must be >= 0 and <= 1'
-        print 'No polarization correction. Continue with post-refinement'
+        print('Horizontal polarization fraction is not correct. The value must be >= 0 and <= 1')
+        print('No polarization correction. Continue with post-refinement')
       else:
         phi_angle_obs = flex.double([math.atan2(pred[1]-ybeam, pred[0]-xbeam) \
                                          for pred in mm_predictions])
@@ -125,7 +127,7 @@ class postref_handler(object):
       #apply constrain using the crystal system
       miller_set = symmetry(
           unit_cell=uc_constrained,
-          space_group_symbol=iparams.target_space_group
+          space_group_symbol=str(iparams.target_space_group)
         ).build_miller_set(
           anomalous_flag=target_anomalous_flag,
           d_min=iparams.merge.d_min)
@@ -134,7 +136,7 @@ class postref_handler(object):
     except Exception:
       a,b,c,alpha,beta,gamma = uc_constrained
       txt_exception += 'Mismatch spacegroup (%6.2f,%6.2f,%6.2f,%6.2f,%6.2f,%6.2f)'%(a,b,c,alpha,beta,gamma)
-      print txt_exception
+      print(txt_exception)
       return None, txt_exception
     #reset systematic absence
     sys_absent_negate_flags = flex.bool([sys_absent_flag[1]==False for sys_absent_flag in observations.sys_absent_flags()])
@@ -222,6 +224,9 @@ class postref_handler(object):
     pickle_filepaths = pickle_filename.split('/')
     img_filename_only = pickle_filepaths[len(pickle_filepaths)-1]
     txt_exception = ' {0:40} ==> '.format(img_filename_only)
+    if observations_pickle is None:
+      txt_exception += 'empty or bad input file\n'
+      return None, txt_exception
     inputs, txt_organize_input = self.organize_input(observations_pickle, iparams, avg_mode, pickle_filename=pickle_filename)
     if inputs is not None:
       observations_original, alpha_angle, spot_pred_x_mm, spot_pred_y_mm, detector_distance_mm, wavelength, crystal_init_orientation = inputs
@@ -313,7 +318,7 @@ class postref_handler(object):
     r_xy_change = ((pres.R_xy_final - pres.R_xy_init)/pres.R_xy_init)*100
     cc_change = ((pres.CC_final - pres.CC_init)/pres.CC_init)*100
     txt_postref= '{0:40} => RES:{1:5.2f} NREFL:{2:5d} R:{3:6.1f}% RXY:{4:5.1f}% CC:{5:5.1f}% G:{6:6.4f} B:{7:5.1f} CELL:{8:6.1f}{9:6.1f} {10:6.1f} {11:5.1f} {12:5.1f} {13:5.1f}'.format(img_filename_only+' ('+index_basis_name+')', observations_original_sel.d_min(), len(observations_original_sel.data()), r_change, r_xy_change, cc_change, pres.G, pres.B, a_fin, b_fin, c_fin, alpha_fin, beta_fin, gamma_fin)
-    print txt_postref
+    print(txt_postref)
     txt_postref += '\n'
     return pres, txt_postref
 
@@ -321,6 +326,9 @@ class postref_handler(object):
     observations_pickle = read_frame(pickle_filename)
     pickle_filepaths = pickle_filename.split('/')
     txt_exception = ' {0:40} ==> '.format(pickle_filepaths[len(pickle_filepaths)-1])
+    if observations_pickle is None:
+      txt_exception += 'empty or bad input file\n'
+      return None, txt_exception
     inputs, txt_organize_input = self.organize_input(observations_pickle, iparams, avg_mode, pickle_filename=pickle_filename)
     if inputs is not None:
       observations_original, alpha_angle_obs, spot_pred_x_mm, spot_pred_y_mm, detector_distance_mm, wavelength, crystal_init_orientation = inputs
@@ -340,8 +348,11 @@ class postref_handler(object):
     observations_pickle = read_frame(pickle_filename)
     pickle_filepaths = pickle_filename.split('/')
     img_filename_only = pickle_filepaths[len(pickle_filepaths)-1]
-    inputs, txt_organize_input = self.organize_input(observations_pickle, iparams, avg_mode, pickle_filename=pickle_filename)
     txt_exception = ' {0:40} ==> '.format(img_filename_only)
+    if observations_pickle is None:
+      txt_exception += 'empty or bad input file\n'
+      return None, txt_exception
+    inputs, txt_organize_input = self.organize_input(observations_pickle, iparams, avg_mode, pickle_filename=pickle_filename)
     if inputs is not None:
       observations_original, alpha_angle, spot_pred_x_mm, spot_pred_y_mm, detector_distance_mm, wavelength, crystal_init_orientation = inputs
     else:
@@ -406,7 +417,7 @@ class postref_handler(object):
       for i in range(1,n_bins+1):
         i_binner = (binner_indices == i)
         if len(observations_original.data().select(i_binner)) > 0:
-          print binner.bin_d_range(i)[1], flex.mean(partiality_init.select(i_binner)), flex.mean(rs_init.select(i_binner)), flex.mean(rh_init.select(i_binner)), len(partiality_init.select(i_binner))
+          print(binner.bin_d_range(i)[1], flex.mean(partiality_init.select(i_binner)), flex.mean(rs_init.select(i_binner)), flex.mean(rh_init.select(i_binner)), len(partiality_init.select(i_binner)))
     #monte-carlo merge
     if iparams.flag_monte_carlo:
       G = 1
@@ -428,6 +439,6 @@ class postref_handler(object):
             crystal_orientation=crystal_init_orientation,
             detector_distance_mm=detector_distance_mm)
     txt_scale_frame_by_mean_I = ' {0:40} ==> RES:{1:5.2f} NREFL:{2:5d} G:{3:6.4f} B:{4:6.1f} CELL:{5:6.2f} {6:6.2f} {7:6.2f} {8:6.2f} {9:6.2f} {10:6.2f}'.format(img_filename_only+' ('+index_basis_name+')', observations_original.d_min(), len(observations_original_sel.data()), G, B, uc_params[0],uc_params[1],uc_params[2],uc_params[3],uc_params[4],uc_params[5])
-    print txt_scale_frame_by_mean_I
+    print(txt_scale_frame_by_mean_I)
     txt_scale_frame_by_mean_I += '\n'
     return pres, txt_scale_frame_by_mean_I

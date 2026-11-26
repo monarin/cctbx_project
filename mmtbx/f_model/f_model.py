@@ -1,4 +1,4 @@
-from __future__ import division, absolute_import
+from __future__ import absolute_import, division, print_function
 
 import mmtbx.f_model.f_model_info
 import libtbx.load_env
@@ -18,13 +18,13 @@ from cctbx.array_family import flex
 import math
 from cctbx import xray
 from cctbx import adptbx
-import boost.python
+import boost_adaptbx.boost.python as bp
 import mmtbx
 from libtbx.math_utils import iround
 from libtbx.utils import user_plus_sys_time, date_and_time, Sorry
 from libtbx.str_utils import format_value, show_string
 import libtbx.path
-from cStringIO import StringIO
+from six.moves import cStringIO as StringIO
 import iotbx.phil
 from mmtbx.scaling import outlier_rejection
 from mmtbx.scaling import absolute_scaling
@@ -41,8 +41,11 @@ from cctbx import maptbx
 from libtbx.test_utils import approx_equal
 import libtbx
 import mmtbx.bulk_solvent
+import six
+from six.moves import zip, range
+import libtbx.utils
 
-ext = boost.python.import_ext("mmtbx_f_model_ext")
+ext = bp.import_ext("mmtbx_f_model_ext")
 
 time_bulk_solvent_and_scale         = 0.0
 time_mask                           = 0.0
@@ -67,18 +70,18 @@ def show_times(out = None):
           time_r_factors                      +\
           time_phase_errors                   +\
           time_foms
-  print >> out, "  Micro-tasks:"
-  print >> out, "    mask                            = %-7.2f" % (time_mask)
-  print >> out, "    f_calc                          = %-7.2f" % time_f_calc
-  print >> out, "    alpha_beta                      = %-7.2f" % time_alpha_beta
-  print >> out, "    target                          = %-7.2f" % time_target
-  print >> out, "    gradients_wrt_atomic_parameters = %-7.2f" % \
-    time_gradients_wrt_atomic_parameters
-  print >> out, "    fmodel                         = %-7.2f" % time_fmodel_core_data
-  print >> out, "    r_factors                      = %-7.2f" % time_r_factors
-  print >> out, "    phase_errors                   = %-7.2f" % time_phase_errors
-  print >> out, "    foms                           = %-7.2f" % time_foms
-  print >> out, "    TOTAL for micro-tasks          = %-7.2f" % total
+  print("  Micro-tasks:", file=out)
+  print("    mask                            = %-7.2f" % (time_mask), file=out)
+  print("    f_calc                          = %-7.2f" % time_f_calc, file=out)
+  print("    alpha_beta                      = %-7.2f" % time_alpha_beta, file=out)
+  print("    target                          = %-7.2f" % time_target, file=out)
+  print("    gradients_wrt_atomic_parameters = %-7.2f" % \
+    time_gradients_wrt_atomic_parameters, file=out)
+  print("    fmodel                         = %-7.2f" % time_fmodel_core_data, file=out)
+  print("    r_factors                      = %-7.2f" % time_r_factors, file=out)
+  print("    phase_errors                   = %-7.2f" % time_phase_errors, file=out)
+  print("    foms                           = %-7.2f" % time_foms, file=out)
+  print("    TOTAL for micro-tasks          = %-7.2f" % total, file=out)
   return total
 
 class arrays(object):
@@ -144,7 +147,7 @@ class manager_mixin(object):
       .gradients_wrt_atomic_parameters(**keyword_args)
 
 sf_and_grads_accuracy_master_params = iotbx.phil.parse("""\
-  algorithm = *fft direct
+  algorithm = *fft direct taam
     .type = choice
   cos_sin_table = False
     .type = bool
@@ -160,7 +163,19 @@ sf_and_grads_accuracy_master_params = iotbx.phil.parse("""\
     .type = float
   exp_table_one_over_step_size = None
     .type = float
+  extra
+    .help = Extra parameters for additional algorithms, e.g. TAAM using DiSCaMB
+  {
+  }
 """)
+
+if cctbx.xray.structure_factors.pydiscamb_is_installed:
+  sf_and_grads_accuracy_master_params.adopt_scope(
+    iotbx.phil.parse(
+      "extra  { discamb { include scope pydiscamb.cctbx_interface.pydiscamb_master_params } }",
+      process_includes=True,
+    )
+  )
 
 alpha_beta_master_params = iotbx.phil.parse("""\
   include scope mmtbx.max_lik.maxlik.alpha_beta_params
@@ -324,10 +339,11 @@ class manager_kbu(object):
     return flex.double(self.f_obs.data().size(),
       mmtbx.bulk_solvent.scale(self.f_obs.data(), self.f_model.data()))
 
-class manager(manager_mixin):
+class manager(manager_mixin, metaclass=libtbx.utils.Tracker):
 
   def __init__(self,
          f_obs                        = None,
+         i_obs                        = None,
          r_free_flags                 = None,
          f_mask                       = None,
          f_part1                      = None,
@@ -354,13 +370,28 @@ class manager(manager_mixin):
          b_cart =None,
          _target_memory               = None,
          n_resolution_bins_output     = None,
-         scale_method="combo"):
+         scale_method="combo",
+         origin=None,
+         data_type=None):
+    self._origin = origin
+    self._data_type = data_type
+    self.russ = None
     if(twin_law is not None): target_name = "twin_lsq_f"
     self.k_sol, self.b_sol, self.b_cart = k_sol, b_sol, b_cart
     self.bin_selections = bin_selections
     self.scale_method = scale_method
     self.arrays = None
     self.alpha_beta_cache = None
+    # Mosaic bulk-solvent model (mmtbx.bulk_solvent.mosaic); see
+    # update_all_scales(mosaic=True)
+    self.mosaic_correction = None
+    self.mosaic_correction_signature = None
+    self._mosaic_result = None
+    # Squeeze: unmodelled solvent density as a contribution to F_model
+    # (mmtbx.bulk_solvent.squeeze); see update_all_scales(squeeze=True)
+    self.squeeze_correction = None
+    self.squeeze_signature = None
+    self._squeeze_result = None
     self.twin_law = twin_law
     self.twin_law_str = twin_law
     self.twin_fraction = twin_fraction
@@ -387,11 +418,13 @@ class manager(manager_mixin):
         abcd = abcd.complete_array(
           new_data_value=(0,0,0,0), d_min=f_obs.d_min()).common_set(f_obs)
     self._f_obs = f_obs
+    self._i_obs = i_obs
     self._r_free_flags = r_free_flags
     assert type(f_obs) == type(r_free_flags)
     self._hl_coeffs = abcd
     if(sf_and_grads_accuracy_params is None):
       sf_and_grads_accuracy_params = sf_and_grads_accuracy_master_params.extract()
+    self.sfg_params = sf_and_grads_accuracy_params
     if(alpha_beta_params is None):
       alpha_beta_params = alpha_beta_master_params.extract()
     self.twin = False
@@ -404,16 +437,12 @@ class manager(manager_mixin):
       # twin mate of mapped-to-asu does not have to obey this!
       assert f_obs.is_in_asu()
       assert r_free_flags.is_in_asu()
-    self.sfg_params = sf_and_grads_accuracy_params
     self.alpha_beta_params = alpha_beta_params
     self.xray_structure    = xray_structure
     self.use_f_model_scaled= use_f_model_scaled
     self.max_number_of_bins = max_number_of_bins
     self.n_resolution_bins_output = n_resolution_bins_output
-    if(mask_params is not None):
-      self.mask_params = mask_params
-    else:
-      self.mask_params = mmtbx.masks.mask_master_params.extract()
+    self._set_mask_params(mask_params = mask_params)
     self.mask_manager = mask_manager
     if(self.mask_manager is None):
       self.mask_manager = masks.manager(
@@ -473,9 +502,20 @@ class manager(manager_mixin):
 
   def __setstate__(self, state):
     assert len(state) == 1
+    # objects saved before these attributes existed
+    for name in ["mosaic_correction", "mosaic_correction_signature",
+                 "_mosaic_result", "squeeze_correction",
+                 "squeeze_signature", "_squeeze_result"]:
+      self.__dict__[name] = None
     self.__dict__.update(state[0])
 
-  def is_twin_fmodel_manager (self) :
+  def origin(self):
+    return self._origin
+
+  def data_type(self):
+    return self._data_type
+
+  def is_twin_fmodel_manager(self):
     return False
 
   def _get_structure_factor_gradients_w(self):
@@ -500,6 +540,7 @@ class manager(manager_mixin):
     if(self.twin_law is not None):
       twin_law_xyz = sgtbx.rt_mx(symbol=self.twin_law, r_den=12, t_den=144)
       twin_law_matrix = twin_law_xyz.as_double_array()[0:9]
+      import mmtbx.utils # not imported at module level (circular)
       twin_mi = mmtbx.utils.create_twin_mate(
         miller_indices  = miller_array.indices(),
         twin_law_matrix = twin_law_matrix)
@@ -524,7 +565,9 @@ class manager(manager_mixin):
       u_base                       = p.u_base,
       b_base                       = p.b_base,
       wing_cutoff                  = p.wing_cutoff,
-      exp_table_one_over_step_size = p.exp_table_one_over_step_size)
+      exp_table_one_over_step_size = p.exp_table_one_over_step_size,
+      extra_params = p.extra
+      )
     m = manager.manager()
     return manager.f_calc()
 
@@ -568,18 +611,18 @@ class manager(manager_mixin):
       result = s1 & s2 & s3 & s4
     else: result = s1 & s2 & s3
     if(log is not None):
-      print >> log
-      print >> log, "basic_wilson_outliers    =", s1.count(False)
-      print >> log, "extreme_wilson_outliers  =", s2.count(False)
-      print >> log, "beamstop_shadow_outliers =", s3.count(False)
+      print(file=log)
+      print("basic_wilson_outliers    =", s1.count(False), file=log)
+      print("extreme_wilson_outliers  =", s2.count(False), file=log)
+      print("beamstop_shadow_outliers =", s3.count(False), file=log)
       if(n_free > 0 and s4 is not None):
-        print >> log, "model_based_outliers     =", s4.count(False)
-      print >> log, "total                    =", result.count(False)
+        print("model_based_outliers     =", s4.count(False), file=log)
+      print("total                    =", result.count(False), file=log)
     return result
 
   def remove_outliers(self, log = None, use_model=True):
     if(log is not None):
-      print >> log, "Distribution of F-obs values:"
+      print("Distribution of F-obs values:", file=log)
       show_histogram(data = self.f_obs().data(), n_slots = 10, log = log)
     o_sel = self.outlier_selection(log = log, use_model=use_model)
     if(o_sel.count(False) > 0):
@@ -590,28 +633,26 @@ class manager(manager_mixin):
       o_sel_neg = (~o_sel).iselection()
       d_spacings = self.f_obs().d_spacings().data()
       if(log is not None):
-        print >> log, "Discarded reflections:"
+        print("Discarded reflections:", file=log)
         if(sigmas is not None):
-          print >> log, \
-            "    h    k    l           f_obs       sigma   d_min"
+          print("    h    k    l           f_obs       sigma   d_min", file=log)
           fmt = "%5d%5d%5d %15.4f %10.4f %7.4f"
           for si in o_sel_neg:
             i = indices[si]
-            print >> log, fmt%(i[0],i[1],i[2], data[si],
-              sigmas[si], d_spacings[si])
+            print(fmt%(i[0],i[1],i[2], data[si],
+              sigmas[si], d_spacings[si]), file=log)
         else:
-          print >> log, \
-            "    h    k    l           f_obs    d_min"
+          print("    h    k    l           f_obs    d_min", file=log)
           fmt = "%5d%5d%5d %15.4f %7.4f"
           for si in o_sel_neg:
             i = indices[si]
-            print >> log, fmt%(i[0],i[1],i[2], data[si],
-              d_spacings[si])
+            print(fmt%(i[0],i[1],i[2], data[si],
+              d_spacings[si]), file=log)
       #
       new = self.select(selection = o_sel, in_place=True,
         deep_copy_xray_structure=False)
       if(log is not None):
-        print >> log, "\nDistribution of active F-obs values after outliers rejection:"
+        print("\nDistribution of active F-obs values after outliers rejection:", file=log)
         show_histogram(data=new.arrays.f_obs.data(),n_slots=10,log=log)
 
   def wilson_b(self, force_update = False):
@@ -681,6 +722,18 @@ class manager(manager_mixin):
       k_anisotropic = None
     else:
       k_anisotropic = self.arrays.core.k_anisotropic.select(selection)
+    #
+    bin_selections = self.bin_selections
+    if(bin_selections is not None):
+      tmp = []
+      for bs in bin_selections:
+        bs_ = bs.select(selection)
+        tmp.append(bs_)
+        if(bs_.count(True)==0):
+          tmp = None
+          break
+      bin_selections = tmp
+    #
     result = manager(
       f_obs                        = self.f_obs().select(selection=selection),
       r_free_flags                 = self._r_free_flags.select(selection=selection),
@@ -702,17 +755,38 @@ class manager(manager_mixin):
       k_mask                       = new_k_masks,
       k_isotropic                  = k_isotropic,
       k_anisotropic                = k_anisotropic,
+      bin_selections               = bin_selections,
       _target_memory               = self._target_memory,
       n_resolution_bins_output     = self.n_resolution_bins_output,
       k_sol                        = self.k_sol,
       b_sol                        = self.b_sol,
-      b_cart                       = self.b_cart)
+      b_cart                       = self.b_cart,
+      origin                       = self.origin(),
+      data_type                    = self.data_type())
     result.twin = self.twin
     result.twin_law_str = self.twin_law_str
     result.k_h = self.k_h
     result.b_h = self.b_h
+    result._call_stats = self._call_stats # tracking!!
+    if(self.mosaic_correction is not None):
+      # the mask of result is a selection of the mask of self
+      signature = self.mosaic_correction_signature
+      if(self.mosaic_correction_is_current()):
+        signature = result.mosaic_signature()
+      result._set_mosaic_arrays(
+        correction = self.mosaic_correction.select(selection),
+        signature  = signature,
+        result     = self._mosaic_result)
+    if(self._squeeze_result is not None):
+      signature = self.squeeze_signature
+      if(self.squeeze_is_current()):
+        signature = result.mosaic_signature()
+      result._set_squeeze(
+        result    = self._squeeze_result.select(selection),
+        signature = signature)
     if(in_place): # XXX USE THIS INSTEAD OF ABOVE
-      for k, v in zip(self.__dict__.keys(), self.__dict__.values()):
+      # TODO: six.moves.zip this file
+      for k, v in six.iteritems(self.__dict__):
         try: self.__dict__[k] = result.__dict__[k]
         except KeyError:
           raise RuntimeError("Corrupt refinement: ad hoc key", k)
@@ -753,7 +827,7 @@ class manager(manager_mixin):
       if(mngmsks is not None):
         f_masks = mngmsks[:] # copy
       if(mngmsks is not None and curfmsks is not None):
-        assert len(curfmsks) == len(mngmsks)
+        assert len(curfmsks) == len(mngmsks), [len(curfmsks), len(mngmsks)]
         for i in range(len(curfmsks)):
           if( mngmsks[i].data().size() != curfmsks[i].data().size() ):
             f_masks[i] = mngmsks[i].common_set(curfmsks[i])
@@ -866,84 +940,116 @@ class manager(manager_mixin):
     if(out is None): return
     line_len = len("|-"+"|"+prefix)
     fill_len = 80-line_len-1
-    print >> out, "|-"+prefix+"-"*(fill_len)+"|"
-    print >> out, \
-      "| Solvent (probe) radius= %4.2f Shrink truncation radius= %4.2f%s|"%(
+    print("|-"+prefix+"-"*(fill_len)+"|", file=out)
+    print("| Solvent (probe) radius= %4.2f Shrink truncation radius= %4.2f%s|"%(
       self.mask_params.solvent_radius,
-      self.mask_params.shrink_truncation_radius," "*17)
-    print >> out, \
-      "| all data:                         500 lowest resolution reflections:        |"
+      self.mask_params.shrink_truncation_radius," "*17), file=out)
+    print("| all data:                         500 lowest resolution reflections:        |", file=out)
     fmtl = "| r_work= %s r_free= %s     r_work= %s  "%(
       format_value(format="%6.4f", value=self.r_work()).strip(),
       format_value(format="%6.4f", value=self.r_free()).strip(),
       format_value(format="%6.4f", value=self.r_work_low()).strip())
     pad = " "*(78-len(fmtl))
-    print >> out, fmtl + pad + "|"
-    print >> out, "|"+"-"*77+"|"
-    print >> out
+    print(fmtl + pad + "|", file=out)
+    print("|"+"-"*77+"|", file=out)
+    print(file=out)
 
   def optimize_mask(self, params = None, thorough=False, out = None,
-      nproc=1):
+      nproc=1, fast=None, refine_hd_scattering=False):
+    """
+    Grid-search the bulk-solvent mask parameters that minimize r_work.
+
+    Every trial mask is scored after re-fitting all scales (bulk solvent and
+    overall scaling) for that mask, so trials are compared on equal footing.
+    The grid covers solvent_radius 0.6-1.4 A in 0.1 A steps with
+    shrink_truncation_radius 0.1-0.5 A below it, which is where physically
+    sensible masks lie (shrink_truncation_radius >= solvent_radius gives
+    masks that fit much worse). On return the manager holds the best
+    parameters and the scales fitted for them.
+
+    Parameters
+    ----------
+    params : libtbx.phil.scope_extract, optional
+      bulk_solvent_and_scale parameters, as in update_all_scales.
+    thorough : bool
+      Refine the grid optimum in 0.05 A steps.
+    out : file-like, optional
+      Log; one line per trial.
+    nproc : int or Auto
+      Trials are evaluated in parallel when > 1.
+    fast, refine_hd_scattering : bool
+      Scaling options, as in update_all_scales (fast=None: params.mode
+      decides, fast if there are no params).
+
+    Returns
+    -------
+    bool
+      False if the manager has several mask shells (not optimized).
+    """
     if(len(self.f_masks()) != 1):
       return False
-    if (nproc is None) : nproc = 1
-    rw_ = self.r_work()
-    rf_ = self.r_free()
-    rwl_= self.r_work_low()
-    r_solv_   = self.mask_params.solvent_radius
-    r_shrink_ = self.mask_params.shrink_truncation_radius
+    if(fast is None):
+      fast = (params is None or params.mode == "fast")
+    scaling_kwds = dict(params=params, fast=fast,
+      refine_hd_scattering=refine_hd_scattering)
     self.show_mask_optimization_statistics(prefix="Mask optimization: start",
       out = out)
-    trial_range = [0.0,0.1,0.2,0.3,0.4,0.5,0.6,0.7,0.8,0.9,1.0,1.1,1.2,1.3,1.4]
-    r_shrinks = []
-    r_solvs = []
-    for tr1 in trial_range:
-      for tr2 in trial_range:
-        r_shrinks.append(tr1)
-        r_solvs.append(tr2)
-    r_solv = trial_range[:]
-    r_shrink = trial_range[:]
-    trial_params = zip(r_solvs, r_shrinks)
-    parallel = False
-    mask_results = []
-    if(nproc is Auto) or (nproc > 1) :
-      parallel = True
-      from libtbx import easy_mp
-      stdout_and_results = easy_mp.pool_map(
-        processes=nproc,
-        fixed_func=self.try_mask_params,
-        args=trial_params,
-        func_wrapper="buffer_stdout_stderr") # XXX safer for phenix GUI
-      mask_results = [ r for so, r in stdout_and_results ]
-    else :
-      for r_solv, r_shrink in trial_params :
-        result = self.try_mask_params((r_solv, r_shrink))
-        result.show(out=out)
-        mask_results.append(result)
-    for result in mask_results :
-      if (parallel) :
-        result.show(out=out)
-      if(result.r_work < rw_):
-        rw_       = result.r_work
-        rf_       = result.r_free
-        r_solv_   = result.r_solv
-        r_shrink_ = result.r_shrink
-    if(out is not None): print >> out
-    self.mask_params.solvent_radius = r_solv_
-    self.mask_params.shrink_truncation_radius = r_shrink_
-    self.mask_manager.mask_params = self.mask_params
-    self.update_xray_structure(
-      xray_structure      = self.xray_structure,
-      update_f_calc       = False,
-      update_f_mask       = True,
-      force_update_f_mask = True)
+    start = mask_result(
+      r_solv     = self.mask_params.solvent_radius,
+      r_shrink   = self.mask_params.shrink_truncation_radius,
+      r_work     = self.r_work(),
+      r_free     = self.r_free(),
+      r_work_low = self.r_work_low())
+    trial_params = []
+    for i_solv in range(6, 15):
+      r_solv = i_solv/10.
+      for i_delta in range(1, 6):
+        trial_params.append((r_solv, r_solv - i_delta/10.))
+    results = self._try_mask_params_list(trial_params, scaling_kwds, nproc, out)
+    best = min(results, key=lambda r: r.r_work)
+    if(thorough):
+      trial_params = []
+      for ds in (-0.05, 0, 0.05):
+        for dh in (-0.05, 0, 0.05):
+          if(ds == 0 and dh == 0): continue
+          r_solv, r_shrink = best.r_solv+ds, best.r_shrink+dh
+          if(r_shrink > 0 and r_shrink < r_solv):
+            trial_params.append((r_solv, r_shrink))
+      results = self._try_mask_params_list(trial_params, scaling_kwds, nproc,
+        out)
+      best = min(results+[best], key=lambda r: r.r_work)
+    if(best.r_work >= start.r_work): best = start
+    if(out is not None): print(file=out)
+    self.try_mask_params((best.r_solv, best.r_shrink, scaling_kwds))
     self.show_mask_optimization_statistics(prefix="Mask optimization: final",
       out = out)
     return True
 
+  def _try_mask_params_list(self, trial_params, scaling_kwds, nproc, out):
+    if(nproc is Auto or (nproc is not None and nproc > 1)):
+      from libtbx import easy_mp
+      stdout_and_results = easy_mp.pool_map(
+        processes=nproc,
+        fixed_func=self.try_mask_params,
+        args=[(r_solv, r_shrink, scaling_kwds)
+          for r_solv, r_shrink in trial_params],
+        func_wrapper="buffer_stdout_stderr") # XXX safer for phenix GUI
+      results = [r for so, r in stdout_and_results]
+    else:
+      results = [self.try_mask_params((r_solv, r_shrink, scaling_kwds))
+        for r_solv, r_shrink in trial_params]
+    for result in results:
+      result.show(out=out)
+    return results
+
   # XXX parallel routine
-  def try_mask_params (self, args) :
-    r_solv, r_shrink = args
+  def try_mask_params(self, args):
+    """Set mask parameters, recompute f_mask, re-fit all scales and report
+    r-factors. args: (r_solv, r_shrink) or (r_solv, r_shrink, scaling_kwds)
+    with scaling_kwds holding params, fast, refine_hd_scattering (see
+    update_all_scales)."""
+    r_solv, r_shrink = args[:2]
+    scaling_kwds = args[2] if len(args) > 2 else {}
     self.mask_params.solvent_radius = r_solv
     self.mask_params.shrink_truncation_radius = r_shrink
     self.mask_manager.mask_params = self.mask_params
@@ -952,6 +1058,15 @@ class manager(manager_mixin):
       update_f_calc       = False,
       update_f_mask       = True,
       force_update_f_mask = True)
+    from mmtbx.bulk_solvent import f_model_all_scales
+    f_model_all_scales.run(
+      fmodel               = self,
+      apply_back_trace     = False,
+      remove_outliers      = False,
+      fast                 = scaling_kwds.get("fast", True),
+      params               = scaling_kwds.get("params", None),
+      refine_hd_scattering = scaling_kwds.get("refine_hd_scattering", False),
+      log                  = None)
     return mask_result(
       r_solv=r_solv,
       r_shrink=r_shrink,
@@ -1031,184 +1146,6 @@ class manager(manager_mixin):
       miller_set = full_set,
       data       = fmodel_data_full_set)
 
-  def update_f_part1_all(self, purpose,
-                     refinement_neg_cutoff=-2.5):
-    zero = flex.complex_double(self.f_calc().data().size(),0)
-    zero_a = self.f_calc().customized_copy(data = zero)
-    self.update_core(f_part1 = zero_a)
-    mp = mmtbx.masks.mask_master_params.extract()
-    mp.solvent_radius = mp.solvent_radius/2
-    mp.shrink_truncation_radius = mp.shrink_truncation_radius/2
-    mmtbx_masks_asu_mask_obj = mmtbx.masks.asu_mask(
-      xray_structure = self.xray_structure.expand_to_p1(sites_mod_positive=True),
-      d_min          = self.f_obs().d_min(),
-      mask_params    = mp)
-    bulk_solvent_mask = mmtbx_masks_asu_mask_obj.mask_data_whole_uc()
-    crystal_gridding = maptbx.crystal_gridding(
-      unit_cell             = self.xray_structure.unit_cell(),
-      space_group_info      = self.f_obs().space_group_info(),
-      pre_determined_n_real = bulk_solvent_mask.focus())
-    mc = self.electron_density_map().map_coefficients(
-      map_type   = "mFo-DFc",
-      isotropize = True,
-      exclude_free_r_reflections = False)
-    fft_map = mc.fft_map(crystal_gridding = crystal_gridding)
-    fft_map.apply_sigma_scaling()
-    map_data = fft_map.real_map_unpadded() # important: not scaled!
-    maptbx.truncate_between_min_max(
-      map_data = map_data,
-      min      = 0,
-      max      = 2)
-    map_data = map_data*bulk_solvent_mask
-    min_map = flex.min(map_data)
-    if(min_map == 0): return
-    assert min_map < 0
-    f_diff = mc.structure_factors_from_map(
-      map            = map_data,
-      use_scale      = True,
-      anomalous_flag = False,
-      use_sg         = False)
-    fm = manager(
-      f_obs        = self.f_obs(),
-      r_free_flags = self.r_free_flags(),
-      f_calc       = self.f_model(), # important: not f_model_scaled_with_k1() !
-      f_mask       = f_diff)
-    fm.update_all_scales(remove_outliers=False, update_f_part1=False)
-    rw, rf = fm.r_work(), fm.r_free()
-    # put back into self: tricky!
-    kt  = self.k_isotropic()*self.k_anisotropic()
-    ktp = fm.k_isotropic()*fm.k_anisotropic()
-    assert kt.all_ne(0)
-    self.update_core(
-      k_isotropic   = flex.double(kt.size(),1),
-      k_anisotropic = kt*ktp,
-      f_part1       = f_diff.customized_copy(
-        data = f_diff.data()*(1/kt)*fm.k_masks()[0]))
-    # normally it holds up to 1.e-6, so if assertion below breakes then
-    # there must be something terribly wrong!
-    assert approx_equal(rw, self.r_work(), 1.e-4)
-    assert approx_equal(rf, self.r_free(), 1.e-4)
-
-  def update_f_part1(self):
-    """
-    Identify negative blobs in mFo-DFc synthesis in solvent region only,
-    then leave only those blobs (set everything else to zero),
-    then FT modified synthesis into f_diff s.f. and add them to Fmodel as scaled
-    Fmask contribution. Finally, extract updated scales and scaled f_diff and
-    update self with them. Store f_diff in F_part_1 partial contribution array
-    of Fmodel, which is an arbitrary choice (could be F_part_2, for instance).
-    Rationale: there should not be negative peaks in bulk-solvent region unless
-               they are noise or errors of bulk-solvent model, so they are
-               always good to remove.
-    """
-    zero = flex.complex_double(self.f_calc().data().size(),0)
-    zero_a = self.f_calc().customized_copy(data = zero)
-    self.update_core(f_part1 = zero_a)
-    if(self.xray_structure is None): return # need mask
-    sgt = self.f_obs().space_group().type()
-    d_spacings = self.f_calc().d_spacings().data()
-    if(flex.max(d_spacings)>3.0 and (d_spacings>3.0).count(True)>500):
-      S_E_L_F = self.resolution_filter(d_min=3.0)
-    else:
-      S_E_L_F = self.deep_copy()
-    crystal_gridding = S_E_L_F.f_obs().crystal_gridding(
-      d_min              = S_E_L_F.f_obs().d_min(),
-      symmetry_flags     = maptbx.use_space_group_symmetry,
-      resolution_factor  = 1./4)
-    # bulk-solvent mask filter
-    mmtbx_masks_asu_mask_obj = mmtbx.masks.asu_mask(
-      xray_structure = S_E_L_F.xray_structure.expand_to_p1(sites_mod_positive=True),
-      n_real         = crystal_gridding.n_real())
-    asu_map_ext = boost.python.import_ext("cctbx_asymmetric_map_ext")
-    bulk_solvent_mask = mmtbx_masks_asu_mask_obj.mask_data_whole_uc()
-    # residual map
-    mc = S_E_L_F.electron_density_map().map_coefficients(
-      map_type   = "mFo-DFc",
-      isotropize = True,
-      exclude_free_r_reflections = False)
-    #
-    exclude_free_r_reflections = True
-    r_free_flags_data = S_E_L_F.r_free_flags().data()
-    if(exclude_free_r_reflections and
-       0 not in [r_free_flags_data.count(True),r_free_flags_data.count(False)]):
-      mc = mc.customized_copy(
-        data = mc.data().set_selected(r_free_flags_data, 0+0j))
-    fft_map = mc.fft_map(
-      symmetry_flags   = maptbx.use_space_group_symmetry,
-      crystal_gridding = crystal_gridding)
-    map_data = fft_map.real_map_unpadded() # important: not scaled!
-    # in P1
-    map_filtered_inverted = map_data * bulk_solvent_mask *(-1.)
-    # in ASU
-    asu_map = asu_map_ext.asymmetric_map(sgt, map_filtered_inverted)
-    map_data_asu = asu_map.data()
-    map_data_asu = map_data_asu.shift_origin()
-    # connectivity analysis; work at 0.2 e/A**3 (lower end of solvent density)
-    co = maptbx.connectivity(map_data=map_data_asu/mc.unit_cell().volume(),
-      threshold=0.2)
-    conn = co.result()
-    z = zip(co.regions(),range(0,co.regions().size()))
-    #z = zip(co.maximum_values(),range(0,co.regions().size()))
-    sorted_by_volume = sorted(z, key=lambda x: x[0], reverse=True)
-    good = []
-    r_free = S_E_L_F.r_free()
-    #
-    cntr = 0
-    for p in sorted_by_volume:
-      v, i = p
-    #
-    #for i, v in enumerate(co.regions()):
-    #
-      cntr += 1
-      if(cntr>50): break
-      if(i==0): continue
-      if(v>40):
-        map_data_asu_ = maptbx.update_f_part1_helper(
-          connectivity_map = conn,
-          map_data         = map_data_asu,
-          region_id        = i)
-        asu_map = asu_map_ext.asymmetric_map(sgt, map_data_asu_,
-          crystal_gridding.n_real())
-        f_diff = mc.customized_copy(
-          data = asu_map.structure_factors(mc.indices()))
-        fm = manager(
-          f_obs        = S_E_L_F.f_obs(),
-          r_free_flags = S_E_L_F.r_free_flags(),
-          f_calc       = S_E_L_F.f_model(), # not f_model_scaled_with_k1() !
-          f_mask       = f_diff)
-        fm.update_all_scales(remove_outliers=False, update_f_part1=False)
-        if(fm.r_free() < r_free): good.append(i)
-    # may be inefficient?
-    F = conn.deep_copy()
-    if(not 1 in good): F = F.set_selected(F==1, 0)
-    for i in good:
-      F = F.set_selected(F==i, 1)
-    F = F.set_selected(F!=1, 0)
-    # filter and invert back to negative
-    map_data_asu_ = map_data_asu * (F.as_double() * (-1.))
-    asu_map = asu_map_ext.asymmetric_map(sgt, map_data_asu_,
-      crystal_gridding.n_real())
-    f_diff = mc.customized_copy(
-      indices = mc.indices(),
-      data    = asu_map.structure_factors(mc.indices()))
-    fm = manager(
-      f_obs        = S_E_L_F.f_obs(),
-      r_free_flags = S_E_L_F.r_free_flags(),
-      f_calc       = S_E_L_F.f_model(), # not f_model_scaled_with_k1() !
-      f_mask       = f_diff)
-    fm.update_all_scales(remove_outliers=False, update_f_part1=False)
-    kt  = S_E_L_F.k_isotropic()*S_E_L_F.k_anisotropic()
-    ktp = fm.k_isotropic()*fm.k_anisotropic()
-    f_part1 = f_diff.customized_copy(data = f_diff.data()*(1/kt)*fm.k_masks()[0])
-    # concatenate
-    fc = self.f_calc()
-    fc_lp = fc.lone_set(f_part1)
-    fc_lp = fc_lp.customized_copy(data = fc_lp.data()*0)
-    f_part1 = f_part1.concatenate(fc_lp)
-    f_part1, fc = f_part1.common_sets(fc)
-    # add to self (fmodel)
-    self.update(f_part1 = f_part1)
-
   def bins(self):
     k_masks       = self.k_masks()
     k_isotropic   = self.k_isotropic()
@@ -1234,7 +1171,7 @@ class manager(manager_mixin):
       ka       = flex.mean(k_anisotropic.select(sel))
       r        = mmtbx.bulk_solvent.r_factor(
         f_obs.select(sel_work).data(),
-        f_model.select(sel_work).data(), 1)
+        f_model.select(sel_work).data())
       km = " ".join(["%5.3f"%flex.mean(km_.select(sel)) for km_ in k_masks])
       result.append(group_args(
         d_min   = d_min,
@@ -1250,6 +1187,19 @@ class manager(manager_mixin):
         km      = km))
     return result
 
+  def show_short(self, show_k_mask=True, log=None, prefix=""):
+    if(log is None): log = sys.stdout
+    if(show_k_mask):
+      fmt="%s%7.3f-%-7.3f %6.2f %5d %5d %6.4f %9.3f %9.3f %5.3f   %s"
+      print("%s   Resolution    Compl Nwork Nfree R_work    <Fobs>  <Fmodel> ktotal  kmask"%prefix, file=log)
+      for b in self.bins():
+        print(fmt % (prefix,b.d_max,b.d_min,b.cmpl,b.nw,b.nf,b.r,b.fo_mean,b.fm_mean,b.ki*b.ka,b.km), file=log)
+    else:
+      fmt="%s%7.3f-%-7.3f %6.2f %5d %5d %6.4f %9.3f %9.3f %5.3f"
+      print("%s   Resolution    Compl Nwork Nfree R_work    <Fobs>  <Fmodel> ktotal"%prefix, file=log)
+      for b in self.bins():
+        print(fmt % (prefix,b.d_max,b.d_min,b.cmpl,b.nw,b.nf,b.r,b.fo_mean,b.fm_mean,b.ki*b.ka), file=log)
+
   def show(self, log=None, suffix=None, show_header=True, show_approx=True):
     if(log is None): log = sys.stdout
     l="Statistics in resolution bins"
@@ -1259,26 +1209,33 @@ class manager(manager_mixin):
     f3 = "    k_total = k_isotropic * k_anisotropic"
     m=(77-len(l))//2
     if(show_header):
-      print >> log, "\n","="*m,l,"="*m,"\n"
-      print >> log, f1
-      print >> log, f2
-      print >> log, f3
+      print("\n","="*m,l,"="*m,"\n", file=log)
+      print(f1, file=log)
+      print(f2, file=log)
+      print(f3, file=log)
     fmt="%7.3f-%-7.3f %6.2f %5d %5d %6.4f %9.3f %9.3f %5.3f %5.3f %s"
-    print >> log, "   Resolution    Compl Nwork Nfree R_work    <Fobs>  <Fmodel> kiso   kani kmask"
+    print("   Resolution    Compl Nwork Nfree R_work    <Fobs>  <Fmodel> kiso   kani kmask", file=log)
     for b in self.bins():
-      print >> log, fmt % (b.d_max,b.d_min,b.cmpl,b.nw,b.nf,b.r,b.fo_mean,b.fm_mean,b.ki,b.ka,b.km)
+      print(fmt % (b.d_max,b.d_min,b.cmpl,b.nw,b.nf,b.r,b.fo_mean,b.fm_mean,b.ki,b.ka,b.km), file=log)
     def overall_isotropic_kb_estimate(self):
       k_total = self.k_isotropic() * self.k_anisotropic()
       assert self.ss.size() == self.k_isotropic().size()
       r = scitbx.math.gaussian_fit_1d_analytical(x=flex.sqrt(self.ss), y=k_total)
       return r.a, r.b
     k_overall, b_overall = overall_isotropic_kb_estimate(self)
-    print >> log
+    print(file=log)
     f3="  Approximation of k_total with k_overall*exp(-b_overall*s**2/4)"
     f4="    k_overall=%-8.4f b_overall=%-8.4f"%(k_overall, b_overall)
     if(show_approx):
-      print >> log, f3
-      print >> log, f4
+      print(f3, file=log)
+      print(f4, file=log)
+    #
+    if(self.russ is not None):
+      if(self.russ.b_cart is not None and self.twin_law is None):
+        b_cart = " ".join(["%6.4f"%b for b in self.russ.b_cart])
+        print("  k_sol: %6.4f"%self.russ.k_sol[0], file=log)
+        print("  b_sol: %6.4f"%self.russ.b_sol[0], file=log)
+        print("  b_cart:", b_cart, file=log)
 
   def remove_unreliable_atoms_and_update(self, min_map_value=0.5, min_cc=0.7):
     """
@@ -1391,7 +1348,7 @@ class manager(manager_mixin):
         fill         = True)
 
   def k_sol_b_sol_from_k_mask(self):
-    sel = self.f_obs().d_spacings().data()>=3.5
+    sel = self.f_obs().d_spacings().data()>=4.0
     k_mask = self.k_masks()[0].select(sel)
     ss = self.ss.select(sel)
     r = scitbx.math.gaussian_fit_1d_analytical(x=flex.sqrt(ss), y=k_mask)
@@ -1434,20 +1391,87 @@ class manager(manager_mixin):
         update_f_part1 = True,
         apply_back_trace=False,
         params = None, # XXX DUMMY
-        nproc = None,  # XXX DUMMY
+        nproc = None,
         cycles = None,
-        fast = True,
+        fast = None,
         optimize_mask = False,
         refine_hd_scattering = True,
         refine_hd_scattering_method = "fast",
         bulk_solvent_and_scaling = True,
         remove_outliers = True,
+        apply_scale_k1_to_f_obs=True,
         show = False,
         verbose=None,
-        log = None):
+        log = None,
+        mosaic = False,
+        squeeze = False,
+        water_selection = None):
+    """
+    Overall and bulk-solvent scales.
+
+    squeeze : bool
+        True: positive mFo-DFc density in the solvent region is added to
+        F_model with a fitted scale and B (mmtbx.bulk_solvent.squeeze). It
+        is determined now, after bulk-solvent (flat or mosaic) and overall
+        scaling, and stored in this object (see f_squeeze, squeeze_result);
+        scales are optimized with it. Settings are taken from
+        params.squeeze. Skipped with a message in log if not applicable
+        (twinned or neutron data, data resolution).
+        False (default): nothing is determined. A stored contribution stays
+        part of F_model, as the mosaic correction does, until the mask is
+        computed again or the number of atoms changes. Use remove_squeeze()
+        to go back.
+    water_selection : flex.bool, optional
+        Water atoms of xray_structure; used by squeeze=True to compute its
+        solvent mask without water. None: the mask is computed from all
+        atoms.
+
+    mosaic : bool
+        True: use the mosaic bulk-solvent model
+        (mmtbx.bulk_solvent.mosaic). Isolated regions of the solvent mask and
+        their occupancies are determined now and the resulting correction to
+        the mask structure factors is stored in this object
+        (mosaic_correction); scales are optimized with it. Settings are taken
+        from params.mosaic. Skipped with a message in log for twinned or
+        neutron data.
+        False (default): nothing mosaic is computed. A correction that is
+        already stored stays part of F_model, like the mask does: scales are
+        optimized with it. It is dropped if the number of atoms changed
+        since it was computed. Use remove_mosaic() to go back to the flat
+        bulk-solvent model.
+    update_f_part1 : ignored (kept for compatibility).
+    """
     self.alpha_beta_cache = None
-    self.apply_scale_k1_to_f_obs()
+    # Which protocol: params.mode decides unless the caller insists on one.
+    if(params is None):
+      fast = (fast is None or fast)
+    elif(fast is None):
+      fast = (params.mode == "fast")
+    else:
+      assert not (fast and params.mode == "slow"), \
+        "fast=True contradicts bulk_solvent_and_scale.mode=slow"
+    if(params is not None and not params.apply_back_trace):
+      apply_back_trace = False
+    # Auto-shutoff refine_hd_scattering if number of H is too small.
+    if refine_hd_scattering:
+      if self.xray_structure is not None:
+        hd_sel = self.xray_structure.hd_selection()
+        h_fraction = hd_sel.count(True)*100./hd_sel.size()
+        if h_fraction < 25.: refine_hd_scattering = False
+    #
+    if(apply_scale_k1_to_f_obs):
+      self.apply_scale_k1_to_f_obs()
     from mmtbx.bulk_solvent import f_model_all_scales
+    mosaic_requested = mosaic
+    squeeze_requested = squeeze
+    if(optimize_mask):
+      # The mask is going to change: a stored mosaic correction belongs to
+      # the regions of the current mask, and new regions are determined
+      # after the mask is final. Same for squeeze.
+      self.remove_mosaic()
+      self.remove_squeeze()
+      mosaic = False
+      squeeze = False
     o = f_model_all_scales.run(
       fmodel               = self,
       apply_back_trace     = apply_back_trace,
@@ -1455,8 +1479,27 @@ class manager(manager_mixin):
       fast                 = fast,
       params               = params,
       log                  = log,
-      refine_hd_scattering = refine_hd_scattering)
-    if(optimize_mask): self.optimize_mask(out=log)
+      refine_hd_scattering = refine_hd_scattering,
+      mosaic               = mosaic,
+      squeeze              = squeeze,
+      water_selection      = water_selection)
+    if(optimize_mask):
+      self.optimize_mask(params=params, out=log, nproc=nproc, fast=fast,
+        refine_hd_scattering=refine_hd_scattering)
+      mosaic = mosaic_requested
+      squeeze = squeeze_requested
+      if(mosaic or squeeze):
+        o = f_model_all_scales.run(
+          fmodel               = self,
+          apply_back_trace     = False,
+          remove_outliers      = False,
+          fast                 = fast,
+          params               = params,
+          log                  = log,
+          refine_hd_scattering = refine_hd_scattering,
+          mosaic               = mosaic,
+          squeeze              = squeeze,
+          water_selection      = water_selection)
     if(remove_outliers and self.twin_law is None):
       for i in [1,2,3,4,5]:
         if(self.r_work_low()>0.7 and len(self.bin_selections)>1):
@@ -1466,6 +1509,14 @@ class manager(manager_mixin):
           abcd = self.hl_coeffs()
           if(abcd is not None):
             abcd = self.hl_coeffs().common_set(f_obs)
+          mosaic_state = self._get_mosaic_arrays()
+          mosaic_current = self.mosaic_correction_is_current()
+          squeeze_result = self._squeeze_result
+          squeeze_current = self.squeeze_is_current()
+          squeeze_signature = self.squeeze_signature
+          if(squeeze_result is not None):
+            squeeze_result = squeeze_result.select(
+              self.f_obs().resolution_filter_selection(d_max=ds_low))
           self.__init__(
              f_obs                        = f_obs,
              r_free_flags                 = self.r_free_flags().common_set(f_obs),
@@ -1487,22 +1538,168 @@ class manager(manager_mixin):
              bin_selections               = None    ,
              n_resolution_bins_output     = self.n_resolution_bins_output,
              scale_method                 = self.scale_method)
+          if(mosaic_state is not None):
+            # mosaic=True below computes it again; else keep what was stored
+            c, signature, result = mosaic_state
+            if(mosaic_current): signature = self.mosaic_signature()
+            self._set_mosaic_arrays(
+              correction = c.common_set(f_obs),
+              signature  = signature,
+              result     = result)
+          if(squeeze_result is not None):
+            # squeeze=True below computes it again; else keep what was stored
+            if(squeeze_current): squeeze_signature = self.mosaic_signature()
+            self._set_squeeze(
+              result    = squeeze_result,
+              signature = squeeze_signature)
           o = f_model_all_scales.run(
             fmodel=self, apply_back_trace = apply_back_trace,
             remove_outliers = remove_outliers, fast = fast,
-            params = params, log = log, refine_hd_scattering=refine_hd_scattering)
+            params = params, log = log, refine_hd_scattering=refine_hd_scattering,
+            mosaic = mosaic, squeeze = squeeze,
+            water_selection = water_selection)
+    self.russ = o.russ
     return o.russ
 
-  def apply_scale_k1_to_f_obs(self, threshold=10):
-    assert threshold > 0
-    k_total = self.k_isotropic()*self.k_anisotropic()
-    if(k_total.all_ne(1.0)): return
+  def mosaic_result(self):
+    """
+    mmtbx.bulk_solvent.mosaic.result of the last update_all_scales(mosaic=True)
+    (regions of the solvent mask and their occupancies), or None if the
+    mosaic bulk-solvent model is not in use.
+    """
+    return self._mosaic_result
+
+  def remove_mosaic(self):
+    """
+    Forget the stored mosaic bulk-solvent correction. F_model is the one of
+    the flat bulk-solvent model after the next update_all_scales().
+    """
+    self.mosaic_correction = None
+    self.mosaic_correction_signature = None
+    self._mosaic_result = None
+
+  def f_mosaic(self):
+    """
+    Correction of the mosaic bulk-solvent model to F_model, without the
+    overall scales: k_mask*sum_n (q_n-1) F_n (cctbx.miller.array, zero if
+    the mosaic model is not in use). It is part of f_bulk().
+    """
+    f_obs = self.f_obs()
+    if(self.mosaic_correction is None):
+      return f_obs.array(data = flex.complex_double(f_obs.data().size(), 0))
+    return f_obs.array(
+      data = self.k_masks()[0]*self.mosaic_correction.data())
+
+  def f_squeeze(self):
+    """
+    Squeeze contribution to F_model, without the overall scales:
+    k*exp(-B*s^2/4)*FT[unmodelled density in the solvent region]
+    (cctbx.miller.array, zero if squeeze is not in use). So that
+
+      F_model = k_total * (F_calc + F_bulk + F_squeeze [+ F_H]),
+
+    with f_bulk() being the bulk solvent, mosaic correction included.
+    """
+    f_obs = self.f_obs()
+    if(self.squeeze_correction is None):
+      return f_obs.array(data = flex.complex_double(f_obs.data().size(), 0))
+    return self.squeeze_correction
+
+  def squeeze_result(self):
+    """
+    mmtbx.bulk_solvent.squeeze.result of the last
+    update_all_scales(squeeze=True), or None if squeeze is not in use.
+    """
+    return self._squeeze_result
+
+  def remove_squeeze(self):
+    """
+    Forget the stored squeeze contribution. F_model is without it after the
+    next update_all_scales().
+    """
+    self.squeeze_correction = None
+    self.squeeze_signature = None
+    self._squeeze_result = None
+
+  def _set_squeeze(self, result, signature):
+    """
+    result: mmtbx.bulk_solvent.squeeze.result for the reflections of
+    f_obs(). signature: mosaic_signature() of the fmodel it was computed
+    for.
+    """
+    f_obs = self.f_obs()
+    assert result.f.size() == f_obs.data().size()
+    self._squeeze_result = result
+    self.squeeze_signature = signature
+    self.squeeze_correction = f_obs.array(data = result.scaled(ss = self.ss))
+
+  def squeeze_is_current(self):
+    """
+    True if a squeeze contribution is stored and it belongs to the current
+    model and mask (same rule as for the mosaic correction, see
+    mosaic_signature).
+    """
+    if(self._squeeze_result is None or self.xray_structure is None):
+      return False
+    return (self.squeeze_signature == self.mosaic_signature()) and \
+           (self._squeeze_result.f.size() == self.f_obs().data().size())
+
+  def _get_mosaic_arrays(self):
+    if(self.mosaic_correction is None): return None
+    return (self.mosaic_correction, self.mosaic_correction_signature,
+            self._mosaic_result)
+
+  def mosaic_signature(self):
+    """
+    What identifies the solvent mask that a mosaic correction belongs to:
+    number of atoms, number of atoms that define the mask, mask radii,
+    number of masks, and the sum of the amplitudes of the mask structure
+    factors (changes whenever the mask is computed again from moved atoms).
+    A stored mosaic correction is used only as long as this is the same as
+    when it was computed.
+    """
+    xrs = self.xray_structure
+    if(xrs is None): return None
+    mp = self.mask_params
+    selection = flex.bool(xrs.scatterers().size(), True)
+    if(mp.ignore_zero_occupancy_atoms):
+      selection &= xrs.scatterers().extract_occupancies() > 0
+    if(mp.ignore_hydrogens):
+      selection &= ~xrs.hd_selection()
+    return (xrs.scatterers().size(), selection.count(True),
+            mp.solvent_radius, mp.shrink_truncation_radius,
+            len(self.f_masks()),
+            "%.6e"%sum([flex.sum(flex.abs(f.data())) for f in self.f_masks()]))
+
+  def _set_mosaic_arrays(self, correction, signature, result):
+    """
+    correction: cctbx.miller.array on the reflections of f_obs().
+    signature: mosaic_signature() of the fmodel it was computed for.
+    """
+    assert correction.data().size() == self.f_obs().data().size()
+    self.mosaic_correction = correction
+    self.mosaic_correction_signature = signature
+    self._mosaic_result = result
+
+  def mosaic_correction_is_current(self):
+    """
+    True if a mosaic correction is stored and it belongs to the current
+    model and mask (see mosaic_signature).
+    """
+    if(self.mosaic_correction is None or self.xray_structure is None):
+      return False
+    return (self.mosaic_correction_signature == self.mosaic_signature()) \
+       and (self.mosaic_correction.data().size() ==
+            self.f_obs().data().size())
+
+  def apply_scale_k1_to_f_obs(self):
     r_start = self.r_work()
     fo = self.f_obs().data()
     fc = abs(self.f_model()).data()
     sc = flex.sum(fo*fc)/flex.sum(fc*fc)
-    if(sc == 0 or (abs(sc)<threshold and abs(sc)>1./threshold) or
-       self.twin_law is not None): return
+    if sc < 1.1 and sc > 0.9: return
+    if sc == 0: return
+    if self.twin_law is not None: return
     sigmas = self.f_obs().sigmas()
     if(sigmas is not None):
       sigmas = sigmas/sc
@@ -1512,6 +1709,11 @@ class manager(manager_mixin):
     self.update(f_obs = f_obs_new)
     r_final = self.r_work()
     assert approx_equal(r_start, r_final), [r_start, r_final]
+
+  def r_work4(self):
+    s4 = self.resolution_filter(d_min=4)
+    if(s4.f_obs().data().size()==0): return 0
+    return s4.r_work()
 
   def _get_target_name(self): return self._target_name
   target_name = property(_get_target_name)
@@ -1530,6 +1732,8 @@ class manager(manager_mixin):
 
   def set_target_name(self, target_name):
     if (target_name == "ls"): target_name = "ls_wunit_k1"
+    if(target_name=="mlhl" and self._hl_coeffs is None):
+      raise Sorry("Using MLHL target requires HL present: no HL provided.")
     self._target_name = target_name
 
   def determine_n_bins(self,
@@ -1557,6 +1761,26 @@ class manager(manager_mixin):
   def target_unscaled_t(self, alpha_beta=None):
     return self.target_t(alpha_beta=alpha_beta)*self.f_calc_t().data().size()
 
+  def _set_mask_params(self, mask_params):
+    """
+    Neutron data: H and D are always part of the mask. The caller's
+    parameters are not changed for that (they may be shared with an X-ray
+    fmodel).
+    """
+    if(mask_params is None):
+      mask_params = mmtbx.masks.mask_master_params.extract()
+    if(self._data_type == "neutron" and mask_params.ignore_hydrogens):
+      mask_params = deepcopy(mask_params)
+      mask_params.ignore_hydrogens = False
+    self.mask_params = mask_params
+
+  def _update_mask_params(self, mask_params):
+    self._set_mask_params(mask_params = mask_params)
+    self.mask_manager = masks.manager(
+      miller_array      = self.f_obs(),
+      miller_array_twin = self.twin_set,
+      mask_params       = self.mask_params)
+
   def update(self, f_calc                       = None,
                    f_obs                        = None,
                    f_mask                       = None,
@@ -1570,6 +1794,7 @@ class manager(manager_mixin):
                    alpha_beta_params            = None,
                    twin_fraction                = None,
                    xray_structure               = None,
+                   epsilons                     = None,
                    mask_params                  = None):
     self.update_core(
       f_calc = f_calc,
@@ -1577,8 +1802,10 @@ class manager(manager_mixin):
       f_part1 = f_part1,
       k_mask = k_mask,
       k_anisotropic=k_anisotropic)
-    if(mask_params is not None):
-      self.mask_params = mask_params
+    if(epsilons is not None):
+      self.epsilons = epsilons
+    if(mask_params is not None): # Reguires updating mask manager!
+      self._update_mask_params(mask_params=mask_params)
     if(f_obs is not None):
       self.arrays.f_obs = f_obs
       self.update_core()
@@ -1632,18 +1859,37 @@ class manager(manager_mixin):
     else:
       return self.arrays.hl_coeffs
 
-  def f_obs(self): # XXX CLEAN
+  def f_obs_scaled(self, include_fom=False):
+    scale = 1.0 / self.k_total()
+    if include_fom:
+      scale = scale * self.figures_of_merit()
+    return miller.array(
+      miller_set = self.f_obs(),
+      data       = self.f_obs().data()*scale)
+
+  def f_obs(self):
     if(self.arrays is not None):
       return self.arrays.f_obs
     else:
       return self._f_obs
 
+  def i_obs(self):
+    return self._i_obs
+
   def r_free_flags(self):
       return self._r_free_flags
 
   def f_bulk(self):
-    return miller.array(miller_set = self.f_obs(),
-      data = self.arrays.core.data.f_bulk)
+    """
+    Bulk-solvent contribution, without the overall scales: k_mask*F_mask
+    plus, for the mosaic bulk-solvent model, its correction
+    k_mask*sum_n (q_n-1) F_n (see f_mosaic). The squeeze contribution
+    (f_squeeze) is not part of it.
+    """
+    data = self.arrays.core.data.f_bulk
+    if(self.mosaic_correction is not None):
+      data = data + self.f_mosaic().data()
+    return miller.array(miller_set = self.f_obs(), data = data)
 
   def f_bulk_w(self):
     if(self.r_free_flags().data().count(True) > 0):
@@ -1678,6 +1924,14 @@ class manager(manager_mixin):
   def k_isotropic_work(self):
     return self.arrays.k_isotropic_work
 
+  def k_total(self):
+    return self.k_isotropic()*self.k_anisotropic()*self.scale_k1()*\
+      self.arrays.core.k_isotropic_exp
+
+  def k_total_work(self):
+    return self.k_isotropic_work()*self.k_anisotropic_work()*self.scale_k1_w()*\
+      self.arrays.core.k_isotropic_exp.select(self.arrays.work_sel)
+
   def f_obs_work(self):
     return self.arrays.f_obs_work
 
@@ -1688,7 +1942,9 @@ class manager(manager_mixin):
     return self.arrays.f_model
 
   def f_model_no_scales(self):
-    # or better name: f_calc + f_bulk
+    # f_calc + flat bulk solvent. The correction of the mosaic bulk-solvent
+    # model and the squeeze contribution are not in it: their sum is
+    # f_part1(), see f_mosaic() and f_squeeze().
     f_masks = self.f_masks()
     k_masks = self.k_masks()
     assert len(f_masks)==1
@@ -1784,8 +2040,8 @@ class manager(manager_mixin):
     for fo, fm, d in zip(self.f_obs().data(),
                          abs(self.f_model_scaled_with_k1()),
                          self.f_obs().d_spacings().data()):
-      print >> log, "Fobe   Fmodel   resolution (A)"
-      print >> log, "%12.3f %12.3f %6.3f"%(fo, fm, d)
+      print("Fobe   Fmodel   resolution (A)", file=log)
+      print("%12.3f %12.3f %6.3f"%(fo, fm, d), file=log)
 
   #Ensemble refinement alpha beta parameters
   set_sigmaa = None
@@ -1987,10 +2243,10 @@ class manager(manager_mixin):
     if([d_min, d_max].count(None) < 2):
       assert selection is None and d_spacings is not None
     timer = user_plus_sys_time()
-    if([d_min, d_max].count(None) == 0):
+    if(d_min is not None or d_max is not None):
       keep = flex.bool(d_spacings.size(), True)
-      if (d_max): keep &= d_spacings <= d_max
-      if (d_min): keep &= d_spacings >= d_min
+      if (d_max is not None): keep &= d_spacings <= d_max
+      if (d_min is not None): keep &= d_spacings >= d_min
       f_obs   = f_obs.select(keep)
       f_model = f_model.select(keep)
     if(selection is not None):
@@ -2114,8 +2370,41 @@ class manager(manager_mixin):
     assert approx_equal(flex.min(k_mask_l), flex.max(k_mask_l), 1.e-3)
     return k_mask_l[0]
 
+  def r_n_lowest(self, n=500):
+    ds = self.f_obs().d_spacings().data()
+    sel = flex.sort_permutation(ds,reverse=True)
+    ds = ds.select(sel)
+    d_min = ds[n]
+    return self.resolution_filter(d_min=d_min).r_work()
+
+  def r_two_bins_lowest(self):
+    f = self.select(self.bin_selections[0] | self.bin_selections[1])
+    return mmtbx.bulk_solvent.r_factor(
+      f.f_obs_work().data(), f.f_model_work().data())
+
   def r_work_low(self):
     f = self.select(self.bin_selections[0])
+
+
+    # Scan for best k
+    #fo, fc = f.f_obs_work().data(), f.f_model_work().data()
+    #scale = mmtbx.bulk_solvent.scale(fo, fc)
+    #r1 = mmtbx.bulk_solvent.r_factor(fo, fc, scale)
+    #r1_ = mmtbx.bulk_solvent.r_factor(fo, fc)
+    #assert approx_equal(r1, r1_)
+    #
+    #r2=r1
+    #k_best = scale
+    #k=scale-0.5
+    #while k<=scale+0.5:
+    #  r2_ = mmtbx.bulk_solvent.r_factor(fo, fc,k)
+    #  if(r2_<r2):
+    #    k_best = k
+    #    r2 = r2_
+    #  k+=0.01
+    #return mmtbx.bulk_solvent.r_factor(
+    #  f.f_obs_work().data(), f.f_model_work().data(), k_best)
+
     return mmtbx.bulk_solvent.r_factor(
       f.f_obs_work().data(), f.f_model_work().data())
 
@@ -2123,6 +2412,22 @@ class manager(manager_mixin):
     f = self.select(self.bin_selections[len(self.bin_selections)-1])
     return mmtbx.bulk_solvent.r_factor(
       f.f_obs_work().data(), f.f_model_work().data())
+
+  def completeness_high(self):
+    sel = self.bin_selections[len(self.bin_selections)-1]
+    ds = self.f_obs().d_spacings().data()
+    d_max = flex.max(ds.select(sel))
+    return self.f_obs().select(sel).completeness(d_max=d_max)
+
+  def completeness_low(self):
+    return self.f_obs().select(self.bin_selections[0]).completeness()
+
+  def r_factors(self, prefix="", as_string=True):
+    rw,rf,rh,rl,r4=self.r_work(),self.r_free(),self.r_work_high(),\
+      self.r_work_low(), self.r_work4()
+    f = "%s r_work=%6.4f r_free=%6.4f r_high=%6.4f r_low=%6.4f r_4=%6.4f"
+    if(as_string): return f%(prefix, rw,rf,rh,rl,r4)
+    else:          return group_args(rw=rw,rf=rf,rh=rh,rl=rl,r4=r4)
 
   def r_overall_low_high(self, d = 6.0):
     r_work = self.r_work()
@@ -2231,6 +2536,18 @@ class manager(manager_mixin):
   def twinned(self):
     return self.arrays.core_twin is not None
 
+  def vector_diff_map(self, fo_phase_source, isotropize):
+    mch = self.map_calculation_helper()
+    fo = self.f_obs().phase_transfer(phase_source = fo_phase_source)
+    fo = fo.array(data = fo.data()*mch.fom)
+    fc = self.f_model()
+    fc = fc.array(data = fc.data()*mch.alpha.data())
+    diff = fo.data() - fc.data()
+    if isotropize:
+      scale = 1. / (self.k_isotropic()*self.k_anisotropic())
+      diff = diff * scale
+    return fo.array(data = diff)
+
   def map_calculation_helper(self,
                              free_reflections_per_bin = 100,
                              interpolation = True):
@@ -2280,7 +2597,7 @@ class manager(manager_mixin):
     hl_b_model = t * sin_f_model_phases
     return flex.hendrickson_lattman(a = hl_a_model, b = hl_b_model)
 
-  def f_model_phases_as_hl_coeffs_array (self) :
+  def f_model_phases_as_hl_coeffs_array(self):
     hl_coeffs = miller.set(crystal_symmetry=self.f_obs().crystal_symmetry(),
         indices = self.f_obs().indices(),
         anomalous_flag=False).array(
@@ -2319,24 +2636,24 @@ class manager(manager_mixin):
   def electron_density_map(self):
     return map_tools.electron_density_map(fmodel = self)
 
-  def map_coefficients (self, **kwds) :
+  def map_coefficients(self, **kwds):
     emap = self.electron_density_map()
     return emap.map_coefficients(**kwds)
 
-  def _get_real_map (self, **kwds) :
+  def _get_real_map(self, **kwds):
     map_coeffs = self.map_coefficients(**kwds)
     return map_coeffs.fft_map(
       resolution_factor=0.25).apply_sigma_scaling().real_map_unpadded()
 
-  def two_fofc_map (self, **kwds) :
+  def two_fofc_map(self, **kwds):
     kwds['map_type'] = "2mFo-DFc"
     return self._get_real_map(**kwds)
 
-  def fofc_map (self, **kwds) :
+  def fofc_map(self, **kwds):
     kwds['map_type'] = "mFo-DFc"
     return self._get_real_map(**kwds)
 
-  def anomalous_map (self, **kwds) :
+  def anomalous_map(self, **kwds):
     if (not self.f_obs().anomalous_flag()) : return None
     kwds['map_type'] = "anom"
     return self._get_real_map(**kwds)
@@ -2347,7 +2664,7 @@ class manager(manager_mixin):
       free_reflections_per_bin= self.alpha_beta_params.free_reflections_per_bin
     if(max_number_of_bins is None):
       max_number_of_bins = self.max_number_of_bins
-    if (n_bins is None) :
+    if (n_bins is None):
       n_bins = self.n_resolution_bins_output
     return mmtbx.f_model.f_model_info.info(
       fmodel                   = self,
@@ -2371,9 +2688,9 @@ class manager(manager_mixin):
        fmodel_dc.update(sf_and_grads_accuracy_params = dir_p)
     elif(self.sfg_params.algorithm == "direct"):
        fmodel_dc.update(sf_and_grads_accuracy_params = fft_p)
-    print >> out, "|"+"-"*77+"|"
-    print >> out, "| Bin     Resolution   Compl.  No.       Scale_k1             R-work          |"
-    print >> out, "|number     range              Refl.      direct       fft direct fft-direct,%|"
+    print("|"+"-"*77+"|", file=out)
+    print("| Bin     Resolution   Compl.  No.       Scale_k1             R-work          |", file=out)
+    print("|number     range              Refl.      direct       fft direct fft-direct,%|", file=out)
     deltas = flex.double()
     for i_bin in f_obs_w.binner().range_used():
         sel         = f_obs_w.binner().selection(i_bin)
@@ -2391,12 +2708,12 @@ class manager(manager_mixin):
                    i_bin = i_bin, show_bin_number = False, show_counts = False)
         format = "|%3d: %-17s %4.2f %6d %14.3f %6.4f %6.4f   %9.4f  |"
         if(self.sfg_params.algorithm == "fft"):
-           print >> out, format % (i_bin,d_range,compl,n_ref,
-                                            scale_k1_2,r_work_1,r_work_2,delta)
+           print(format % (i_bin,d_range,compl,n_ref,
+                                            scale_k1_2,r_work_1,r_work_2,delta), file=out)
         else:
-           print >> out, format % (i_bin,d_range,compl,n_ref,
-                                            scale_k1_1,r_work_2,r_work_1,delta)
-    print >> out, "|"+"-"*77+"|"
+           print(format % (i_bin,d_range,compl,n_ref,
+                                            scale_k1_1,r_work_2,r_work_1,delta), file=out)
+    print("|"+"-"*77+"|", file=out)
     out.flush()
 
   def explain_members(self, out=None, prefix="", suffix=""):
@@ -2411,12 +2728,12 @@ class manager(manager_mixin):
        "k_isotropic   = overall resolution-dependent scale factor",
        "k_anisotropic = overall Millerindex-dependent scale factor",
        "k_mask        = bulk-solvent scale factor"]:
-      print >> out, prefix + line + suffix
+      print(prefix + line + suffix, file=out)
 
-  def export_f_obs_flags_as_mtz (self,
+  def export_f_obs_flags_as_mtz(self,
       file_name,
       merge_anomalous=False,
-      include_hendrickson_lattman=True) :
+      include_hendrickson_lattman=True):
     """
     Dump all input data to an MTZ file using standard column labels.  This may
     be useful when running modules or programs that require an MTZ file as
@@ -2425,13 +2742,13 @@ class manager(manager_mixin):
     f_obs = self.f_obs()
     flags = self.r_free_flags()
     hl_coeffs = self.hl_coeffs()
-    if (merge_anomalous) :
+    if (merge_anomalous):
       f_obs = f_obs.average_bijvoet_mates()
       flags = flags.average_bijvoet_mates()
-      if (hl_coeffs is not None) :
+      if (hl_coeffs is not None):
         hl_coeffs = hl_coeffs.average_bijvoet_mates()
     mtz_dataset = f_obs.as_mtz_dataset(column_root_label="F")
-    if (hl_coeffs is not None) and (include_hendrickson_lattman) :
+    if (hl_coeffs is not None) and (include_hendrickson_lattman):
       mtz_dataset.add_miller_array(hl_coeffs, column_root_label="HL")
     mtz_dataset.add_miller_array(flags, column_root_label="FreeR_flag")
     mtz_dataset.mtz_object().write(file_name)
@@ -2441,7 +2758,7 @@ class manager(manager_mixin):
     file_name = None
     if (out is None):
       out = sys.stdout
-    elif (hasattr(out, "name")):
+    elif (hasattr(out, "name") and file_name is None):
       file_name = libtbx.path.canonical_path(file_name=out.name)
     if(format == "mtz"):
       assert file_name is not None
@@ -2452,7 +2769,13 @@ class manager(manager_mixin):
         miller_array=self.f_model_scaled_with_k1(), column_root_label="FMODEL")
       mtz_dataset.add_miller_array(
         miller_array=self.f_calc(), column_root_label="FCALC")
-      for ifm,fm in enumerate(self.f_masks()):
+      f_masks = self.f_masks()
+      if(self.mosaic_correction is not None):
+        # mosaic bulk-solvent model: the mask term as it is in F_model
+        assert len(f_masks) == 1
+        f_masks = [f_masks[0].array(
+          data = f_masks[0].data() + self.mosaic_correction.data())]
+      for ifm,fm in enumerate(f_masks):
         if( len(self.f_masks())==1 ):
           label = "FMASK"
         else:
@@ -2481,6 +2804,9 @@ class manager(manager_mixin):
         miller_array=alpha, column_root_label="ALPHA")
       mtz_dataset.add_miller_array(
         miller_array=beta, column_root_label="BETA")
+      mtz_dataset.add_miller_array(
+        miller_array=self.f_obs().centric_flags(),
+        column_root_label="CENTRIC_FLAGS")
       if(self.hl_coeffs() is not None):
         mtz_dataset.add_miller_array(
           miller_array=self.hl_coeffs(), column_root_label="HL")
@@ -2522,28 +2848,28 @@ def show_histogram(data, n_slots, log):
   s_1 = enumerate(hm.slots())
   for (i_1,n_1) in s_1:
     hc_1 = hm.data_min() + hm.slot_width() * (i_1+1)
-    print >> log, "%10.3f - %-10.3f : %d" % (lc_1, hc_1, n_1)
+    print("%10.3f - %-10.3f : %d" % (lc_1, hc_1, n_1), file=log)
     lc_1 = hc_1
 
-class mask_result (object) :
-  def __init__ (self, r_solv, r_shrink, r_work, r_free, r_work_low) :
+class mask_result(object):
+  def __init__(self, r_solv, r_shrink, r_work, r_free, r_work_low):
     adopt_init_args(self, locals())
 
-  def show (self, out) :
+  def show(self, out):
     if (out is None) : return
-    print >> out, "r_solv=%s r_shrink=%s r_work=%s r_free=%s r_work_low=%s"%(
+    print("r_solv=%s r_shrink=%s r_work=%s r_free=%s r_work_low=%s"%(
           format_value("%6.2f", self.r_solv),
           format_value("%6.2f", self.r_shrink),
           format_value("%6.4f", self.r_work),
           format_value("%6.4f", self.r_free),
-          format_value("%6.4f", self.r_work_low))
+          format_value("%6.4f", self.r_work_low)), file=out)
 
 # XXX backwards compatibility 2011-02-08
 # bad hack... - relative import
 # Change to absolute import
 from . import f_model_info
-class info (f_model_info.info) :
+class info(f_model_info.info):
   pass
 
-class resolution_bin (f_model_info.resolution_bin) :
+class resolution_bin(f_model_info.resolution_bin):
   pass

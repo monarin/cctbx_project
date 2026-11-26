@@ -55,7 +55,7 @@ class AutoType(object):
 
   def __str__(self): return "Auto"
   def __eq__(self, other):
-    return type(other) is self.__class__
+    return isinstance(other, self.__class__)
   def __ne__(self, other):
     return not self.__eq__(other)
   def __hash__(self):
@@ -67,6 +67,9 @@ class AutoType(object):
     return cls.singleton
 
 Auto = AutoType()
+
+class mpi_import_guard:
+  disable_mpi = False
 
 class slots_getstate_setstate(object):
   """
@@ -101,7 +104,7 @@ class slots_getstate_setstate(object):
     try:
       # avoid printing deprecation warning to stderr when loading mangle
       warnings.simplefilter("ignore")
-      from compiler.misc import mangle
+      from libtbx.utils import mangle
 
     finally:
       warnings.showwarning = show_warning
@@ -112,7 +115,10 @@ class slots_getstate_setstate(object):
     return dict([(name, getattr(self, name)) for name in mnames])
 
   def __setstate__(self, state):
-    for name,value in state.items(): setattr(self, name, value)
+    for name,value in state.items():
+      if isinstance(name, bytes):
+        name = name.decode('utf8')
+      setattr(self, name, value)
 
 class mutable(slots_getstate_setstate):
   __slots__ = ["value"]
@@ -120,7 +126,7 @@ class mutable(slots_getstate_setstate):
   def __init__(O, value):
     O.value = value
 
-class slots_getstate_setstate_default_initializer (slots_getstate_setstate) :
+class slots_getstate_setstate_default_initializer(slots_getstate_setstate):
   """
   Merges together functionality from slots_getstate_setstate with
   adopt_optional_init_args.
@@ -134,7 +140,7 @@ class slots_getstate_setstate_default_initializer (slots_getstate_setstate) :
   >>> print(svm_pair.i_seq)
   1
   """
-  def __init__ (self, **kwds) :
+  def __init__(self, **kwds):
     kwds = dict(kwds)
     for key in kwds :
       setattr(self, key, kwds.get(key, None))
@@ -187,6 +193,8 @@ def adopt_init_args(obj, args, exclude=(), hide=False):
     del args[param]
   if (hide == False):
     for key in args.keys():
+      if key.startswith("__") and key.endswith("__"):
+        continue
       assert not hasattr(obj.__dict__, key)
     obj.__dict__.update(args)
   else:
@@ -217,7 +225,7 @@ def adopt_optional_init_args(obj, kwds):
   >>> a = foo(z=10)
   >>> assert a.z == 10
   """
-  for k,v in kwds.iteritems():
+  for k,v in kwds.items():
     if not hasattr(obj.__class__, k):
       raise RuntimeError("%s must be a class attribute of %s to "
                          "be adopted as optional init argument "
@@ -225,7 +233,17 @@ def adopt_optional_init_args(obj, kwds):
                          % (k, obj.__class__))
     setattr(obj, k, v)
 
-class group_args(object):
+class dda(object):
+  dynamic_attributes_disabled = False
+  def __setattr__(self, k, v):
+    if(self.dynamic_attributes_disabled and not hasattr(self, k)):
+      raise TypeError("Dynamic attributes disabled.")
+    object.__setattr__(self, k, v)
+
+  def stop_dynamic_attributes(self):
+      self.dynamic_attributes_disabled = True
+
+class group_args(dda):
   """
   Class to build an arbitrary object from a list of keyword arguments.
 
@@ -235,6 +253,13 @@ class group_args(object):
   >>> obj = group_args(a=1, b=2, c=3)
   >>> print(obj.a, obj.b, obj.c)
   1 2 3
+
+  Once stop_dynamic_attributes is called, adding new attributes won't be
+  possible, that is this:
+
+  obj.tmp=10
+
+  will fail.
   """
 
   def __init__(self, **keyword_arguments):
@@ -243,10 +268,19 @@ class group_args(object):
   def __call__(self):
     return self.__dict__
 
+  def get(self,kw, default_value = None):
+    return self.__dict__.get(kw, default_value)
+
+  def keys(self):
+    return self.__dict__.keys()
+
   def __repr__(self):
     outl = "group_args"
+    from libtbx.utils import to_str,sys
     for attr in sorted(self.__dict__.keys()):
       tmp=getattr(self, attr)
+      if (sys.version_info.major < 3) and (isinstance(tmp,unicode)):
+        tmp = to_str(tmp)
       if str(tmp).find("ext.atom ")>-1:
         outl += "\n  %-30s : %s" % (attr, tmp.quote())
       else:
@@ -257,6 +291,26 @@ class group_args(object):
     """ To merge other group_args into self.
     Overwrites matching fields!!!"""
     self.__dict__.update(other.__dict__)
+
+  def add_if_missing(self, other, add_if_self_is_none = False):
+    """ takes values from other only if not present at all in self
+      Optionally add if value in self is None"""
+    self_keys = list(self.keys())
+    for key in other.keys():
+      if key.startswith("__"): continue
+      if (not (key in self_keys)) or (add_if_self_is_none and
+          (self.get(key) is None)):
+        self.add(key,other.get(key))
+
+  def add(self,key=None,value=None):
+    self.__dict__[key]=value
+
+  def delete(self, key = None):
+    if key in self.keys():
+      self.__dict__[key] = None
+  def copy(self):
+    """ produce shallow copy of self by converting to dict and back"""
+    return group_args(**self().copy())
 
 if os.environ.get("LIBTBX_PRINT_TRACE"):
   import libtbx.start_print_trace

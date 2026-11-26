@@ -1,4 +1,4 @@
-from __future__ import division
+from __future__ import absolute_import, division, print_function
 
 def pretty_filename(spotfinder,key):
   nwildcard = spotfinder.pd['template'].count('#')
@@ -10,7 +10,7 @@ def pretty_filename(spotfinder,key):
     return spotfinder.pd['template']
 
 def optionally_add_saturation(canonical_info,image):
-  if image.has_key('saturation'):
+  if image.has_extended_key('saturation'):
     sat_info = ("%6s",image['saturation'].message(),
                       image['saturation'].format())
     canonical_info.append(sat_info)
@@ -20,7 +20,7 @@ def optionally_add_saturation(canonical_info,image):
     canonical_info.append(sat_info)
 
 def optionally_add_saturation_webice(canonical_info,image):
-  if image.has_key('saturation'):
+  if image.has_extended_key('saturation'):
     sat_info = ("%5s %%",image['saturation'].message().split("%")[1],
                       "%.1f"%(100*image['saturation'].p_saturation))
     canonical_info.append(sat_info)
@@ -30,7 +30,7 @@ def optionally_add_saturation_webice(canonical_info,image):
     canonical_info.append(sat_info)
 
 def key_adaptor(mapping,key,idx=None):
-  if mapping.has_key(key):
+  if mapping.has_extended_key(key):
     if idx == None:
       return mapping[key]
     else: return mapping[key][idx]
@@ -61,7 +61,7 @@ def key_safe_items_webice(image):
   ]
 
 def pretty_image_stats(Spotfinder,key):
-    print
+    print()
     image = Spotfinder.images[key]
 
     canonical_info = [
@@ -74,37 +74,37 @@ def pretty_image_stats(Spotfinder,key):
 
     for item in canonical_info:
       if item[2]==None:
-        print "%25s : None"%item[1]
+        print("%25s : None"%item[1])
       else:
-        print "%25s : %s"%(item[1],item[0]%item[2])
+        print("%25s : %s"%(item[1],item[0]%item[2]))
 
 def webice_image_stats(Spotfinder,key):
-    import StringIO
+    from six.moves import StringIO
     image = Spotfinder.images[key]
     canonical_info = []
     canonical_info.extend(key_safe_items_webice(image))
     optionally_add_saturation_webice(canonical_info,image)
-    g = StringIO.StringIO()
+    g = StringIO()
     for item in canonical_info:
       if item[2]==None:
-        print >>g,"%35s: None"%item[1]
+        print("%35s: None"%item[1], file=g)
       else:
-        print >>g,"%35s: %s"%(item[1],item[0]%item[2])
+        print("%35s: %s"%(item[1],item[0]%item[2]), file=g)
     ibinfac = int(Spotfinder.pd['binning'])
     if ibinfac > 1:
-      print >>g,"\nImage was processed with %1dx%1d pixel binning\n to increase Viewer speed."%(ibinfac,ibinfac)
+      print("\nImage was processed with %1dx%1d pixel binning\n to increase Viewer speed."%(ibinfac,ibinfac), file=g)
     return g.getvalue()
 
 def notes(Spotfinder,key):
-    print
+    print()
     image = Spotfinder.images[key]
-    if image.has_key('resolution_divisor'):
-      print "Bin population cutoff for method 2 resolution: %.0f%%"%(
-        100./image['resolution_divisor'])
+    if image.has_extended_key('resolution_divisor'):
+      print("Bin population cutoff for method 2 resolution: %.0f%%"%(
+        100./image['resolution_divisor']))
 
 if __name__=='__main__':
   Spotfinder = unpickle_spotfinder()
 
   for key in Spotfinder.pd['osc_start'].keys():
     pretty_image_stats(Spotfinder,key)
-  notes(Spotfinder,Spotfinder.pd['osc_start'].keys()[0])
+  notes(Spotfinder,list(Spotfinder.pd['osc_start'].keys())[0])

@@ -1,21 +1,22 @@
-from __future__ import division
+from __future__ import absolute_import, division, print_function
 
 from mmtbx.secondary_structure import manager
 import iotbx.pdb
 import iotbx.phil
 from libtbx.utils import Sorry, safe_div
-import cStringIO
+from six.moves import cStringIO as StringIO
 import sys
 from libtbx import easy_mp
 import mmtbx
-from mmtbx.building.loop_closure.utils import get_phi_psi_atoms, get_rama_score, \
-    rama_evaluate, get_pair_angles
+from mmtbx.building.loop_closure.utils import get_phi_psi_atoms, get_pair_angles
 from libtbx import group_args
 
-import boost.python
-ext = boost.python.import_ext("mmtbx_validation_ramachandran_ext")
+import boost_adaptbx.boost.python as bp
+from six.moves import zip
+ext = bp.import_ext("mmtbx_validation_ramachandran_ext")
 from mmtbx_validation_ramachandran_ext import rama_eval
 from mmtbx.validation import ramalyze
+from mmtbx.validation.phi_psi_2_data import phi_psi_2_mask_class
 
 master_phil_str = '''
 ss_validation {
@@ -46,6 +47,7 @@ class gather_ss_stats(object):
     self.r = rama_eval_manager
     if self.r is None:
       self.r = rama_eval()
+    self.pp2m = phi_psi_2_mask_class()
 
   def __call__(self, hsh_tuple):
     temp_annot = iotbx.pdb.secondary_structure.annotation(
@@ -53,19 +55,20 @@ class gather_ss_stats(object):
         sheets = hsh_tuple[1])
     helix = len(hsh_tuple[0]) > 0
     # print temp_annot.as_pdb_str().replace('\n',' '),
-    ss_params = mmtbx.secondary_structure.default_params
+    ss_params = mmtbx.secondary_structure.manager.get_default_ss_params()
     ss_params.secondary_structure.enabled=True
     ss_params.secondary_structure.protein.remove_outliers=False
     ss_params.secondary_structure.protein.helix=[]
     ss_params.secondary_structure.protein.sheet=[]
     ss_params.secondary_structure.nucleic_acid.enabled=False
-    ss_m_log = cStringIO.StringIO()
+    ss_m_log = StringIO()
 
     ss_manager = mmtbx.secondary_structure.manager(
         pdb_hierarchy=self.pdb_h,
         atom_selection_cache=self.asc,
         sec_str_from_pdb_file=temp_annot,
         params=ss_params.secondary_structure,
+        show_summary_on=False,
         log = ss_m_log)
     h_bond_proxies, hb_angles = ss_manager.create_protein_hbond_proxies(log=ss_m_log)
 
@@ -86,35 +89,31 @@ class gather_ss_stats(object):
         n_mediocre_hbonds += 1
 
     # Ramachandran outliers and wrong areas
-    sele = ss_manager.selection_cache.selection(temp_annot.as_atom_selections()[0])
+    sele = self.asc.selection(temp_annot.as_atom_selections()[0])
     ss_h = self.pdb_h.select(sele)
     phi_psi_atoms = get_phi_psi_atoms(ss_h)
 
     n_outliers = 0
     n_wrong_region = 0
     for phi_psi_pair, rama_key in phi_psi_atoms:
-      rama_score = get_rama_score(phi_psi_pair, self.r, rama_key)
-      if rama_evaluate(phi_psi_pair, self.r, rama_key) == ramalyze.RAMALYZE_OUTLIER:
+      phi, psi = get_pair_angles(phi_psi_pair)
+      r_eval = self.r.evaluate_angles(rama_key, phi, psi)
+      if r_eval == ramalyze.RAMALYZE_OUTLIER:
         n_outliers += 1
       else:
-        reg = gather_ss_stats.helix_sheet_rama_region(phi_psi_pair)
-        if (reg == 1 and not helix) or (reg == 2 and helix):
+        reg = pp2_helix_sheet_rama_region(phi, psi, self.pp2m)
+        if (helix and reg != 'A') or (not helix and reg !='B'):
           n_wrong_region += 1
           # print "  Wrong region:", phi_psi_pair[0][2].id_str(), reg, helix
-
     del ss_manager
     del ss_params
     return n_hbonds, n_bad_hbonds, n_mediocre_hbonds, hb_lens, n_outliers, n_wrong_region
 
-  @classmethod
-  def helix_sheet_rama_region(cls,phi_psi_pair):
-    # result 1 - helix, 2 - sheet, 0 - other
-    # cutoff: phi < 70 - helix, phi>=70 - sheet
-    phi_psi_angles = get_pair_angles(phi_psi_pair, round_coords=False)
-    if phi_psi_angles[1] < 70:
-      return 1
-    else:
-      return 2
+def pp2_helix_sheet_rama_region(phi, psi, pp2m=None):
+  # result: A - helix, B - sheet.
+  if pp2m is None:
+    pp2m = phi_psi_2_mask_class()
+  return pp2m.get_closest((phi,psi))
 
 def is_ca_and_something(pdb_h):
   asc = pdb_h.atom_selection_cache()
@@ -143,36 +142,36 @@ class validate(object):
       self.params = validate.get_default_params().ss_validation
     self.log = log
     self.results = None
-    ss_log = cStringIO.StringIO()
+    ss_log = StringIO()
     try:
       ss_annot = self.model.get_ss_annotation(log=ss_log)
     except Sorry as e:
-      print >> out, " Syntax error in SS: %s" % e.message
+      print(" Syntax error in SS: %s" % str(e), file=self.log)
       return
     ss_log_cont = ss_log.getvalue()
     n_bad_helices = ss_log_cont.count("Bad HELIX")
     n_bad_sheets = ss_log_cont.count("Bad SHEET")
     pdb_h = self.model.get_hierarchy()
     if ss_annot is None or ss_annot.is_empty():
-      print >> self.log, "No SS annotation, nothing to analyze"
+      print("No SS annotation, nothing to analyze", file=self.log)
       return
     if n_bad_helices > 0:
-      print >> self.log, "Number of helices with syntax error: %d" % n_bad_helices
+      print("Number of helices with syntax error: %d" % n_bad_helices, file=self.log)
     if n_bad_helices > 0:
-      print >> self.log, "Number of sheets with syntax error: %d" % n_bad_sheets
+      print("Number of sheets with syntax error: %d" % n_bad_sheets, file=self.log)
     if model.get_number_of_models() != 1 :
       raise Sorry("Multiple models not supported.")
     if not pdb_h.contains_protein():
-      print >> self.log, "Protein is not found in the model"
+      print("Protein is not found in the model", file=self.log)
       return
     if pdb_h.is_ca_only():
-      print >> self.log, "Error: CA-only model"
+      print("Error: CA-only model", file=self.log)
       return
     if is_ca_and_something(pdb_h):
-      print >> self.log, "CA-only and something model"
+      print("CA-only and something model", file=self.log)
       return
     if some_chains_are_ca(pdb_h):
-      print >> self.log, "some chains are CA-only"
+      print("some chains are CA-only", file=self.log)
       return
 
     n_total_helix_sheet_records = ss_annot.get_n_helices()+ss_annot.get_n_sheets()
@@ -183,15 +182,15 @@ class validate(object):
     number_of_empty_sheets = empty_annots.get_n_sheets()
     n_bad_helix_sheet_records += (number_of_empty_helices+number_of_empty_sheets)
     if number_of_empty_helices > 0:
-      print >> self.log, "Helices without corresponding atoms in the model (%d):" % number_of_empty_helices
+      print("Helices without corresponding atoms in the model (%d):" % number_of_empty_helices, file=self.log)
       for h in empty_annots.helices:
-        print >> self.log, "  ", h.as_pdb_str()
+        print("  ", h.as_pdb_or_mmcif_str(), file=self.log)
     if number_of_empty_sheets > 0:
-      print >> self.log, "Sheets without corresponding atoms in the model (%d):" % number_of_empty_sheets
+      print("Sheets without corresponding atoms in the model (%d):" % number_of_empty_sheets, file=self.log)
       for sh in empty_annots.sheets:
-        print >> self.log, "  ", sh.as_pdb_str()
+        print("  ", sh.as_pdb_or_mmcif_str(), file=self.log)
 
-    print >> self.log, "Checking annotations thoroughly, use nproc=<number> if it is too slow..."
+    print("Checking annotations thoroughly, use nproc=<number> if it is too slow...", file=self.log)
 
     hsh_tuples = []
     for h in ss_annot.helices:
@@ -243,11 +242,11 @@ class validate(object):
           n_bad_helix_sheet_records += 1
         if n_bad_hbonds + n_mediocre_hbonds + n_outliers + n_wrong_region > 0:
           # this is bad annotation, printing it to log with separate stats:
-          print >> self.log, "Bad annotation found:"
-          print >> self.log, "%s" % ss_elem.as_pdb_str()
-          print >> self.log, "  Total hb: %d, mediocre: %d, bad: %d, Rama outliers: %d, Rama wrong %d" % (
-              n_hbonds, n_mediocre_hbonds, n_bad_hbonds, n_outliers, n_wrong_region)
-          print >> self.log, "-"*80
+          print("Bad annotation found:", file=self.log)
+          print("%s" % ss_elem.as_pdb_or_mmcif_str(), file=self.log)
+          print("  Total hb: %d, mediocre: %d, bad: %d, Rama outliers: %d, Rama wrong %d" % (
+              n_hbonds, n_mediocre_hbonds, n_bad_hbonds, n_outliers, n_wrong_region), file=self.log)
+          print("-"*80, file=self.log)
 
     # n1 = percentage of bad SS elements (per given model);
     # bad here means: n_bad_hbonds + n_outliers + n_wrong_region > 0
@@ -260,18 +259,18 @@ class validate(object):
     n4 = safe_div(cumm_n_bad_hbonds,cumm_n_hbonds)*100. # No per SS element separation
     # percentage of SS elements that have at least one bad H bond (per given model)
     n5 = safe_div(n_elem_with_bad_hbond,n_total_helix_sheet_records)*100.
-    print >> self.log, "Overall info:"
-    print >> self.log, "  Total HELIX+SHEET recods       :", n_total_helix_sheet_records
-    print >> self.log, "  Total bad HELIX+SHEET recods   :", n_bad_helix_sheet_records
-    print >> self.log, "  Total declared H-bonds         :", cumm_n_hbonds
-    print >> self.log, "  Total mediocre H-bonds (%.1f-%.1fA):" % (
+    print("Overall info:", file=self.log)
+    print("  Total HELIX+SHEET recods       :", n_total_helix_sheet_records, file=self.log)
+    print("  Total bad HELIX+SHEET recods   :", n_bad_helix_sheet_records, file=self.log)
+    print("  Total declared H-bonds         :", cumm_n_hbonds, file=self.log)
+    print("  Total mediocre H-bonds (%.1f-%.1fA):" % (
         self.params.mediocre_hbond_cutoff, self.params.bad_hbond_cutoff), \
-        cumm_n_mediocre_hbonds
-    print >> self.log, "  Total bad H-bonds (>%.1fA)      :" % self.params.bad_hbond_cutoff, \
-        cumm_n_bad_hbonds
-    print >> self.log, "  Total Ramachandran outliers    :", cumm_n_rama_out
-    print >> self.log, "  Total wrong Ramachandrans      :", cumm_n_wrong_reg
-    print >> self.log, "All done."
+        cumm_n_mediocre_hbonds, file=self.log)
+    print("  Total bad H-bonds (>%.1fA)      :" % self.params.bad_hbond_cutoff, \
+        cumm_n_bad_hbonds, file=self.log)
+    print("  Total Ramachandran outliers    :", cumm_n_rama_out, file=self.log)
+    print("  Total wrong Ramachandrans      :", cumm_n_wrong_reg, file=self.log)
+    print("All done.", file=self.log)
     help_string = """\
   Total bad HELIX+SHEET recods does not include records with syntax mistakes
     (they are outputted separately in the beginning of the log),
@@ -284,12 +283,12 @@ class validate(object):
     For example, residue annotated as HELIX has phi-psi angles in beta-strand
     region and vice versa.
 """
-    print >> self.log, help_string
+    print(help_string, file=self.log)
 
     if self.params.filter_annotation:
       filtered_ann = ss_annot.filter_annotation(hierarchy=pdb_h)
-      print >> self.log, "Filtered annotation:"
-      print >> self.log, filtered_ann.as_pdb_str()
+      print("Filtered annotation:", file=self.log)
+      print(filtered_ann.as_pdb_or_mmcif_str(), file=self.log)
     self.results = group_args(
       n_total_helix_sheet_records = n_total_helix_sheet_records,
       n_bad_helix_sheet_records   = n_bad_helix_sheet_records,

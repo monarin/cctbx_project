@@ -1,10 +1,9 @@
-
 """
 Tools for creating atom selection arrays (flex.bool or flex.size_t) based on
 a simple keyword syntax and boolean operators.
 """
 
-from __future__ import division
+from __future__ import absolute_import, division, print_function
 from iotbx import simple_parser
 from iotbx import wildcard
 from cctbx import crystal
@@ -15,6 +14,8 @@ from libtbx.phil import tokenizer
 from libtbx.utils import Sorry, format_exception
 from libtbx import slots_getstate_setstate
 from mmtbx.ncs.ncs_search import get_chains_info
+from six.moves import range
+from iotbx.pdb.hybrid_36 import hy36encode
 
 abc="abcdefghijklmnopqrstuvwxyz"
 ABC="ABCDEFGHIJKLMNOPQRSTUVWXYZ"
@@ -33,6 +34,22 @@ def _character_case_id(strings):
   if (have_upper): return 1
   if (have_lower): return -1
   return 0
+
+def long_int_to_str(number):
+  # if short, no need to transform
+  if len(number) <=4:
+    return number
+  # make sure we deal with actual number
+  for c in number:
+    if c not in '0123456789':
+      return number
+  try:
+    number_int = int(number)
+  except Exception:
+    return number
+  if number_int < 0:
+    return number
+  return hy36encode(4, int(number_int))
 
 def _get_map_string(
       map,
@@ -75,9 +92,9 @@ def _get_serial_range(sel_keyword, map, start, stop):
   o_start = None
   o_stop = None
   if (start is not None and start.count(" ") != len(start)):
-    o_start = o(start)
+    o_start = o(long_int_to_str(start))
   if (stop is not None and stop.count(" ") != len(stop)):
-    o_stop = o(stop)
+    o_stop = o(long_int_to_str(stop))
   if (    o_start is not None
       and o_stop is not None
       and o_start > o_stop):
@@ -142,9 +159,9 @@ class cache(slots_getstate_setstate):
   """
   Manager for interpreting atom selection strings, with caching of partial
   selections.  This has some limited understanding of chemical identities via
-  keywords like pepnames, water, or single_atom_residue, but more advanced
-  selections require the use of a callback.  In practice this would usually
-  involve wrapping the cache in another object, for example the class
+  keywords like pepnames, water, single_atom_residue, or capping_h, but more
+  advanced selections require the use of a callback.  In practice this would
+  usually involve wrapping the cache in another object, for example the class
   build_all_chain_proxies in mmtbx.monomer_library.pdb_interpretation.
 
   Because the selections available here are used in some situations where setup
@@ -174,11 +191,18 @@ class cache(slots_getstate_setstate):
     "protein",
     "nucleotide",
     "single_atom_residue",
+    "capping_h",
     "water",
+    'ion',
     "hetero",
     "backbone",
     "sidechain",
-    "special_position_settings"]
+    "special_position_settings",
+    #
+    'small_molecule',
+    'ion',
+    'carbohydrate',
+    ]
 
   def __init__(self, root, wildcard_escape_char='\\',
       special_position_settings=None):
@@ -187,13 +211,19 @@ class cache(slots_getstate_setstate):
     root.get_atom_selection_cache(self)
     self.pepnames = None
     self.single_atom_residue = None
+    self.capping_h = None
     self.protein = None
     self.nucleotide = None
     self.water = None
+    self.ion = None
     self.hetero = None
     self.backbone = None
     self.sidechain = None
     self.special_position_settings = special_position_settings
+    #
+    self.small_molecule = None
+    self.ion = None
+    self.carbohydrate = None
 
   def get_name(self, pattern):
     return _get_map_string(
@@ -205,7 +235,8 @@ class cache(slots_getstate_setstate):
     return _get_map_string(
       map=self.altloc,
       pattern=pattern,
-      wildcard_escape_char=self.wildcard_escape_char)
+      wildcard_escape_char=self.wildcard_escape_char,
+      unconditionally_case_insensitive=False)
 
   def get_resname(self, pattern):
     return _get_map_string(
@@ -221,6 +252,7 @@ class cache(slots_getstate_setstate):
       unconditionally_case_insensitive=False)
 
   def get_resseq(self, pattern):
+    pattern.value = long_int_to_str(pattern.value)
     return _get_map_string(
       map=self.resseq,
       pattern=pattern,
@@ -237,10 +269,11 @@ class cache(slots_getstate_setstate):
       wildcard_escape_char=self.wildcard_escape_char)
 
   def get_resid(self, pattern):
-    return _get_map_string(
+    res = _get_map_string(
       map=self.resid,
       pattern=pattern,
       wildcard_escape_char=self.wildcard_escape_char)
+    return res
 
   def get_resid_range(self, start, stop):
     from iotbx.pdb import utils_base_256_ordinal as o
@@ -263,7 +296,7 @@ class cache(slots_getstate_setstate):
       result.append(iselection)
     return result
 
-  def get_resid_sequence (self, start, stop) :
+  def get_resid_sequence(self, start, stop):
     assert (not None in [start, stop])
     import iotbx.pdb.hierarchy
     result = iotbx.pdb.hierarchy.get_resid_sequence(
@@ -304,21 +337,53 @@ class cache(slots_getstate_setstate):
   def get_anisou(self):
     return [self.anisou]
 
+  def _get_one_class(self, gc):
+    import iotbx.pdb
+    get_class = iotbx.pdb.common_residue_names_get_class
+    atoms = self.root.atoms()
+    sentinel = atoms.reset_tmp(first_value=0, increment=0)
+    for model in self.root.models():
+      for chain in model.chains():
+        for conformer in chain.conformers():
+          for residue in conformer.residues():
+            if(get_class(name = residue.resname) == gc):
+              for atom in residue.atoms():
+                atom.tmp = 1
+    return (atoms.extract_tmp_as_size_t() == 1).iselection()
+
   def get_water(self):
     if (self.water is None):
-      import iotbx.pdb
-      get_class = iotbx.pdb.common_residue_names_get_class
-      atoms = self.root.atoms()
-      sentinel = atoms.reset_tmp(first_value=0, increment=0)
-      for model in self.root.models():
-        for chain in model.chains():
-          for conformer in chain.conformers():
-            for residue in conformer.residues():
-              if(get_class(name = residue.resname) == "common_water"):
-                for atom in residue.atoms():
-                  atom.tmp = 1
-      self.water = (atoms.extract_tmp_as_size_t() == 1).iselection()
+      self.water = self._get_one_class('common_water')
     return [self.water]
+
+  def get_ion_ad_hoc(self):
+    from mmtbx.monomer_library.linking_setup import ad_hoc_single_metal_residue_element_types
+    if self.ion is None:
+      atoms = self.root.atoms()
+      atoms.set_chemical_element_simple_if_necessary()
+      for atom in atoms:
+        if atom.element.upper() in ad_hoc_single_metal_residue_element_types:
+          atom.tmp=1
+      self.ion = (atoms.extract_tmp_as_size_t() == 1).iselection()
+    return [self.ion]
+
+  def get_carbohydrate(self):
+    if (self.carbohydrate is None):
+      self.carbohydrate = self._get_one_class('common_saccharide')
+    return [self.carbohydrate]
+
+  def get_ion_get_class(self):
+    if (self.ion is None):
+      self.ion = self._get_one_class('common_element')
+    return [self.ion]
+
+  def get_ion(self):
+    return self.get_ion_get_class()
+
+  def get_small_molecule(self):
+    if (self.small_molecule is None):
+      self.small_molecule = self._get_one_class('common_small_molecule')
+    return [self.small_molecule]
 
   def get_protein(self):
     if self.protein is None:
@@ -354,8 +419,8 @@ class cache(slots_getstate_setstate):
       self.nucleotide = (atoms.extract_tmp_as_size_t() == 1).iselection()
     return [self.nucleotide]
 
-  def get_hetero (self) :
-    if (self.hetero is None) :
+  def get_hetero(self):
+    if (self.hetero is None):
       atoms = self.root.atoms()
       self.hetero = atoms.extract_hetero()
     return [self.hetero]
@@ -388,6 +453,17 @@ class cache(slots_getstate_setstate):
       self.pepnames = (atoms.extract_tmp_as_size_t() == 1).iselection()
     return [self.pepnames]
 
+  def get_capping_h(self):
+    if (self.capping_h is None):
+      try:
+        import mmtbx
+      except ImportError as e:
+        raise Sorry("The capping_h selection keyword needs mmtbx (%s)." % e)
+      # outside the try: an ImportError inside mmtbx is a real error
+      from mmtbx.hydrogens.capping import capping_h_selection
+      self.capping_h = capping_h_selection(self.root).iselection()
+    return [self.capping_h]
+
   def get_single_atom_residue(self):
     if (self.single_atom_residue is None):
       atoms = self.root.atoms()
@@ -403,29 +479,29 @@ class cache(slots_getstate_setstate):
         atoms.extract_tmp_as_size_t() == 1).iselection()
     return [self.single_atom_residue]
 
-  def get_bfactor (self, op, value) :
+  def get_bfactor(self, op, value):
     assert (op in [">", "<", "="])
     atoms = self.root.atoms()
     b_iso = atoms.extract_b()
     selection = None
-    if (op == ">") :
+    if (op == ">"):
       selection = b_iso > value
-    elif (op == "<") :
+    elif (op == "<"):
       selection = b_iso < value
-    elif (op == "=") :
+    elif (op == "="):
       selection = b_iso == value
     return [ selection.iselection() ]
 
-  def get_occupancy (self, op, value) :
+  def get_occupancy(self, op, value):
     assert (op in [">", "<", "="])
     atoms = self.root.atoms()
     occ = atoms.extract_occ()
     selection = None
-    if (op == ">") :
+    if (op == ">"):
       selection = occ > value
-    elif (op == "<") :
+    elif (op == "<"):
       selection = occ < value
-    elif (op == "=") :
+    elif (op == "="):
       selection = occ == value
     return [ selection.iselection() ]
 
@@ -466,7 +542,7 @@ class cache(slots_getstate_setstate):
   def sel_resid_range(self, start, stop):
     return self.union(iselections=self.get_resid_range(start=start,stop=stop))
 
-  def sel_resid_sequence(self, start, stop) :
+  def sel_resid_sequence(self, start, stop):
     return self.union(iselections=self.get_resid_sequence(start=start,
       stop=stop))
 
@@ -492,6 +568,9 @@ class cache(slots_getstate_setstate):
   def sel_pepnames(self):
     return self.union(iselections=self.get_pepnames())
 
+  def sel_capping_h(self):
+    return self.union(iselections=self.get_capping_h())
+
   def sel_single_atom_residue(self):
     return self.union(iselections=self.get_single_atom_residue())
 
@@ -504,13 +583,22 @@ class cache(slots_getstate_setstate):
   def sel_water(self):
     return self.union(iselections=self.get_water())
 
+  def sel_carbohydrate(self):
+    return self.union(iselections=self.get_carbohydrate())
+
+  def sel_ion(self):
+    return self.union(iselections=self.get_ion())
+
+  def sel_small_molecule(self):
+    return self.union(iselections=self.get_small_molecule())
+
   def sel_hetero(self):
     return self.union(iselections=self.get_hetero())
 
-  def sel_bfactor (self, op, value) :
+  def sel_bfactor(self, op, value):
     return self.union(iselections=self.get_bfactor(op, value))
 
-  def sel_occupancy (self, op, value) :
+  def sel_occupancy(self, op, value):
     return self.union(iselections=self.get_occupancy(op, value))
 
   def sel_within(self, radius, primary_selection):
@@ -527,14 +615,15 @@ class cache(slots_getstate_setstate):
     sel_within = self.sel_within(radius, primary_selection)
     atoms = self.root.atoms()
     residue_groups = []
-    for atom, sel in zip(atoms, sel_within):
-      if sel:
-        res_id = atom.parent().parent().id_str()
-        if res_id not in residue_groups:
-          residue_groups.append(res_id)
-          residue_group = atom.parent().parent()
-          for at in residue_group.atoms():
-            sel_within[at.i_seq] = True
+    isel = sel_within.iselection()
+    for sel in isel:
+      atom = atoms[sel]
+      res_id = atom.parent().parent().id_str()
+      if res_id not in residue_groups:
+        residue_groups.append(res_id)
+        residue_group = atom.parent().parent()
+        for at in residue_group.atoms():
+          sel_within[at.i_seq] = True
     return sel_within
 
   def selection_tokenizer(self, string, contiguous_word_characters=None):
@@ -622,31 +711,36 @@ class cache(slots_getstate_setstate):
                   return arg.value+arg_cont.value, i_colon
                 word_iterator.backup()
             return arg.value, i_colon
-          def try_compose_sequence () :
+          def try_compose_sequence():
             arg_next = word_iterator.try_pop()
-            if (arg_next is None) :
+            if (arg_next is None):
               word_iterator.backup()
               return None, None
             lnext = arg_next.value.lower()
-            if (lnext == "through") :
+            if (lnext == "through"):
               arg_final = word_iterator.pop_argument(arg_next.value)
               return arg.value, arg_final.value
             word_iterator.backup()
             return (None, None)
           val, i_colon = try_compose_range()
           if (i_colon < 0):
+            # processing absence of colon, i.e. single residue/model or range with "through"
             if (lword == "resseq"):
+              # "resseq 6", does not support "through"
               result_stack.append(self.sel_resseq(pattern=arg))
             elif (lword in ["resid", "resi"]):
               start, stop = try_compose_sequence()
-              if (start is None) :
+              if (start is None):
+                # "resid 6"
                 result_stack.append(self.sel_resid(pattern=arg))
               else :
+                # resid 5 through 6"
                 result_stack.append(self.sel_resid_sequence(start=start,
                   stop=stop))
             else:
               result_stack.append(self.sel_model_id(pattern=arg))
           else:
+            # processing colon
             start = val[:i_colon]
             stop = val[i_colon+1:]
             if (lword == "resseq"):
@@ -683,13 +777,21 @@ class cache(slots_getstate_setstate):
           result_stack.append(self.sel_nucleotide())
         elif (lword == "single_atom_residue"):
           result_stack.append(self.sel_single_atom_residue())
+        elif (lword == "capping_h"):
+          result_stack.append(self.sel_capping_h())
         elif (lword == "water"):
           result_stack.append(self.sel_water())
-        elif (lword == "hetero") or (lword == "hetatm") :
+        elif (lword == "carbohydrate"):
+          result_stack.append(self.sel_carbohydrate())
+        elif (lword == "ion"):
+          result_stack.append(self.sel_ion())
+        elif (lword == "small_molecule") or (lword == 'small'):
+          result_stack.append(self.sel_small_molecule())
+        elif (lword == "hetero") or (lword == "hetatm"):
           result_stack.append(self.sel_hetero())
-        elif (lword == "bfactor") or (lword == "occupancy") :
+        elif (lword == "bfactor") or (lword == "occupancy"):
           op = word_iterator.pop_argument(word.value).value
-          if (not op in [">", "<", "="]) :
+          if (not op in [">", "<", "="]):
             raise_syntax_error()
           else :
             arg_next = word_iterator.try_pop()
@@ -699,12 +801,12 @@ class cache(slots_getstate_setstate):
             except ValueError :
               raise_syntax_error()
             else :
-              if (lword == "bfactor") :
+              if (lword == "bfactor"):
                 result_stack.append(self.sel_bfactor(op, val))
               else :
                 result_stack.append(self.sel_occupancy(op, val))
         elif ((lword == "within" or lword=='residues_within') and
-              (self.special_position_settings is not None)) :
+              (self.special_position_settings is not None)):
           assert word_iterator.pop().value == "("
           radius = float(word_iterator.pop().value)
           assert word_iterator.pop().value == ","
@@ -812,10 +914,10 @@ class cache(slots_getstate_setstate):
       .intersection(fs(self.resseq.get(link_record.resseq2, sel_null)))
       .intersection(fs(self.icode.get(link_record.icode2, sel_null)))]
 
-def expand_selection_to_entire_atom_groups (selection, pdb_atoms) :
+def expand_selection_to_entire_atom_groups(selection, pdb_atoms):
   assert not pdb_atoms.extract_i_seq().all_eq(0)
   selection_complete = flex.bool(pdb_atoms.size(), False)
-  if (type(selection).__name__ == 'bool') :
+  if (type(selection).__name__ == 'bool'):
     selection = selection.iselection()
   for i_seq in selection :
     atom_group = pdb_atoms[i_seq].parent()
@@ -824,8 +926,8 @@ def expand_selection_to_entire_atom_groups (selection, pdb_atoms) :
   return selection_complete
 
 def convert_wildcards_in_chain_id(chain_id):
-  chain_id = chain_id.replace("?", "\?")
-  chain_id = chain_id.replace("*", "\*")
+  chain_id = chain_id.replace("?", r"\?")
+  chain_id = chain_id.replace("*", r"\*")
   return chain_id
 
 def chain_is_needed(selection, chain_selections):
@@ -861,13 +963,12 @@ def selection_string_from_selection(pdb_h,
   Args:
     pdb_h : iotbx.pdb.hierarchy
     selection (flex.bool or flex.size_t)
-    chains_info : object containing
-      chains (str): chain IDs OR selections string
+    chains_info (dict): values are object containing
       res_name (list of str): list of residues names
       resid (list of str): list of residues sequence number, resid
-      atom_names (list of list of str): list of atoms in residues
-      atom_selection (list of list of list of int): the location of atoms in ph
-      chains_atom_number (list of int): list of number of atoms in each chain
+      atom_names (list of flex.str): per residue atom names
+      atom_selection (list of flex.size_t()): per residue atom selections
+      chains_atom_number (int): list of number of atoms in each chain
 
   Returns:
     sel_str (str): atom selection string
@@ -891,7 +992,7 @@ def selection_string_from_selection(pdb_h,
     # this "unfolds" the atom_selection array which is [[],[],[],[]...] into
     # a set
     if not chain_is_needed(selection, chains_info[ch_id].atom_selection): continue
-    a_sel = {x for xi in chains_info[ch_id].atom_selection for x in xi}
+    a_sel = set(chains_info[ch_id].flat_atom_selection)
     test_set = a_sel.intersection(selection_set)
     if not test_set: continue
     ch_sel = "chain '%s'" % convert_wildcards_in_chain_id(ch_id)
@@ -926,7 +1027,7 @@ def selection_string_from_selection(pdb_h,
 
       first_resid = chains_info[ch_id].resid[0]
       last_resid = None
-      for i in xrange(res_len):
+      for i in range(res_len):
         cur_resid = chains_info[ch_id].resid[i]
         # test that all atoms in residue are included in selection
         a_sel = set(chains_info[ch_id].atom_selection[i])
@@ -1047,6 +1148,15 @@ def selection_string_from_selection(pdb_h,
   #     "%d (result) != %d (input): conversion to string selects different number of atoms!.\n" \
   #     % (len(isel), len(selection)) +\
   #     "String lead to error: '%s'" % sel_str
+
+  # This hack is implemented to allow a chain be completely in two alternative
+  # conformations. Above check would fail. Selections outputted in refinement
+  # are incorrect, but underlying iselections are actually correct and refinement
+  # should be fine. General solution would be a universal procedure which can
+  # handle alternative conformations correctly, but this is time-demanding project.
+  # http://phenix-online.org/pipermail/phenixbb/2018-November/024006.html
+  if sel_str == '':
+    sel_str = "not all"
   return sel_str
 
 def get_atom_str(atom_str):

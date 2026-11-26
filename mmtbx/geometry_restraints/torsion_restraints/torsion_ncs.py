@@ -1,4 +1,4 @@
-from __future__ import division
+from __future__ import absolute_import, division, print_function
 import cctbx.geometry_restraints
 from mmtbx.validation import rotalyze
 from mmtbx.validation import ramalyze
@@ -10,8 +10,8 @@ from libtbx.str_utils import make_sub_header
 import sys, math
 from libtbx.utils import Sorry
 from mmtbx.geometry_restraints.torsion_restraints import utils, rotamer_search
-from libtbx import Auto
 from libtbx.str_utils import line_breaker
+from six.moves import zip
 
 # Refactoring notes 11 May 2015
 # Torsion NCS restraints should use the same procedure to find NCS groups
@@ -175,7 +175,7 @@ class torsion_ncs(object):
             msg += "No NCS restraints will be applied.\n"
             msg += "Try to use phenix.simple_ncs_from_pdb or leave ncs_groups "
             msg += "blank to allow \nautomatic search for NCS copies."
-            print >> self.log, msg
+            print(msg, file=self.log)
           for ic, jc in matching_chains:
             for rg1, rg2 in zip(ic.residue_groups(), jc.residue_groups()):
               resname1 = rg1.atom_groups()[0].resname
@@ -206,7 +206,7 @@ class torsion_ncs(object):
     return alignments
 
   def find_ncs_groups(self, pdb_hierarchy):
-    print >> self.log, "Determining NCS matches..."
+    print("Determining NCS matches...", file=self.log)
     self.use_segid = False
     chains = pdb_hierarchy.models()[0].chains()
     n_ncs_groups = self.ncs_obj.number_of_ncs_groups
@@ -221,27 +221,12 @@ class torsion_ncs(object):
       # ================================================
       assert 0
 
-  def as_cif_block(self, loops, cif_block):
-    if cif_block is None:
-      cif_block = iotbx.cif.model.block()
-    (ncs_ens_loop, ncs_dom_loop, ncs_dom_lim_loop, ncs_oper_loop,
-        ncs_ens_gen_loop) = loops
-    for i_group, ncs_group in enumerate(self.ncs_groups_selection_string_list):
-      ncs_ens_loop.add_row((i_group+1, "?"))
-      for i_domain, ncs_domain in enumerate(ncs_group):
-        ncs_dom_loop.add_row((i_domain+1, i_group+1, "?"))
-        segments = self.master_ranges[ncs_domain]
-        asym_id = ncs_domain.split("and")[0].split()[1].strip()
-        for i_segment, segment_range in enumerate(segments):
-          ncs_dom_lim_loop.add_row(
-            (i_group+1, i_domain+1, asym_id, segment_range[0],
-             asym_id, segment_range[1], ncs_domain))
-    cif_block.add_loop(ncs_ens_loop)
-    cif_block.add_loop(ncs_dom_loop)
-    cif_block.add_loop(ncs_dom_lim_loop)
-    if self.ncs_groups_selection_string_list is not None:
-      cif_block.add_loop(ncs_oper_loop)
-      cif_block.add_loop(ncs_ens_gen_loop)
+  def as_cif_block(self, cif_block, hierarchy, scattering_type):
+    self.ncs_restraints_group_list.as_cif_block(
+        cif_block=cif_block,
+        hierarchy=hierarchy,
+        scattering_type=scattering_type,
+        ncs_type='Torsion NCS')
     return cif_block
 
   def as_pdb(self, out):
@@ -250,35 +235,35 @@ class torsion_ncs(object):
     sites_cart = self.model.get_sites_cart()
     self.get_torsion_rmsd(sites_cart=sites_cart)
     pr = "REMARK   3  "
-    print >> out, pr+"TORSION NCS DETAILS."
-    print >> out, pr+" NUMBER OF NCS GROUPS : %-6d"%len(self.ncs_groups_selection_string_list)
+    print(pr+"TORSION NCS DETAILS.", file=out)
+    print(pr+" NUMBER OF NCS GROUPS : %-6d"%len(self.ncs_groups_selection_string_list), file=out)
     for i_group, ncs_group in enumerate(self.ncs_groups_selection_string_list):
       count = 0
-      print >>out,pr+" NCS GROUP : %-6d"%(i_group+1)
+      print(pr+" NCS GROUP : %-6d"%(i_group+1), file=out)
       selection_strings = ncs_group
       for selection in selection_strings:
         lines = line_breaker(selection, width=34)
         for i_line, line in enumerate(lines):
           if (i_line == 0):
-            print >> out, pr+"   SELECTION          : %s"%line
+            print(pr+"   SELECTION          : %s"%line, file=out)
           else:
-            print >> out, pr+"                      : %s"%line
+            print(pr+"                      : %s"%line, file=out)
         count += torsion_counts[selection]
-      print >> out,pr+"   RESTRAINED TORSIONS: %-d" % count
+      print(pr+"   RESTRAINED TORSIONS: %-d" % count, file=out)
       if self.torsion_rmsd is not None:
-        print >> out,pr+"   BELOW LIMIT RMSD   : %-10.3f" % \
-          self.torsion_rmsd
+        print(pr+"   BELOW LIMIT RMSD   : %-10.3f" % \
+          self.torsion_rmsd, file=out)
       if self.all_torsion_rmsd is not None:
-        print >> out,pr+"   ALL RESTRAINT RMSD : %-10.3f" % \
-          self.all_torsion_rmsd
+        print(pr+"   ALL RESTRAINT RMSD : %-10.3f" % \
+          self.all_torsion_rmsd, file=out)
     if self.histogram_under_limit is not None:
-      print >> out, pr + "  Histogram of differences under limit:"
+      print(pr + "  Histogram of differences under limit:", file=out)
       self.histogram_under_limit.show(
         f=out,
         prefix=pr+"  ",
         format_cutoffs="%8.3f")
     if self.histogram_over_limit is not None:
-      print >> out, pr + "  Histogram of differences over limit:"
+      print(pr + "  Histogram of differences over limit:", file=out)
       self.histogram_over_limit.show(
         f=out,
         prefix=pr+"  ",
@@ -404,7 +389,7 @@ class torsion_ncs(object):
           cur_matches = super_hash.get(i_seq)
           if cur_matches is None:
             continue
-          for key in cur_matches.keys():
+          for key in list(cur_matches.keys()):
             try:
               temp[key].append(cur_matches[key])
             except Exception:
@@ -416,7 +401,7 @@ class torsion_ncs(object):
         dp_match = []
           # cctbx.geometry_restraints.shared_dihedral_proxy()
         dp_match.append([dp, False, False, False])
-        for key in temp.keys():
+        for key in list(temp.keys()):
           cur_dp_hash = dp_hash.get(tuple(temp[key]))
           if cur_dp_hash is not None:
             dp_match.append([cur_dp_hash, False, False, False])
@@ -481,7 +466,7 @@ class torsion_ncs(object):
       self.ncs_match_hash = ncs_match_hash
       self.reduce_redundancies()
 
-      for res in self.ncs_match_hash.keys():
+      for res in list(self.ncs_match_hash.keys()):
         resnum = res[6:10]
         hash_key = res_to_selection_hash[res]
         cur_len = match_counter[hash_key]
@@ -494,7 +479,7 @@ class torsion_ncs(object):
 
       #determine ranges
       self.master_ranges = {}
-      for key in inclusive_range.keys():
+      for key in list(inclusive_range.keys()):
         current = None
         previous = None
         start = None
@@ -520,9 +505,9 @@ class torsion_ncs(object):
       if self.ncs_dihedral_proxies is None:
         self.show_ncs_summary(log=self.log)
       if self.ncs_dihedral_proxies is None: #first time run
-        print >> self.log, "Initializing torsion NCS restraints..."
+        print("Initializing torsion NCS restraints...", file=self.log)
       else:
-        print >> self.log, "Verifying torsion NCS restraints..."
+        print("Verifying torsion NCS restraints...", file=self.log)
       self.rama = ramalyze.ramalyze(pdb_hierarchy=pdb_hierarchy)
       self.generate_dihedral_ncs_restraints(
         sites_cart=sites_cart,
@@ -533,17 +518,16 @@ class torsion_ncs(object):
       # Should never be executed
       # ================================================
       assert 0
-      print >> self.log, \
-        "** WARNING: No torsion NCS found!!" + \
-        "  Please check parameters. **"
+      print("** WARNING: No torsion NCS found!!" + \
+        "  Please check parameters. **", file=self.log)
 
   def show_ncs_summary(self, log=None):
     if(log is None): log = sys.stdout
     def get_key_chain_num(res):
       return res[4:]
     sorted_keys = sorted(self.ncs_match_hash, key=get_key_chain_num)
-    print >> log, "--------------------------------------------------------"
-    print >> log, "Torsion NCS Matching Summary:"
+    print("--------------------------------------------------------", file=log)
+    print("Torsion NCS Matching Summary:", file=log)
     for key in sorted_keys:
       if key.endswith("    "):
         print_line = key[:-4]
@@ -554,13 +538,13 @@ class torsion_ncs(object):
           print_line += " <=> %s" % (match[:-4])
         else:
           print_line += " <=> %s" % (match)
-      print >> log, print_line
-    print >> log, "--------------------------------------------------------"
+      print(print_line, file=log)
+    print("--------------------------------------------------------", file=log)
 
   def reduce_redundancies(self):
     #clear out redundancies
-    for key in self.ncs_match_hash.keys():
-      for key2 in self.ncs_match_hash.keys():
+    for key in list(self.ncs_match_hash.keys()):
+      for key2 in list(self.ncs_match_hash.keys()):
         if key == key2:
           continue
         if key in self.ncs_match_hash[key2]:
@@ -603,7 +587,7 @@ class torsion_ncs(object):
     current_rotamers = {}
     for rot in self.r.results:
       current_rotamers[rot.id_str()] = rot.rotamer_name
-    for key in self.ncs_match_hash.keys():
+    for key in list(self.ncs_match_hash.keys()):
       search_key = key[4:11]+key[0:4] # SEGIDs?
       rotamer = current_rotamers.get(search_key)
       if rotamer is not None:
@@ -632,7 +616,7 @@ class torsion_ncs(object):
     #  target_map_data, residual_map_data = self.prepare_map(
     #                                         fmodel=self.fmodel)
     #rama_outliers = None
-    #rama_outlier_list = []
+    rama_outlier_list = []
     omega_outlier_list = []
     if self.filter_phi_psi_outliers:
       rama_outlier_list = \
@@ -775,14 +759,12 @@ class torsion_ncs(object):
           torsion_counter += 1
 
     if len(self.ncs_dihedral_proxies) == 0:
-      if (not self.params.silence_warnings) :
-        print >> log, \
-          "** WARNING: No torsion NCS found!!" + \
-          "  Please check parameters. **"
+      if (not self.params.silence_warnings):
+        print("** WARNING: No torsion NCS found!!" + \
+          "  Please check parameters. **", file=log)
     else:
-      print >> log, \
-        "Number of torsion NCS restraints: %d\n" \
-          % len(self.ncs_dihedral_proxies)
+      print("Number of torsion NCS restraints: %d\n" \
+          % len(self.ncs_dihedral_proxies), file=log)
 
   def show_sorted(self,
         by_value,
@@ -945,7 +927,7 @@ class torsion_ncs(object):
             used.append(j)
       if i not in used:
         clusters[i] = None
-    for key in clusters.keys():
+    for key in list(clusters.keys()):
       cluster = clusters[key]
       if cluster is None:
         target_angles[key] = None
@@ -1022,7 +1004,7 @@ class torsion_ncs(object):
     for rot in self.r.results:
       model_hash[rot.id_str()] = rot.rotamer_name
       model_score[rot.id_str()] = rot.score
-    for key in self.res_match_master.keys():
+    for key in list(self.res_match_master.keys()):
       res_key = key[4:10]+' '+key[0:4]
       all_rotamers[res_key] = []
       model_rot = model_hash.get(res_key)
@@ -1094,7 +1076,7 @@ class torsion_ncs(object):
     fix_list = {}
     rotamer_targets = {}
 
-    for key in self.res_match_master.keys():
+    for key in list(self.res_match_master.keys()):
       res_key = key[4:11]+key[0:4]
       model_rot = model_hash.get(res_key)
       if model_rot == "OUTLIER":
@@ -1122,7 +1104,7 @@ class torsion_ncs(object):
     sites_cart_moving = xray_structure.sites_cart()
     for model in pdb_hierarchy.models():
       for chain in model.chains():
-        if not utils.is_protein_chain(chain=chain):
+        if not chain.is_protein():
           continue
         for residue_group in chain.residue_groups():
           all_dict = \
@@ -1139,7 +1121,7 @@ class torsion_ncs(object):
             #key = '%s%5s %s' % (
             #          chain.id, residue_group.resid(),
             #          atom_group.altloc+atom_group.resname)
-            if key in fix_list.keys():
+            if key in list(fix_list.keys()):
               model_rot, m_chis, value = rotalyze.evaluate_rotamer(
                 atom_group=atom_group,
                 sidechain_angles=self.sa,
@@ -1163,8 +1145,8 @@ class torsion_ncs(object):
                   xray_structure=xray_structure,
                   key=key)
                 if status:
-                  print >> log, "Set %s to %s rotamer" % \
-                    (key, cur_rotamer)
+                  print("Set %s to %s rotamer" % \
+                    (key, cur_rotamer), file=log)
                   self.last_round_outlier_fixes += 1
 
   def get_sites_cc(self,
@@ -1186,7 +1168,7 @@ class torsion_ncs(object):
     for model in pdb_hierarchy.models():
       for chain in model.chains():
         #only works with protein sidechains
-        if not utils.is_protein_chain(chain=chain):
+        if not chain.is_protein():
           continue
         for residue_group in chain.residue_groups():
           all_dict = rotalyze.construct_complete_sidechain(residue_group)
@@ -1252,7 +1234,7 @@ class torsion_ncs(object):
     map_cc_hash, sigma_cutoff_hash = \
       self.get_sidechain_map_correlation(xray_structure, pdb_hierarchy)
     cc_candidate_list = []
-    for key in self.ncs_match_hash.keys():
+    for key in list(self.ncs_match_hash.keys()):
       whole_set = []
       value = map_cc_hash.get(key)
       max = None
@@ -1287,7 +1269,7 @@ class torsion_ncs(object):
 
     for model in pdb_hierarchy.models():
       for chain in model.chains():
-        if not utils.is_protein_chain(chain=chain):
+        if not chain.is_protein():
           continue
         for residue_group in chain.residue_groups():
           all_dict = rotalyze.construct_complete_sidechain(residue_group)
@@ -1350,9 +1332,9 @@ class torsion_ncs(object):
                                                  atom_dict,
                                                  sites_cart_moving)
                 if current_best != model_rot:
-                  print >> self.log, "Set %s to %s rotamer" % \
+                  print("Set %s to %s rotamer" % \
                     (key,
-                     current_best)
+                     current_best), file=self.log)
                   self.last_round_rotamer_changes += 1
                 else:
                   rotamer, chis, value = rotalyze.evaluate_rotamer(
@@ -1366,7 +1348,7 @@ class torsion_ncs(object):
 
   def build_sidechain_angle_hash(self):
     sidechain_angle_hash = {}
-    for key in self.sa.atomsForAngle.keys():
+    for key in list(self.sa.atomsForAngle.keys()):
       resname = key[0:3].upper()
       if sidechain_angle_hash.get(resname) is None:
         sidechain_angle_hash[resname] = {}
@@ -1445,7 +1427,7 @@ class torsion_ncs(object):
       delta_sq_sum += ( abs(delta)**2 )
     return math.sqrt(delta_sq_sum / len(deltas))
 
-  def proxy_select (self, nseq, iselection) :
+  def proxy_select(self, nseq, iselection):
     #
     # This is still not proper manager selection. A lot of stuff remains old.
     # It still works because it is being updated every macro-cycle via
@@ -1487,11 +1469,11 @@ class torsion_ncs(object):
           gradient_array=gradient_array)
 
 # XXX wrapper for running in Phenix GUI
-class _run_iotbx_ncs_input (object) :
-  def __init__ (self, params, pdb_hierarchy) :
+class _run_iotbx_ncs_input(object):
+  def __init__(self, params, pdb_hierarchy):
     self.params = params
     self.pdb_hierarchy = pdb_hierarchy
 
-  def __call__ (self, *args, **kwds) :
+  def __call__(self, *args, **kwds):
     return iotbx.ncs.input(hierarchy=self.pdb_hierarchy).\
       print_ncs_phil_param()

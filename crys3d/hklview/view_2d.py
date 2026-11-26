@@ -1,4 +1,4 @@
-from __future__ import division
+from __future__ import absolute_import, division, print_function
 
 # TODO:
 #  - cached scenes
@@ -9,9 +9,9 @@ import wx
 from math import sqrt
 import sys
 
-class hklview_2d (wx.PyPanel, cctbx.miller.display.render_2d) :
+class hklview_2d (wx.Panel, cctbx.miller.display.render_2d) :
   def __init__ (self, *args, **kwds) :
-    wx.PyPanel.__init__(self, *args, **kwds)
+    wx.Panel.__init__(self, *args, **kwds)
     font = wx.Font(14, wx.MODERN, wx.NORMAL, wx.NORMAL)
     self.SetFont(font)
     self.Bind(wx.EVT_PAINT, self.OnPaint)
@@ -29,7 +29,7 @@ class hklview_2d (wx.PyPanel, cctbx.miller.display.render_2d) :
     self._clicked = None
 
   def GetSize (self) :
-    return wx.PyPanel.GetSize(self)
+    return wx.Panel.GetSize(self)
 
   # XXX silent keyword 'zoom=False' is for compatibility with view_3d.py
   def set_miller_array (self, array, zoom=False, merge=None) :
@@ -114,7 +114,11 @@ class hklview_2d (wx.PyPanel, cctbx.miller.display.render_2d) :
   def process_pick_points (self, x, y) :
     context = wx.ClientDC( self )
     w, h = self.GetClientSize()
-    bitmap = wx.EmptyBitmap( w, h, -1 )
+    if wx.VERSION[0] > 3:
+      bitmap = wx.Bitmap( w, h, -1 )
+    else:
+      # https://discuss.wxpython.org/t/wx-bitmap-x-y-and-wx-bitmap-create-x-y-vs-wx-emptybitmap-x-y/29463
+      bitmap = wx.EmptyBitmap(w, h, -1)
     memory = wx.MemoryDC(bitmap)
     memory.SelectObject(bitmap)
     memory.Blit(0, 0, w, h, context, 0, 0)
@@ -128,7 +132,7 @@ class hklview_2d (wx.PyPanel, cctbx.miller.display.render_2d) :
       c = memory.GetPixel(x, y)
     bg = self.GetBackgroundColour()
     self._clicked = None
-    min_dist = sys.maxint
+    min_dist = sys.maxsize
     closest_hkl = None
     for k, (x2,y2) in enumerate(self._points_2d) :
       dist = sqrt((x2-x)**2 + (y2-y)**2)
@@ -147,7 +151,11 @@ class hklview_2d (wx.PyPanel, cctbx.miller.display.render_2d) :
   # mimics gltbx.wx_viewer.wxGLWindow.save_screen_shot
   def save_screen_shot (self, file_name, extensions=None) :
     rect = self.GetRect()
-    bitmap = wx.EmptyBitmap(rect.width, rect.height)
+    if wx.VERSION[0] > 3:
+      bitmap = wx.Bitmap(rect.width, rect.height)
+    else:
+      # https://discuss.wxpython.org/t/wx-bitmap-x-y-and-wx-bitmap-create-x-y-vs-wx-emptybitmap-x-y/29463
+      bitmap = wx.EmptyBitmap(rect.width, rect.height)
     memory_dc = wx.MemoryDC()
     memory_dc.SelectObject(bitmap)
     #memory_dc.SetBackgroundMode(wx.TRANSPARENT)

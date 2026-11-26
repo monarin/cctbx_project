@@ -1,4 +1,4 @@
-from __future__ import division
+from __future__ import absolute_import, division, print_function
 from libtbx import easy_run
 import sys
 
@@ -58,18 +58,18 @@ def exercise(args):
     "tmp_altloc_chain_break.pdb",
     "pdb_interpretation.nonbonded_weight=16",
     ">tmp_altloc_chain_break.zlog"])
-  easy_run.call(command=command)
+  assert not easy_run.call(command=command)
   target_values = []
   for line in open("tmp_altloc_chain_break.zlog","r").readlines():
     line = line.strip()
     if (line.startswith("target: ")):
       target_values.append(float(line.split()[-1]))
-  print target_values
+  print(target_values)
 
   assert len(target_values) == 6
   assert target_values[0] > 100
   assert target_values[5] < 7
-  print "OK"
+  print("OK")
 
 if (__name__ == "__main__"):
   exercise(sys.argv[1:])

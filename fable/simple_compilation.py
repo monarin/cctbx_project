@@ -1,4 +1,4 @@
-from __future__ import division
+from __future__ import absolute_import, division, print_function
 import os
 op = os.path
 
@@ -76,6 +76,7 @@ class environment(object):
         file_names,
         out_name):
     qon = quote(out_name)
+    import libtbx.load_env
     if (O.compiler == "cl"):
       if (not link): part = "/c /Fo%s" % qon
       else:          part = "/Fe%s" % qon
@@ -87,10 +88,10 @@ class environment(object):
     else:
       if (not link): opt_c = "-c "
       else:          opt_c = ""
-      if (disable_warnings or O.gcc_version < 30400):
+      if (disable_warnings or (O.gcc_version is not None and O.gcc_version < 30400)):
         opt_w = "-w"
       else:
-        opt_w = "-Wall -Wno-sign-compare -Winvalid-pch"
+        opt_w = "-Wall -Wno-sign-compare -Winvalid-pch -Wno-deprecated-declarations"
       if (out_name.endswith(O.pch_suffix)):
         assert not O.__have_pch
         opt_x = " -x c++-header"
@@ -100,8 +101,13 @@ class environment(object):
         opt_i = O.assemble_include_search_paths()
       else:
         opt_i = " -I."
-      result = "%s -o %s %s%s -g -O0%s%s %s" % (
-        O.compiler, qon, opt_c, opt_w, opt_i, opt_x, quote_list(file_names))
+      if libtbx.env.build_options.enable_cxx11:
+        opt_11 = " -std=c++11"
+      else:
+        opt_11 = ""
+      result = "%s -o %s %s%s -g -O0%s%s%s %s" % (
+        O.compiler, qon, opt_c, opt_w, opt_i, opt_x, opt_11, quote_list(file_names))
+      print(result)
     return result
 
   def file_name_obj(O, file_name_cpp):
@@ -156,7 +162,7 @@ class environment(object):
       file_names=[file_name_cpp],
       out_name=out_name)
     if (show_command):
-      print cmd
+      print(cmd)
     from libtbx import easy_run
     buffers = easy_run.fully_buffered(command=cmd)
     if (O.compiler != "cl" or buffers.stderr_lines != [file_name_cpp]):

@@ -1,4 +1,4 @@
-from __future__ import division
+from __future__ import absolute_import, division, print_function
 from scitbx.array_family import flex
 import sys
 from libtbx import group_args
@@ -15,7 +15,8 @@ map_model_cc {
   resolution = None
     .type = float
     .help = Data (map) resolution
-    .expert_level=0
+    .short_caption = Resolution (optional in GUI)
+    .expert_level=1
   scattering_table = wk1995  it1992 n_gaussian  neutron *electron
     .type = choice
     .help = Scattering table (X-ray, neutron or electron)
@@ -23,10 +24,16 @@ map_model_cc {
   atom_radius = None
     .type = float
     .help = Atom radius for masking. If undefined then calculated automatically
+    .short_caption = Atom radius (optional)
     .expert_level=0
   keep_map_calc = False
     .type = bool
     .help = Keep model-calculated map
+    .expert_level=3
+  wrapping = None
+    .type = bool
+    .help = You can specify whether your maps wrap around outside boundaries
+    .short_caption = Wrapping (optional)
     .expert_level=3
   ignore_symmetry_conflicts = False
     .type = bool
@@ -39,12 +46,19 @@ map_model_cc {
     cc_per_chain = True
       .type = bool
       .help = Compute local model-map CC for each chain
+      .short_caption = CC by chain
     cc_per_residue = True
       .type = bool
       .help = Compute local model-map CC for each residue
+      .short_caption = CC by residue
+    cc_per_residue_group = False
+      .type = bool
+      .help = Compute local model-map CC for each residue group
+      .short_caption = CC by residue group
     fsc = True
       .type = bool
       .help = Compute FSC
+      .short_caption = FSC
     cc_mask = True
       .type = bool
     cc_volume = True
@@ -70,6 +84,7 @@ class map_model_cc(object):
     self.cc_per_residue = []
     self.cc_main_chain = None
     self.cc_side_chain = None
+    self.cc_per_residue_group = flex.double()
 
   def validate(self):
     assert not None in [self.map_data, self.pdb_hierarchy,
@@ -146,6 +161,13 @@ class map_model_cc(object):
               n_atoms    = cd.n_atoms,
               cc         = cd.cc,
               xyz_mean   = cd.xyz_mean))
+    # CC per residue group
+    if(self.params.compute.cc_per_residue_group):
+      for rg in self.pdb_hierarchy.residue_groups():
+        rg_cc = cc_calculator.cc(
+          selection   = rg.atoms().extract_i_seq(),
+          atom_radius = self.atom_radius)
+        self.cc_per_residue_group.append(rg_cc)
     # Side chain
     sel_mc_str = "protein and (name C or name N or name CA or name O or name CB)"
     asc = self.pdb_hierarchy.atom_selection_cache()
@@ -169,6 +191,7 @@ class map_model_cc(object):
       map_calc       = self.five_cc.result.map_calc,
       cc_per_chain   = self.cc_per_chain,
       cc_per_residue = self.cc_per_residue,
+      cc_per_residue_group = self.cc_per_residue_group,
       cc_main_chain  = self.cc_main_chain,
       cc_side_chain  = self.cc_side_chain,
       atom_radius    = self.atom_radius)

@@ -1,4 +1,4 @@
-from __future__ import division
+from __future__ import absolute_import, division, print_function
 import mmtbx.clashes
 from libtbx.utils import null_out
 
@@ -57,10 +57,14 @@ def tst_01():
   o = mmtbx.clashes.from_pdb(pdb_str=pdb_good, clash_threshold=2.3)
   o.show()
   assert o.clashing_pairs() == [(9, 10), (18, 19), (3, 11)]
-  print
+  print()
   o = mmtbx.clashes.from_pdb(pdb_str=pdb_poor, clash_threshold=1.5)
   o.show()
-  assert o.clashing_pairs() == [(9, 18), (9, 19), (8, 18), (7, 18), (9, 17)]
+  expected_pairs = [(9, 18), (7, 19), (8, 19), (9, 19), (9, 17)]
+  found_pairs = o.clashing_pairs()
+  expected_pairs = sorted(expected_pairs)
+  found_pairs = sorted(found_pairs)
+  assert expected_pairs == found_pairs
 
 def tst_02():
   # Test for remove_clashes
@@ -69,13 +73,14 @@ def tst_02():
   import iotbx.pdb
   import sys
   pdb_inp = iotbx.pdb.input(lines=pdb_poor.splitlines(),source_info='None')
-  model=  mmtbx.model.manager( model_input= pdb_inp,)
+  model= mmtbx.model.manager(model_input=pdb_inp)
+  model.process(make_restraints=True)
 
   model.set_log(log = null_out())
 
-  print "\n","-"*79
-  print " Summary of input model statistics "
-  print "-"*79
+  print("\n","-"*79)
+  print(" Summary of input model statistics ")
+  print("-"*79)
   model.get_restraints_manager()
   geometry = model.geometry_statistics()
   geometry.show(log = sys.stdout)
@@ -83,14 +88,14 @@ def tst_02():
 
   rc=remove_clashes(model=model)
 
-  print "\n","-"*79
-  print "Starting residues: %d " % (
-     rc.model.get_hierarchy().overall_counts().n_residues)
-  print "Side-chains removed: %d    Residues removed: %d" %(
+  print("\n","-"*79)
+  print("Starting residues: %d " % (
+     rc.model.get_hierarchy().overall_counts().n_residues))
+  print("Side-chains removed: %d    Residues removed: %d" %(
      rc.side_chains_removed,
-     rc.residues_removed)
-  print "Final residues: %d " % (
-     rc.new_model.get_hierarchy().overall_counts().n_residues)
+     rc.residues_removed))
+  print("Final residues: %d " % (
+     rc.new_model.get_hierarchy().overall_counts().n_residues))
 
   rc.new_model.set_log(log = null_out())
   rc.new_model.get_restraints_manager()

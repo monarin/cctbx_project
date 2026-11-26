@@ -4,18 +4,17 @@ Generic module to provide parallel job execution on queuing systems
 Provides drop-in replacement classes to those defined in the multiprocessing
 module (Queue and Job), with certain restrictions placed by the pickle module
 """
-from __future__ import division
+from __future__ import absolute_import, division, print_function
 
-import cPickle as pickle
+from six.moves import cPickle as pickle
+from six.moves.queue import Empty as QueueEmptyException
 import subprocess
 import os
 import time
 import itertools
 import glob
 import re
-from Queue import Empty as QueueEmptyException
-
-import libtbx.load_env
+import shlex
 
 
 class InstantTimeout(object):
@@ -25,7 +24,7 @@ class InstantTimeout(object):
 
   def delay(self, waittime):
 
-    raise QueueEmptyException, "No data found in queue"
+    raise QueueEmptyException("No data found in queue")
 
 
 class TimedTimeout(object):
@@ -45,7 +44,7 @@ class TimedTimeout(object):
       time.sleep( waittime )
 
     else:
-      raise QueueEmptyException, "No data found in queue within timeout"
+      raise QueueEmptyException("No data found in queue within timeout")
 
 
 class NoTimeout(object):
@@ -162,17 +161,28 @@ class Job(object):
 
   SCRIPT = \
 """\
-source %s
+. %s
 libtbx.python << EOF
-try:
-  import cPickle as pickle
-except ImportError:
-  import pickle
-( target, args, kwargs ) = pickle.load( open( "%s.target" ) )
+from six.moves import cPickle as pickle
+( target, args, kwargs ) = pickle.load( open( "%s.target", "rb" ) )
 target( *args, **kwargs )
 EOF
 """
-  SETPATHS = libtbx.env.under_build("setpaths.sh")
+  def script(self):
+    """
+    Return the shell script submitted to the queue, which sources the
+    environment script and runs the pickled target with libtbx.python.
+
+    Raises
+    ------
+    Sorry
+      If no environment script exists, see
+      libtbx.runtime_utils.get_environment_script.
+    """
+
+    from libtbx.runtime_utils import get_environment_script
+    return self.SCRIPT % (
+      shlex.quote( get_environment_script() ), self.name )
 
   def __init__(self, name, target, qinterface, args = (), kwargs = {}):
 
@@ -187,8 +197,9 @@ EOF
   def start(self):
 
     if self.process is not None:
-      raise RuntimeError, "start called second time"
+      raise RuntimeError("start called second time")
 
+    script = self.script() # may raise, so before anything is written
     self.write_input_data()
 
     cmd = self.qinterface(
@@ -202,28 +213,30 @@ EOF
           cmd,
           stdin = subprocess.PIPE,
           stdout = subprocess.PIPE,
-          stderr = subprocess.STDOUT
+          stderr = subprocess.STDOUT,
+          encoding = "utf-8",
+          errors = "replace",
           )
 
-    except OSError, e:
-        raise RuntimeError, "Error while executing: '%s': %s" % (
+    except OSError as e:
+        raise RuntimeError("Error while executing: '%s': %s" % (
             " ".join( cmd ),
             e,
-            )
+            ))
 
-    self.process.stdin.write( self.SCRIPT % ( self.SETPATHS, self.name ) )
+    self.process.stdin.write( script )
     self.process.stdin.close()
     self.parse_process_stdout()
 
   # grab job ID, etc. from stdout - subclass as necessary (PBSJob already
   # handles this separately)
-  def parse_process_stdout (self) :
+  def parse_process_stdout(self):
     pass
 
   def is_alive(self):
 
     if self.process is None:
-      raise RuntimeError, "job has not been submitted yet"
+      raise RuntimeError("job has not been submitted yet")
 
     return self.process.poll() is None
 
@@ -233,11 +246,17 @@ EOF
     while self.is_alive():
       time.sleep( 0.1 )
 
+    # qsub has exited (with -sync y, only once the job has), so the pipe can
+    # be drained and released without waiting
+    if self.process is not None and not self.process.stdout.closed:
+      self.process.stdout.read()
+      self.process.stdout.close()
+
     if os.path.exists( self.err_file() ):
       error = open( self.err_file() ).read()
 
       if error:
-        raise RuntimeError, error
+        raise RuntimeError(error)
 
     for fname in [ self.target_file(), self.out_file(), self.err_file() ]:
       if os.path.exists( fname ):
@@ -282,21 +301,12 @@ class PBSJob(Job):
 
   REGEX = re.compile( r"job_state\s*=\s*(\w+)" )
 
-  def __init__(self, name, target, qinterface, args = (), kwargs = {}):
-
-    self.name = "%s_%d_%d" % ( name, os.getpid(), id( self ) )
-    self.target = target
-    self.args = args
-    self.kwargs = kwargs
-    self.qinterface = qinterface
-    self.jobid = None
-
-
   def start(self):
 
     if self.jobid is not None:
-      raise RuntimeError, "start called second time"
+      raise RuntimeError("start called second time")
 
+    script = self.script() # may raise, so before anything is written
     self.write_input_data()
 
     cmd = self.qinterface(
@@ -310,21 +320,23 @@ class PBSJob(Job):
           cmd,
           stdin = subprocess.PIPE,
           stdout = subprocess.PIPE,
-          stderr = subprocess.PIPE
+          stderr = subprocess.PIPE,
+          encoding = "utf-8",
+          errors = "replace",
           )
 
-    except OSError, e:
-        raise RuntimeError, "Error while executing: '%s': %s" % (
+    except OSError as e:
+        raise RuntimeError("Error while executing: '%s': %s" % (
             " ".join( cmd ),
             e,
-            )
+            ))
 
     ( out, err ) = process.communicate(
-      input = self.SCRIPT % ( self.SETPATHS, self.name )
+      input = script
       )
 
     if err:
-      raise RuntimeError, err
+      raise RuntimeError(err)
 
     assert out is not None
     self.jobid = out.strip()
@@ -338,43 +350,46 @@ class PBSJob(Job):
   def job_status(self):
 
     if self.jobid is None:
-      raise RuntimeError, "job has not been submitted yet"
+      raise RuntimeError("job has not been submitted yet")
 
     process = subprocess.Popen(
       ( "qstat", "-f", self.jobid ),
       stdout = subprocess.PIPE,
-      stderr = subprocess.PIPE
+      stderr = subprocess.PIPE,
+      encoding = "utf-8",
+      errors = "replace",
       )
     ( out, err ) = process.communicate()
 
     if err:
       # may be better to indicate finish, in case job has already been deleted
-      raise RuntimeError, "Jobid: %s\nPBS error: %s" % ( self.jobid, err )
+      raise RuntimeError("Jobid: %s\nPBS error: %s" % ( self.jobid, err ))
 
     m = self.REGEX.search( out )
 
     if not m:
-      raise RuntimeError, "Incorrect qstat output: %s" % out
+      raise RuntimeError("Incorrect qstat output: %s" % out)
 
     return m.group( 1 )
 
-class SGEJob (Job) :
-  def parse_process_stdout (self) :
-    qsub_out = self.process.stdout.readlines()
-    for line in qsub_out :
-      if line.startswith("Your job") :
+class SGEJob(Job):
+  def parse_process_stdout(self):
+    # read only up to the acknowledgement: with -sync y the pipe stays open
+    # until the job ends, and join drains the rest
+    for line in self.process.stdout:
+      if line.startswith("Your job"):
         self.jobid = int(line.split()[2])
         break
 
-class queue_interface (object) :
+class queue_interface(object):
   COMMAND = None
   def __init__(self, command, asynchronous=False):
-    self.async = asynchronous
+    self.async_ = asynchronous
     if command is None:
       assert (self.COMMAND is not None)
       self.command = [ self.COMMAND, ]
     else:
-      if (isinstance(command, str)) :
+      if (isinstance(command, str)):
         self.command = [ command, ]
       else :
         self.command = command
@@ -390,7 +405,7 @@ class sge_interface(queue_interface):
 
     cmd = self.command + [ "-S", "/bin/sh", "-cwd", "-N", name, "-o", out,
       "-e", err ]
-    if (not self.async) :
+    if (not self.async_):
       cmd.extend(["-sync", "y"])
     return cmd
 
@@ -405,7 +420,7 @@ class lsf_interface(queue_interface):
   def __call__(self, name, out, err):
 
     cmd = self.command +  [ "-J", name, "-o", out, "-e", err ]
-    if (not self.async) :
+    if (not self.async_):
       cmd.append("-K")
     return cmd
 
@@ -420,23 +435,23 @@ class pbs_interface(queue_interface):
 
     return self.command + [ "-d", ".", "-N", name, "-o", out, "-e", err ]
 
-def qsub (target,
+def qsub(target,
           name="libtbx_python",
           platform="sge",
           command=None,
-          asynchronous=True) :
+          asynchronous=True):
   assert hasattr(target, "__call__")
-  if (platform == "sge") :
+  if (platform == "sge"):
     return SGEJob(
       target=target,
       name=name,
       qinterface=sge_interface(command, asynchronous))
-  elif (platform == "pbs") :
+  elif (platform == "pbs"):
     return PBSJob(
       target=target,
       name=name,
       qinterface=pbs_interface(command, asynchronous))
-  elif (platform == "lsf") :
+  elif (platform == "lsf"):
     return Job(
       target=target,
       name=name,

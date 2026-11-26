@@ -6,19 +6,22 @@
 
 XXX Better named cspad_base?
 """
-from __future__ import division
+from __future__ import absolute_import, division, print_function
+from six.moves import range
+from six.moves import zip
 
 __version__ = "$Revision$"
 
 import numpy
-from parse_calib         import Section
-from parse_calib         import calib2sections
+from .parse_calib         import Section
+from .parse_calib         import calib2sections
 
 from libtbx import easy_pickle
 from scitbx.array_family import flex
 from xfel.cxi.cspad_ana import cspad_tbx
 from xfel.cxi.cspad_ana import skip_event_flag
 from xfel.cxi.cspad_ana.mod_event_info import mod_event_info
+from serialtbx.detector.xtc import old_address_to_new_address
 
 
 class common_mode_correction(mod_event_info):
@@ -218,7 +221,7 @@ class common_mode_correction(mod_event_info):
       assert self.override_beam_x is not None
       assert self.override_beam_y is not None
       from xfel.cxi.cspad_ana import rayonix_tbx
-      maxx, maxy = rayonix_tbx.get_rayonix_detector_dimensions(self.bin_size)
+      maxx, maxy = rayonix_tbx.get_rayonix_detector_dimensions(env)
       if self.crop_rayonix:
         bx = int(round(self.override_beam_x))
         by = int(round(self.override_beam_y))
@@ -378,7 +381,7 @@ class common_mode_correction(mod_event_info):
          self.address == 'MfxEndstation-0|Rayonix-0':
       from psana import Source, Camera
       import numpy as np
-      address = cspad_tbx.old_address_to_new_address(self.address)
+      address = old_address_to_new_address(self.address)
       src=Source('DetInfo(%s)'%address)
       self.cspad_img = evt.get(Camera.FrameV1,src)
       if self.cspad_img is not None:
@@ -403,7 +406,7 @@ class common_mode_correction(mod_event_info):
         self.cspad_img = cspad_tbx.image(
           self.address, cspad_tbx.getConfig(self.address, env),
           evt, env, self.sections)
-      except Exception, e:
+      except Exception as e:
         self.logger.error("Error reading image data: " + str(e))
         evt.put(skip_event_flag(), "skip_event")
         return
@@ -445,7 +448,7 @@ class common_mode_correction(mod_event_info):
           q_mask = 1
         else:
           q_mask = config.quadMask()
-        for q in xrange(len(self.sections)):
+        for q in range(len(self.sections)):
           if (not((1 << q) & q_mask)):
             continue
 
@@ -457,7 +460,7 @@ class common_mode_correction(mod_event_info):
             s_mask = config.roiMask()
           else:
             s_mask = config.roiMask(q)
-          for s in xrange(len(self.sections[q])):
+          for s in range(len(self.sections[q])):
             # XXX DAQ misconfiguration?  This mask appears not to work
             # reliably for the Sc1 detector.
 #            if (not((1 << s) & s_mask)):
@@ -550,9 +553,9 @@ class common_mode_correction(mod_event_info):
       env = obj2
 
     if 0 and self._dark_path is not None and self.nmemb > 1:
-      print self.sum_common_mode, self.sumsq_common_mode
+      print(self.sum_common_mode, self.sumsq_common_mode)
       self.mean_common_mode = self.sum_common_mode / self.nmemb
-      print self.mean_common_mode
+      print(self.mean_common_mode)
       self.stddev_commond_mode = math.sqrt((self.sumsq_common_mode
         - self.sum_common_mode * self.mean_common_mode) / (self.nmemb - 1))
 
@@ -577,7 +580,7 @@ class common_mode_correction(mod_event_info):
     if 0: # for debugging
       from matplotlib import pyplot
       hist_min, hist_max = flex.min(flex_cspad_img_sel.as_double()), flex.max(flex_cspad_img_sel.as_double())
-      print hist_min, hist_max
+      print(hist_min, hist_max)
       n_slots = 100
       n, bins, patches = pyplot.hist(flex_cspad_img_sel.as_1d().as_numpy_array(), bins=n_slots, range=(hist_min, hist_max))
       pyplot.show()

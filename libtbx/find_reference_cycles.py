@@ -1,6 +1,6 @@
-from __future__ import division
+from __future__ import absolute_import, division, print_function
 from types import FrameType
-from StringIO import StringIO
+from six.moves import cStringIO as StringIO
 import gc
 import sys
 
@@ -91,13 +91,18 @@ def exercise():
   # "   <class '__main__.bad_class'> -- <__main__.bad_class object at 0xb7eb5d2c> ->"
   # "   <type 'dict'> --  ->"
   # ''
-  assert len(lines) == 4
+  # For Python 3.11, the <type 'dict'> line is missing
+  if sys.version_info.major == 3 and sys.version_info.minor >= 11:
+    assert len(lines) == 3
+  else:
+    assert len(lines) == 4
   assert lines[0].startswith("Examining: <")
   assert lines[0].count("bad_class") == 1
   assert lines[1].count("bad_class") == 2
-  assert lines[2].count("dict") == 1
+  if sys.version_info.major == 3 and sys.version_info.minor < 11:
+    assert lines[2].count("dict") == 1
 
-  print "OK"
+  print("OK")
 
 # =============================================================================
 if (__name__ == "__main__"):

@@ -1,4 +1,4 @@
-from __future__ import division
+from __future__ import absolute_import, division, print_function
 import iotbx.pdb
 from libtbx.test_utils import approx_equal
 import mmtbx.refinement.rigid_body
@@ -244,7 +244,7 @@ def exercise_01():
     xrs_1.structure_factors(d_min=2).f_calc().data(),
     xrs_2.structure_factors(d_min=2).f_calc().data())
 
-def exercise_02 () :
+def exercise_02():
   pdb_inp = iotbx.pdb.input(source_info=None, lines=m3_in_str)
   pdb_hierarchy = pdb_inp.construct_hierarchy()
   pdb_hierarchy.atoms().reset_i_seq()
@@ -257,4 +257,4 @@ if (__name__ == "__main__"):
   exercise_00()
   exercise_01()
   exercise_02()
-  print "OK"
+  print("OK")

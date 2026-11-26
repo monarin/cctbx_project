@@ -1,8 +1,11 @@
-from __future__ import division
+from __future__ import absolute_import, division, print_function
+from six.moves import range
 
 from xfel.util.reflection_length import ReflectionsRadialLengthsFromFiles
 from dials.array_family import flex
 import os
+from six.moves import zip
+from six.moves import map
 
 def get_spot_length_stats(outdir, ref_stats=None):
   def join(filename):
@@ -38,7 +41,7 @@ def get_spot_length_stats(outdir, ref_stats=None):
         if db.split("datablock.json")[0] + "strong.pickle" in strong
         else None
         for db in datablocks]
-    for i in xrange(len(timestamps)):
+    for i in range(len(timestamps)):
       ts, s, db = timestamps[i], strong[i], datablocks[i]
       if s is not None:
         process_pair(s, db, ts=ts)

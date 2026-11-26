@@ -1,7 +1,7 @@
 
 ## Peter Zwart, April 18, 2005
 
-from __future__ import division
+from __future__ import absolute_import, division, print_function
 from mmtbx import scaling
 from cctbx.eltbx import xray_scattering
 from cctbx.array_family import flex
@@ -16,8 +16,9 @@ from libtbx.str_utils import format_value
 from libtbx import table_utils
 import math
 import sys
+from six.moves import range
 
-class gamma_protein (object):
+class gamma_protein(object):
   __slots__ = [
     "gamma",
     "sigma_gamma",
@@ -108,7 +109,7 @@ class gamma_protein (object):
     self.gamma = gamma_cheb.f( d_star_sq )
     self.sigma_gamma = gamma_sigma_cheb.f( d_star_sq )
 
-class gamma_nucleic (object):
+class gamma_nucleic(object):
   def __init__(self, d_star_sq):
     ## Coefficient for gamma as a function of resolution
     ## described by a chebyshev polynome.
@@ -194,7 +195,7 @@ class gamma_nucleic (object):
     self.sigma_gamma = gamma_sigma_cheb.f( d_star_sq )
 
 
-class expected_intensity (object):
+class expected_intensity(object):
   """
   This class computes the expected intensity for a given d_star_sq_array given
   some basic info about ASU contents.
@@ -399,7 +400,7 @@ def anisotropic_correction(cache_0,
     # which is missing nearly all acentric hkls but it clearly points to a bug
     # in this routine when dealing with pathological data.
     f_max = flex.max(work_array.data())
-    if (not f_max < math.sqrt(sys.float_info.max)) :
+    if (not f_max < math.sqrt(sys.float_info.max)):
       raise OverflowError("Amplitudes will exceed floating point limit if "+
         "converted to intensities (max F = %e)." % f_max)
     work_array = work_array.f_as_f_sq()
@@ -409,7 +410,7 @@ def anisotropic_correction(cache_0,
 # SCALING ROUTINES
 ########################################################################
 
-class ml_iso_absolute_scaling (scaling.xtriage_analysis):
+class ml_iso_absolute_scaling(scaling.xtriage_analysis):
   """
   Maximum likelihood isotropic wilson scaling.
 
@@ -443,7 +444,7 @@ class ml_iso_absolute_scaling (scaling.xtriage_analysis):
       miller_array = miller_array.f_sq_as_f()
     assert ( miller_array.is_real_array() )
     self.info = None
-    if (include_array_info) :
+    if (include_array_info):
       ## Save the information of the file name etc
       self.info = miller_array.info()
     work_array = miller_array.resolution_filter(
@@ -526,9 +527,9 @@ class ml_iso_absolute_scaling (scaling.xtriage_analysis):
     self.f = f
     return f, g
 
-  def _show_impl (self, out) :
+  def _show_impl(self, out):
     label_suffix = ""
-    if (self.info is not None) :
+    if (self.info is not None):
       label_suffix = " of %s" % str(self.info)
     out.show_sub_header("Maximum likelihood isotropic Wilson scaling")
     out.show(""" ML estimate of overall B value%s:""" % label_suffix)
@@ -544,7 +545,7 @@ class ml_iso_absolute_scaling (scaling.xtriage_analysis):
  data (where the crystal is poorly ordered along an axis).  The Wilson B is
  strongly correlated with refined atomic B-factors but these may differ by
  a significant amount, especially if anisotropy is present.""")
-    if (self.b_wilson < 0) :
+    if (self.b_wilson < 0):
       out.warn("The Wilson B-factor is negative!  This indicates that "+
         "the data are either unusually pathological, or have been "+
         "artifically manipulated (for instance by applying anisotropic "+
@@ -553,11 +554,11 @@ class ml_iso_absolute_scaling (scaling.xtriage_analysis):
         "generated from the current dataset will be unrealistic.")
     # TODO compare to datasets in PDB at similar resolution
 
-  def summarize_issues (self) :
-    if (self.b_wilson < 0) :
+  def summarize_issues(self):
+    if (self.b_wilson < 0):
       return [(2, "The Wilson plot isotropic B-factor is negative.",
         "Maximum likelihood isotropic Wilson scaling")]
-    elif (self.b_wilson > 200) :
+    elif (self.b_wilson > 200):
       return [(1, "The Wilson plot isotropic B-factor is greater than 200.",
         "Maximum likelihood isotropic Wilson scaling")]
     return []
@@ -665,13 +666,13 @@ class ml_aniso_absolute_scaling(scaling.xtriage_analysis):
                                           self.u_star)
       #get eigenvalues of B-cart
       eigen = eigensystem.real_symmetric( self.b_cart )
-      self.eigen_values = eigen.values()
+      self.eigen_values = eigen.values()  # TODO verify that Im not a dictionary values method
       self.eigen_vectors = eigen.vectors()
 
       self.work_array  = work_array # i need this for further analyses
       self.analyze_aniso_correction()
       # FIXME see 3ihm:IOBS4,SIGIOBS4
-      if (self.eigen_values[0] != 0) :
+      if (self.eigen_values[0] != 0):
         self.anirat = (abs(self.eigen_values[0] - self.eigen_values[2]) /
                      self.eigen_values[0])
       else :
@@ -817,7 +818,7 @@ class ml_aniso_absolute_scaling(scaling.xtriage_analysis):
     self.mean_isigi_high_correction_factor = mean_isigi_high_correction_factor
     self.frac_below_high_correction = frac_below_high_correction
 
-  def _show_impl (self, out) :
+  def _show_impl(self, out):
     assert (self.b_cart is not None)
     out.show_sub_header("Maximum likelihood anisotropic Wilson scaling")
     out.show("ML estimate of overall B_cart value:")
@@ -837,7 +838,7 @@ class ml_aniso_absolute_scaling(scaling.xtriage_analysis):
                       self.u_cif[1], self.u_cif[5],
                                      self.u_cif[2]))
     out.show("Eigen analyses of B-cart:")
-    def format_it (x,format="%3.2f"):
+    def format_it(x,format="%3.2f"):
       xx = format%(x)
       if x > 0:
         xx = " "+xx
@@ -863,7 +864,7 @@ class ml_aniso_absolute_scaling(scaling.xtriage_analysis):
     out.show("ML estimate of  -log of scale factor:")
     out.show_preformatted_text("  %5.2f" %(self.p_scale))
     out.show_sub_header("Anisotropy analyses")
-    if (self.eigen_values[0] == 0) :
+    if (self.eigen_values[0] == 0):
       raise Sorry("Fatal error: eigenvector 1 of the overall anisotropic "+
         "B-factor B_cart is zero.  This "+
         "may indicate severe problems with the input data, for instance "+
@@ -882,7 +883,7 @@ class ml_aniso_absolute_scaling(scaling.xtriage_analysis):
 #      (ani_rat_p, 100.0*math.exp(-ani_rat_p)))
     message = """indicates that there probably is no
  significant systematic noise amplification."""
-    if (self.z_tot is not None) and (self.z_tot > self.z_level) :
+    if (self.z_tot is not None) and (self.z_tot > self.z_level):
       if self.mean_isigi_high_correction_factor < self.level:
         message =  """indicates that there probably is significant
  systematic noise amplification that could possibly lead to artefacts in the
@@ -893,7 +894,7 @@ class ml_aniso_absolute_scaling(scaling.xtriage_analysis):
  intensities. Because the signal to noise for the most affected intensities
  is relatively good, the affect on maps or refinement behavior is most likely
  not very serious."""
-    if (self.mean_count is not None) :
+    if (self.mean_count is not None):
       out.show("""
  For the resolution shell spanning between %4.2f - %4.2f Angstrom,
  the mean I/sigI is equal to %5.2f. %4.1f %% of these intensities have
@@ -926,15 +927,15 @@ class ml_aniso_absolute_scaling(scaling.xtriage_analysis):
  Z-scores are computed on the basis of a Bernoulli model assuming independence
  of weak reflections with respect to anisotropy.""")
 
-  def summarize_issues (self) :
+  def summarize_issues(self):
     b_cart_mean = sum(self.b_cart[0:3]) / 3
     b_cart_range = max(self.b_cart[0:3]) - min(self.b_cart[0:3])
     aniso_ratio = b_cart_range / b_cart_mean
     # Using VTF cutoffs (from Read et al. 2011)
-    if (aniso_ratio >= 1) and (b_cart_mean > 20) :
+    if (aniso_ratio >= 1) and (b_cart_mean > 20):
       return [(2, "The data show severe anisotropy.",
         "Maximum likelihood anisotropic Wilson scaling")]
-    elif (aniso_ratio >= 0.5) and (b_cart_mean > 20) :
+    elif (aniso_ratio >= 0.5) and (b_cart_mean > 20):
       return [(1, "The data are moderately anisotropic.",
         "Maximum likelihood anisotropic Wilson scaling")]
     else :
@@ -986,6 +987,8 @@ class kernel_normalisation(object):
     ## that seems to work reasonable in practice
     self.kernel_width=kernel_width
     if auto_kernel is not False:
+      ## Otherwise we can get into an infinite loop below
+      assert d_star_sq_hkl.size() > 1
       ## get the d_star_sq_array and sort it
       sort_permut = flex.sort_permutation(d_star_sq_hkl)
       ##
@@ -993,8 +996,7 @@ class kernel_normalisation(object):
         number=number_of_sorted_reflections_for_auto_kernel
       else:
         number=int(auto_kernel)
-      if number > d_star_sq_hkl.size():
-        number = d_star_sq_hkl.size()-1
+      number = min(number, d_star_sq_hkl.size()-1)
       self.kernel_width = d_star_sq_hkl[sort_permut[number]]-d_star_sq_low
       if self.kernel_width ==0:
         original_number=number
@@ -1045,7 +1047,7 @@ class kernel_normalisation(object):
     # it would be good to catch such cases in advance by inspecting the binned
     # values, and raise a different error message.
     assert sel_pos.size() > 0
-    if (sel_pos.size() < self.mean_I_array.size() / 2) :
+    if (sel_pos.size() < self.mean_I_array.size() / 2):
       raise Sorry("Analysis could not be continued because more than half "+
         "of the data have values below 1e-16.  This usually indicates either "+
         "an inappropriately high resolution cutoff, or an error in the data "+

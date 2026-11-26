@@ -1,9 +1,10 @@
-from __future__ import absolute_import, division
+from __future__ import absolute_import, division, print_function
 from scitbx.array_family import flex
 from scitbx.stdlib import math, random
 from libtbx.utils import Sorry
 from copy import deepcopy
 from scitbx import simplex
+from six.moves import range
 
 class dssa(object):
   """
@@ -40,7 +41,7 @@ class dssa(object):
     if((len(matrix) != self.dimension+1) or (matrix[0].size() != self.dimension)):
        raise Sorry("The initial simplex matrix does not match dimensions specified")
     for vector in matrix[1:]:
-      if (vector.size() !=  matrix[0].size()) :
+      if (vector.size() !=  matrix[0].size()):
         raise Sorry("Vector length in intial simplex do not match up" )
 
     self.monitor_cycle=monitor_cycle

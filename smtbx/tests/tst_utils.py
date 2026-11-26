@@ -1,4 +1,5 @@
-from __future__ import division
+from __future__ import absolute_import, division, print_function
+
 from cctbx import sgtbx
 from libtbx.test_utils import approx_equal
 from smtbx import development, utils
@@ -21,9 +22,6 @@ def exercise_connectivity_table():
   connectivity.remove_bond(5,5, rt_mx_ji=sgtbx.rt_mx("x+1,y,z"))
   assert approx_equal(connectivity.pair_asu_table.pair_counts(), pair_counts)
 
-def run():
-  exercise_connectivity_table()
-  print "OK"
-
 if __name__ == '__main__':
-  run()
+  exercise_connectivity_table()
+  print('OK')

@@ -11,10 +11,12 @@ output {{
   split_logs = True
 }}
 mp {{
-  method = *lsf sge pbs custom
-  use_mpi = True
+  method = {method}
+  use_mpi = {use_mpi}
+  mpi_command = {mpi_command}
   nproc = {nproc}
   queue = {queue}
+  {extra_options}
 }}
 experiment_tag = {experiment_tag}
 db {{
@@ -22,4 +24,5 @@ db {{
   name = {dbname}
   user = {user}
   password = {password}
+  port = {port}
 }}

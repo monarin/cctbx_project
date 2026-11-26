@@ -1,10 +1,40 @@
 "light-weight, simple source_path, target_path dependency management"
-from __future__ import division
+from __future__ import absolute_import, division, print_function
 
 from libtbx import easy_pickle
+from libtbx.utils import Sorry
 import hashlib
 import time
 import sys, os
+
+def try_loading_db(file_name):
+  '''
+  This function tries to load an existing pickle file. If the pickle file
+  cannot be loaded, an empty target_db object is returned. This helps
+  simplify the rebuilding of chem_data databases when switching Python
+  versions.
+
+  Parameters
+  ----------
+  file_name : str
+      The filename for the database file
+
+  Returns
+  -------
+  target_db : target_db
+      If the file exists and the pickle file can be loaded, the target_db
+      object. If the pickle protocol is not supported, the file is removed
+      and an empty target_db object is returned.
+  '''
+  db = None
+  try:
+    db = target_db(file_name)
+  except (Sorry, ValueError) as s:
+    if 'unsupported pickle protocol' in str(s):
+      os.remove(file_name)
+      db = target_db(file_name)
+  assert db is not None
+  return db
 
 class node_info(object):
 
@@ -26,7 +56,8 @@ class node_info(object):
     full_path = self.full_path(path_prefix=path_prefix)
     if (not os.path.exists(full_path)): return None
     m = hashlib.md5()
-    m.update(open(full_path, "rb").read())
+    with open(full_path, "rb") as f:
+      m.update(f.read())
     return m.hexdigest()
 
   def has_changed(self, path_prefix=None, mtime_resolution=2):
@@ -104,6 +135,6 @@ class target_db(object):
     for pair_info in self.pair_infos.values():
       for attr in ["source", "target"]:
         node = getattr(pair_info, attr)
-        print >> out, attr+":", node.path, "mtime:", node.mtime,\
-                                           "md5:", node.md5
-      print >> out, "-"*79
+        print(attr+":", node.path, "mtime:", node.mtime,\
+                                           "md5:", node.md5, file=out)
+      print("-"*79, file=out)

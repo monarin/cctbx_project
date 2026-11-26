@@ -10,9 +10,10 @@ They all feature:
 """
 
 
-from __future__ import division
-import boost.python
-ext = boost.python.import_ext("smtbx_refinement_least_squares_ext")
+from __future__ import absolute_import, division, print_function
+import boost_adaptbx.boost.python as bp
+from six.moves import range
+ext = bp.import_ext("smtbx_refinement_least_squares_ext")
 
 
 from cctbx.array_family import flex
@@ -20,7 +21,8 @@ from cctbx.array_family import flex
 import math
 
 
-class _(boost.python.injector, ext.mainstream_shelx_weighting):
+@bp.inject_into(ext.mainstream_shelx_weighting)
+class _():
 
   def __str__(self):
     if round(self.a, 4) in (0.1, 0.2):
@@ -29,7 +31,7 @@ class _(boost.python.injector, ext.mainstream_shelx_weighting):
       a = "%.4f" %self.a
     if round(self.b, 4) == 0: b_part=""
     else: b_part = "+%.4fP" %self.b
-    return ("w=1/[\s^2^(Fo^2^)+(%sP)^2^%s]"
+    return (r"w=1/[\s^2^(Fo^2^)+(%sP)^2^%s]"
             " where P=(Fo^2^+2Fc^2^)/3" %(a, b_part))
 
   def type(self):
@@ -148,7 +150,8 @@ class _(boost.python.injector, ext.mainstream_shelx_weighting):
     weighting.b = start_b
     return weighting
 
-class _(boost.python.injector, ext.unit_weighting):
+@bp.inject_into(ext.unit_weighting)
+class _():
 
   def __str__(self):
     return "w=1"
@@ -161,7 +164,8 @@ class _(boost.python.injector, ext.unit_weighting):
     # no parameters to optimise!
     return self
 
-class _(boost.python.injector, ext.sigma_weighting):
+@bp.inject_into(ext.sigma_weighting)
+class _():
 
   def __str__(self): return "w=1/sigma^2"
 

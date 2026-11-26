@@ -1,5 +1,5 @@
 
-from __future__ import division
+from __future__ import absolute_import, division, print_function
 from mmtbx import utils
 import mmtbx.f_model
 from iotbx.option_parser import iotbx_option_parser
@@ -17,9 +17,12 @@ from libtbx.utils import Sorry, null_out
 from libtbx import adopt_init_args
 from libtbx import runtime_utils
 import libtbx.callbacks # import dependency
-from cStringIO import StringIO
+from six.moves import cStringIO as StringIO
 import os
 import sys
+import mmtbx.model
+from six.moves import zip
+from iotbx import extract_xtal_data
 
 fo_minus_fo_master_params_str = """\
 f_obs_1_file_name = None
@@ -59,7 +62,7 @@ phase_source = None
   .help = PDB file with a model or reflection file with the phases
   .short_caption = PDB file for phasing
   .style = bold OnChange:validate_phase_source file_type:pdb
-scattering_table = *xray neutron
+scattering_table = wk1995 it1992 *n_gaussian electron neutron
   .type = choice(multi=False)
   .help = Choices of scattering table for structure factors calculations
 output_file = None
@@ -100,7 +103,7 @@ advanced
     .expert_level = 1
   anomalous = False
     .type = bool
-    .short_caption = Use anomalous differences instead of amplitdues
+    .short_caption = Use anomalous differences instead of amplitudes
     .help = Experimental feature: generate a difference map using the \
       anomalous differences of each dataset instead of the amplitudes, \
       similar to the log-likelihood gradient difference map in Phaser \
@@ -120,14 +123,21 @@ peak_search
 {
 include scope mmtbx.find_peaks.master_params
 }
+structure_factors_accuracy
+  .short_caption = Structure factors accuracy
+  .style = auto_align box
+{
+  include scope mmtbx.f_model.sf_and_grads_accuracy_master_params
+}
 """
 def fo_minus_fo_master_params():
   return iotbx.phil.parse(fo_minus_fo_master_params_str, process_includes=True)
 
-class compute_fo_minus_fo_map (object) :
-  def __init__ (self,
+class compute_fo_minus_fo_map(object):
+  def __init__(self,
       data_arrays,
       xray_structure,
+      sf_accuracy_params=None,
       log=None,
       silent=False,
       output_file=None,
@@ -137,40 +147,42 @@ class compute_fo_minus_fo_map (object) :
       r_free_arrays=None,
       write_map=True,
       multiscale=False,
-      anomalous=False) :
+      anomalous=False):
     if (log is None) : log = sys.stdout
     adopt_init_args(self, locals())
     fmodels = []
     for i_seq, d in enumerate(data_arrays):
       if(not silent):
-        print >> log, "Data set: %d"%i_seq
-      if(d.anomalous_flag()) and (not anomalous) :
+        print("Data set: %d"%i_seq, file=log)
+      if(d.anomalous_flag()) and (not anomalous):
         d = d.average_bijvoet_mates()
-      elif (anomalous) :
+      elif (anomalous):
         assert d.anomalous_flag()
-      if (r_free_arrays is not None) and (i_seq < len(r_free_arrays)) :
+      if (r_free_arrays is not None) and (i_seq < len(r_free_arrays)):
         r_free_flags = r_free_arrays[i_seq]
       else :
         r_free_flags = d.array(data = flex.bool(d.data().size(), False))
       fmodel = mmtbx.f_model.manager(
-        xray_structure = xray_structure,
+        xray_structure = xray_structure.deep_copy_scatterers(),
         r_free_flags   = r_free_flags,
         target_name    = "ls_wunit_k1",
+        sf_and_grads_accuracy_params = sf_accuracy_params,
         f_obs          = d)
       fmodel.update_all_scales(log=None)
+
+      #fmodel.export( out=open("taam_%d.mtz"%i_seq,"w") )
+
       if(not silent):
         fmodel.info().show_rfactors_targets_scales_overall(out=log)
-        print >> log
+        print(file=log)
+        fmodel.show(show_header=False, show_approx=False, log=log)
+
       fmodels.append(fmodel)
     self.fmodel = fmodels[0]
     # prepare Fobs for map calculation (apply scaling):
     f_obss = []
     for fmodel in fmodels:
-      obs = fmodel.f_obs()
-      f_obs_scale   = 1.0 / fmodel.k_anisotropic() / fmodel.k_isotropic()
-      obs = miller.array(miller_set = fmodel.f_model(),
-                         data       = obs.data()*f_obs_scale)
-      f_obss.append(obs)
+      f_obss.append(fmodel.f_obs_scaled(include_fom=True))
     # given two Fobs sets, make them one-to-one matching, get phases and map coefficients
     # Note: f_calc below is just f_calc from atoms (no bulk solvent etc applied)
     fobs_1, f_model = f_obss[0].common_sets(other = fmodels[1].f_model())
@@ -179,6 +191,7 @@ class compute_fo_minus_fo_map (object) :
     self.f_model = f_model
     assert fobs_2.indices().all_eq(fobs_1.indices())
     assert f_model.indices().all_eq(fobs_1.indices())
+
     # scale again
     scale_k1 = 1
     den = flex.sum(flex.abs(fobs_2.data())*flex.abs(fobs_2.data()))
@@ -186,13 +199,16 @@ class compute_fo_minus_fo_map (object) :
       scale_k1 = flex.sum(flex.abs(fobs_1.data())*flex.abs(fobs_2.data())) / den
     #
     fobs_2 = fobs_2.array(data = fobs_2.data()*scale_k1)
+
     if multiscale:
-      fobs_1 = fobs_2.multiscale(other = fobs_1, reflections_per_bin=250)
+      #fobs_1 = fobs_2.multiscale(other = fobs_1, reflections_per_bin=50)
+      fobs_1 = fobs_2.multiscale(
+        other = fobs_1, reflections_per_bin=250, use_exp_scale=True)
     if(not silent):
-      print >> log, ""
-      print >> log, "Fobs1_vs_Fobs2 statistics:"
-      print >> log, "Bin# Resolution range  Compl.  No.of refl. CC   R-factor"
-      fobs_1.setup_binner(reflections_per_bin = min(500, fobs_1.data().size()))
+      print("", file=log)
+      print("Fobs1_vs_Fobs2 statistics:", file=log)
+      print("Bin# Resolution range  Compl.  No.of refl. CC   R-factor", file=log)
+      fobs_1.setup_binner(reflections_per_bin = min(50, fobs_1.data().size()))
       fobs_2.use_binning_of(fobs_1)
       for i_bin in fobs_1.binner().range_used():
         sel = fobs_1.binner().selection(i_bin)
@@ -210,8 +226,8 @@ class compute_fo_minus_fo_map (object) :
         d_range = fobs_1.binner().bin_legend(
                        i_bin = i_bin, show_bin_number = False, show_counts = False)
         fmt = "%3d: %-17s   %4.2f %6d         %5.3f  %6s"
-        print >> log, fmt % (i_bin, d_range, compl, n_ref, cc,
-          format_value("%6.4f", r))
+        print(fmt % (i_bin, d_range, compl, n_ref, cc,
+          format_value("%6.4f", r)), file=log)
     # overall statistics
     self.cc = flex.linear_correlation(
       x=fobs_1.data(),
@@ -219,7 +235,7 @@ class compute_fo_minus_fo_map (object) :
     num = flex.sum(flex.abs(fobs_1.data()-fobs_2.data()))
     den = flex.sum(flex.abs(fobs_2.data()+fobs_2.data())/2)
     self.r_factor = None
-    if (den != 0) :
+    if (den != 0):
       self.r_factor = num / den
     # map coefficients
     def phase_transfer(miller_array, phase_source):
@@ -228,7 +244,7 @@ class compute_fo_minus_fo_map (object) :
         ).phase_transfer(phase_source = phase_source)
       return miller.array(miller_set = miller_array,
         data = miller_array.data() * tmp.data() )
-    if (not anomalous) :
+    if (not anomalous):
       diff = miller.array(
         miller_set = f_model,
         data       = fobs_1.data()-fobs_2.data())
@@ -250,10 +266,10 @@ class compute_fo_minus_fo_map (object) :
     if(self.map_coeff.anomalous_flag()):
       self.map_coeff = map_coeff.average_bijvoet_mates()
     self.file_names = []
-    if (write_map) :
+    if (write_map):
       self.file_names = self.write_map_file()
 
-  def write_map_file (self) :
+  def write_map_file(self):
   # output MTZ file with map coefficients
     class map_coeffs_mtz_label_manager:
       def __init__(self, amplitudes, phases):
@@ -280,27 +296,25 @@ class compute_fo_minus_fo_map (object) :
     mtz_object.add_history(mtz_history_buffer)
     mtz_object.write(file_name=file_name)
     self.file_names = [ file_name ]
-    if (self.peak_search) :
+    if (self.peak_search):
       from mmtbx.command_line import find_peaks_holes
       from mmtbx import find_peaks
       peak_search_log = self.log
       if (self.silent) : peak_search_log = null_out()
       fmodel = self.fmodel
       peaks = find_peaks.manager(
-        fmodel=fmodel,
-        map_type=None,
-        map_coeffs=self.map_coeff,
-        map_cutoff=self.map_cutoff,
-        params=self.peak_search_params,
-        log=peak_search_log).peaks_mapped()
+        map_cutoff     = self.map_cutoff,
+        xray_structure = fmodel.xray_structure,
+        params         = self.peak_search_params,
+        log            = peak_search_log,
+        map_coeffs     = self.map_coeff).peaks_mapped()
       peaks.sites = fmodel.xray_structure.unit_cell().orthogonalize(peaks.sites)
       holes = find_peaks.manager(
-        fmodel=fmodel,
-        map_type=None,
-        map_coeffs=self.map_coeff,
-        map_cutoff=-self.map_cutoff,
-        params=self.peak_search_params,
-        log=peak_search_log).peaks_mapped()
+        map_cutoff     = -self.map_cutoff,
+        xray_structure = fmodel.xray_structure,
+        params         = self.peak_search_params,
+        log            = peak_search_log,
+        map_coeffs     = self.map_coeff).peaks_mapped()
       holes.sites = fmodel.xray_structure.unit_cell().orthogonalize(holes.sites)
       result = find_peaks_holes.peaks_holes_container(
         peaks=peaks,
@@ -335,13 +349,13 @@ high_res=2.0 sigma_cutoff=2 scattering_table=neutron"""
     .enable_symmetry_comprehensive()
     ).process(args=args)
   #
-  if (log is None) :
+  if (log is None):
     log = sys.stdout
   if(not command_line.options.silent):
     utils.print_header("phenix.fobs_minus_fobs_map", out = log)
-    print >> log, "Command line arguments: "
-    print >> log, args
-    print >> log
+    print("Command line arguments: ", file=log)
+    print(args, file=log)
+    print(file=log)
   #
   processed_args = utils.process_command_line_args(
     args=command_line.args,
@@ -353,12 +367,12 @@ high_res=2.0 sigma_cutoff=2 scattering_table=neutron"""
     suppress_symmetry_related_errors=True)
   working_phil = processed_args.params
   if(not command_line.options.silent):
-    print >> log, "*** Parameters:"
+    print("*** Parameters:", file=log)
     working_phil.show(out = log)
-    print >> log
+    print(file=log)
   params = working_phil.extract()
   consensus_symmetry = None
-  if (params.ignore_non_isomorphous_unit_cells) :
+  if (params.ignore_non_isomorphous_unit_cells):
     if (None in [params.f_obs_1_file_name, params.f_obs_2_file_name,
         params.phase_source]):
       raise Sorry("The file parameters (f_obs_1_file_name, f_obs_2_file_name, "+
@@ -375,12 +389,12 @@ high_res=2.0 sigma_cutoff=2 scattering_table=neutron"""
     sg_err_2, uc_err_2 = symm_manager.process_reflections_file(hkl_in_2)
     out = StringIO()
     symm_manager.show(out=out)
-    if (sg_err_1) or (sg_err_2) :
+    if (sg_err_1) or (sg_err_2):
       raise Sorry(("Incompatible space groups in input files:\n%s\nAll files "+
         "must have the same point group (and ideally the same space group). "+
         "Please note that any symmetry information in the PDB file will be "+
         "used first.") % out.getvalue())
-    elif (uc_err_1) or (uc_err_2) :
+    elif (uc_err_1) or (uc_err_2):
       libtbx.call_back(message="warn",
         data=("Crystal symmetry mismatch:\n%s\nCalculations will continue "+
           "using the symmetry in the PDB file (or if not available, the "+
@@ -415,23 +429,21 @@ high_res=2.0 sigma_cutoff=2 scattering_table=neutron"""
         err              = null_out())
       # XXX UGLY !!!
       try:
-        parameters = utils.data_and_flags_master_params().extract()
+        parameters = extract_xtal_data.data_and_flags_master_params().extract()
         if(params.f_obs_1_label is not None):
           parameters.labels = [params.f_obs_1_label]
-        determine_data_and_flags_result = utils.determine_data_and_flags(
-          reflection_file_server  = reflection_file_server,
-          keep_going              = True,
-          parameters              = parameters,
-          log                     = null_out())
+        determine_data_and_flags_result = extract_xtal_data.run(
+          reflection_file_server = reflection_file_server,
+          keep_going             = True,
+          parameters             = parameters)
       except: # intentional
-        parameters = utils.data_and_flags_master_params().extract()
+        parameters = extract_xtal_data.data_and_flags_master_params().extract()
         if(params.f_obs_2_label is not None):
           parameters.labels = [params.f_obs_2_label]
-        determine_data_and_flags_result = utils.determine_data_and_flags(
-          reflection_file_server  = reflection_file_server,
-          keep_going              = True,
-          parameters              = parameters,
-          log                     = null_out())
+        determine_data_and_flags_result = extract_xtal_data.run(
+          reflection_file_server = reflection_file_server,
+          keep_going             = True,
+          parameters             = parameters)
       f_obss.append(determine_data_and_flags_result.f_obs)
   else:
     if([params.f_obs_1_file_name,params.f_obs_2_file_name].count(None)==2):
@@ -445,22 +457,21 @@ high_res=2.0 sigma_cutoff=2 scattering_table=neutron"""
         force_symmetry   = True,
         reflection_files = [reflection_file],
         err              = null_out())
-      parameters = utils.data_and_flags_master_params().extract()
+      parameters = extract_xtal_data.data_and_flags_master_params().extract()
       if(label is not None):
         parameters.labels = [label]
-      determine_data_and_flags_result = utils.determine_data_and_flags(
-          reflection_file_server  = reflection_file_server,
-          parameters              = parameters,
-          keep_going              = True,
-          log                     = null_out())
+      determine_data_and_flags_result = extract_xtal_data.run(
+          reflection_file_server = reflection_file_server,
+          parameters             = parameters,
+          keep_going             = True)
       f_obss.append(determine_data_and_flags_result.f_obs)
   if(len(f_obss)!=2):
     raise Sorry(" ".join(errors))
   if(not command_line.options.silent):
     for ifobs, fobs in enumerate(f_obss):
-      print >> log, "*** Summary for data set %d:"%ifobs
+      print("*** Summary for data set %d:"%ifobs, file=log)
       fobs.show_comprehensive_summary(f = log)
-      print >> log
+      print(file=log)
   pdb_combined = combine_unique_pdb_files(file_names = pdb_file_names)
   pdb_combined.report_non_unique(out = log)
   if(len(pdb_combined.unique_file_names) == 0):
@@ -474,20 +485,27 @@ high_res=2.0 sigma_cutoff=2 scattering_table=neutron"""
     crystal_symmetry = crystal_symmetry))
   #
   pdb_in = iotbx.pdb.input(source_info = None, lines = raw_recs)
-  hierarchy = pdb_in.construct_hierarchy()
+  model = mmtbx.model.manager(model_input = pdb_in)
+  d_min = min(f_obss[0].d_min(), f_obss[1].d_min())
+  model.setup_scattering_dictionaries(
+    scattering_table = params.scattering_table,
+    d_min            = d_min)
+  xray_structure = model.get_xray_structure()
+  hierarchy = model.get_hierarchy()
+  #
   omit_sel = flex.bool(hierarchy.atoms_size(), False)
-  if (params.advanced.omit_selection is not None) :
-    print >> log, "Will omit selection from phasing model:"
-    print >> log, "  " + params.advanced.omit_selection
+  if (params.advanced.omit_selection is not None):
+    print("Will omit selection from phasing model:", file=log)
+    print("  " + params.advanced.omit_selection, file=log)
     omit_sel = hierarchy.atom_selection_cache().selection(
       params.advanced.omit_selection)
-    print >> log, "%d atoms selected for removal" % omit_sel.count(True)
-  xray_structure = pdb_in.xray_structure_simple()
+    print("%d atoms selected for removal" % omit_sel.count(True), file=log)
+  del hierarchy
   xray_structure = xray_structure.select(~omit_sel)
   if(not command_line.options.silent):
-    print >> log, "*** Model summary:"
+    print("*** Model summary:", file=log)
     xray_structure.show_summary(f = log)
-    print >> log
+    print(file=log)
   info0 = f_obss[0].info()
   info1 = f_obss[1].info()
   f_obss[0] = f_obss[0].resolution_filter(d_min = params.high_resolution,
@@ -499,16 +517,17 @@ high_res=2.0 sigma_cutoff=2 scattering_table=neutron"""
       if(f_obss[i].sigmas() is not None):
         sel = f_obss[i].data() > f_obss[i].sigmas()*params.sigma_cutoff
         f_obss[i] = f_obss[i].select(sel).set_info(info0)
-  for k, f_obs in enumerate(f_obss) :
-    if (f_obs.indices().size() == 0) :
+  for k, f_obs in enumerate(f_obss):
+    if (f_obs.indices().size() == 0):
       raise Sorry("No data left in array %d (labels=%s) after filtering!" % (k+1,
         f_obs.info().label_string()))
   output_file_name = params.output_file
-  if (output_file_name is None) and (params.file_name_prefix is not None) :
+  if (output_file_name is None) and (params.file_name_prefix is not None):
     output_file_name = "%s_%s.mtz" % (params.file_name_prefix, params.job_id)
   output_files = compute_fo_minus_fo_map(
     data_arrays = f_obss,
     xray_structure = xray_structure,
+    sf_accuracy_params = params.structure_factors_accuracy,
     log = log,
     silent = command_line.options.silent,
     output_file = output_file_name,
@@ -519,27 +538,27 @@ high_res=2.0 sigma_cutoff=2 scattering_table=neutron"""
     anomalous=params.advanced.anomalous).file_names
   return output_files
 
-class launcher (runtime_utils.target_with_save_result) :
-  def run (self) :
+class launcher(runtime_utils.target_with_save_result):
+  def run(self):
     os.makedirs(self.output_dir)
     os.chdir(self.output_dir)
     return run(args=list(self.args))
 
-def validate_params (params, callback=None) :
-  if (None in [params.f_obs_1_file_name, params.f_obs_2_file_name]) :
+def validate_params(params, callback=None):
+  if (None in [params.f_obs_1_file_name, params.f_obs_2_file_name]):
     raise Sorry("You must supply two files containing F(obs).")
-  if (None in [params.f_obs_1_label, params.f_obs_2_label]) :
+  if (None in [params.f_obs_1_label, params.f_obs_2_label]):
     raise Sorry("You must define the labels for both reflection files.")
-  if (params.phase_source is None) :
+  if (params.phase_source is None):
     raise Sorry("You must specify a PDB file for phasing.")
-  if not os.path.isdir(params.output_dir) :
+  if not os.path.isdir(params.output_dir):
     raise Sorry("Output directory does not exist.")
 
-def finish_job (result) :
+def finish_job(result):
   output_files = []
-  if (result is not None) :
+  if (result is not None):
     assert (isinstance(result, list)) and (len(result) > 0)
     output_files.append((result[0], "Map coefficients"))
-    if (len(result) > 1) :
+    if (len(result) > 1):
       output_files.append((result[1], "Map peaks and holes"))
   return (output_files, [])

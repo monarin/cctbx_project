@@ -60,7 +60,7 @@ def print_trace(frame, event, arg):
 
 def start_print_trace():
   if ("pydoc" in sys.modules):
-    from cStringIO import StringIO
+    from six.moves import cStringIO as StringIO
     s = StringIO()
     show_stack(out=s)
     for line in s.getvalue().splitlines():
@@ -113,7 +113,8 @@ class virtual_memory_info(proc_file_reader):
 
   def __init__(self):
     try:
-      self.proc_status = open(_proc_status).read()
+      with open(_proc_status) as f:
+        self.proc_status = f.read()
     except IOError:
       self.proc_status = None
 
@@ -121,26 +122,29 @@ class virtual_memory_info(proc_file_reader):
     result = self.get_bytes('VmPeak:')
     if (result is not None):
       virtual_memory_info.have_vmpeak = True
-    virtual_memory_info.max_virtual_memory_size = max(
-    virtual_memory_info.max_virtual_memory_size, result)
+      virtual_memory_info.max_virtual_memory_size = max(
+        virtual_memory_info.max_virtual_memory_size, result)
     return result
 
   def virtual_memory_size(self):
     result = self.get_bytes('VmSize:')
-    virtual_memory_info.max_virtual_memory_size = max(
-    virtual_memory_info.max_virtual_memory_size, result)
+    if (result is not None):
+      virtual_memory_info.max_virtual_memory_size = max(
+        virtual_memory_info.max_virtual_memory_size, result)
     return result
 
   def resident_set_size(self):
     result = self.get_bytes('VmRSS:')
-    virtual_memory_info.max_resident_set_size = max(
-    virtual_memory_info.max_resident_set_size, result)
+    if (result is not None):
+      virtual_memory_info.max_resident_set_size = max(
+        virtual_memory_info.max_resident_set_size, result)
     return result
 
   def stack_size(self):
     result = self.get_bytes('VmStk:')
-    virtual_memory_info.max_stack_size = max(
-    virtual_memory_info.max_stack_size, result)
+    if (result is not None):
+      virtual_memory_info.max_stack_size = max(
+        virtual_memory_info.max_stack_size, result)
     return result
 
   def update_max(self):
@@ -193,10 +197,22 @@ class virtual_memory_info(proc_file_reader):
       stack=self.max_stack_size)
 
 def get_mac_os_x_memory_total():
+  from libtbx import easy_run
+  # sysctl answers at once; system_profiler can take ten seconds (it waits
+  # for an Activation Lock check on recent macOS).
+  cmd = "/usr/sbin/sysctl"
+  if os.path.isfile(cmd):
+    for line in easy_run.fully_buffered(command=cmd+" -n hw.memsize",
+        join_stdout_stderr=False).stdout_lines:
+      try:
+        num = int(line.strip())
+      except ValueError:
+        continue
+      if (num > 0):
+        return num
   cmd = "/usr/sbin/system_profiler"
   if not os.path.isfile(cmd):
     return None
-  from libtbx import easy_run
   for line in easy_run.fully_buffered(
                 command=cmd+" SPHardwareDataType").stdout_lines:
     line = line.strip()
@@ -225,7 +241,8 @@ class machine_memory_info(proc_file_reader):
     self._memory_free = Auto
     if os.path.isfile("/proc/meminfo"):
       try:
-        self.proc_status = open("/proc/meminfo").read()
+        with open("/proc/meminfo") as fh:
+          self.proc_status = fh.read()
       except IOError:
         pass
     else:
@@ -267,21 +284,22 @@ def number_of_processors(return_value_if_unknown=None):
       else:
         _number_of_processors = n
     if (_number_of_processors is None):
-      try: import boost.python
+      try: import boost_adaptbx.boost.python as bp
       except ImportError: pass
       else:
-        n = boost.python.ext.number_of_processors()
+        n = bp.ext.number_of_processors()
         if (n != 0):
           _number_of_processors = n
     if (_number_of_processors is None):
       cpuinfo = "/proc/cpuinfo" # Linux
       if os.path.isfile(cpuinfo):
         n = 0
-        for line in open(cpuinfo).read().splitlines():
-          if (not line.startswith("processor")): continue
-          line = line[9:].replace(" ", "").replace("\t", "")
-          if (not line.startswith(":")): continue
-          n += 1
+        with open(cpuinfo) as fh:
+          for line in fh.read().splitlines():
+            if (not line.startswith("processor")): continue
+            line = line[9:].replace(" ", "").replace("\t", "")
+            if (not line.startswith(":")): continue
+            n += 1
         if (n != 0):
           _number_of_processors = n
     if (_number_of_processors is None):
@@ -327,19 +345,19 @@ def number_of_processors(return_value_if_unknown=None):
     return _number_of_processors
   return return_value_if_unknown
 
-class method_debug_log (object) :
+class method_debug_log(object):
   """For Python 2.4 or greater.  Use an instance of this class as a
   decorator for class methods, and it will print the call signature and
   call location before the method is executed.
 
   Example:
   debug = libtbx.introspection.method_debug_log()
-  class a (object) :
+  class a(object):
     @debug
-    def foo (self, x) :
+    def foo(self, x):
       print x
 
-  def main () :
+  def main():
     my_object = a()
     a.foo(1)
   main()
@@ -348,19 +366,19 @@ class method_debug_log (object) :
 a.foo(1) @ test.py(13) main
 1
   """
-  def __init__ (self) :
+  def __init__(self):
     self.debug = False
     if os.environ.get("LIBTBX_DEBUG_LOG") is not None :
       self.debug = True
 
-  def __call__ (self, f) :
-    def log_wrapper (O, *args, **kwds) :
+  def __call__(self, f):
+    def log_wrapper(O, *args, **kwds):
       if self.debug :
         _args = list(args)
         _kwds = dict(kwds)
         str_args = ", ".join([ str(arg) for arg in _args ])
         str_kwds = ", ".join([ "%s=%s" % (kwd, str(val))
-                               for kwd, val in _kwds.iteritems() ])
+                               for kwd, val in _kwds.items() ])
         call_signature = []
         if str_args != "" : call_signature.append(str_args)
         if str_kwds != "" : call_signature.append(str_kwds)
@@ -412,13 +430,22 @@ class current_process_status(object):
     else:
       return
     self.field = dict(
-      [ (name, field[i_col]) for name, i_col in cols.iteritems() ])
-    for name, conv in self.conversions.iteritems():
+      [ (name, field[i_col]) for name, i_col in cols.items() ])
+    for name, conv in self.conversions.items():
       self.field[name] = conv(self.field[name])
 
   def __getitem__(self, field_name):
     return self.field[field_name]
 
+def getfullargspec(function):
+  '''
+  Wrapper for importing getfullargspec
+  '''
+  import inspect
+  if sys.version_info[0] == 3:
+    return inspect.getfullargspec(function)
+  else:
+    return inspect.getargspec(function)
 
 if (__name__ == "__main__"):
   def exercise_varnames(a, b, c):

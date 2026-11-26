@@ -1,9 +1,9 @@
 
-from __future__ import division
+from __future__ import absolute_import, division, print_function
 from libtbx.test_utils import show_diff
 import warnings
 
-def exercise () :
+def exercise():
   from iotbx.scalepack import no_merge_original_index
   from cctbx import crystal
   # input from xia2 with one slight modification to the (44,0,-25) observation,
@@ -43,7 +43,8 @@ def exercise () :
 """
   hkl_in = "tst_scalepack_unmerged_writer.sca"
   hkl_out = "tst_scalepack_unmerged_writer_out.sca"
-  open(hkl_in, "w").write(sca_raw)
+  with open(hkl_in, "w") as f:
+    f.write(sca_raw)
   reader = no_merge_original_index.reader(hkl_in)
   symm = crystal.symmetry(
     space_group_symbol="P21",
@@ -55,7 +56,8 @@ def exercise () :
     file_name=hkl_out,
     batch_numbers=reader.batch_numbers,
     spindle_flags=reader.spindle_flags)
-  sca_recycled = open(hkl_out).read()
+  with open(hkl_out) as f:
+    sca_recycled = f.read()
   assert not show_diff(sca_recycled, sca_raw)
   batches = reader.batch_as_miller_array(crystal_symmetry=symm)
   assert batches.indices().all_eq(i_obs.indices())
@@ -125,13 +127,14 @@ def exercise () :
 """
   hkl_in = "tst_scalepack_unmerged_writer2.sca"
   hkl_out = "tst_scalepack_unmerged_writer2_out.sca"
-  open(hkl_in, "w").write(sca_bad)
+  with open(hkl_in, "w") as f:
+    f.write(sca_bad)
   reader = no_merge_original_index.reader(hkl_in)
   with warnings.catch_warnings(record=True) as w:
     space_group_info = reader.space_group_info()
     assert (len(w) == 1)
     assert (str(space_group_info) == "F 41 3 2")
 
-if (__name__ == "__main__") :
+if (__name__ == "__main__"):
   exercise()
-  print "OK"
+  print("OK")

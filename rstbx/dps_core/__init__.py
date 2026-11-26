@@ -1,8 +1,9 @@
-from __future__ import division
+from __future__ import absolute_import, division, print_function
+from six.moves import range
 from cctbx.array_family import flex # import dependency
 
-import boost.python
-boost.python.import_ext("rstbx_ext")
+import boost_adaptbx.boost.python as bp
+bp.import_ext("rstbx_ext")
 from rstbx_ext import *
 import rstbx_ext as ext
 
@@ -11,7 +12,8 @@ import math
 from cctbx.crystal_orientation import basis_type
 from cctbx.crystal_orientation import ext as coext
 
-class _(boost.python.injector, coext.crystal_orientation):
+@bp.inject_into(coext.crystal_orientation)
+class _():
 
   def constrain(self,constraints):
 
@@ -70,11 +72,12 @@ def combocmp(a,b):
   return 1
 
 def directional_show(direction,message):
-  print message,"%.4f %8.2f %8.2f kmax=%2d kval=%5.1f kval2=%5.1f kval3=%5.1f"%(
+  print(message,"%.4f %8.2f %8.2f kmax=%2d kval=%5.1f kval2=%5.1f kval3=%5.1f"%(
     direction.real,180*direction.psi/math.pi, 180.*direction.phi/math.pi,
-    direction.kmax, direction.kval,direction.kval2,direction.kval3)
+    direction.kmax, direction.kval,direction.kval2,direction.kval3))
 
-class _(boost.python.injector, ext.dps_core):
+@bp.inject_into(ext.dps_core)
+class _():
 
   def combos(self,basis=10):
     """All interesting combinations of the directional candidates.
@@ -85,11 +88,12 @@ class _(boost.python.injector, ext.dps_core):
     MAXINDEX=basis
     bases = range(min(MAXINDEX,nc))
     comb=[]
-    for pp in xrange(len(bases)-2):
-      for qq in xrange(pp+1,len(bases)-1):
-        for rr in xrange(qq+1, len(bases)):
+    for pp in range(len(bases)-2):
+      for qq in range(pp+1,len(bases)-1):
+        for rr in range(qq+1, len(bases)):
           comb.append((bases[pp],bases[qq],bases[rr]))
-    comb.sort(combocmp)
+    from functools import cmp_to_key
+    comb.sort(key = cmp_to_key(combocmp))
     return comb
 
   def niggli(self, cutoff = 25.):

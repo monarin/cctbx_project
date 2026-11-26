@@ -1,28 +1,31 @@
 
-from __future__ import division
+from __future__ import absolute_import, division, print_function
 from mmtbx.rotamer.rotamer_eval import find_rotarama_data_dir
 from mmtbx.validation import rotalyze
-from iotbx import file_reader
 from iotbx import pdb
-from libtbx.test_utils import show_diff, Exception_expected
+from libtbx.test_utils import show_diff, Exception_expected, approx_equal
 from libtbx.utils import Sorry
 import libtbx.load_env
 from libtbx.easy_pickle import loads, dumps
-from cStringIO import StringIO
+from six.moves import cStringIO as StringIO
+from iotbx.data_manager import DataManager
+from libtbx.test_utils import convert_string_to_cif_long
 import os.path
+import json
+from six.moves import zip
 
 def exercise_rotalyze():
   regression_pdb = libtbx.env.find_in_repositories(
     relative_path="phenix_regression/pdb/jcm.pdb",
     test=os.path.isfile)
   if (regression_pdb is None):
-    print "Skipping exercise_rotalyze(): input pdb (jcm.pdb) not available"
+    print("Skipping exercise_rotalyze(): input pdb (jcm.pdb) not available")
     return
   if (find_rotarama_data_dir(optional=True) is None):
-    print "Skipping exercise_rotalyze(): rotarama_data directory not available"
+    print("Skipping exercise_rotalyze(): rotarama_data directory not available")
     return
-  pdb_in = file_reader.any_file(file_name=regression_pdb)
-  hierarchy = pdb_in.file_object.hierarchy
+  pdb_in = pdb.input(file_name=regression_pdb)
+  hierarchy = pdb_in.construct_hierarchy()
   pdb_io = pdb.input(file_name=regression_pdb)
   r = rotalyze.rotalyze(
     pdb_hierarchy=hierarchy,
@@ -89,17 +92,17 @@ def exercise_rotalyze():
      " B 377  GLU:1.00:15.0:311.7:166.2:160.1::Favored:mt-10",
      " B 378  THR:1.00:17.0:309.4::::Favored:m",
     ]
-    for idx, val in zip(line_indices, line_values) :
+    for idx, val in zip(line_indices, line_values):
       assert (output_lines[idx] == val), (idx, output_lines[idx])
 
   regression_pdb = libtbx.env.find_in_repositories(
     relative_path="phenix_regression/pdb/pdb1jxt.ent",
     test=os.path.isfile)
   if (regression_pdb is None):
-    print "Skipping exercise_ramalyze(): input pdb (pdb1jxt.ent) not available"
+    print("Skipping exercise_ramalyze(): input pdb (pdb1jxt.ent) not available")
     return
-  pdb_in = file_reader.any_file(file_name=regression_pdb)
-  hierarchy = pdb_in.file_object.hierarchy
+  pdb_in = pdb.input(file_name=regression_pdb)
+  hierarchy = pdb_in.construct_hierarchy()
   pdb_io = pdb.input(file_name=regression_pdb)
   r = rotalyze.rotalyze(
     pdb_hierarchy=hierarchy,
@@ -171,7 +174,7 @@ def exercise_rotalyze():
  A  46  ASN:1.00:38.7:301.6:117.9:::Favored:m110
 """)
 
-def exercise_2 () :
+def exercise_2():
   pdb_str = """\
 ATOM   2527  N   LEU A 261     -31.022 -24.808 107.479  1.00 28.22           N
 ATOM   2528  CA  LEU A 261     -30.054 -23.719 107.237  1.00 21.77           C
@@ -243,7 +246,7 @@ ATOM    476  NZ  LYS A  49       0.899   4.110  12.980  1.00 19.97           N
   hierarchy = pdb_io.construct_hierarchy()
   try :
     rotalyze.rotalyze(pdb_hierarchy=hierarchy)
-  except Sorry, e :
+  except Sorry as e :
     assert ("GLY A 262" in str(e))
   else :
     raise Exception_expected
@@ -288,7 +291,82 @@ ATOM    476  NZ  LYS A  49       0.899   4.110  12.980  1.00 19.97           N
         results.append(cur_rot)
   assert results == ['Cg_exo', 'OUTLIER', 'OUTLIER']
 
-if (__name__ == "__main__") :
+def exercise_rotalyze_json(test_mmcif=False):
+  regression_pdb = libtbx.env.find_in_repositories(
+    relative_path="phenix_regression/pdb/jcm.pdb",
+    test=os.path.isfile)
+  if (regression_pdb is None):
+    print("Skipping exercise_rotalyze(): input pdb (jcm.pdb) not available")
+    return
+  if (find_rotarama_data_dir(optional=True) is None):
+    print("Skipping exercise_rotalyze(): rotarama_data directory not available")
+    return
+  dm = DataManager()
+  if test_mmcif:
+    with open(regression_pdb) as f:
+      pdb_jcm_str = f.read()
+    pdb_jcm_str = convert_string_to_cif_long(pdb_jcm_str, chain_addition="LONGCHAIN")
+    dm.process_model_str("1", pdb_jcm_str)
+    m = dm.get_model("1")
+  else:
+    m = dm.get_model(regression_pdb)
+  rotalyze_json = rotalyze.rotalyze(pdb_hierarchy=m.get_hierarchy(), outliers_only=True).as_JSON()
+  rtjson_dict = json.loads(rotalyze_json)
+  #import pprint
+  #pprint.pprint(rtjson_dict)
+  assert len(rtjson_dict['flat_results'])==123, "tst_rotalyze json output not returning correct number of values"
+  assert approx_equal(rtjson_dict['flat_results'][0]['chi_angles'][0], 229.02299329063914), "tst_rotalyze json output first calculated chi dihedral angle not matching previous value"
+  assert rtjson_dict['flat_results'][0]['rotamer_name']=='OUTLIER', "tst_rotalyze json output first rotamer_name not matching previous value"
+  assert approx_equal(rtjson_dict['flat_results'][122]['chi_angles'][0], 328.0085051658891), "tst_rotalyze json output last calculated first chi dihedral angle not matching previous value"
+  assert approx_equal(rtjson_dict['flat_results'][122]['chi_angles'][1], 352.23811983072466), "tst_rotalyze json output last calculated second chi dihedral angle not matching previous value"
+  assert rtjson_dict['flat_results'][122]['rotamer_name']=='OUTLIER', "tst_rotalyze json output last rotamer_name not matching previous value"
+  from mmtbx.validation import test_utils
+  assert test_utils.count_dict_values(rtjson_dict['hierarchical_results'], "OUTLIER")==246, "tst_rotalyze json hierarchical output total number of rota outliers changed"
+  assert rtjson_dict['summary_results'][""]['num_allowed'] == 116, "tst_rotalyze json output summary total num_allowed not matching previous value"
+  assert rtjson_dict['summary_results'][""]['num_favored'] == 404, "tst_rotalyze json output summary total num_favored not matching previous value"
+  assert rtjson_dict['summary_results'][""]['num_outliers'] == 123, "tst_rotalyze json output summary total num_outliers not matching previous value"
+  assert rtjson_dict['summary_results'][""]['num_residues'] == 643, "tst_rotalyze json output summary total num_residues not matching previous value"
+  return rtjson_dict
+
+def exercise_rotalyze_pdb_vs_cif():
+  """PDB and mmCIF input must give the same answer.
+
+  Deliberately does NOT use phenix_regression. The absolute counts in the json exercise
+  are properties of that specific structure and still need that repository, but "do the
+  two input formats agree" can be answered by any model, so this uses a cctbx-owned one
+  and therefore runs in a cctbx-only build.
+
+  That matters because the old form of this check crashed rather than skipped: the
+  phenix_regression guard did a bare `return`, and the caller then subscripted the None
+  it got back, reporting a TypeError instead of a missing input file.
+  """
+  model_file = libtbx.env.find_in_repositories(
+    relative_path="mmtbx/regression/pdbs/p9.pdb",
+    test=os.path.isfile)
+  if (model_file is None):
+    print("Skipping exercise_rotalyze_pdb_vs_cif(): p9.pdb not available")
+    return
+  with open(model_file) as f:
+    pdb_str = f.read()
+  dm = DataManager()
+  dm.process_model_str("pdb", pdb_str)
+  from_pdb = json.loads(rotalyze.rotalyze(pdb_hierarchy=dm.get_model("pdb").get_hierarchy(), outliers_only=False).as_JSON())
+  dm.process_model_str("cif", convert_string_to_cif_long(
+    pdb_str, chain_addition="LONGCHAIN"))
+  from_cif = json.loads(rotalyze.rotalyze(pdb_hierarchy=dm.get_model("cif").get_hierarchy(), outliers_only=False).as_JSON())
+  assert len(from_pdb['flat_results']) > 0, \
+    "rotalyze produced nothing for p9.pdb, so the comparison below is vacuous"
+  assert from_pdb['summary_results'] == from_cif['summary_results'], \
+    "rotalyze summary results differ between pdb and cif input"
+
+if (__name__ == "__main__"):
   exercise_rotalyze()
   exercise_2()
-  print "OK"
+  exercise_rotalyze_pdb_vs_cif()
+  rt_dict = exercise_rotalyze_json()
+  rt_dict_cif = exercise_rotalyze_json(test_mmcif=True)
+  # Both are None without phenix_regression; the check above covers that case.
+  if rt_dict is not None and rt_dict_cif is not None:
+    assert rt_dict['summary_results'] == rt_dict_cif['summary_results'], "tst_rotalyze summary results changed between pdb and cif version"
+
+  print("OK")

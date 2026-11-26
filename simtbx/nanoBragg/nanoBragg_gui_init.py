@@ -1,11 +1,10 @@
-from __future__ import division
-
 '''
 Author      : Lyubimov, A.Y.
 Created     : 12/12/2017
-Last Changed: 12/12/2017
+Last Changed: 10/30/2018
 Description : SIMTBX (nanoBragg) GUI Initialization module
 '''
+from __future__ import absolute_import, division, print_function
 
 import os
 import wx
@@ -22,7 +21,7 @@ class MainWindow(wx.Frame):
   ''' Frame housing the entire app; all windows open from this one '''
 
   def __init__(self, parent, id, title):
-    wx.Frame.__init__(self, parent, id, title, size=(800, 800))
+    wx.Frame.__init__(self, parent, id, title)
     self.parent = parent
     self.simtbx_phil = inp.generate_simtbx_phil()
     self.sparams = self.simtbx_phil.extract()
@@ -33,7 +32,7 @@ class MainWindow(wx.Frame):
     self.main_sizer = wx.BoxSizer(wx.VERTICAL)
 
     # Setup toolbar
-    self.toolbar = self.CreateToolBar(style=wx.TB_3DBUTTONS | wx.TB_TEXT)
+    self.toolbar = self.CreateToolBar(style=wx.TB_TEXT)
     quit_bmp = bitmaps.fetch_icon_bitmap('actions', 'exit')
     self.tb_btn_quit = self.toolbar.AddLabelTool(wx.ID_EXIT, label='Quit',
                                                  bitmap=quit_bmp,
@@ -149,8 +148,7 @@ class InitAll(object):
     self.input_list = self.make_input_list()
 
     if self.input_list is not None:
-      for i in self.input_list: print i
+      for i in self.input_list: print(i)
       return True
     else:
       return False
-

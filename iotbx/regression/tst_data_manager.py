@@ -1,13 +1,17 @@
-from __future__ import division, print_function
+from __future__ import absolute_import, division, print_function
 
 import os
 
+import iotbx.phil
 import libtbx.load_env
 import libtbx.phil
-import mmtbx.model
 
+from cctbx import crystal
+from libtbx import group_args
+from libtbx.program_template import ProgramTemplate
 from libtbx.utils import Sorry
 from iotbx.data_manager import DataManager
+from six.moves import zip
 
 # -----------------------------------------------------------------------------
 def test_data_manager():
@@ -15,17 +19,18 @@ def test_data_manager():
 
   a.add_model('a', 'b')
   a.add_model('c', 'd')
-  assert (a.get_model() == 'b')
-  assert (a.get_model('a') == 'b')
-  assert (a.get_model('c') == 'd')
+  assert a.get_model() == 'b'
+  assert a.get_model('a') == 'b'
+  assert a.get_model('c') == 'd'
+  assert a.get_model_names() == ['a', 'c']
 
-  assert (a.has_models())
-  assert (a.has_models(exact_count=True, expected_n=2))
-  assert (not a.has_models(expected_n=3, raise_sorry=False))
+  assert a.has_models()
+  assert a.has_models(exact_count=True, expected_n=2)
+  assert not a.has_models(expected_n=3, raise_sorry=False)
 
   # exporting phil
   working_phil = a.export_phil_scope()
-  assert(working_phil.extract().data_manager.model_files == ['a', 'c'])
+  assert len(working_phil.extract().data_manager.model) == 2
 
   # data tracking
   try:
@@ -39,10 +44,9 @@ def test_data_manager():
     pass
 
   a.set_default_model('c')
-  assert (a.get_model() == 'd')
+  assert a.get_model() == 'd'
 
-  assert ( (a.get_model_names() == ['a', 'c']) or
-           (a.get_model_names() == ['c', 'a']) )
+  assert a.get_model_names() == ['a', 'c'] or a.get_model_names() == ['c', 'a']
 
   a.remove_model('c')
   try:
@@ -59,8 +63,8 @@ def test_data_manager():
     pass
 
   a = DataManager(datatypes=['sequence', 'phil'])
-  assert (a.get_sequence_names() == [])
-  assert (not hasattr(a, 'get_model'))
+  assert a.get_sequence_names() == []
+  assert not hasattr(a, 'get_model')
 
   # phil functions
   test_phil_str = '''
@@ -72,18 +76,18 @@ data_manager {
     f.write(test_phil_str)
 
   # loading file with get function
-  assert(len(a.get_phil_names()) == 0)
+  assert len(a.get_phil_names()) == 0
   p = a.get_phil('data_manager_test.eff')
-  assert(type(p) == libtbx.phil.scope)
-  assert('data_manager_test.eff' in a.get_phil_names())
+  assert isinstance(p, libtbx.phil.scope)
+  assert 'data_manager_test.eff' in a.get_phil_names()
 
   # loading file with phil
   a = DataManager(datatypes=['phil'])
-  test_phil = libtbx.phil.parse(test_phil_str)
+  test_phil = iotbx.phil.parse(test_phil_str)
   a.load_phil_scope(test_phil)
 
-  assert('data_manager_test.eff' in a.get_phil_names())
-  assert(a.get_default_phil_name() == 'data_manager_test.eff')
+  assert 'data_manager_test.eff' in a.get_phil_names()
+  assert a.get_default_phil_name() == 'data_manager_test.eff'
 
   os.remove('data_manager_test.eff')
 
@@ -93,20 +97,39 @@ data_manager {
   a.add_phil('c','d')
   a.add_sequence('e','f')
 
-  a.write_model_file('a.dat', a.get_model(), overwrite=True)
-  a.write_phil_file('c.dat', a.get_phil(), overwrite=True)
-  a.write_sequence_file('e.dat', a.get_sequence(), overwrite=True)
+  a.write_model_file(a.get_model(), filename='a.dat', overwrite=True)
+  a.write_phil_file(a.get_phil(), filename='c.dat', overwrite=True)
+  a.write_sequence_file(a.get_sequence(), filename='e.dat', overwrite=True)
 
   with open('a.dat', 'r') as f:
     lines = f.readlines()
-  assert(lines[0] == 'b')
+  assert lines[0] == 'b'
 
   os.remove('a.dat')
   os.remove('c.dat')
   os.remove('e.dat')
 
+  # check datatypes with parent
+  datatypes = ['miller_array', 'map_coefficients']
+  dm = DataManager(datatypes=datatypes)
+  assert len(dm.datatypes) == len(datatypes)
+
+  datatypes = ['miller_array', 'map_coefficients', 'phil', 'model']
+  dm = DataManager(datatypes=datatypes)
+  assert len(dm.datatypes) == len(datatypes)
+
+  datatypes = ['phil', 'model', 'miller_array', 'map_coefficients',]
+  dm = DataManager(datatypes=datatypes)
+  assert len(dm.datatypes) == len(datatypes)
+
 # -----------------------------------------------------------------------------
 def test_model_datatype():
+  import mmtbx.monomer_library.server
+  try:
+    mon_lib_srv = mmtbx.monomer_library.server.server()
+  except mmtbx.monomer_library.server.MonomerLibraryServerError:
+    print("Can not initialize monomer_library, skipping test_model_datatype.")
+    return
 
   # 1yjp
   model_str = '''
@@ -188,21 +211,165 @@ MASTER      238    0    0    0    0    0    0    6   66    1    0    1
 END
 '''
 
+  # test reading/writing PDB
+  test_filename = 'test_model.pdb'
+  test_output_filename = 'test_model_output.pdb'
+  test_eff = 'model.eff'
   dm = DataManager(['model'])
-  dm.process_model_str('test', model_str)
-  assert('test' in dm.get_model_names())
+  dm.process_model_str(test_filename, model_str)
+  dm.write_model_file(model_str, filename=test_output_filename, overwrite=True)
+  m = dm.get_model(test_output_filename)
+  assert test_output_filename in dm.get_model_names()
+  dm.write_model_file(m, overwrite=True)
+  pdb_filename = 'cctbx_program.pdb'
+  assert os.path.exists(pdb_filename)
+  dm.process_model_file(pdb_filename)
+  assert not dm.get_model(pdb_filename).input_model_format_cif()
+  dm.write_model_file(m, test_filename, overwrite=True)
+  os.remove(test_output_filename)
 
+  # test reading PDB writing CIF
+  test_filename = 'test_model.pdb'
+  test_output_filename = 'test_model.cif'
+  dm = DataManager(['model'])
+  dm.process_model_str(test_filename, model_str)
+  m = dm.get_model(test_filename)
+  dm.write_model_file(m, filename=test_output_filename, format='cif',
+      overwrite=True)
+  m = dm.get_model(test_output_filename)
+  assert test_output_filename in dm.get_model_names()
+  dm.write_model_file(m, overwrite=True)
+  cif_filename = 'cctbx_program.cif'
+  assert os.path.exists(cif_filename)
+  dm.process_model_file(cif_filename)
+  assert dm.get_model(cif_filename).input_model_format_cif()
+
+  # test type
+  assert dm.get_model_type() == ['x_ray']
+  dm.set_model_type(test_filename, ['neutron'])
+  assert dm.get_model_type() == ['neutron']
+  phil_scope = dm.export_phil_scope()
+  extract = phil_scope.extract()
+  assert extract.data_manager.model[0].type == ['neutron']
+  with open(test_eff, 'w') as f:
+    f.write(phil_scope.as_str())
+  new_phil_scope = iotbx.phil.parse(file_name=test_eff)
+  new_dm = DataManager(['model'])
+  new_dm.load_phil_scope(new_phil_scope)
+  assert new_dm.get_model_type(test_filename) == ['neutron']
+  new_dm = DataManager(['model'])
+  try:
+    new_dm.set_default_model_type(['nonsense'])
+  except Sorry as s:
+    assert 'Unrecognized' in str(s)
+  # single model_type
+  new_dm.set_default_model_type(['electron'])
+  new_dm.process_model_file(test_filename)
+  assert new_dm.get_model_type() == ['electron']
+  assert len(new_dm.get_model_names()) == 1
+  assert len(new_dm.get_model_names(model_type='x_ray')) == 0
+  assert len(new_dm.get_model_names(model_type='electron')) == 1
+  assert len(new_dm.get_model_names(model_type='neutron')) == 0
+  assert len(new_dm.get_model_names(model_type='reference')) == 0
+  # multiple model_type
+  new_dm.set_model_type(filename=test_filename, model_type=['x_ray', 'reference'])
+  assert len(new_dm.get_model_names(model_type='x_ray')) == 1
+  assert len(new_dm.get_model_names(model_type='electron')) == 0
+  assert len(new_dm.get_model_names(model_type='neutron')) == 0
+  assert len(new_dm.get_model_names(model_type='reference')) == 1
+  new_dm.set_model_type(filename=test_filename, model_type=['x_ray', 'neutron'])
+  try:
+    new_dm.get_model(filename=test_filename)
+  except Sorry as s:
+    assert 'There is more than one model type' in str(s)
+  try:
+    new_dm.get_model(filename=test_filename, model_type='electron')
+  except Sorry as s:
+    assert 'electron, is not one of the types' in str(s)
+  try:
+    new_dm.get_model(filename=test_filename, model_type='not_a_valid_type')
+  except Sorry as s:
+    assert 'type, "not_a_valid_type' in str(s)
+  # check for copy
+  new_dm.set_model_type(filename=test_filename, model_type=['electron'])
+  model = new_dm.get_model(filename=test_filename)
+  test_model = new_dm.get_model(filename=test_filename, model_type='electron')
+  assert test_model is model
+  new_dm.set_model_type(filename=test_filename, model_type=['electron', 'neutron'])
+  test_model = new_dm.get_model(filename=test_filename, model_type='electron')
+  assert test_model is model
+  test_model = new_dm.get_model(filename=test_filename, model_type='neutron')
+  assert test_model is not model
+
+  # check PHIL
+  new_dm.set_model_type(filename=test_filename, model_type=['x_ray', 'reference'])
+  multiple_type_phil_str = new_dm.export_phil_scope().as_str()
+  multiple_type_phil = iotbx.phil.parse(multiple_type_phil_str)
+  new_dm = DataManager(phil=multiple_type_phil)
+  assert new_dm.get_model_names()[0] == test_filename
+  assert len(new_dm.get_model_names(model_type='x_ray')) == 1
+  assert len(new_dm.get_model_names(model_type='electron')) == 0
+  assert len(new_dm.get_model_names(model_type='neutron')) == 0
+  assert len(new_dm.get_model_names(model_type='reference')) == 1
+  try:
+    new_dm.set_model_type(filename=test_filename, model_type=['electron', 'nonsense'])
+  except Sorry as s:
+    assert 'Unrecognized' in str(s)
+
+  # check processing file by getting the object
+  dm = DataManager(['model', 'phil'])
+  assert test_output_filename not in dm.get_model_names()
+  dm.get_model(test_output_filename)
+  assert test_output_filename in dm.get_model_names()
+  try:
+    dm.get_model('model.eff')
+  except Sorry as s:
+    assert 'not a recognized model file' in str(s)
+  assert test_filename not in dm.get_phil_names()
+  try:
+    dm.get_phil(test_filename)
+  except Sorry as s:
+    assert 'not a recognized phil file' in str(s)
+
+  # check processing file by setting a default
+  dm = DataManager(['model', 'phil'])
+  assert test_output_filename not in dm.get_model_names()
+  dm.set_default_model(test_output_filename)
+  assert 'does_not_exist.pdb' not in dm.get_model_names()
+  try:
+    dm.set_default_model('does_not_exist.pdb')
+  except Sorry as s:
+    assert 'find the file does_not_exist.pdb' in str(s)
+  assert 'model.eff' not in dm.get_model_names()
+  try:
+    dm.set_default_model('model.eff')
+  except Sorry as s:
+    assert 'not a recognized model file' in str(s)
+  assert test_filename not in dm.get_phil_names()
+  try:
+    dm.set_default_phil(test_filename)
+  except Sorry as s:
+    assert 'not a recognized phil file' in str(s)
+
+  os.remove(test_eff)
+  os.remove(test_filename)
+  os.remove(test_output_filename)
+
+  # test reading/writing CIF
   test_filename = 'test_model_datatype.cif'
-  dm.write_model_file(test_filename,
-                      dm.get_model().model_as_mmcif(), overwrite=True)
+  dm.write_model_file(dm.get_model().model_as_mmcif(),
+                      filename=test_filename, overwrite=True)
   dm.process_model_file(test_filename)
   os.remove(test_filename)
-  assert(test_filename in dm.get_model_names())
-
-  extract = mmtbx.model.manager.get_default_pdb_interpretation_params()
-  extract.pdb_interpretation.use_neutron_distances = True
-  dm.update_pdb_interpretation_for_model('test', extract)
-  assert(dm.get_model().restraints_manager is None)
+  assert test_filename in dm.get_model_names()
+  m = dm.get_model(test_filename)
+  dm.write_model_file(m, overwrite=True)
+  cif_filename = 'cctbx_program.cif'
+  assert os.path.exists(cif_filename)
+  dm.process_model_file(cif_filename)
+  assert dm.get_model(cif_filename).input_model_format_cif()
+  os.remove(pdb_filename)
+  os.remove(cif_filename)
 
 # -----------------------------------------------------------------------------
 def test_model_and_restraint():
@@ -323,8 +490,9 @@ URE plan-1  HN22   0.020
   restraint_filename = 'ure.cif'
 
   dm = DataManager(['model', 'restraint'])
-  dm.write_model_file(model_filename, model_str, overwrite=True)
-  dm.write_restraint_file(restraint_filename, restraint_str, overwrite=True)
+  dm.write_model_file(model_str, filename=model_filename, overwrite=True)
+  dm.write_restraint_file(restraint_str, filename=restraint_filename,
+                          overwrite=True)
 
   # fails because no restraints are loaded
   dm.process_model_file(model_filename)
@@ -357,14 +525,208 @@ YTGDHYATFSLIDQTC
 
   dm = DataManager(['sequence'])
   dm.process_sequence_file(seq_filename)
-  assert(seq_filename in dm.get_sequence_names())
+  assert seq_filename in dm.get_sequence_names()
 
   seq = dm.get_sequence()
   new_str = dm.get_sequence_as_string(seq_filename)
-  for a,b in zip(new_str, seq_str):
-    assert(a == b)
+  for a, b in zip(new_str, seq_str):
+    assert a == b
 
   os.remove(seq_filename)
+
+# -----------------------------------------------------------------------------
+def test_json_datatype():
+  """Exercise the JSON DataManager datatype: in-memory CRUD, file round-trip,
+  flexible write (object or pre-formatted string), and error handling."""
+  import json
+
+  filename = 'test_dm.json'
+  data = {'name': 'cctbx', 'values': [1, 2, 3], 'nested': {'a': True}}
+
+  # in-memory: add / get / names / default / has / remove
+  dm = DataManager(['json'])
+  dm.add_json(filename, data)
+  assert filename in dm.get_json_names()
+  assert dm.get_default_json_name() == filename
+  assert dm.get_json() == data            # no-arg returns the default
+  assert dm.get_json(filename) == data
+  assert dm.has_jsons()
+  assert dm.has_jsons(expected_n=1, exact_count=True)
+  dm.remove_json(filename)
+  assert filename not in dm.get_json_names()
+  assert not dm.has_jsons()
+
+  # output-filename helper appends .json
+  dm = DataManager(['json'])
+  dm.set_default_output_filename('myout')
+  assert dm.get_default_output_json_filename() == 'myout.json'
+
+  # process a real file -> parsed object round-trips
+  with open(filename, 'w') as f:
+    json.dump(data, f)
+  dm = DataManager(['json'])
+  assert dm.process_json_file(filename) == filename
+  assert dm.get_json(filename) == data
+  os.remove(filename)
+
+  # write a Python object -> read back equal
+  out = 'test_dm_out.json'
+  dm = DataManager(['json'])
+  dm.write_json_file(data, filename=out, overwrite=True)
+  with open(out) as f:
+    assert json.load(f) == data
+  os.remove(out)
+
+  # write a pre-formatted string -> written verbatim
+  pre = '{"x": 1}'
+  dm.write_json_file(pre, filename=out, overwrite=True)
+  with open(out) as f:
+    assert f.read() == pre
+  os.remove(out)
+
+  # invalid JSON content -> Sorry
+  bad = 'test_dm_bad.json'
+  with open(bad, 'w') as f:
+    f.write('{bad')
+  dm = DataManager(['json'])
+  got_sorry = False
+  try:
+    dm.process_json_file(bad)
+  except Sorry:
+    got_sorry = True
+  assert got_sorry
+  os.remove(bad)
+
+  # missing file -> Sorry (NOT a raw FileNotFoundError)
+  dm = DataManager(['json'])
+  got_sorry = False
+  try:
+    dm.process_json_file('does_not_exist_zzz.json')
+  except Sorry:
+    got_sorry = True
+  assert got_sorry
+
+# -----------------------------------------------------------------------------
+def test_yaml_datatype():
+  """Exercise the YAML DataManager datatype. Skips if PyYAML is unavailable
+  (mirrors the monomer_library skip in test_model_datatype)."""
+  try:
+    import yaml
+  except ImportError:
+    print('Skipping test_yaml_datatype, PyYAML not available')
+    return
+
+  filename = 'test_dm.yaml'
+  data = {'name': 'cctbx', 'values': [1, 2, 3], 'nested': {'a': True}}
+
+  # in-memory: add / get / names / default / has / remove
+  dm = DataManager(['yaml'])
+  dm.add_yaml(filename, data)
+  assert filename in dm.get_yaml_names()
+  assert dm.get_default_yaml_name() == filename
+  assert dm.get_yaml() == data            # no-arg returns the default
+  assert dm.get_yaml(filename) == data
+  assert dm.has_yamls()
+  assert dm.has_yamls(expected_n=1, exact_count=True)
+  dm.remove_yaml(filename)
+  assert filename not in dm.get_yaml_names()
+  assert not dm.has_yamls()
+
+  # output-filename helper appends .yaml
+  dm = DataManager(['yaml'])
+  dm.set_default_output_filename('myout')
+  assert dm.get_default_output_yaml_filename() == 'myout.yaml'
+
+  # process a real file -> parsed object round-trips
+  with open(filename, 'w') as f:
+    yaml.safe_dump(data, f)
+  dm = DataManager(['yaml'])
+  assert dm.process_yaml_file(filename) == filename
+  assert dm.get_yaml(filename) == data
+  os.remove(filename)
+
+  # write a Python object -> read back equal
+  out = 'test_dm_out.yaml'
+  dm = DataManager(['yaml'])
+  dm.write_yaml_file(data, filename=out, overwrite=True)
+  with open(out) as f:
+    assert yaml.safe_load(f) == data
+  os.remove(out)
+
+  # write a pre-formatted string -> written verbatim
+  pre = 'x: 1\n'
+  dm.write_yaml_file(pre, filename=out, overwrite=True)
+  with open(out) as f:
+    assert f.read() == pre
+  os.remove(out)
+
+  # GENUINELY malformed YAML -> Sorry. NOTE: arbitrary text like 'not yaml'
+  # is VALID YAML (parses to the string), so it would NOT raise. Use an
+  # unbalanced flow collection to force a yaml.YAMLError.
+  bad = 'test_dm_bad.yaml'
+  with open(bad, 'w') as f:
+    f.write('[1, 2')
+  dm = DataManager(['yaml'])
+  got_sorry = False
+  try:
+    dm.process_yaml_file(bad)
+  except Sorry:
+    got_sorry = True
+  assert got_sorry
+  os.remove(bad)
+
+  # empty file parses to None (the one behavioral asymmetry with JSON)
+  empty = 'test_dm_empty.yaml'
+  with open(empty, 'w') as f:
+    f.write('')
+  dm = DataManager(['yaml'])
+  assert dm.process_yaml_file(empty) == empty
+  assert dm.get_yaml(empty) is None
+  os.remove(empty)
+
+# -----------------------------------------------------------------------------
+def test_yaml_without_pyyaml():
+  """Guard the lazy PyYAML import in iotbx/data_manager/yaml.py: a DataManager
+  with the yaml datatype must still construct when PyYAML is absent, and YAML
+  use must raise a user-facing Sorry (not ImportError). Runs regardless of
+  whether PyYAML is installed."""
+  import sys
+
+  fn = 'test_dm_nopyyaml.yaml'
+  _missing = object()
+  saved = sys.modules.get('yaml', _missing)
+  sys.modules['yaml'] = None   # makes "import yaml" raise ImportError
+  try:
+    # construction must succeed without PyYAML (the import is lazy)
+    dm = DataManager(['yaml'])
+    assert dm.supports('yaml')
+
+    # reading a real YAML file must surface the install-guidance Sorry
+    with open(fn, 'w') as f:
+      f.write('a: 1\n')
+    got_sorry = False
+    try:
+      dm.process_yaml_file(fn)
+    except Sorry as e:
+      got_sorry = True
+      assert 'PyYAML' in str(e)
+    assert got_sorry
+
+    # writing a Python object must surface the same Sorry
+    got_sorry = False
+    try:
+      dm.write_yaml_file({'a': 1}, filename='wont_write.yaml', overwrite=True)
+    except Sorry as e:
+      got_sorry = True
+      assert 'PyYAML' in str(e)
+    assert got_sorry
+  finally:
+    if saved is _missing:
+      sys.modules.pop('yaml', None)
+    else:
+      sys.modules['yaml'] = saved
+    if os.path.isfile(fn):
+      os.remove(fn)
 
 # -----------------------------------------------------------------------------
 def test_miller_array_datatype():
@@ -377,39 +739,733 @@ def test_miller_array_datatype():
   dm.process_miller_array_file(data_mtz)
 
   # test labels
-  labels = ['M_ISYM', 'BATCH', 'I, SIGI', 'IPR, SIGIPR', 'FRACTIONCALC',
-            'XDET', 'YDET', 'ROT', 'WIDTH', 'LP', 'MPART', 'FLAG', 'BGPKRATIOS']
-  for label in dm.get_miller_array_labels():
-    assert(label in labels)
+  labels = ['M_ISYM', 'BATCH', 'I,SIGI,merged', 'IPR,SIGIPR,merged',
+            'FRACTIONCALC', 'XDET', 'YDET', 'ROT', 'WIDTH', 'LP', 'MPART',
+            'FLAG', 'BGPKRATIOS']
+  for label in dm.get_miller_array_all_labels():
+    assert label in labels
 
-  assert(len(dm.get_miller_arrays()) == len(dm.get_miller_array_labels()))
+  assert len(dm.get_miller_arrays()) == len(dm.get_miller_array_all_labels())
 
   # test access by label
-  label = dm.get_miller_array_labels()[3]
-  new_label = ', '.join(dm.get_miller_arrays(labels=[label])[0].info().labels)
-  assert(label == new_label)
+  label = dm.get_miller_array_all_labels()[3]
+  new_label = dm.get_miller_arrays(labels=[label])[0].info().label_string()
+  assert label == new_label
 
   # test custom PHIL
-  dm.write_phil_file('test.phil', dm.export_phil_scope().as_str(),
-                     overwrite=True)
-  loaded_phil = libtbx.phil.parse(file_name='test.phil')
+  dm.write_phil_file(dm.export_phil_scope().as_str(),
+                     filename='test.phil', overwrite=True)
+  loaded_phil = iotbx.phil.parse(file_name='test.phil')
   new_dm = DataManager(['miller_array', 'phil'])
   new_dm.load_phil_scope(loaded_phil)
-  assert(data_mtz == new_dm.get_default_miller_array_name())
-  for label in new_dm.get_miller_array_labels():
-    assert(label in labels)
+  assert data_mtz == new_dm.get_default_miller_array_name()
+  for label in new_dm.get_miller_array_all_labels():
+    assert label in labels
 
   os.remove('test.phil')
 
+  # test type
+  assert dm.get_miller_array_type() == ['x_ray']
+  dm.set_miller_array_user_selected_labels()
+  label = labels[3]
+  dm.set_miller_array_type(data_mtz, label, ['electron'])
+  assert dm.get_miller_array_type(label=label) == ['electron']
+  dm.write_phil_file(dm.export_phil_scope().as_str(),
+                     filename='test_phil', overwrite=True)
+  loaded_phil = iotbx.phil.parse(file_name='test_phil')
+  new_dm.load_phil_scope(loaded_phil)
+  assert new_dm.get_miller_array_type(label=label) == ['electron']
+  new_dm = DataManager(['miller_array'])
+  try:
+    new_dm.set_default_miller_array_type(['q'])
+  except Sorry as s:
+    assert 'Unrecognized miller_array type, "q,"' in str(s)
+  new_dm.set_default_miller_array_type(['neutron'])
+  new_dm.process_miller_array_file(data_mtz)
+  assert new_dm.get_miller_array_type(label=label) == ['neutron']
+  os.remove('test_phil')
+
+  # test array_type
+  assert dm.get_miller_array_array_type() == 'integer'
+  label = labels[6]
+  dm.set_miller_array_array_type(data_mtz, label, 'nonsense')
+  assert dm.get_miller_array_array_type(label=label) == 'nonsense'
+  dm.write_phil_file(dm.export_phil_scope().as_str(),
+                     filename='test_phil', overwrite=True)
+  loaded_phil = iotbx.phil.parse(file_name='test_phil')
+  new_dm.load_phil_scope(loaded_phil)
+  assert new_dm.get_miller_array_array_type(label=label) == 'nonsense'
+  new_dm = DataManager(['miller_array'])
+  try:
+    new_dm.set_default_miller_array_array_type('q')
+  except Sorry as s:
+    assert 'Unrecognized miller_array type, "q,"' in str(s)
+  new_dm.set_default_miller_array_array_type('intensity')
+  new_dm.process_miller_array_file(data_mtz)
+  assert new_dm.get_miller_array_array_type(label=label) == 'intensity'
+
+  os.remove('test_phil')
+
+  # test writing file
+  arrays = dm.get_miller_arrays()
+  dataset = arrays[2].as_mtz_dataset(column_root_label='label1')
+  dataset.add_miller_array(miller_array=arrays[3], column_root_label='label2')
+  mtz_object = dataset.mtz_object()
+  dm.write_miller_array_file(mtz_object, filename='test.mtz', overwrite=True)
+  dm.process_miller_array_file('test.mtz')
+  new_labels = dm.get_miller_array_all_labels('test.mtz')
+  assert 'label1,SIGlabel1' in new_labels
+  assert 'label2,SIGlabel2' in new_labels
+
+  os.remove('test.mtz')
+
+  # test file server
+  dm.set_miller_array_user_selected_labels(labels=[])
+  fs1 = dm.get_reflection_file_server()
+  fs2 = dm.get_reflection_file_server([data_mtz, 'test.mtz'])
+  assert len(fs1.miller_arrays) == len(fs2.miller_arrays)
+  cs = crystal.symmetry(
+    unit_cell=dm.get_miller_arrays()[0].crystal_symmetry().unit_cell(),
+    space_group_symbol='P1')
+  fs = dm.get_reflection_file_server(crystal_symmetry=cs)
+  assert fs.crystal_symmetry.is_similar_symmetry(cs)
+  assert not fs.crystal_symmetry.is_similar_symmetry(
+    dm.get_miller_arrays()[0].crystal_symmetry())
+  fs = dm.get_reflection_file_server(labels=[None, ['I,SIGI,merged']])
+  assert len(fs.get_miller_arrays(None)) == len(labels)
+  fs = dm.get_reflection_file_server(labels=[['I,SIGI,merged']])
+  assert len(fs.get_miller_arrays(None)) == 3
+  fs = dm.get_reflection_file_server(labels=[['I,SIGI,merged'], ['label1,SIGlabel1']])
+  assert len(fs.get_miller_arrays(None)) == 2
+  fs = dm.get_reflection_file_server(labels=[['I,SIGI,merged'], ['label2,SIGlabel2']])
+  assert len(fs.get_miller_arrays(None)) == 2
+  fs = dm.get_reflection_file_server(labels=[['I,SIGI,merged'],
+                                             ['label1,SIGlabel1', 'label2,SIGlabel2']])
+  assert len(fs.get_miller_arrays(None)) == 3
+  fs = dm.get_reflection_file_server(labels=[['I,SIGI,merged'], ['I,SIGI,merged']])
+  assert len(fs.get_miller_arrays(None)) == 1
+  miller_array = fs.get_amplitudes(None, None, True, None, None)
+  assert miller_array.info().label_string() == 'I,as_amplitude_array,merged'
+
+  for label in dm.get_miller_array_all_labels():
+    dm.set_miller_array_type(label=label, array_type=['electron'])
+  fs = dm.get_reflection_file_server(array_type='x_ray')
+  assert len(fs.get_miller_arrays(None)) == 2
+  fs = dm.get_reflection_file_server(array_type='electron')
+  assert len(fs.get_miller_arrays(None)) == 13
+  fs = dm.get_reflection_file_server(filenames=[data_mtz],
+    labels=[['I,SIGI,merged', 'IPR,SIGIPR,merged']], array_type='neutron')
+  assert fs is None
+  for label in ['I,SIGI,merged', 'IPR,SIGIPR,merged']:
+    dm.set_miller_array_type(label=label, array_type=['x_ray'])
+  fs = dm.get_reflection_file_server(filenames=[data_mtz],
+    labels=[['I,SIGI,merged', 'IPR,SIGIPR,merged']], array_type='x_ray')
+  assert len(fs.get_miller_arrays(data_mtz)) == 2
+  fs = dm.get_reflection_file_server(filenames=[data_mtz], array_type='x_ray')
+  assert len(fs.get_miller_arrays(data_mtz)) == 2
+  fs = dm.get_reflection_file_server(filenames=[data_mtz], array_type='electron')
+  assert len(fs.get_miller_arrays(data_mtz)) == 11
+
+  # test subset of labels
+  label_subset = labels[3:8]
+  dm = DataManager(['miller_array', 'phil'])
+  dm.process_miller_array_file(data_mtz)
+  dm.set_miller_array_user_selected_labels(labels=label_subset)
+  dm.set_miller_array_type(label=label_subset[2], array_type=['electron'])
+  assert dm.get_miller_array_type(label=label_subset[2]) == ['electron']
+  dm.write_phil_file(dm.export_phil_scope().as_str(), filename='test.phil',
+                     overwrite=True)
+  loaded_phil = iotbx.phil.parse(file_name='test.phil')
+  new_dm = DataManager(['miller_array', 'phil'])
+  new_dm.load_phil_scope(loaded_phil)
+  assert new_dm.get_miller_array_type(label=label_subset[2]) == ['electron']
+  fs = new_dm.get_reflection_file_server(array_type='x_ray', labels=[label_subset])
+  assert len(fs.get_miller_arrays(None)) == 4
+  fs = new_dm.get_reflection_file_server(array_type='electron', labels=[label_subset])
+  assert len(fs.get_miller_arrays(None)) == 1
+  os.remove('test.phil')
+
+  label_subset = list()
+  dm = DataManager(['miller_array', 'phil'])
+  dm.process_miller_array_file(data_mtz)
+  dm.write_phil_file(dm.export_phil_scope().as_str(), filename='test.phil',
+                     overwrite=True)
+  loaded_phil = iotbx.phil.parse(file_name='test.phil')
+  new_dm = DataManager(['miller_array', 'phil'])
+  new_dm.load_phil_scope(loaded_phil)
+  fs = new_dm.get_reflection_file_server(array_type='x_ray')
+  assert len(fs.get_miller_arrays(None)) == 13
+  fs = new_dm.get_reflection_file_server(array_type='electron')
+  assert fs is None
+  os.remove('test.phil')
+
 # -----------------------------------------------------------------------------
-if (__name__ == '__main__'):
+def test_real_map_datatype():
+
+  data_dir = os.path.dirname(os.path.abspath(__file__))
+  data_ccp4 = os.path.join(data_dir, 'data',
+                          'non_zero_origin_map.ccp4')
+
+  dm = DataManager(['real_map', 'phil'])
+  dm.process_real_map_file(data_ccp4)
+  assert dm.has_real_maps()
+
+  # test custom PHIL
+  dm.write_phil_file(dm.export_phil_scope().as_str(),
+                     filename='test.phil', overwrite=True)
+  loaded_phil = iotbx.phil.parse(file_name='test.phil')
+  new_dm = DataManager(['real_map', 'phil'])
+  new_dm.load_phil_scope(loaded_phil)
+  assert data_ccp4 == new_dm.get_default_real_map_name()
+  os.remove('test.phil')
+
+  # test writing and reading file
+  mm = dm.get_real_map()
+  mm.shift_origin()
+  dm.write_real_map_file(mm, filename='test.ccp4', overwrite=True)
+  dm.process_real_map_file('test.ccp4')
+  new_mm = dm.get_real_map('test.ccp4')
+  assert not new_mm.is_similar(mm)
+  new_mm.shift_origin()
+  assert new_mm.is_similar(mm)
+
+  os.remove('test.ccp4')
+
+# -----------------------------------------------------------------------------
+def test_map_mixins():
+  dm = DataManager(['real_map'])
+  assert not hasattr(dm, 'has_real_maps_or_map_coefficients')
+  assert hasattr(dm, 'has_real_maps')
+  assert not hasattr(dm, 'has_map_coefficients')
+
+  dm = DataManager(['map_coefficients'])
+  assert not hasattr(dm, 'has_real_maps_or_map_coefficients')
+  assert not hasattr(dm, 'has_real_maps')
+  assert hasattr(dm, 'has_map_coefficients')
+
+  dm = DataManager()
+  assert hasattr(dm, 'has_real_maps_or_map_coefficients')
+  assert hasattr(dm, 'has_real_maps')
+  assert hasattr(dm, 'has_map_coefficients')
+
+  real_map_file = libtbx.env.under_dist('iotbx', 'regression/data/D7.ccp4')
+  map_coefficients_file = 'D7.mtz'
+  m = dm.get_real_map(real_map_file)
+  mc = m.map_as_fourier_coefficients(d_min=3)
+  mtz_dataset = mc.as_mtz_dataset(column_root_label='F')
+  mtz_object=mtz_dataset.mtz_object()
+  dm.write_miller_array_file(mtz_object, filename=map_coefficients_file)
+
+  dm = DataManager()
+  assert not dm.has_real_maps_or_map_coefficients(expected_n=1, exact_count=True)
+  dm.process_real_map_file(real_map_file)
+  assert dm.has_real_maps(expected_n=1, exact_count=True)
+  assert dm.has_real_maps_or_map_coefficients(expected_n=1, exact_count=True)
+  dm.process_map_coefficients_file(map_coefficients_file)
+  assert dm.has_map_coefficients(expected_n=1, exact_count=True)
+  assert not dm.has_real_maps_or_map_coefficients(expected_n=1, exact_count=True)
+  assert dm.has_real_maps_or_map_coefficients(expected_n=1, exact_count=False)
+  assert dm.has_real_maps_or_map_coefficients(expected_n=2, exact_count=True)
+
+  os.remove(map_coefficients_file)
+
+# -----------------------------------------------------------------------------
+def test_real_map_mixins():
+  dm = DataManager(['map_coefficients'])
+  assert not hasattr(dm, 'get_map_model_manager')
+
+  dm = DataManager(['real_map'])
+  assert hasattr(dm, 'get_map_model_manager')
+
+  real_map_file = libtbx.env.under_dist('iotbx', 'regression/data/non_zero_origin_map.ccp4')
+  dm.process_real_map_file(real_map_file)
+
+  test_phil_str = '''
+include scope iotbx.map_model_manager.map_model_phil_str
+'''
+  test_program = group_args()
+  test_program.params = iotbx.phil.parse(test_phil_str, process_includes=True).fetch().extract()
+
+  dm._program = test_program
+
+  # without model
+  mmm = dm.get_map_model_manager(from_phil=True)
+  assert mmm is not None
+
+  # with model
+  dm = DataManager()
+  assert hasattr(dm, 'get_map_model_manager')
+  dm._program = test_program
+
+  dm.process_real_map_file(real_map_file)
+
+  model_file = libtbx.env.under_dist('iotbx', 'regression/data/non_zero_origin_model.pdb')
+  dm.process_model_file(model_file)
+
+  mmm = dm.get_map_model_manager(from_phil=True)
+  assert mmm is not None
+
+# -----------------------------------------------------------------------------
+def test_default_filenames():
+  datatypes = ['model', 'ncs_spec', 'phil', 'real_map', 'restraint', 'sequence']
+  extensions = ['cif', 'ncs_spec', 'eff', 'ccp4', 'cif', 'seq']
+  dm = DataManager(datatypes)
+  for datatype, extension in zip(datatypes, extensions):
+    filename = getattr(dm, 'get_default_output_{datatype}_filename'.
+                       format(datatype=datatype))()
+    assert filename == 'cctbx_program.' + extension
+
+  filename = dm.get_default_output_model_filename(extension='.abc')
+  assert filename == 'cctbx_program.abc'
+
+  class TestProgram(ProgramTemplate):
+    master_phil_str = """
+output {
+  serial = 0
+    .type = int
+}
+"""
+  master_phil = iotbx.phil.parse(TestProgram.master_phil_str)
+  required_output_phil = iotbx.phil.parse(ProgramTemplate.output_phil_str)
+  master_phil.adopt_scope(required_output_phil)
+  working_phil = iotbx.phil.parse(ProgramTemplate.master_phil_str)
+  params = master_phil.fetch(working_phil).extract()
+  p = ProgramTemplate(dm, params, master_phil)
+  assert dm.get_default_output_filename() == 'cctbx_program_000'
+  dm.set_overwrite(False)
+  name = dm.write_model_file('abc')    # cctbx_program_000.cif
+  assert name == 'cctbx_program_000.cif'
+  name = dm.write_phil_file('123')     # cctbx_program_000.eff
+  assert name == 'cctbx_program_000.eff'
+  name = dm.write_phil_file('456')     # cctbx_program_001.eff
+  assert name == 'cctbx_program_001.eff'
+  name = dm.write_model_file('def')    # cctbx_program_001.cif
+  assert name == 'cctbx_program_001.cif'
+  assert dm.get_default_output_filename() == 'cctbx_program_001'
+  name = dm.write_sequence_file('ghi') # cctbx_program_001.seq
+  assert name == 'cctbx_program_001.seq'
+  name = dm.write_sequence_file('hkl') # cctbx_program_002.seq
+  assert name == 'cctbx_program_002.seq'
+  assert dm.get_default_output_filename() == 'cctbx_program_002'
+  assert os.path.isfile('cctbx_program_000.cif')
+  assert os.path.isfile('cctbx_program_001.cif')
+  assert os.path.isfile('cctbx_program_000.eff')
+  assert os.path.isfile('cctbx_program_001.eff')
+  assert os.path.isfile('cctbx_program_001.seq')
+  assert os.path.isfile('cctbx_program_002.seq')
+  os.remove('cctbx_program_000.cif')
+  os.remove('cctbx_program_001.cif')
+  os.remove('cctbx_program_000.eff')
+  os.remove('cctbx_program_001.eff')
+  os.remove('cctbx_program_001.seq')
+  os.remove('cctbx_program_002.seq')
+
+  # test output.filename, output.file_name
+  assert p.get_default_output_filename() == 'cctbx_program_002'
+  assert p.get_default_output_filename(filename='abc') == 'abc'
+  working_phil_str = 'output.filename=def'
+  working_phil = iotbx.phil.parse(working_phil_str)
+  params = master_phil.fetch(working_phil).extract()
+  p = ProgramTemplate(dm, params, master_phil)
+  assert params.output.filename == params.output.file_name == 'def'
+  assert p.get_default_output_filename() == 'def'
+  assert dm.get_default_output_filename() == 'def'
+  working_phil_str = 'output.file_name=ghi'
+  working_phil = iotbx.phil.parse(working_phil_str)
+  params = master_phil.fetch(working_phil).extract()
+  p = ProgramTemplate(dm, params, master_phil)
+  assert params.output.filename == params.output.file_name == 'ghi'
+  assert p.get_default_output_filename() == 'ghi'
+  assert dm.get_default_output_filename() == 'ghi'
+
+# -----------------------------------------------------------------------------
+def test_model_skip_ss_annotations():
+  good_h_str = 'HELIX    1   1 THR A   18  ILE A   20  5                                   3'
+  bad_h_str = 'HELIX    1   1 THR A   18  ILE A   20 11                                   3'
+  pdb_str = """
+CRYST1   32.501   39.502   44.640  90.00  90.00  90.00 P 21 21 21    4
+ATOM    265  N   THR A  18      13.114   7.968   6.956  1.00  4.57           N
+ATOM    266  CA  THR A  18      13.581   6.907   6.105  1.00  4.76           C
+ATOM    267  C   THR A  18      14.273   5.867   7.003  1.00  4.60           C
+ATOM    268  O   THR A  18      14.631   6.110   8.149  1.00  4.40           O
+ATOM    269  CB  THR A  18      14.556   7.447   5.032  1.00  5.62           C
+ATOM    270  OG1 THR A  18      15.710   7.880   5.759  1.00  6.08           O
+ATOM    271  CG2 THR A  18      13.937   8.551   4.219  1.00  7.48           C
+ATOM    279  N   LEU A  19      14.528   4.681   6.410  1.00  5.15           N
+ATOM    280  CA  LEU A  19      15.074   3.599   7.202  1.00  4.83           C
+ATOM    281  C   LEU A  19      16.437   3.919   7.781  1.00  4.82           C
+ATOM    282  O   LEU A  19      16.736   3.482   8.909  1.00  5.18           O
+ATOM    283  CB  LEU A  19      15.111   2.303   6.373  1.00  5.60           C
+ATOM    284  CG  LEU A  19      13.748   1.663   6.109  1.00  6.04           C
+ATOM    285  CD1 LEU A  19      13.891   0.508   5.116  1.00  7.36           C
+ATOM    286  CD2 LEU A  19      13.107   1.170   7.418  1.00  7.22           C
+ATOM    298  N   ILE A  20      17.306   4.658   7.066  1.00  5.11           N
+ATOM    299  CA  ILE A  20      18.645   4.933   7.588  1.00  5.24           C
+ATOM    300  C   ILE A  20      18.601   5.767   8.844  1.00  4.94           C
+ATOM    301  O   ILE A  20      19.565   5.822   9.609  1.00  5.92           O
+ATOM    302  CB  ILE A  20      19.529   5.617   6.519  1.00  6.40           C
+ATOM    303  CG1 ILE A  20      21.031   5.545   6.877  1.00  9.33           C
+ATOM    304  CG2 ILE A  20      19.057   7.034   6.234  1.00  7.06           C
+ATOM    305  CD1 ILE A  20      21.947   6.045   5.765  1.00 12.70           C
+"""
+  dm = DataManager(['model'])
+  dm.write_model_file(good_h_str + pdb_str, filename='good', format='pdb', overwrite=True)
+  dm.write_model_file(bad_h_str + pdb_str, filename='bad', format='pdb', overwrite=True)
+  dm.process_model_file('good.pdb')
+  try:
+    dm.process_model_file('bad.pdb')
+  except IndexError as e:
+    assert str(e) == 'list index out of range'
+  dm = DataManager(['model'], custom_options=['model_skip_ss_annotations'])
+  dm.process_model_file('good.pdb')
+  dm.process_model_file('bad.pdb')
+
+  os.remove('good.pdb')
+  os.remove('bad.pdb')
+
+# -----------------------------------------------------------------------------
+def test_fmodel_params():
+  dm = DataManager(['model'])
+  assert not hasattr(dm, 'get_fmodel_params')
+
+  dm = DataManager(['miller_array'])
+  params = dm.export_phil_scope(as_extract=True)
+  assert not hasattr(params.data_manager, 'fmodel')
+
+  dm = DataManager(['model', 'miller_array'])
+  params = dm.get_fmodel_params()
+  assert isinstance(params, libtbx.phil.scope_extract)
+
+  phil = iotbx.phil.parse('data_manager.fmodel.xray_data.french_wilson.max_bins=1')
+  dm.load_phil_scope(phil)
+  params = dm.get_fmodel_params()
+  assert params.xray_data.french_wilson.max_bins == 1
+
+  new_params = dm.get_fmodel_params()
+  new_params.xray_data.r_free_flags.test_flag_value = 2
+  dm.set_fmodel_params(new_params)
+  params = dm.get_fmodel_params()
+  assert params.xray_data.r_free_flags.test_flag_value == 2
+
+  new_params = dm.export_phil_scope(as_extract=True)
+  new_params.data_manager.fmodel.xray_data.twin_law = 'h, k, l'
+  dm.set_fmodel_params(new_params)
+  params = dm.get_fmodel_params()
+  assert params.xray_data.twin_law == 'h, k, l'
+  assert params.xray_data.r_free_flags.test_flag_value == 2
+  assert params.xray_data.french_wilson.max_bins == 1
+  full_params = dm.export_phil_scope(as_extract=True)
+  assert full_params.data_manager.fmodel.xray_data.twin_law == 'h, k, l'
+  assert full_params.data_manager.fmodel.xray_data.r_free_flags.test_flag_value == 2
+  assert full_params.data_manager.fmodel.xray_data.french_wilson.max_bins == 1
+
+  # test updated defaults
+  dm = DataManager(['model', 'miller_array'])
+  data_dir = os.path.dirname(os.path.abspath(__file__))
+  data_pdb = os.path.join(data_dir, 'data', '1yjp.pdb')
+  data_pdb2 = os.path.join(data_dir, 'data', '2ERL.pdb')
+  data_mtz = os.path.join(data_dir, 'data',
+                          'insulin_unmerged_cutted_from_ccp4.mtz')
+  data_mtz2 = os.path.join(data_dir, 'data',
+                           'phaser_1.mtz')
+  dm.process_model_file(data_pdb)
+  dm.process_model_file(data_pdb2)
+  dm.process_miller_array_file(data_mtz)
+  dm.process_miller_array_file(data_mtz2)
+
+  assert dm.get_default_model_type() == ['x_ray']
+  for filename in dm.get_model_names():
+    assert dm.get_model_type(filename) == ['x_ray']
+  assert dm.get_default_miller_array_type() == ['x_ray']
+  for filename in dm.get_miller_array_names():
+    for label in dm.get_miller_array_labels(filename):
+      assert dm.get_miller_array_type(filename, label) == ['x_ray']
+
+  dm.update_all_defaults('electron')
+  assert dm.get_default_model_type() == ['electron']
+  for filename in dm.get_model_names():
+    assert dm.get_model_type(filename) == ['electron']
+  assert dm.get_default_miller_array_type() == ['electron']
+  for filename in dm.get_miller_array_names():
+    for label in dm.get_miller_array_labels(filename):
+      assert dm.get_miller_array_type(filename, label) == ['electron']
+
+  for x_ray_type in ['wk1995', 'it1992', 'n_gaussian']:
+    dm.update_all_defaults(x_ray_type)
+    for filename in dm.get_model_names():
+      assert dm.get_model_type(filename) == ['x_ray']
+    assert dm.get_default_miller_array_type() == ['x_ray']
+    for filename in dm.get_miller_array_names():
+      for label in dm.get_miller_array_labels(filename):
+        assert dm.get_miller_array_type(filename, label) == ['x_ray']
+
+# -----------------------------------------------------------------------------
+def test_user_selected_labels():
+  dm = DataManager(['miller_array', 'phil'])
+  data_dir = os.path.dirname(os.path.abspath(__file__))
+  data_mtz = os.path.join(data_dir, 'data',
+                          'insulin_unmerged_cutted_from_ccp4.mtz')
+  dm.process_miller_array_file(data_mtz)
+  params = dm.export_phil_scope(as_extract=True)
+  assert len(params.data_manager.miller_array[0].user_selected_labels) == 0
+
+  # user_selected_labels
+  dm = DataManager(['miller_array', 'phil'])
+  phil = iotbx.phil.parse('''
+data_manager {
+  miller_array {
+    file = %s
+    user_selected_labels = FRACTION
+    user_selected_labels = BGP
+  }
+}
+''' % data_mtz)
+  working_phil = dm.master_phil.fetch(phil)
+  dm.load_miller_array_phil_extract(working_phil.extract())
+  params = dm.export_phil_scope(as_extract=True)
+  assert params.data_manager.miller_array[0].user_selected_labels == ['FRACTION', 'BGP']
+
+  # wrong label
+  dm = DataManager(['miller_array', 'phil'])
+  phil = iotbx.phil.parse('''
+data_manager {
+  miller_array {
+    file = %s
+    user_selected_labels = abc
+  }
+}
+''' % data_mtz)
+  working_phil = dm.master_phil.fetch(phil)
+  try:
+    dm.load_miller_array_phil_extract(working_phil.extract())
+  except Sorry as s:
+    assert 'abc, could not be found in' in str(s)
+
+  # labels
+  dm = DataManager(['miller_array', 'phil'])
+  phil = iotbx.phil.parse('''
+data_manager {
+  miller_array {
+    file = %s
+    labels.name = fraction
+  }
+}
+''' % data_mtz)
+  working_phil = dm.master_phil.fetch(phil)
+  dm.load_miller_array_phil_extract(working_phil.extract())
+  params = dm.export_phil_scope(as_extract=True)
+  assert params.data_manager.miller_array[0].user_selected_labels == ['fraction']
+  for label in params.data_manager.miller_array[0].labels:
+    assert label.name != 'fraction'  # fraction is only stored in user_selected_labels
+
+  # wrong label
+  dm = DataManager(['miller_array', 'phil'])
+  phil = iotbx.phil.parse('''
+data_manager {
+  miller_array {
+    file = %s
+    labels.name = DEF
+  }
+}
+''' % data_mtz)
+  working_phil = dm.master_phil.fetch(phil)
+  try:
+    dm.load_miller_array_phil_extract(working_phil.extract())
+  except Sorry as s:
+    assert 'DEF, could not be found in' in str(s)
+
+  # test file server
+  dm = DataManager(['miller_array', 'phil'])
+  phil = iotbx.phil.parse('''
+data_manager {
+  miller_array {
+    file = %s
+    user_selected_labels = IPR
+  }
+}
+''' % data_mtz)
+  working_phil = dm.master_phil.fetch(phil)
+  dm.load_miller_array_phil_extract(working_phil.extract())
+  fs = dm.get_reflection_file_server()
+  ma = fs.get_miller_arrays(None)
+  fs_labels = [m.info().label_string() for m in ma]
+  # only I,SIGI should be ignored in reflection file server
+  all_labels = dm.get_miller_array_all_labels()
+  assert 'I,SIGI,merged' in all_labels
+  assert 'I,SIGI,merged' not in fs_labels
+  for label in all_labels:
+    if label != 'I,SIGI,merged':
+      assert label in fs_labels
+
+  # select array by incomplete label
+  dm = DataManager(['miller_array', 'phil'])
+  phil = iotbx.phil.parse('''
+data_manager {
+  miller_array {
+    file = %s
+    user_selected_labels = XD
+  }
+}
+''' % data_mtz)
+  working_phil = dm.master_phil.fetch(phil)
+  dm.load_miller_array_phil_extract(working_phil.extract())
+  answer = dm.get_miller_arrays(labels=['XDET'])
+  user_labels = dm.get_miller_array_user_selected_labels()
+  test = dm.get_miller_arrays(labels=user_labels)
+  assert user_labels == ['XD']
+  assert answer == test
+
+# -----------------------------------------------------------------------------
+def test_duplicate_user_selected_labels():
+  '''
+  Two user_selected_labels matching the same array are rejected whichever
+  datatype they are given under. Both the order in which the datatypes are
+  loaded and the order of the class-level child list follow set iteration
+  order (PYTHONHASHSEED), so every combination is checked explicitly.
+  '''
+  from iotbx.data_manager.miller_array import MillerArrayDataManager
+
+  data_dir = os.path.dirname(os.path.abspath(__file__))
+  data_mtz = os.path.join(data_dir, 'data', 'phaser_1.mtz')
+  phil = iotbx.phil.parse('''
+data_manager {
+  miller_array {
+    file = %s
+    user_selected_labels = PHIF
+  }
+  map_coefficients {
+    file = %s
+    user_selected_labels = WT
+  }
+}
+''' % (data_mtz, data_mtz))
+
+  datatypes = ['miller_array', 'map_coefficients']
+  children = MillerArrayDataManager.miller_array_child_datatypes
+  original_children = list(children)
+  try:
+    for child_order in (datatypes, datatypes[::-1]):
+      for load_order in (datatypes, datatypes[::-1]):
+        dm = DataManager(datatypes + ['phil'])
+        children[:] = child_order
+        phil_extract = dm.master_phil.fetch(phil).extract()
+        try:
+          for datatype in load_order:
+            getattr(dm, 'load_%s_phil_extract' % datatype)(phil_extract)
+        except Sorry as s:
+          assert 'duplicate user_selected_labels' in str(s), \
+            (child_order, load_order, str(s))
+        else:
+          raise AssertionError('Sorry expected: child_order=%s load_order=%s'
+                               % (child_order, load_order))
+  finally:
+    children[:] = original_children
+
+# -----------------------------------------------------------------------------
+def test_scattering_table_mixins():
+  for datatype in ['model', 'miller_array']:
+    dm = DataManager([datatype])
+    assert hasattr(dm, 'check_scattering_table_type')
+    assert hasattr(dm, 'map_scattering_table_type')
+
+  dm = DataManager(['phil'])
+  assert not hasattr(dm, 'check_scattering_table_type')
+  assert not hasattr(dm, 'map_scattering_table_type')
+
+  dm = DataManager()
+  for scattering_table in ['wk1995', 'it1992', 'n_gaussian', 'neutron',  'electron']:
+    assert dm.check_scattering_table_type(scattering_table) == scattering_table
+  assert dm.check_scattering_table_type('x_ray') == 'n_gaussian'
+  try:
+    dm.check_scattering_table_type('abc')
+  except Sorry as s:
+    assert 'Unrecognized scattering table type, "abc,"' in str(s)
+
+  for scattering_table in ['neutron',  'electron']:
+    assert dm.map_scattering_table_type(scattering_table) == scattering_table
+  for scattering_table in ['wk1995', 'it1992', 'n_gaussian']:
+    assert dm.map_scattering_table_type(scattering_table) == 'x_ray'
+
+def test_miller_array_single_build():
+  '''
+  A reflection file is built into miller arrays once per DataManager, whatever
+  the number of miller_array child datatypes and of DataManagers constructed
+  in the process. as_miller_arrays() runs the full builder (seconds on large
+  cifs); the parent filter and the map_coefficients filter used to run it
+  three times per file, and the class-level child list grew on every
+  DataManager() so the k-th one ran it 3k times.
+  '''
+  from cctbx import crystal, miller
+  from cctbx.array_family import flex
+  import iotbx.mtz
+  from iotbx.reflection_file_reader import any_reflection_file
+  from iotbx.data_manager.miller_array import MillerArrayDataManager
+
+  cs = crystal.symmetry(unit_cell=(10, 20, 30, 90, 90, 90),
+                        space_group_symbol='P 21 21 21')
+  ms = miller.build_set(cs, anomalous_flag=False, d_min=3.0)
+  f = ms.array(data=flex.double(ms.size(), 10.0), sigmas=flex.double(ms.size(), 1.0))
+  f.set_observation_type_xray_amplitude()
+  fwt = ms.array(data=flex.complex_double(ms.size(), complex(1.0, 2.0)))
+  mtz_dataset = f.as_mtz_dataset(column_root_label='FOBS')
+  mtz_dataset.add_miller_array(fwt, column_root_label='FWT',
+                               label_decorator=iotbx.mtz.ccp4_label_decorator())
+  data_mtz = 'tst_data_manager_single_build.mtz'
+  mtz_dataset.mtz_object().write(data_mtz)
+
+  n_builds = [0]
+  orig = any_reflection_file.as_miller_arrays
+  def counting(self, *args, **kwds):
+    n_builds[0] += 1
+    return orig(self, *args, **kwds)
+  any_reflection_file.as_miller_arrays = counting
+  try:
+    for datatypes, custom_options in (
+        (['miller_array', 'map_coefficients'], None),
+        (['miller_array', 'map_coefficients'], None),
+        (['miller_array'], None),
+        (['miller_array', 'map_coefficients'], ['miller_array_skip_merge'])):
+      n_builds[0] = 0
+      dm = DataManager(datatypes=datatypes, custom_options=custom_options)
+      dm.process_miller_array_file(data_mtz)
+      arrays = dm.get_miller_arrays()
+      assert n_builds[0] == 1, (datatypes, custom_options, n_builds[0])
+      labels = sorted(a.info().label_string() for a in arrays)
+      assert labels == ['FOBS,SIGFOBS', 'FWT,PHWT'], labels
+      if 'map_coefficients' in datatypes:
+        assert dm.get_map_coefficients_labels() == ['FWT,PHWT'], \
+          dm.get_map_coefficients_labels()
+        mc = dm.get_map_coefficients_arrays(labels=['FWT,PHWT'])
+        assert len(mc) == 1 and mc[0].is_complex_array()
+      children = MillerArrayDataManager.miller_array_child_datatypes
+      assert len(children) == len(set(children)), children
+  finally:
+    any_reflection_file.as_miller_arrays = orig
+  os.remove(data_mtz)
+
+# -----------------------------------------------------------------------------
+if __name__ == '__main__':
 
   test_data_manager()
+  test_miller_array_single_build()
   test_model_datatype()
   test_sequence_datatype()
+  test_json_datatype()
+  test_yaml_datatype()
+  test_yaml_without_pyyaml()
   test_miller_array_datatype()
+  test_real_map_datatype()
+  test_map_mixins()
+  test_real_map_mixins()
+  test_default_filenames()
+  test_model_skip_ss_annotations()
+  test_fmodel_params()
+  test_user_selected_labels()
+  test_duplicate_user_selected_labels()
+  test_scattering_table_mixins()
 
-  if (libtbx.env.find_in_repositories(relative_path='chem_data') is not None):
+  if libtbx.env.find_in_repositories(relative_path='chem_data') is not None:
     test_model_and_restraint()
   else:
     print('Skip test_model_and_restraint, chem_data not available')
+  print("OK")

@@ -4,15 +4,13 @@ Test for mmtbx.ncs.ligands module and associated command-line tool
 mmtbx.apply_ncs_to_ligands (used in phenix.ligand_pipeline)
 """
 
-from __future__ import division
-from iotbx import file_reader
+from __future__ import absolute_import, division, print_function
 from libtbx import easy_run
 from libtbx.utils import null_out
-from cStringIO import StringIO
 import os.path as op
 import os
 
-def make_inputs (prefix="tst_ligand_ncs") :
+def make_inputs(prefix="tst_ligand_ncs"):
   pdb_raw = """\
 CRYST1   25.000   10.000   25.477  90.00 107.08  90.00 P 1
 ATOM      1  N   GLY A   1       9.010   0.535  -6.096  1.00 16.23           N
@@ -155,64 +153,67 @@ HETATM  132  O   HOH B  12      -1.576   1.103  11.035  1.00 44.76           O
 END
 """
   pdb_in = prefix + "_in.pdb"
-  open(pdb_in, "w").write(pdb_raw)
+  with open(pdb_in, "w") as f:
+    f.write(pdb_raw)
   mtz_in = prefix + "_in.mtz"
   params = """
     high_resolution = 1.75
     r_free_flags_fraction = 0.1
     add_sigmas = True
-    pdb_file = %s
     random_seed = 12345
     output {
       label = F
       type = *real complex
       file_name = %s
     }
-  """ % (pdb_in, mtz_in)
-  open("%s_fmodel.eff" % prefix, "w").write(params)
+  """ % mtz_in
+  with open("%s_fmodel.eff" % prefix, "w") as f:
+    f.write(params)
   assert (easy_run.fully_buffered(
-      "phenix.fmodel %s_fmodel.eff" % prefix
+      "phenix.fmodel %s %s_fmodel.eff" % (pdb_in, prefix)
     ).raise_if_errors().return_code == 0)
   return pdb_in, mtz_in
 
-def exercise () :
+def exercise():
   #
   # Test command-line program
   #
   pdb_in, mtz_in = make_inputs()
-  pdb_file = file_reader.any_file(pdb_in, force_type="pdb")
-  hierarchy = pdb_file.file_object.hierarchy
+  import iotbx.pdb
+  pdb_file = iotbx.pdb.input(pdb_in)
+  hierarchy = pdb_file.construct_hierarchy()
   old_ligand = None
-  for chain in hierarchy.only_model().chains() :
+  for chain in hierarchy.only_model().chains():
     if (chain.id != "B") : continue
-    for residue_group in chain.residue_groups() :
+    for residue_group in chain.residue_groups():
       atom_group = residue_group.only_atom_group()
-      if (atom_group.resname == "ACT") :
+      if (atom_group.resname == "ACT"):
         old_ligand = atom_group.detached_copy()
         residue_group.remove_atom_group(atom_group)
         break
   assert old_ligand is not None
-  open("tst_ligand_ncs_start.pdb", "w").write(hierarchy.as_pdb_string(
-    crystal_symmetry=pdb_file.file_object.crystal_symmetry()))
+  with open("tst_ligand_ncs_start.pdb", "w") as f:
+    f.write(hierarchy.as_pdb_string(
+      crystal_symmetry=pdb_file.crystal_symmetry()))
   args = [
     "tst_ligand_ncs_start.pdb",
     mtz_in,
     "ligand_code=ACT",
   ]
   from mmtbx.command_line import apply_ncs_to_ligand
-  if op.isfile("ncs_ligands.pdb") :
+  if op.isfile("ncs_ligands.pdb"):
     os.remove("ncs_ligands.pdb")
   result = apply_ncs_to_ligand.run(args=args, out=null_out())
   assert result.n_ligands_new == 1
   assert op.isfile("ncs_ligands.pdb")
-  pdb_out = file_reader.any_file("ncs_ligands.pdb", force_type="pdb")
-  hierarchy_new = pdb_out.file_object.hierarchy
+  pdb_out = iotbx.pdb.input("ncs_ligands.pdb")
+  hierarchy_new = pdb_out.construct_hierarchy()
   new_ligand = None
-  for chain in hierarchy_new.only_model().chains() :
+  for chain in hierarchy_new.only_model().chains():
     if (chain.id != "B") : continue
-    for residue_group in chain.residue_groups() :
+    for residue_group in chain.residue_groups():
       atom_group = residue_group.only_atom_group()
-      if (atom_group.resname == "ACT") :
+      if (atom_group.resname == "ACT"):
         new_ligand = atom_group.detached_copy()
   assert new_ligand is not None
   rmsd = old_ligand.atoms().extract_xyz().rms_difference(
@@ -221,18 +222,14 @@ def exercise () :
   #
   # Unit tests
   #
-  import mmtbx.ncs.ligands
-  operators = mmtbx.ncs.ligands.find_ncs_operators(hierarchy,
-    log=null_out())
-  assert len(operators) == 1
-  group_ops = operators[0]
-  assert len(group_ops) == 2
-  assert (len(group_ops[0].selection) == 7)
-  for g_op in group_ops:
-    out = StringIO()
-    g_op.show_summary(out=out, prefix=" ")
-    assert out.getvalue().count("Rotation:") == 1
 
-if (__name__ == "__main__") :
+  # Excessive testing of NCS search machinery although with ligands. May be removed.
+  import iotbx.ncs
+  ncs_obj = iotbx.ncs.input(hierarchy=hierarchy, log=null_out())
+  nrgl = ncs_obj.get_ncs_restraints_group_list()
+  assert len(nrgl) == 1, len(nrgl)
+  assert len(nrgl[0].master_iselection) == 59, len(nrgl[0].master_iselection)
+
+if (__name__ == "__main__"):
   exercise()
-  print "OK"
+  print("OK")

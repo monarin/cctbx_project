@@ -1,4 +1,4 @@
-from __future__ import division
+from __future__ import absolute_import, division, print_function
 # LIBTBX_SET_DISPATCHER_NAME sphinx.build
 
 import sys
@@ -11,5 +11,9 @@ except ImportError:
   pass
 
 if __name__ == '__main__':
-    from sphinx import main
-    sys.exit(main(sys.argv))
+    try:
+        from sphinx import main
+        sys.exit(main(sys.argv))
+    except ImportError:
+        from sphinx.cmd.build import main
+        sys.exit(main())

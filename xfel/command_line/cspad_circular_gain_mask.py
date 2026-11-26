@@ -1,6 +1,6 @@
-from __future__ import division
+from __future__ import absolute_import, division, print_function
+from six.moves import range
 # LIBTBX_SET_DISPATCHER_NAME cspad.circular_gain_mask
-# LIBTBX_PRE_DISPATCHER_INCLUDE_SH export BOOST_ADAPTBX_FPE_DEFAULT=1
 # $Id
 #
 
@@ -13,7 +13,7 @@ will be set to low gain.
 import sys, numpy, math
 import libtbx.phil
 from libtbx.utils import Sorry
-from make_mask import point_inside_circle
+from xfel.command_line.make_mask import point_inside_circle
 
 master_phil = libtbx.phil.parse("""
 resolution = None
@@ -44,7 +44,7 @@ if (__name__ == "__main__") :
   for arg in sys.argv[1:]:
     try :
       user_phil.append(libtbx.phil.parse(arg))
-    except RuntimeError, e :
+    except RuntimeError as e :
       raise Sorry("Unrecognized argument '%s' (error: %s)" % (arg, str(e)))
 
   params = master_phil.fetch(sources=user_phil).extract()
@@ -59,16 +59,17 @@ if (__name__ == "__main__") :
 
   if annulus:
     if params.resolution is None:
-      print "Generating annular gain mask between %f and %f angstroms, assuming a distance %s mm and wavelength %s angstroms" % \
-        (params.annulus_inner, params.annulus_outer, params.distance, params.wavelength)
+      print("Generating annular gain mask between %f and %f angstroms, assuming a distance %s mm and wavelength %s angstroms" % \
+        (params.annulus_inner, params.annulus_outer, params.distance, params.wavelength))
     else:
-      print "Generating annular gain mask between %f and %f angstroms, assuming a distance %s mm and wavelength %s angstroms. Also, pixels higher than %f angstroms will be set to low gain." % \
-        (params.annulus_inner, params.annulus_outer, params.distance, params.wavelength, params.resolution)
+      print("Generating annular gain mask between %f and %f angstroms, assuming a distance %s mm and wavelength %s angstroms. Also, pixels higher than %f angstroms will be set to low gain." % \
+        (params.annulus_inner, params.annulus_outer, params.distance, params.wavelength, params.resolution))
   elif params.resolution is not None:
-    print "Generating circular gain mask %s angstroms, assuming a distance %s mm and wavelength %s angstroms" % \
-      (params.resolution, params.distance, params.wavelength)
+    print("Generating circular gain mask %s angstroms, assuming a distance %s mm and wavelength %s angstroms" % \
+      (params.resolution, params.distance, params.wavelength))
 
-  from xfel.cftbx.detector.cspad_cbf_tbx import read_slac_metrology, get_cspad_cbf_handle
+  from serialtbx.detector.cspad import read_slac_metrology
+  from xfel.cftbx.detector.cspad_cbf_tbx import get_cspad_cbf_handle
   from dxtbx.format.FormatCBFCspad import FormatCBFCspadInMemory
   from dxtbx.model import BeamFactory
   metro = read_slac_metrology(path = params.optical_metrology_path)
@@ -82,17 +83,17 @@ if (__name__ == "__main__") :
   if annulus:
     inner = params.distance * math.tan(2*math.sinh(params.wavelength/(2*params.annulus_inner)))
     outer = params.distance * math.tan(2*math.sinh(params.wavelength/(2*params.annulus_outer)))
-    print "Inner (mm):", inner
-    print "Outer (mm):", outer
+    print("Inner (mm):", inner)
+    print("Outer (mm):", outer)
   if params.resolution is not None:
     radius = params.distance * math.tan(2*math.sinh(params.wavelength/(2*params.resolution)))
-    print "Radius (mm):", radius
+    print("Radius (mm):", radius)
 
-  print "Panel:",; sys.stdout.flush()
+  print("Panel:", end=' '); sys.stdout.flush()
   for p_id, panel in enumerate(img.get_detector()):
-    print p_id,; sys.stdout.flush()
-    for y in xrange(185):
-      for x in xrange(194):
+    print(p_id, end=' '); sys.stdout.flush()
+    for y in range(185):
+      for x in range(194):
         lx, ly, lz = panel.get_pixel_lab_coord((x,y))
         if annulus:
           if not point_inside_circle(lx,ly,beam_center[0],beam_center[1],outer) or point_inside_circle(lx,ly,beam_center[0],beam_center[1],inner):
@@ -104,6 +105,6 @@ if (__name__ == "__main__") :
           else:
             if not point_inside_circle(lx,ly,beam_center[0],beam_center[1],radius):
               data[(p_id*185)+y,x] = 1
-  print
-  print "Masked out %d pixels out of %d (%.2f%%)"%(data.size-int(data.sum()), data.size, 100*(data.size-int(data.sum()))/data.size)
+  print()
+  print("Masked out %d pixels out of %d (%.2f%%)"%(data.size-int(data.sum()), data.size, 100*(data.size-int(data.sum()))/data.size))
   numpy.savetxt(params.out, data, fmt="%d")

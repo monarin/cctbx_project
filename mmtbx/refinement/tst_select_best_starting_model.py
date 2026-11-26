@@ -1,16 +1,17 @@
+from __future__ import absolute_import, division, print_function
 
-from __future__ import division
 from libtbx.test_utils import Exception_expected
 from libtbx.utils import null_out, Sorry
 from libtbx import easy_run
+from scitbx.array_family import flex
+from cctbx import uctbx, sgtbx
+import iotbx.pdb
+from iotbx import file_reader
+from mmtbx.refinement import select_best_starting_model
+import random
+from six.moves import range
 
-def exercise_main () :
-  from mmtbx.refinement import select_best_starting_model
-  from iotbx import file_reader
-  from cctbx import uctbx
-  from cctbx import sgtbx
-  from scitbx.array_family import flex
-  import random
+def exercise_main():
   unit_cell = (24.937, 8.866, 25.477, 90.00, 107.08, 90.00)
   space_group = "P21"
   pdb_base = """\
@@ -86,20 +87,21 @@ HETATM   66  O   HOH S   3     -11.809   0.108  -9.956  1.00 27.52           O
 HETATM   67  O   HOH S   4       1.580  -3.455 -11.035  1.00 44.76           O
 END
 """
-  open("tst_start_model_base.pdb", "w").write(pdb_base+pdb_base_water)
+  with open("tst_start_model_base.pdb", "w") as f:
+    f.write(pdb_base+pdb_base_water)
   params = """
     high_resolution = 1.75
     add_sigmas = True
-    pdb_file = tst_start_model_base.pdb
     output {
       label = F
       type = *real complex
       file_name = tst_start_model_base.mtz
     }
   """
-  open("tst_start_model_fmodel.eff", "w").write(params)
+  with open("tst_start_model_fmodel.eff", "w") as f:
+    f.write(params)
   assert (easy_run.fully_buffered(
-    "phenix.fmodel tst_start_model_fmodel.eff"
+    "phenix.fmodel tst_start_model_base.pdb tst_start_model_fmodel.eff"
   ).raise_if_errors().return_code == 0)
   mtz_in = file_reader.any_file("tst_start_model_base.mtz")
   f_obs = mtz_in.file_server.miller_arrays[0]
@@ -113,9 +115,9 @@ END
   mtz_data.add_miller_array(flags,
     column_root_label="FreeR_flag")
   mtz_data.mtz_object().write("tst_start_model.mtz")
-  pdb_in = file_reader.any_file("tst_start_model_base.pdb")
-  hierarchy_in = pdb_in.file_object.hierarchy
-  xrs_in = pdb_in.file_object.xray_structure_simple()
+  pdb_in = iotbx.pdb.input("tst_start_model_base.pdb")
+  hierarchy_in = pdb_in.construct_hierarchy()
+  xrs_in = pdb_in.xray_structure_simple()
   selection = hierarchy_in.atom_selection_cache().selection
   # Model 1: very few changes, but shifted by (1,0,0.5)
   symm2 = xrs_in.crystal_symmetry().customized_copy(
@@ -129,23 +131,23 @@ END
   xrs_out.set_sites_cart(sites_cart)
   hierarchy_out = hierarchy_in.deep_copy()
   hierarchy_out.adopt_xray_structure(xrs_out)
-  open("tst_start_model_1.pdb", "w").write(
-    hierarchy_out.as_pdb_string(crystal_symmetry=symm2))
+  with open("tst_start_model_1.pdb", "w") as f:
+    f.write(hierarchy_out.as_pdb_string(crystal_symmetry=symm2))
   # Model 2: no sidechains
   mc_sele = selection("(name N or name C or name O or name CA or name CB)")
   hierarchy_out = hierarchy_in.select(mc_sele)
   xrs_out = xrs_in.select(mc_sele)
-  open("tst_start_model_2.pdb", "w").write(
-    hierarchy_out.as_pdb_string(crystal_symmetry=xrs_out))
+  with open("tst_start_model_2.pdb", "w") as f:
+    f.write(hierarchy_out.as_pdb_string(crystal_symmetry=xrs_out))
   # Model 3: P1 symmetry
   symm3 = xrs_in.crystal_symmetry().customized_copy(
     space_group_info=sgtbx.space_group_info("P1"))
-  open("tst_start_model_3.pdb", "w").write(
-    hierarchy_out.as_pdb_string(crystal_symmetry=symm3))
+  with open("tst_start_model_3.pdb", "w") as f:
+    f.write(hierarchy_out.as_pdb_string(crystal_symmetry=symm3))
   # Model 4: shaken coordinates and ADPs
-  def random_double (size, factor=1) :
+  def random_double(size, factor=1):
     d = flex.double()
-    for x in range(size) :
+    for x in range(size):
       d.append(random.random() * factor)
     return d
   xrs_out = xrs_in.customized_copy()
@@ -153,10 +155,11 @@ END
   xrs_out.shake_adp()
   hierarchy_out = hierarchy_in.deep_copy()
   hierarchy_out.adopt_xray_structure(xrs_out)
-  open("tst_start_model_4.pdb", "w").write(
-    hierarchy_out.as_pdb_string(crystal_symmetry=xrs_out))
+  with open("tst_start_model_4.pdb", "w") as f:
+    f.write(hierarchy_out.as_pdb_string(crystal_symmetry=xrs_out))
   # Model 5: perfect, but missing CRYST1
-  open("tst_start_model_5.pdb", "w").write(hierarchy_in.as_pdb_string())
+  with open("tst_start_model_5.pdb", "w") as f:
+    f.write(hierarchy_in.as_pdb_string())
   # run method
   params = select_best_starting_model.master_phil.extract()
   params.rigid_body_refine = False
@@ -189,10 +192,7 @@ END
   # result.show(verbose=True)
   assert (result.best_model_name == "tst_start_model_1.pdb"), result.best_model_name
 
-def exercise_misc () :
-  from mmtbx.refinement import select_best_starting_model
-  from iotbx import file_reader
-  import iotbx.pdb.hierarchy
+def exercise_misc():
   pdb_str = """\
 REMARK this is a remark record!
 CRYST1   21.937    4.866   23.477  90.00 107.08  90.00 P 1 21 1
@@ -329,10 +329,11 @@ TER
 END
 """
   pdb_file = "tst_start_model_misc.pdb"
-  open(pdb_file, "w").write(pdb_str)
-  pdb_in = iotbx.pdb.hierarchy.input(pdb_file)
-  pdb_hierarchy = pdb_in.hierarchy
-  xray_structure = pdb_in.input.xray_structure_simple()
+  with open(pdb_file, "w") as f:
+    f.write(pdb_str)
+  pdb_in = iotbx.pdb.input(file_name=pdb_file)
+  pdb_hierarchy = pdb_in.construct_hierarchy()
+  xray_structure = pdb_in.xray_structure_simple()
   hd_sel = xray_structure.hd_selection()
   assert hd_sel.count(True) == 55
   xray_structure.convert_to_anisotropic(selection=~hd_sel)
@@ -400,8 +401,8 @@ END
     preserve_remarks=True,
     output_file="tst_start_model_misc_new.pdb",
     log=null_out())
-  pdb_new = iotbx.pdb.hierarchy.input(file_name="tst_start_model_misc_new.pdb")
-  assert len(pdb_new.input.remark_section()) == 1
+  pdb_new = iotbx.pdb.input(file_name="tst_start_model_misc_new.pdb")
+  assert len(pdb_new.remark_section()) == 1
   # reset HETATM
   hierarchy_new, xrs_new = select_best_starting_model.strip_model(
     file_name=pdb_file,
@@ -409,11 +410,12 @@ END
     reset_hetatm_flag=True,
     output_file="tst_start_model_misc_new.pdb",
     log=null_out())
-  lines = open("tst_start_model_misc_new.pdb").readlines()
+  with open("tst_start_model_misc_new.pdb") as f:
+    lines = f.readlines()
   for line in lines :
     assert (not line.startswith("HETATM"))
 
-if (__name__ == "__main__") :
+if (__name__ == "__main__"):
   exercise_misc()
   exercise_main()
-  print "OK"
+  print("OK")

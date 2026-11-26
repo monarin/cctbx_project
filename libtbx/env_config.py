@@ -1,16 +1,19 @@
 from __future__ import absolute_import, division, print_function
 import libtbx.path
 from libtbx.auto_build import regenerate_module_files
+from libtbx.auto_build.installer_utils import call
 from libtbx.path import relocatable_path, absolute_path
 from libtbx.str_utils import show_string
-from libtbx.utils import detect_binary_file
+from libtbx.utils import detect_binary_file, to_str
 from libtbx import adopt_init_args
+from libtbx.dispatcher_env import environment_guard_lines, \
+  external_path_lines, unconditional_lines
 import platform
 import shutil
-try:
-  import cPickle as pickle
-except ImportError:
-  import pickle
+from six.moves import zip, map
+from six.moves import cPickle as pickle
+
+import io
 import os
 import re
 import site
@@ -34,8 +37,11 @@ default_build_boost_python_extensions = True
 default_enable_openmp_if_possible = False
 default_enable_boost_threads = True
 default_enable_cuda = False
+default_enable_kokkos = False
 default_opt_resources = False
 default_enable_cxx11 = False
+default_cxxstd = 'c++14'
+default_use_conda = False
 
 def is_64bit_architecture():
   # this appears to be most compatible (hat tip: James Stroud)
@@ -43,6 +49,35 @@ def is_64bit_architecture():
   import struct
   nbits = 8 * struct.calcsize("P")
   return (nbits == 64)
+
+def using_conda_python():
+  '''
+  Return True if Python is from conda, False otherwise.
+  This check is independent of being in an active conda environment.
+  https://stackoverflow.com/questions/47608532/how-to-detect-from-within-python-whether-packages-are-managed-with-conda?noredirect=1&lq=1
+  '''
+  conda_prefix = sys.prefix
+  if (sys.platform == 'darwin'):
+    if ('python.app' in conda_prefix):
+      conda_prefix = conda_prefix.split('python.app')[0]
+  return os.path.exists(os.path.join(conda_prefix, 'conda-meta'))
+
+def get_conda_prefix():
+  '''
+  Return the root directory of the conda environment. This function will
+  try to figure out the root directory if the environment is not active.
+  A special case exists for macOS where the framework package (python.app)
+  is used for GUI programs.
+
+  A RuntimeError is raised if the root directory of the conda environment
+  cannot be determined.
+  '''
+  conda_prefix = sys.prefix
+  if (using_conda_python()):
+    if (sys.platform == 'darwin'):  # case where python.app is used
+      if ('python.app' in conda_prefix):
+        conda_prefix = conda_prefix.split('python.app')[0]
+  return conda_prefix
 
 def unique_paths(paths):
   hash = set()
@@ -67,7 +102,8 @@ def darwin_shlinkcom(env_etc, env, lo, dylib):
     else:
       opt_m = " -m"
     shlinkcom = [
-      "ld -dynamic%s -r -d -bind_at_load -o %s $SOURCES" % (opt_m, lo),
+      "ld -dynamic%s -headerpad_max_install_names -r -bind_at_load -o %s $SOURCES" %
+        (opt_m, lo),
       "$SHLINK -nostartfiles -undefined dynamic_lookup -Wl,-dylib"
         " %s -o %s %s" % (dylib1, dylib, lo)]
     if (env_etc.mac_os_use_dsymutil):
@@ -86,7 +122,7 @@ def get_darwin_gcc_build_number(gcc='gcc'):
   except ValueError:
     return None
 
-def is_llvm_compiler(gcc='gcc') :
+def is_llvm_compiler(gcc='gcc'):
   from libtbx import easy_run
   try:
     gcc_version = (easy_run.fully_buffered(command='%s --version' % gcc)
@@ -97,23 +133,30 @@ def is_llvm_compiler(gcc='gcc') :
     return False
 
 def get_gcc_version(command_name="gcc"):
+  # run command in shell subprocess
   from libtbx import easy_run
   buffer = easy_run.fully_buffered(
     command="%s -dumpversion" % command_name)
-  if (len(buffer.stderr_lines) != 0):
-    return None
-  if (len(buffer.stdout_lines) != 1):
-    return None
+  # if something went wrong `buffer.stdout_lines` might have len=0
+  if len(buffer.stdout_lines) < 1:
+      return None
+
   major_minor_patchlevel = buffer.stdout_lines[0].split(".")
-  if (len(major_minor_patchlevel) not in [2,3]):
+  # output is not a valid version format:
+  if (len(major_minor_patchlevel) not in [1,2,3]):
     return None
+  # parse version number
   num = []
   for fld in major_minor_patchlevel:
     try: i = int(fld)
     except ValueError:
       return None
     num.append(i)
+  # substitute missing minor and patchlevel for gcc7 on Ubuntu18
+  if (len(num) == 1): num.append(0); num.append(0)
   if (len(num) == 2): num.append(0) # substitute missing patchlevel
+
+  # format version numbers
   return ((num[0]*100)+num[1])*100+num[2]
 
 def get_hostname():
@@ -174,29 +217,32 @@ def python_include_path():
 
   include_path = sysconfig.get_paths()['include']
   if not op.isdir(include_path):
+    try:  # conda environment
+      conda_prefix = get_conda_prefix()
+      include_path = os.path.join(conda_prefix, 'include',
+                                  'python%d.%dm' % sys.version_info[:2])
+      if not op.isdir(include_path):
+        include_path = include_path[:-1]
+    except RuntimeError:
+      pass
+  if not op.isdir(include_path):
     raise RuntimeError("Cannot locate Python's include directory: %s" % include_path)
   return include_path
 
-def ld_library_path_var_name():
-  if (os.name == "nt"):
-    return "PATH"
-  if (sys.platform.startswith("darwin")):
-    return "DYLD_LIBRARY_PATH"
-  else:
-    return "LD_LIBRARY_PATH"
-
 def highlight_dispatcher_include_lines(lines):
   m = max([len(line) for line in lines])
-  if (os.name == "nt") :
+  if (os.name == "nt"):
     lines.insert(0, "@REM " + "-"*(m-5))
   else :
     lines.insert(0, "# " + "-"*(m-2))
   lines.append(lines[0])
 
 def source_specific_dispatcher_include(pattern, source_file):
-  try: source_lines = source_file.open().read().splitlines()
+  try:
+    with io.open(abs(source_file), encoding='utf-8', errors='ignore') as fh:
+      source_lines = to_str(fh.read()).splitlines()
   except IOError: return []
-  if (os.name == "nt") :
+  if (os.name == "nt"):
     lines = ["@REM lines marked " + pattern]
   else :
     lines = ["# lines marked " + pattern]
@@ -233,6 +279,116 @@ def write_do_not_edit(f, win_bat=False):
   print(s+' THIS IS AN AUTOMATICALLY GENERATED FILE.', file=f)
   print(s+' DO NOT EDIT! CHANGES WILL BE LOST.', file=f)
 
+def conda_activation_lines(shell, conda_prefix=None):
+  """Lines that run a conda environment's activate.d hooks without requiring
+  "conda activate".
+
+  The hooks in <prefix>/etc/conda/activate.d set environment variables some
+  packages need at runtime (e.g. COOT_DATA_DIR, GSETTINGS_SCHEMA_DIR,
+  XML_CATALOG_FILES). They reference CONDA_PREFIX, so it is pointed at the
+  target prefix only while they run and then restored to its prior value, so a
+  different active environment is left untouched. They are skipped when that
+  environment is already active (CONDA_PREFIX already equals the prefix).
+
+  The dispatchers run these hooks per command, in a subshell that exits, so
+  nothing persists into the user's shell. Two dispatcher kinds share this,
+  differing only in how the prefix is found:
+
+  - **conda-package dispatchers** (``conda_prefix=None``): the prefix is
+    resolved at runtime from LIBTBX_PREFIX (for "sh" it is the prefix; for
+    "bat" it is <prefix>\\Library, so the prefix is its parent), because
+    there the build directory is the conda prefix.
+  - **development-build dispatchers** (``conda_prefix=<path>``): the prefix
+    is baked in as a literal, because there the build directory is not the
+    conda prefix.
+
+  Parameters
+  ----------
+  shell : str
+      "sh" or "bat".
+  conda_prefix : str or None
+      Literal prefix baked into the script, or None to resolve from
+      LIBTBX_PREFIX at runtime.
+
+  Returns
+  -------
+  list of str
+      The script lines that source the activate.d hooks.
+
+  Raises
+  ------
+  ValueError
+      If shell is not one of "sh", "bat".
+  """
+  resolve_at_runtime = conda_prefix is None
+  if (shell == "sh"):
+    # Expression that yields the prefix inside double quotes.
+    prefix = "${LIBTBX_PREFIX}" if resolve_at_runtime else conda_prefix
+    guard = ('[ "${CONDA_PREFIX}" != "%s" ] && [ -d "%s/etc/conda/activate.d" ]'
+             % (prefix, prefix))
+    return [
+      '# Run the conda environment activate.d scripts so packages that rely on',
+      '# activation-time environment variables work without "conda activate".',
+      '# CONDA_PREFIX is set only while the scripts run, then restored, so',
+      '# only the variables they change persist.',
+      'if %s; then' % guard,
+      '  libtbx_conda_prefix_was_set="${CONDA_PREFIX+set}"',
+      '  libtbx_conda_prefix_backup="${CONDA_PREFIX}"',
+      '  CONDA_PREFIX="%s"' % prefix,
+      '  export CONDA_PREFIX',
+      '  for libtbx_activate_script in "%s"/etc/conda/activate.d/*.sh; do' % prefix,
+      '    if [ -r "${libtbx_activate_script}" ]; then',
+      '      . "${libtbx_activate_script}"',
+      '    fi',
+      '  done',
+      '  if [ "${libtbx_conda_prefix_was_set}" = "set" ]; then',
+      '    CONDA_PREFIX="${libtbx_conda_prefix_backup}"',
+      '    export CONDA_PREFIX',
+      '  else',
+      '    unset CONDA_PREFIX',
+      '  fi',
+      '  unset libtbx_activate_script libtbx_conda_prefix_backup libtbx_conda_prefix_was_set',
+      'fi',
+    ]
+  if (shell == "bat"):
+    # Build these lines by concatenation: %-formatting would collide with the
+    # literal %VAR% batch references.
+    if (resolve_at_runtime):
+      set_prefix = r'@for %%F in ("%LIBTBX_PREFIX%\..") do @set "LIBTBX_CONDA_PREFIX=%%~fF"'
+    else:
+      set_prefix = r'@set "LIBTBX_CONDA_PREFIX=' + conda_prefix + r'"'
+    hookdir = r'%LIBTBX_CONDA_PREFIX%\etc\conda\activate.d'
+    exist = '@if exist "' + hookdir + '\\" @set LIBTBX_RUN_ACTIVATE=1'
+    exist = r'@if /i not "%CONDA_PREFIX%"=="%LIBTBX_CONDA_PREFIX%" ' + exist
+    loop = ('@if "%LIBTBX_RUN_ACTIVATE%"=="1" @for %%S in ("'
+            + hookdir + '\\*.bat") do @call "%%S"')
+    return [
+      r'@rem Run the conda environment activate.d scripts so packages that',
+      r'@rem rely on activation-time environment variables work without',
+      r'@rem "conda activate". CONDA_PREFIX is set only while the scripts run,',
+      r'@rem then restored, so only the variables they change persist.',
+      r'@set "LIBTBX_CONDA_PREFIX_BACKUP=%CONDA_PREFIX%"',
+      set_prefix,
+      r'@set LIBTBX_RUN_ACTIVATE=0',
+      exist,
+      r'@if "%LIBTBX_RUN_ACTIVATE%"=="1" @set "CONDA_PREFIX=%LIBTBX_CONDA_PREFIX%"',
+      loop,
+      r'@if "%LIBTBX_RUN_ACTIVATE%"=="1" @set "CONDA_PREFIX=%LIBTBX_CONDA_PREFIX_BACKUP%"',
+      r'@set "LIBTBX_CONDA_PREFIX="',
+      r'@set "LIBTBX_CONDA_PREFIX_BACKUP="',
+      r'@set "LIBTBX_RUN_ACTIVATE="',
+    ]
+  raise ValueError("shell must be 'sh' or 'bat', not %r" % (shell,))
+
+def _is_scons_dispatcher(target_file):
+  """libtbx.scons builds against the caller's compiler environment, so its
+  development-build dispatcher is the one left without the environment
+  guard (libtbx.dispatcher_env)."""
+  name = target_file.basename()
+  if name.lower().endswith(".bat"):
+    name = name[:-len(".bat")]
+  return name == "libtbx.scons"
+
 def open_info(path, mode="w", info="   "):
   print(info, path.basename())
   try: return path.open(mode)
@@ -259,7 +415,7 @@ class common_setpaths(object):
         os.pathsep.join([
           self.path_script_value(_) for _ in self.env.pythonpath]))
       self.update_path(
-        ld_library_path_var_name(),
+        self.env.ld_library_path_var_name(),
         os.pathsep.join([self.path_script_value(_)
           for _ in self.env.ld_library_path_additions()]))
 
@@ -412,6 +568,9 @@ class environment:
     self.reset_dispatcher_support()
     self.set_derived_paths()
     self.python_exe = self.as_relocatable_path(sys.executable)
+    self.installed = False
+    self.installed_modules = []  # used to track installed modules in local env
+    self.installed_order = []
     # sanity checks
     assert self.python_exe.isfile()
     assert self.python_exe.access(os.X_OK)
@@ -472,11 +631,12 @@ class environment:
     self.missing_optional = set()
 
   def is_ready_for_build(self):
-    return (len(self.missing_for_build) == 0)
+    return True
+    #return (len(self.missing_for_build) == 0)
 
   def as_relocatable_path(self, path):
     if isinstance(path, libtbx.path.path_mixin): return path
-    return relocatable_path(self.build_path, path)
+    return relocatable_path(self.build_path, path, resolve_symlinks=False)
 
   def set_derived_paths(self):
     r = self.as_relocatable_path
@@ -485,12 +645,63 @@ class environment:
     self.lib_path     = r("lib")
     self.include_path = r("include")
 
+  def check_installed_env(self, function, *args, **kwargs):
+    """
+    Loads the installed environment, if available, and runs the function
+    in that environment. This is used in the local environment to check
+    the installed environment.
+    """
+    installed_env = get_installed_env()
+    if installed_env is not None and not self.installed:
+      return getattr(installed_env, function)(*args, **kwargs)
+    return None
+
+  def check_local_env(self, function, *args, **kwargs):
+    """
+    Loads the local environment, if available, and runs the function
+    in that environment. This is used in the installed environment to
+    check the local environment.
+    """
+    local_env = get_local_env()
+    if local_env is not None and self.installed:
+      return getattr(local_env, function)(*args, **kwargs)
+    return None
+
+  def get_installed_module_path(self, name):
+    """
+    Returns the path to the installed path of a module. The path may not
+    always be stored in the installed environment. None is returned if
+    the module is not installed.
+    """
+    module_path = None
+    installed_env = get_installed_env()
+    if installed_env is not None:
+      for p in installed_env.repository_paths:
+        installed_path = os.path.join(abs(p), name)
+        if os.path.isdir(installed_path):
+          module_path = installed_path
+          break
+    return module_path
+
+  def module_is_installed(self, name):
+    """
+    Returns True if module is in installed environment, False otherwise
+    """
+    module_path = self.get_installed_module_path(name)
+    return module_path is not None
+
   def under_root(self, path, return_relocatable_path=False):
     return abs(self.build_path / '..' / path)
 
   def under_base(self, path, return_relocatable_path=False):
-    return abs(self.build_path / '..' / 'base' / path)
-    # return abs(os.path.join(abs(self.build_path), '..', 'base', path))
+    result = self.build_path / '..' / 'conda_base' / path
+    if self.installed:
+      result = self.bin_path.anchor / path
+    elif not self.build_options.use_conda:
+      result = self.build_path / '..' / 'base' / path
+    if not return_relocatable_path:
+      result = abs(result)
+    return result
 
   def under_build(self, path, return_relocatable_path=False):
     result = self.as_relocatable_path(path)
@@ -501,6 +712,26 @@ class environment:
 
   def under_dist(self, module_name, path, default=KeyError, test=None,
                  return_relocatable_path=False):
+    # check installed environment first
+    result = self.check_installed_env('_under_dist', module_name, path, None, test, return_relocatable_path)
+    if result is None:
+      result = self.get_installed_module_path(module_name)
+      if result is not None:
+        result = self.as_relocatable_path(result) / path
+        if not return_relocatable_path:
+          result = abs(result)
+    if result is not None:
+      return result
+    # check current environment
+    result = self._under_dist(module_name, path, None, test, return_relocatable_path)
+    if result is not None:
+      return result
+    # then check local environment
+    result = self.check_local_env('_under_dist', module_name, path, default, test, return_relocatable_path)
+    return result
+
+  def _under_dist(self, module_name, path, default=KeyError, test=None,
+                  return_relocatable_path=False):
     if (default is KeyError):
       result = self.module_dist_paths[module_name] / path
     else:
@@ -516,6 +747,26 @@ class environment:
 
   def dist_path(self, module_name, default=KeyError,
                 return_relocatable_path=False):
+    # check installed environment first
+    result = self.check_installed_env('_dist_path', module_name, None, return_relocatable_path)
+    if result is None:
+      result = self.get_installed_module_path(module_name)
+      if result is not None:
+        result = self.as_relocatable_path(result)
+        if not return_relocatable_path:
+          result = abs(result)
+    if result is not None:
+      return result
+    # check current environment
+    result = self._dist_path(module_name, None, return_relocatable_path)
+    if result is not None:
+      return result
+    # then check local environment
+    result = self.check_local_env('_dist_path', module_name, default, return_relocatable_path)
+    return result
+
+  def _dist_path(self, module_name, default=KeyError,
+                 return_relocatable_path=False):
     if (default is KeyError):
       result = self.module_dist_paths[module_name]
     else:
@@ -525,6 +776,19 @@ class environment:
     return result
 
   def has_module(self, name):
+    # check installed environment first
+    result = self.check_installed_env('_has_module', name)
+    if result:
+      return result
+    # check current environment
+    result = self._has_module(name)
+    if result:
+      return result
+    # then check local environment
+    result = self.check_local_env('_has_module', name)
+    return result
+
+  def _has_module(self, name):
     return name in self.module_dist_paths
 
   def require_module(self, name, error=RuntimeError):
@@ -665,6 +929,25 @@ Wait for the command to finish, then try again.""" % vars())
         test=op.isdir,
         optional=True,
         return_relocatable_path=False):
+    # check installed environment first
+    result = self.check_installed_env(
+      '_find_in_repositories', relative_path, test, True, return_relocatable_path)
+    if result is not None:
+      return result
+    # check current environment
+    result = self._find_in_repositories(relative_path, test, True, return_relocatable_path)
+    if result is not None:
+      return result
+    # then check local environment
+    result = self.check_local_env(
+      '_find_in_repositories', relative_path, test, optional, return_relocatable_path)
+    return result
+
+  def _find_in_repositories(self,
+        relative_path,
+        test=op.isdir,
+        optional=True,
+        return_relocatable_path=False):
     assert len(relative_path) != 0
     for path in self.repository_paths:
       result = path / relative_path
@@ -680,6 +963,24 @@ Wait for the command to finish, then try again.""" % vars())
 
   def find_dist_path(self, module_name, optional=False,
                      return_relocatable_path=False):
+    result = None
+
+    if module_name=='amber': return result # because amber_adaptbx is not an adapter
+
+    # check installed environment first
+    result = self.check_installed_env('_find_dist_path', module_name, True, return_relocatable_path)
+    if result is not None:
+      return result
+    # check current environment
+    result = self._find_dist_path(module_name, True, return_relocatable_path)
+    if result is not None:
+      return result
+    # then check local environment
+    result = self.check_local_env('_find_dist_path', module_name, optional, return_relocatable_path)
+    return result
+
+  def _find_dist_path(self, module_name, optional=False,
+                      return_relocatable_path=False):
     dist_path = self.command_line_redirections.get(module_name, None)
     if (dist_path is not None):
       return dist_path.self_or_abs_if(return_relocatable_path)
@@ -705,6 +1006,15 @@ Wait for the command to finish, then try again.""" % vars())
   def process_module(self, dependent_module, module_name, optional):
     dist_path = self.find_dist_path(module_name, optional=optional)
     if (dist_path is None): return False
+    if self.module_is_installed(module_name):
+      print("{module_name} is already installed".format(module_name=module_name))
+      installed_env = get_installed_env()
+      if module_name in installed_env.module_dict:
+        self.installed_modules.append(installed_env.module_dict[module_name])
+      else:
+        installed_module = module(env=self, name=module_name, dist_path=dist_path)
+        self.installed_modules.append(installed_module)
+      return True
     new_module = module(env=self, name=module_name, dist_path=dist_path)
     new_name_normcase = op.normcase(new_module.name)
     for name in self.module_dict:
@@ -728,6 +1038,7 @@ Wait for the command to finish, then try again.""" % vars())
         path = abs(self.build_path / path)
       self.add_repository(path=path)
     module_names = []
+    installed_env = get_installed_env()
     for module_name in command_line.args:
       if (len(module_name) == 0): continue # ignore arguments like ""
       if (module_name == ".."):
@@ -748,16 +1059,18 @@ Wait for the command to finish, then try again.""" % vars())
             '  resulting target = "%s"' % (
               module_name, redirection, dist_path))
         self.command_line_redirections[module_name] = dist_path
+      # remove any trailing dir separators
+      module_name = module_name.rstrip("/\\")
       module_names.append(module_name)
     if (pre_processed_args.warm_start):
       self.explicitly_requested_modules |= set(module_names)
       if (not command_line.options.only):
         excludes = []
-        if (command_line.options.exclude) :
+        if (command_line.options.exclude):
           excludes = command_line.options.exclude.split(",")
         self.explicitly_requested_modules -= set(excludes)
         for module in self.module_list:
-          if (not module.name in excludes) :
+          if (not module.name in excludes):
             module_names.append(module.name)
       else:
         self.explicitly_requested_modules = set(module_names)
@@ -781,14 +1094,22 @@ Wait for the command to finish, then try again.""" % vars())
         enable_boost_threads
           =command_line.options.enable_boost_threads,
         enable_cuda=command_line.options.enable_cuda,
+        enable_kokkos=command_line.options.enable_kokkos,
+        use_conda=command_line.options.use_conda,
         opt_resources=command_line.options.opt_resources,
         use_environment_flags=command_line.options.use_environment_flags,
         force_32bit=command_line.options.force_32bit,
         msvc_arch_flag=command_line.options.msvc_arch_flag,
         enable_cxx11=command_line.options.enable_cxx11,
-        python3warn=command_line.options.python3warn,
+        cxxstd=command_line.options.cxxstd,
         skip_phenix_dispatchers=command_line.options.skip_phenix_dispatchers)
       self.build_options.get_flags_from_environment()
+      # if an installed environment exists, override with build_options
+      # from installed environment
+      if installed_env is not None:
+        self.build_options = installed_env.build_options
+      if (self.build_options.use_conda):
+        get_conda_prefix()
       if (command_line.options.command_version_suffix is not None):
         self.command_version_suffix = \
           command_line.options.command_version_suffix
@@ -796,17 +1117,54 @@ Wait for the command to finish, then try again.""" % vars())
     if (command_line.options.build_boost_python_extensions is not None):
       self.build_options.build_boost_python_extensions \
         = command_line.options.build_boost_python_extensions
-    if command_line.options.python3warn:
-      self.build_options.python3warn = command_line.options.python3warn
     self.reset_module_registry()
     module_names.insert(0, "libtbx")
+
+    # check for installed environment and remove installed modules
+    if installed_env is not None and not self.installed:
+      module_set = set(module_names)
+      installed_module_names = set([module.name for module in self.installed_modules])
+      for module_name in module_names:
+        dist_path = installed_env.get_installed_module_path(module_name)
+        if module_name in installed_env.module_dict \
+          or dist_path is not None:
+          try:
+            module_set.remove(module_name)
+            if module_name not in installed_module_names \
+              and module_name != 'boost':
+              from libtbx.env_config import module
+              if dist_path is not None:
+                dist_path = installed_env.as_relocatable_path(dist_path)
+              installed_module = module(env=self, name=module_name, dist_path=dist_path)
+              self.installed_modules.append(installed_module)
+              installed_module_names.add(module_name)
+          except (KeyError, ValueError):
+            pass
+      module_names = list(module_set)
+      if len(module_names) == 0:
+        print("All modules have already been installed. No new configuration is necessary.")
+        sys.exit()
+
     for module_name in module_names:
       self.process_module(
         dependent_module=None, module_name=module_name, optional=False)
     self.scons_dist_path = self.find_dist_path("scons", optional=True)
-    self.path_utility = self.under_dist(
-      "libtbx", "command_line/path_utility.py",
-      return_relocatable_path=True)
+    if self.scons_dist_path is None:
+      # try to use SCons in Python installation
+      try:
+        import SCons
+      except ImportError:
+        pass
+      else:
+        self.scons_dist_path = self.as_relocatable_path(sys.prefix)
+    if installed_env is not None and not self.installed:
+      self.path_utility = installed_env.under_dist(
+        "libtbx", "command_line/path_utility.py",
+        return_relocatable_path=True)
+    else:
+      self.path_utility = self.under_dist(
+        "libtbx", "command_line/path_utility.py",
+        return_relocatable_path=True)
     assert self.path_utility.isfile()
 
   def dispatcher_precall_commands(self):
@@ -875,7 +1233,7 @@ Wait for the command to finish, then try again.""" % vars())
                             (lines_before_command,
                              self._dispatcher_include_before_command)]:
         if (len(buffer) == 0): continue
-        if (os.name == "nt") :
+        if (os.name == "nt"):
           buffer.insert(0, "@REM included from %s" % abs(path))
         else :
           buffer.insert(0, "# included from %s" % abs(path))
@@ -894,7 +1252,7 @@ Wait for the command to finish, then try again.""" % vars())
       raise RuntimeError(
         "--opt_resources not supported in combination with --compiler=icc")
     def get_libs_dir():
-      if (sys.platform.startswith("linux")) :
+      if (sys.platform.startswith("linux")):
         libs = ["libimf.so", "libirc.so"]
         if (is_64bit_architecture()):
           return "linux64", libs
@@ -927,6 +1285,16 @@ Wait for the command to finish, then try again.""" % vars())
       result.append(p)
     return ":".join(result)
 
+  def ld_library_path_var_name(self):
+    if (os.name == "nt"):
+      return "PATH"
+    if (sys.platform.startswith("darwin")):
+      if (self.build_options.use_conda):
+        return "DYLD_FALLBACK_LIBRARY_PATH"
+      return "DYLD_LIBRARY_PATH"
+    else:
+      return "LD_LIBRARY_PATH"
+
   def ld_library_path_additions(self):
     result = [self.lib_path]
     dirs = []
@@ -938,6 +1306,183 @@ Wait for the command to finish, then try again.""" % vars())
       if (op.isdir(p)):
         result.append(self.as_relocatable_path(p))
     return result
+
+  def write_conda_dispatcher(self, source_file, target_file,
+                             source_is_python_exe=False):
+    '''
+    Simplified dispatcher for conda package since many of the environment
+    variables are no longer necessary.
+    '''
+    with target_file.open('w') as f:
+      if sys.platform == 'win32':  # windows
+        print('@setlocal', file=f)
+        print('@set LIBTBX_PREFIX=%~dp0', file=f)
+        print('@set LIBTBX_PREFIX=%LIBTBX_PREFIX:~0,-1%', file=f)
+        print(r'@for %%F in ("%LIBTBX_PREFIX%") do @set LIBTBX_PREFIX=%%~dpF', file=f)
+        print('@set LIBTBX_PREFIX=%LIBTBX_PREFIX:~0,-1%', file=f)
+        print('@set LIBTBX_BUILD=%LIBTBX_PREFIX%\\..\\Library\\share\\cctbx', file=f)
+        print('@set LIBTBX_DISPATCHER_NAME=%~nx0', file=f)
+        # LIBTBX_PREFIX is <prefix>\Library here (the .bat lives in
+        # Library\bin), so the conda layout is: the prefix root (python.exe),
+        # Library\mingw-w64\bin, Library\usr\bin, Library\bin (dispatchers
+        # and DLLs), then Scripts and bin under the prefix.
+        print('@set PATH=%LIBTBX_PREFIX%\\..;%LIBTBX_PREFIX%\\mingw-w64\\bin;%LIBTBX_PREFIX%\\usr\\bin;%LIBTBX_PREFIX%\\bin;%LIBTBX_PREFIX%\\..\\Scripts;%LIBTBX_PREFIX%\\..\\bin;%PATH%', file=f)
+        def write_dispatcher_include(where):
+          for line in self.dispatcher_include(where=where):
+            if (line.startswith("@")):
+              print(line, file=f)
+            else :
+              print("@" + line, file=f)
+        for line in unconditional_lines("bat") + environment_guard_lines("bat"):
+          print(line, file=f)
+        for line in conda_activation_lines(shell="bat"):
+          print(line, file=f)
+        write_dispatcher_include(where="at_start")
+        print('@set LIBTBX_PYEXE=%s' % self.python_exe.bat_value(anchor_var='LIBTBX_PREFIX'), file=f)
+        write_dispatcher_include(where="before_command")
+        qnew_tmp = qnew
+        if self.python_version_major_minor[0] == 3:
+          qnew_tmp = '' # -Q is gone in Python3.
+        if source_file.ext().lower() == '.py':
+          print('@"%%LIBTBX_PYEXE%%"%s "%s" %%*' % (
+            qnew_tmp, source_file.bat_value(anchor_var='LIBTBX_PREFIX')), file=f)
+        elif source_file.basename().lower() == 'python.exe':
+          print('@"%%LIBTBX_PYEXE%%"%s %%*' % qnew_tmp, file=f)
+        else:
+          print('@"%s" %%*' % source_file.bat_value(anchor_var='LIBTBX_PREFIX'), file=f)
+      else:  # linux and macOS
+        if (source_file is not None):
+          print('#! /bin/sh', file=f)
+          print('# LIBTBX_DISPATCHER DO NOT EDIT', file=f)
+        else:
+          print('# LIBTBX_DISPATCHER_HEAD DO NOT EDIT', file=f)
+          print('#', file=f)
+          print('# This file is intended to be sourced from other scripts.', file=f)
+          print('# It is like the dispatcher scripts in the bin directory,', file=f)
+          print('# but only sets up the environment without calling a', file=f)
+          print('# command at the end.', file=f)
+        print('#', file=f)
+        write_do_not_edit(f=f)
+        print('# To customize this auto-generated script create', file=f)
+        print('#', file=f)
+        print('#   dispatcher_include*.sh', file=f)
+        print('#', file=f)
+        print('# files in %s and run' % show_string(abs(self.build_path)), file=f)
+        print('#', file=f)
+        print('#   libtbx.refresh', file=f)
+        print('#', file=f)
+        print('# to re-generate the dispatchers (libtbx.refresh is a subset', file=f)
+        print('# of the functionality of the libtbx/configure.py command).', file=f)
+        print('#', file=f)
+        print('# See also:', file=f)
+        print('#   %s' \
+          % show_string(self.under_build("dispatcher_include_template.sh")), file=f)
+        print('#', file=f)
+        print(_SHELLREALPATH_CODE, file=f)
+        print('LC_NUMERIC=C', file=f)
+        print('export LC_NUMERIC', file=f)
+        print('LIBTBX_PREFIX="$(shellrealpath "$0" && cd "$(dirname "$RESULT")/.." && pwd)"', file=f)
+        print('export LIBTBX_PREFIX', file=f)
+        print('LIBTBX_BUILD=${LIBTBX_PREFIX}/share/cctbx', file=f)
+        print('export LIBTBX_BUILD', file=f)
+        print('LIBTBX_PYEXE_BASENAME="%s"' % self.python_exe.basename(), file=f)
+        print('export LIBTBX_PYEXE_BASENAME', file=f)
+        # Always: the interpreter's own standard library, and this prefix's
+        # bin directory first on PATH. The guard after it is skipped when a
+        # caller opts out (see libtbx.dispatcher_env).
+        for line in unconditional_lines("sh"):
+          print(line, file=f)
+        print('export PATH="${LIBTBX_PREFIX}/bin:${PATH}"', file=f)
+        for line in environment_guard_lines("sh"):
+          print(line, file=f)
+        for line in external_path_lines("sh"):
+          print(line, file=f)
+        for line in conda_activation_lines(shell="sh"):
+          print(line, file=f)
+        source_is_py = False
+        if (source_file is not None):
+          dispatcher_name = target_file.basename()
+          if (dispatcher_name.find('"') >= 0):
+            raise RuntimeError(
+              "Dispatcher target file name contains double-quote: %s\n"
+                % dispatcher_name
+              + "  source file: %s" % source_file)
+          print('LIBTBX_DISPATCHER_NAME="%s"' % target_file.basename(), file=f)
+          print('export LIBTBX_DISPATCHER_NAME', file=f)
+          if source_file.ext().lower() == ".py":
+            source_is_py = True
+          else:
+            with open(abs(source_file), 'rb') as fh:
+              first_line = fh.readline()
+            if first_line.startswith(b'#!') and b'python' in first_line.lower():
+              source_is_py = True
+        for line in self.dispatcher_include(where="at_start"):
+          print(line, file=f)
+
+        precall_commands = self.dispatcher_precall_commands()
+        if (precall_commands is not None):
+          for line in precall_commands:
+            print(line, file=f)
+        if (source_is_py):
+          scan_for_dispatcher_includes = True
+        elif source_file is None or not source_file.isfile():
+          scan_for_dispatcher_includes = False
+        else:
+          scan_for_dispatcher_includes = not detect_binary_file.from_initial_block(
+            file_name=abs(source_file))
+        if (scan_for_dispatcher_includes):
+          for line in source_specific_dispatcher_include(
+                        pattern="LIBTBX_PRE_DISPATCHER_INCLUDE_SH",
+                        source_file=source_file):
+            print(line, file=f)
+        for line in self.dispatcher_include(where="before_command"):
+          print(line, file=f)
+        if (scan_for_dispatcher_includes):
+          for line in source_specific_dispatcher_include(
+                        pattern="LIBTBX_POST_DISPATCHER_INCLUDE_SH",
+                        source_file=source_file):
+            print(line, file=f)
+        if (self.build_options.opt_resources):
+          ldpl = self.opt_resources_ld_preload()
+          if (ldpl is not None):
+            print('if [ "${LIBTBX_NO_LD_PRELOAD-UNSET}" == UNSET ]; then', file=f)
+            print('  LD_PRELOAD="%s"' % ldpl, file=f)
+            print('  export LD_PRELOAD', file=f)
+            print('fi', file=f)
+        print('LIBTBX_PYEXE="%s"' % (
+          self.python_exe.dirname() / "$LIBTBX_PYEXE_BASENAME").sh_value(anchor_var='LIBTBX_PREFIX'), file=f)
+        print('export LIBTBX_PYEXE', file=f)
+
+        if (source_file is not None):
+          cmd = ""
+          if (source_is_py or source_is_python_exe):
+            qnew_tmp = qnew
+            if self.python_version_major_minor[0] == 3:
+              qnew_tmp = '' # -Q is gone in Python3.
+            cmd += ' "$LIBTBX_PYEXE"%s' % qnew_tmp
+          start_python = False
+          if (source_is_py):
+            if (len(source_specific_dispatcher_include(
+                      pattern="LIBTBX_START_PYTHON",
+                      source_file=source_file)) > 3):
+              start_python = True
+          if (not start_python and not source_is_python_exe):
+            cmd += ' "%s"' % source_file.sh_value(anchor_var='LIBTBX_PREFIX')
+          print('if [ -n "$LIBTBX__VALGRIND_FLAG__" ]; then', file=f)
+          print("  exec $LIBTBX_VALGRIND"+cmd, '"$@"', file=f)
+          tmp_reloc = os.path.basename(source_file.relocatable)
+          if tmp_reloc.endswith('.py') and cmd.find('-Qnew')>-1:
+            print('elif [ -n "$LIBTBX__CPROFILE_FLAG__" ]; then', file=f)
+            print('  exec %s "$@"' % cmd.replace(
+              '-Qnew',
+              '-Qnew -m cProfile -o %s.profile' % os.path.basename(target_file.relocatable),
+              ), file=f)
+          print("elif [ $# -eq 0 ]; then", file=f)
+          print("  exec"+cmd, file=f)
+          print("else", file=f)
+          print("  exec"+cmd, '"$@"', file=f)
+          print("fi", file=f)
+        target_file.chmod(0o755)
 
   def write_bin_sh_dispatcher(self,
         source_file, target_file, source_is_python_exe=False):
@@ -1004,7 +1549,8 @@ Wait for the command to finish, then try again.""" % vars())
       % show_string(self.under_build("dispatcher_include_template.sh")), file=f)
     print('#', file=f)
     print(_SHELLREALPATH_CODE, file=f)
-    print('unset PYTHONHOME', file=f)
+    for line in unconditional_lines("sh"):
+      print(line, file=f)
     print('LC_ALL=' + LC_ALL, file=f)
     print('export LC_ALL', file=f)
     print('LIBTBX_BUILD="$(shellrealpath "$0" && cd "$(dirname "$RESULT")/.." && pwd)"', file=f)
@@ -1028,29 +1574,65 @@ Wait for the command to finish, then try again.""" % vars())
           first_line = fh.readline()
         if first_line.startswith(b'#!') and b'python' in first_line.lower():
           source_is_py = True
+    # The guard runs before the site include files and this dispatcher's own
+    # paths, for every builder, so neither is undone by it.
+    if (not _is_scons_dispatcher(target_file)):
+      for line in environment_guard_lines("sh"):
+        print(line, file=f)
     for line in self.dispatcher_include(where="at_start"):
       print(line, file=f)
     essentials = [("PYTHONPATH", self.pythonpath)]
     essentials.append((
-      ld_library_path_var_name(),
+      self.ld_library_path_var_name(),
       self.ld_library_path_additions()))
-    essentials.append(("PATH", [self.bin_path]))
+    bin_path = [self.bin_path]
+    if (self.build_options.use_conda):
+      # Put the conda environment's bin after the build bin, as in the
+      # conda-package dispatchers (and the Windows development dispatcher).
+      bin_path.append(
+        self.as_relocatable_path(get_conda_prefix()) / 'bin')
+    essentials.append(("PATH", bin_path))
 
     if (cert_file is not None):
-      print('SSL_CERT_FILE="%s"' % cert_file.sh_value(), file=f)
+      # certifi's bundle unless the caller set one (a corporate CA bundle)
+      print('SSL_CERT_FILE="${SSL_CERT_FILE:-%s}"' % cert_file.sh_value(),
+            file=f)
       print('export SSL_CERT_FILE', file=f)
 
     print('OPENBLAS_NUM_THREADS="%s"' % openblas_num_threads, file=f)
     print('export OPENBLAS_NUM_THREADS', file=f)
 
-    pangorc = abs(self.build_path / '..' / 'base' / 'etc' / 'pango' / 'pangorc')
-    if os.path.exists(pangorc):
-      print('PANGO_RC_FILE="$LIBTBX_BUILD/../base/etc/pango/pangorc"', file=f)
-      print('export PANGO_RC_FILE', file=f)
-    fontconfig = abs(self.build_path / '..' / 'base' / 'etc' / 'fonts')
-    if os.path.exists(fontconfig):
-      print('FONTCONFIG_PATH="$LIBTBX_BUILD/../base/etc/fonts"', file=f)
-      print('export FONTCONFIG_PATH', file=f)
+    if sys.version_info[0] == 2:
+      pangorc = abs(self.build_path / '..' / 'base' / 'etc' / 'pango' / 'pangorc')
+      if os.path.exists(pangorc):
+        print('PANGO_RC_FILE="$LIBTBX_BUILD/../base/etc/pango/pangorc"', file=f)
+        print('export PANGO_RC_FILE', file=f)
+      fontconfig = abs(self.build_path / '..' / 'base' / 'etc' / 'fonts')
+      if os.path.exists(fontconfig):
+        print('FONTCONFIG_PATH="$LIBTBX_BUILD/../base/etc/fonts"', file=f)
+        print('export FONTCONFIG_PATH', file=f)
+
+      # set paths for fontconfig and gdk-pixbuf due to gtk2
+      # checks the location of the conda environment
+      if self.build_options.use_conda and sys.platform.startswith('linux'):
+        fontconfig_path = '{conda_base}/etc/fonts'
+        fontconfig_file = '$FONTCONFIG_PATH/fonts.conf'
+        gdk_pixbuf_module_file = '{conda_base}/lib/gdk-pixbuf-2.0/2.10.0/loaders.cache'
+        gtk_path = '{conda_base}/lib/gtk-2.0/2.10.0'
+        conda_base = get_conda_prefix()
+        if (os.path.exists(fontconfig_path.format(conda_base=conda_base)) and
+            os.path.exists(gdk_pixbuf_module_file.format(conda_base=conda_base))):
+          if conda_base == abs(self.build_path / '..' / 'conda_base'):
+            conda_base = '$LIBTBX_BUILD/../conda_base'
+          print('unset GTK_MODULES', file=f)
+          print('unset GTK2_RC_FILES', file=f)
+          print('unset GTK_RC_FILES', file=f)
+          print('export FONTCONFIG_PATH=' +
+                fontconfig_path.format(conda_base=conda_base), file=f)
+          print('export FONTCONFIG_FILE=' + fontconfig_file, file=f)
+          print('export GDK_PIXBUF_MODULE_FILE=' +
+                gdk_pixbuf_module_file.format(conda_base=conda_base), file=f)
+          print('export GTK_PATH=' + gtk_path.format(conda_base=conda_base), file=f)
 
     for n,v in essentials:
       if (len(v) == 0): continue
@@ -1062,6 +1644,13 @@ Wait for the command to finish, then try again.""" % vars())
       print('  %s="%s"' % (n, v), file=f)
       print('  export %s' % n, file=f)
       print('fi', file=f)
+    if (self.build_options.use_conda):
+      # Run the conda activate.d hooks here -- like the conda-package
+      # dispatchers -- instead of from setpaths. The build directory is not
+      # the conda prefix in a development build, so the prefix is baked in as
+      # a literal rather than resolved from LIBTBX_PREFIX at runtime.
+      for line in conda_activation_lines("sh", get_conda_prefix()):
+        print(line, file=f)
     precall_commands = self.dispatcher_precall_commands()
     if (precall_commands is not None):
       for line in precall_commands:
@@ -1095,18 +1684,6 @@ Wait for the command to finish, then try again.""" % vars())
     print('LIBTBX_PYEXE="%s"' % (
       self.python_exe.dirname() / "$LIBTBX_PYEXE_BASENAME").sh_value(), file=f)
     print('export LIBTBX_PYEXE', file=f)
-    if self.build_options.python3warn in ('warn', 'fail'):
-      # disable warnings for 3rd party modules
-      py3warn_ignores = ( # must specify each module exactly
-        'mock.mock', 'numpy.core', 'py._code.code', 'pytest_timeout',
-        '_pytest.capture', '_pytest.fixtures', '_pytest.python',
-        'wx._controls', 'wx._core', 'wx._gdi', 'wx._misc',
-        'mysql.connector.authentication', 'mysql.connector.catch23',
-        'mysql.connector.dbapi', 'mysql.connector.network',
-      )
-      print('PYTHONWARNINGS="{}"'.format(",".join(
-        'ignore::DeprecationWarning:' + module for module in py3warn_ignores)), file=f)
-      print('export PYTHONWARNINGS', file=f)
 
     # Since El Capitan, Apple Python does not allow relative rpath in shared
     # libraries. Thus any cctbx-based script will fail with an import error
@@ -1121,13 +1698,13 @@ Wait for the command to finish, then try again.""" % vars())
         for $lib(<$ENV{LIBTBX_BUILD}/lib/*.so>) {
             open OTOOL, "-|", "otool", "-L", $lib;
             while(<OTOOL>) {
-                m{^\s+(lib\S+)} and $libs{$lib}{$1}++;
+                m{^\\s+(lib\\S+)} and $libs{$lib}{$1}++;
             }
         }
         while(($so, $relative_libs) = each %libs) {
             for $lib(keys %$relative_libs) {
                 system "install_name_tool",
-                       "-change", $lib, "\@loader_path/../$lib", $so;
+                       "-change", $lib, "\\@loader_path/../$lib", $so;
             }
         }
       """, file=f)
@@ -1140,10 +1717,6 @@ Wait for the command to finish, then try again.""" % vars())
         qnew_tmp = qnew
         if self.python_version_major_minor[0] == 3:
           qnew_tmp = '' # -Q is gone in Python3.
-        if self.build_options.python3warn == 'warn':
-          qnew_tmp += " -3"
-        elif self.build_options.python3warn == 'fail':
-          qnew_tmp += " -3 -Werror::DeprecationWarning"
         cmd += ' %s"$LIBTBX_PYEXE"%s' % (pre_cmd(), qnew_tmp)
       start_python = False
       if (source_is_py):
@@ -1184,27 +1757,46 @@ Wait for the command to finish, then try again.""" % vars())
     print(r'@for %%F in ("%LIBTBX_BUILD%") do @set LIBTBX_BUILD=%%~dpF', file=f)
     print('@set LIBTBX_BUILD=%LIBTBX_BUILD:~0,-1%', file=f)
     print('@set LIBTBX_DISPATCHER_NAME=%~nx0', file=f)
+    # As in write_bin_sh_dispatcher: guard first, then includes and paths.
+    for line in unconditional_lines("bat"):
+      print(line, file=f)
+    if (not _is_scons_dispatcher(target_file)):
+      for line in environment_guard_lines("bat"):
+        print(line, file=f)
     def write_dispatcher_include(where):
       for line in self.dispatcher_include(where=where):
-        if (line.startswith("@")) :
+        if (line.startswith("@")):
           print(line, file=f)
         else :
           print("@" + line, file=f)
     write_dispatcher_include(where="at_start")
     essentials = [("PYTHONPATH", self.pythonpath)]
-    essentials.append((ld_library_path_var_name(), [self.lib_path]))
-    essentials.append(("PATH", [self.bin_path]))
+    essentials.append((self.ld_library_path_var_name(), [self.lib_path]))
+    bin_path = [self.bin_path]
+    if self.build_options.use_conda:
+      bin_path.append(self.as_relocatable_path(get_conda_prefix()) / 'Library' / 'bin')
+      bin_path.append(self.as_relocatable_path(get_conda_prefix()) / 'Library' / 'mingw-w64' / 'bin')
+    essentials.append(("PATH", bin_path))
     for n,v in essentials:
       if (len(v) == 0): continue
       v = ';'.join([ op.join('%LIBTBX_BUILD%', p.relocatable) for p in v ])
-      print('@set %s=%s;%%%s%%' % (n, v, n), file=f)
+      # cmd expands an undefined variable to nothing, which would leave a
+      # trailing ';' (an empty PYTHONPATH entry is the working directory),
+      # so the separator is added only when the variable is defined.
+      print('@if defined %s @set "%s=;%%%s%%"' % (n, n, n), file=f)
+      print('@set "%s=%s%%%s%%"' % (n, v, n), file=f)
+    if self.build_options.use_conda:
+      # Run the conda activate.d hooks here -- like the conda-package
+      # dispatchers -- instead of from setpaths. The build directory is not
+      # the conda prefix in a development build, so the prefix is baked in as
+      # a literal rather than resolved from LIBTBX_PREFIX at runtime.
+      for line in conda_activation_lines("bat", get_conda_prefix()):
+        print(line, file=f)
     print('@set LIBTBX_PYEXE=%s' % self.python_exe.bat_value(), file=f)
     write_dispatcher_include(where="before_command")
     qnew_tmp = qnew
-    if self.build_options.python3warn == 'warn':
-      qnew_tmp += " -3"
-    elif self.build_options.python3warn == 'fail':
-      qnew_tmp += " -3 -Werror::DeprecationWarning"
+    if self.python_version_major_minor[0] == 3:
+      qnew_tmp = '' # -Q is gone in Python3.
     if source_file.ext().lower() == '.py':
       print('@"%%LIBTBX_PYEXE%%"%s "%s" %%*' % (
         qnew_tmp, source_file.bat_value()), file=f)
@@ -1224,7 +1816,7 @@ Wait for the command to finish, then try again.""" % vars())
                                   #'afitt.python',
                                  ]:
       return
-    if self.build_options.skip_phenix_dispatchers and 'phenix' in target_file.basename():
+    if "phenix" not in self.module_dict and self.build_options.skip_phenix_dispatchers and "phenix" in target_file.basename():
       return
     reg = self._dispatcher_registry.setdefault(target_file, source_file)
     if reg != source_file:
@@ -1241,7 +1833,10 @@ Wait for the command to finish, then try again.""" % vars())
           + "   =%s\n" % reg
           + "    %s\n" % show_string(abs(source_file))
           + "   =%s" % source_file)
-    if (os.name == "nt"):
+    if abs(self.build_path) == os.path.abspath(get_conda_prefix()) or \
+      (os.name == "nt" and abs(self.build_path).lower().endswith('library')):
+      action = self.write_conda_dispatcher
+    elif (os.name == "nt"):
       action = self.write_win32_dispatcher
     else:
       action = self.write_bin_sh_dispatcher
@@ -1391,9 +1986,53 @@ alias libtbx.unsetpaths "source '$LIBTBX_BUILD/unsetpaths.csh'"
                                    return_relocatable_path=True))
     write_do_not_edit(f=f)
     print('SConsignFile()', file=f)
-    for path in self.repository_paths:
+    if os.getenv("SCONS_CACHE"):
+      cache_dir = os.getenv("SCONS_CACHE")
+      print("Using build cache in %s" % cache_dir)
+      print("CacheDir(%r)" % cache_dir, file=f)
+      assert os.path.exists(cache_dir) and os.path.isdir(cache_dir), \
+        "Specified build cache dir does not exist"
+
+    repository_paths = self.repository_paths
+    repository_names = set([abs(p) for p in repository_paths])
+    module_list = self.module_list
+    module_names = set([module.name for module in module_list])
+    # insert repositories and modules from installed environment
+    installed_env = get_installed_env()
+    if installed_env is not None:
+      for repository_path in installed_env.repository_paths:
+        if abs(repository_path) in repository_names:
+          for p in repository_paths:
+            if abs(p) == abs(repository_path):
+              try:
+                repository_paths.remove(p)
+              except ValueError:
+                pass
+      repository_paths = installed_env.repository_paths + repository_paths
+      # collect modules
+      all_modules = installed_env.module_list
+      local_env = get_local_env()
+      if local_env is not None:
+        all_modules += local_env.module_list
+      all_modules += self.module_list
+      # reorder modules
+      module_list = []
+      for ordered_name in installed_env.installed_order:
+        for module in all_modules:
+          if ordered_name == module.name:
+            module_list.append(module)
+            all_modules.remove(module)
+            break
+      # add remaining modules
+      module_list_names = set([module.name for module in module_list])
+      for module in all_modules:
+        if module.name not in module_list_names:
+          module_list.append(module)
+          module_list_names.add(module.name)
+
+    for path in repository_paths:
       print('Repository(r"%s")' % abs(path), file=f)
-    for module in self.module_list:
+    for module in module_list:
       name,path  = list(module.name_and_dist_path_pairs())[-1]
       for script_name in ["libtbx_SConscript", "SConscript"]:
         if (path / script_name).isfile():
@@ -1407,7 +2046,12 @@ alias libtbx.unsetpaths "source '$LIBTBX_BUILD/unsetpaths.csh'"
         # make cja seems to get confused if the file is simply overwritten
     f = open_info(self.under_build("Makefile",
                                    return_relocatable_path=True))
+    current_path = os.environ.get('PATH')
     lsj = './bin/libtbx.scons -j "`./bin/libtbx.show_number_of_processors`"'
+    lc = './bin/libtbx.configure'
+    if get_installed_env() is not None:
+      lsj = 'libtbx.scons -j "`libtbx.show_number_of_processors`"'
+      lc = 'libtbx.configure'
     f.write("""\
 # DO NOT EDIT THIS FILE!
 # This file will be overwritten by the next libtbx/configure.py,
@@ -1423,11 +2067,11 @@ bp:
 \t%(lsj)s -k boost_python_tests=1
 
 reconf:
-\t./bin/libtbx.configure .
+\t%(lc)s .
 \t%(lsj)s
 
 redo:
-\t./bin/libtbx.configure . --clear_scons_memory
+\t%(lc)s . --clear_scons_memory
 \t%(lsj)s
 
 clean:
@@ -1468,7 +2112,8 @@ selfx:
   def pickle(self):
     self.reset_dispatcher_support()
     file_name = self.build_path / "libtbx_env"
-    pickle.dump(self, file_name.open("wb"), 0)
+    with file_name.open("wb") as f:
+      pickle.dump(self, f, 0)
 
   def show_module_listing(self):
     print("Relocatable paths anchored at: %s" % abs(self.build_path))
@@ -1505,11 +2150,11 @@ selfx:
 
   def write_setpath_files(self):
     for suffix in ["", "_all", "_debug"]:
-      if (hasattr(os, "symlink")):
+      if (sys.platform == "win32"):
+        self.write_setpaths_bat(suffix)
+      else:
         self.write_setpaths_sh(suffix)
         self.write_setpaths_csh(suffix)
-      else:
-        self.write_setpaths_bat(suffix)
 
   def process_exe(self):
     for path in [self.exe_path,
@@ -1585,63 +2230,6 @@ selfx:
     command.run()
     return dist.install_scripts
 
-  def regenerate_entry_point_console_scripts(self, verbose=True):
-    '''
-    Creates all console_scripts entry point scripts from scratch and overwrites existing ones.
-    This is intended to be used by installers to relocate the entry point script paths.
-    '''
-    try:
-      import distutils.dist
-      import libtbx.fastentrypoints # monkeypatches setuptools
-      import pkg_resources
-      import setuptools.command.easy_install
-    except ImportError:
-      return
-
-    # Prepare generic script generator
-    distribution = distutils.dist.Distribution({'name': 'setuptools'})
-    command = setuptools.command.easy_install.easy_install(distribution)
-    command.args = ['wheel']  # dummy argument
-    command.finalize_options()
-
-    # Force regeneration of all known console_scripts
-    for pkg_resources_dist in pkg_resources.working_set:
-      console_scripts = pkg_resources_dist.get_entry_map().get('console_scripts')
-      if console_scripts:
-        if verbose:
-          print("Regenerating commands for %s: %s" % (
-              pkg_resources_dist,
-              list(console_scripts),
-          ))
-        command.install_wrapper_scripts(pkg_resources_dist)
-
-  def generate_entry_point_dispatchers(self):
-    '''
-    Write indirect dispatcher scripts for all console_scripts entry points
-    that have existing dispatcher scripts in the base/bin directory, but
-    add a 'libtbx.' prefix.
-    '''
-    try:
-      import pkg_resources
-      bin_directory = self.get_setuptools_script_dir()
-    except ImportError:
-      return
-    if not os.path.isdir(bin_directory):
-      return # do not create console_scripts dispatchers, only point to them
-
-    base_bin_dispatchers = set(os.listdir(bin_directory))
-    existing_dispatchers = filter(lambda f: f.startswith('libtbx.'), self.bin_path.listdir())
-    existing_dispatchers = set(map(lambda f: f[7:], existing_dispatchers))
-    entry_point_candidates = base_bin_dispatchers - existing_dispatchers
-
-    entry_points = pkg_resources.iter_entry_points('console_scripts')
-    entry_points = filter(lambda ep: ep.name in entry_point_candidates, entry_points)
-    for ep in entry_points:
-      self.write_dispatcher(
-          source_file=os.path.join(bin_directory, ep.name),
-          target_file=os.path.join('bin', 'libtbx.' + ep.name),
-      )
-
   def write_command_version_duplicates(self):
     if (self.command_version_suffix is None): return
     suffix = "_" + self.command_version_suffix
@@ -1709,53 +2297,94 @@ selfx:
     (self.build_path / ".sconf_temp").remove_tree()
 
   def refresh(self):
-    completed_file_name = (self.build_path / "libtbx_refresh_is_completed")
-    completed_file_name.remove()
-    self.assemble_pythonpath()
-    self.show_build_options_and_module_listing()
-    self.reset_dispatcher_bookkeeping()
-    print("Creating files in build directory: %s" \
-      % show_string(abs(self.build_path)))
-    self.write_dispatcher_include_template()
-    self.write_lib_dispatcher_head()
-    self.write_setpath_files()
-    self.pickle()
-    libtbx.env = self
-    os.environ["LIBTBX_BUILD"] = abs(self.build_path) # to support libtbx.load_env
-    if (self.is_ready_for_build()):
-      self.write_SConstruct()
+    # check if self is modifiable
+    if self.installed:
+      print("Installed environments cannot be refreshed.")
+      try:
+        env = unpickle(os.getcwd())
+      except FileNotFoundError:
+        env = None
+      if env is not None:
+        print("Updating environment in {}".format(os.getcwd()))
+        env.refresh()
+        env.pickle()  # need a separate call
+    # continue normally
+    else:
+      completed_file_name = (self.build_path / "libtbx_refresh_is_completed")
+      completed_file_name.remove()
+      self.assemble_pythonpath()
+      self.show_build_options_and_module_listing()
+      self.reset_dispatcher_bookkeeping()
+      print("Creating files in build directory: %s" \
+        % show_string(abs(self.build_path)))
+      self.write_dispatcher_include_template()
+      self.write_lib_dispatcher_head()
+      self.write_setpath_files()
+      self.pickle()
+      libtbx.env = self
+      os.environ["LIBTBX_BUILD"] = abs(self.build_path) # to support libtbx.load_env
+      if (self.is_ready_for_build()):
+        self.write_SConstruct()
+        if (os.name != "nt"):
+          self.write_Makefile()
       if (os.name != "nt"):
-        self.write_Makefile()
-    if (os.name != "nt"):
-      self.write_run_tests_csh()
-    self.clear_bin_directory()
-    if not self.bin_path.isdir():
-      self.bin_path.makedirs()
-    self.relocate_python_paths_if_necessary()
-    python_dispatchers = ["libtbx.python"]
-    if (self.is_development_environment() and not self.no_bin_python):
-      python_dispatchers.append("python")
-    for file_name in python_dispatchers:
-      self._write_dispatcher_in_bin(
-        source_file=self.python_exe,
-        target_file=file_name,
-        source_is_python_exe=True)
-    for module in self.module_list:
-      module.process_command_line_directories()
-    for path in self.pythonpath:
-      sys.path.insert(0, abs(path))
-    for module in self.module_list:
-      module.process_libtbx_refresh_py()
-    self.write_python_and_show_path_duplicates()
-    self.generate_entry_point_dispatchers()
-    self.process_exe()
-    self.write_command_version_duplicates()
-    if (os.name != "nt"):     # LD_LIBRARY_PATH for dependencies
-      os.environ[ld_library_path_var_name()] = ":".join(
-        [abs(p) for p in self.ld_library_path_additions()])
-    regenerate_module_files.run(libtbx.env.under_base('.'), only_if_needed=True)
-    self.pickle()
-    print("libtbx_refresh_is_completed", file=completed_file_name.open("w"))
+        self.write_run_tests_csh()
+      self.clear_bin_directory()
+      if not self.bin_path.isdir():
+        self.bin_path.makedirs()
+      self.relocate_python_paths_if_necessary()
+      python_dispatchers = ["libtbx.python"]
+      if (self.is_development_environment() and not self.no_bin_python):
+        python_dispatchers.append("python")
+      for file_name in python_dispatchers:
+        self._write_dispatcher_in_bin(
+          source_file=self.python_exe,
+          target_file=file_name,
+          source_is_python_exe=True)
+      for module in self.module_list:
+        module.process_command_line_directories()
+        # Reload the libtbx_config in case dependencies have changed
+        module.process_libtbx_config()
+
+      for path in self.pythonpath:
+        sys.path.insert(0, abs(path))
+
+      # Some libtbx_refresh scripts do a `pip install --editable`. The default
+      # behavior was changed in setuptools 64 and currently we expect the old
+      # behavior. See: https://github.com/pypa/setuptools/pull/3265
+      sef_previous = os.environ.get('SETUPTOOLS_ENABLE_FEATURES')
+      os.environ['SETUPTOOLS_ENABLE_FEATURES'] = 'legacy_editable'
+
+      for module in self.module_list:
+        module.process_libtbx_refresh_py()
+
+      if sef_previous is not None:
+          os.environ['SETUPTOOLS_ENABLE_FEATURES'] = sef_previous
+      else:
+          os.environ.pop('SETUPTOOLS_ENABLE_FEATURES')
+
+      self.write_python_and_show_path_duplicates()
+      self.process_exe()
+      self.write_command_version_duplicates()
+      if (os.name != "nt"):     # LD_LIBRARY_PATH for dependencies
+        os.environ[self.ld_library_path_var_name()] = ":".join(
+          [abs(p) for p in self.ld_library_path_additions()])
+      if sys.version_info[0] == 2:
+        if self.build_options.use_conda:
+          # refresh loaders.cache for gdk-pixbuf on linux due to gtk2
+          if sys.platform.startswith("linux"):
+            conda_base = get_conda_prefix()
+            command = "{conda_base}/bin/gdk-pixbuf-query-loaders"
+            loaders = "{conda_base}/lib/gdk-pixbuf-2.0/2.10.0/loaders/*.so"
+            cache = "{conda_base}/lib/gdk-pixbuf-2.0/2.10.0/loaders.cache"
+            if os.path.isfile(command.format(conda_base=conda_base)):
+              command = command + " " + loaders + " > " + cache
+              command = command.format(conda_base=conda_base)
+              call(command)
+        else:
+          regenerate_module_files.run(libtbx.env.under_base('.'), only_if_needed=True)
+      self.pickle()
+      print("libtbx_refresh_is_completed", file=completed_file_name.open("w"))
 
   def get_module(self, name, must_exist=True):
     result = self.module_dict.get(name, None)
@@ -1765,7 +2394,6 @@ selfx:
     return result
 
 class module:
-
   def __init__(self, env, name, dist_path=None, mate_suffix="adaptbx"):
     self.env = env
     self.mate_suffix = mate_suffix
@@ -1891,6 +2519,9 @@ class module:
         path = dist_path / sub_dir / "__init__.py"
         if path.isfile():
           result.append(path.dirname().dirname())
+      path = dist_path / "src"
+      if (path / self.name).isdir() or (path / "__init__.py").isfile():
+        result.append(path)
     return result
 
   def has_top_level_directory(self, directory_name):
@@ -1943,7 +2574,9 @@ class module:
       check_for_hash_bang = True
     target_files = []
     if (read_size != 0):
-      try: source_text = source_file.open().read(read_size)
+      try:
+        with io.open(abs(source_file), encoding='utf-8', errors='ignore') as fh:
+          source_text = to_str(fh.read(read_size))
       except IOError:
         raise RuntimeError('Cannot read file: "%s"' % source_file)
       if (check_for_hash_bang and not source_text.startswith("#!")):
@@ -1967,6 +2600,14 @@ class module:
           source_file = self.env.under_build(
             op.join(self.name, "exe", file_name[:-len(ext)]+exe_suffix),
             return_relocatable_path=True)
+          # build and prefix directories are different in installations
+          if self.env.installed:
+            from libtbx.auto_build.conda_build.update_libtbx_env import get_default_dir, get_prefix_dir
+            source_file = op.join(
+              get_default_dir(),
+              self.name, "exe", file_name[:-len(ext)]+exe_suffix)
+            source_file = relocatable_path(
+              absolute_path(get_prefix_dir()), source_file, resolve_symlinks=False)
     if (len(target_files) == 0):
       target_file = self.name.lower() + target_file_name_infix
       if (not file_name_lower.startswith("main.")
@@ -1981,7 +2622,7 @@ class module:
   def command_line_directory_paths(self):
     result = []
     for dist_path in self.dist_paths_active():
-      for sub_dir in ["command_line", self.name+"/command_line"]+ \
+      for sub_dir in ["command_line", os.path.join(self.name, "command_line") ]+ \
         [os.path.join(a,"command_line") for a in getattr(self,"extra_command_line_locations",[])]:
         path = dist_path / sub_dir
         if path.isdir():
@@ -2032,12 +2673,11 @@ class module:
       custom_refresh = dist_path / "libtbx_refresh.py"
       if custom_refresh.isfile():
         print("Processing: %s" % show_string(abs(custom_refresh)))
-        with open(abs(custom_refresh)) as fh:
-          exec(
-              fh.read(),
-              {"__name__": dist_path.basename() + ".libtbx_refresh"},
-              {"self": self},
-          )
+        global_vars = globals()
+        global_vars["__name__"] = dist_path.basename() + ".libtbx_refresh"
+        global_vars["self"] = self
+        with io.open(abs(custom_refresh), encoding='utf-8', errors='ignore') as fh:
+          exec(to_str(fh.read()), global_vars)
 
   def collect_test_scripts(self,
         file_names=["run_tests.py", "run_examples.py"]):
@@ -2078,13 +2718,15 @@ class build_options:
         enable_openmp_if_possible=default_enable_openmp_if_possible,
         enable_boost_threads=True,
         enable_cuda=default_enable_cuda,
+        enable_kokkos=default_enable_kokkos,
+        use_conda=default_use_conda,
         opt_resources=default_opt_resources,
         precompile_headers=False,
         use_environment_flags=False,
         force_32bit=False,
         msvc_arch_flag=default_msvc_arch_flag,
         enable_cxx11=default_enable_cxx11,
-        python3warn='none',
+        cxxstd=default_cxxstd,
         skip_phenix_dispatchers=False):
 
     adopt_init_args(self, locals())
@@ -2141,10 +2783,11 @@ class build_options:
     print("Enable OpenMP if possible:", self.enable_openmp_if_possible, file=f)
     print("Boost threads enabled:", self.enable_boost_threads, file=f)
     print("Enable CUDA:", self.enable_cuda, file=f)
+    print("Enable KOKKOS:", self.enable_kokkos, file=f)
+    print("Use conda:", self.use_conda, file=f)
     print("Use opt_resources if available:", self.opt_resources, file=f)
     print("Use environment flags:", self.use_environment_flags, file=f)
     print("Enable C++11:", self.enable_cxx11, file=f)
-    print("Python3 migration warning policy:", self.python3warn, file=f)
     if( self.use_environment_flags ):
       print("  CXXFLAGS = ", self.env_cxxflags, file=f)
       print("  CFLAGS = ", self.env_cflags, file=f)
@@ -2323,7 +2966,18 @@ class pre_process_args:
     parser.option(None, "--enable_cuda",
       action="store_true",
       default=default_enable_cuda,
-      help="Use optimized CUDA routines for certain calculations.  Requires at least one NVIDIA GPU with compute capability of 2.0 or higher, and CUDA Toolkit 4.0 or higher (default: don't)")
+      help="Use optimized CUDA routines for certain calculations.  Requires at least one NVIDIA GPU with compute capability of 2.0 or higher, and CUDA Toolkit 4.0 or higher (default: %s)"
+        % default_enable_cuda)
+    parser.option(None, "--enable_kokkos",
+      action="store_true",
+      default=default_enable_kokkos,
+      help="Use optimized KOKKOS routines for certain calculations. Which backend (CUDA/HIP/OpenMP) is used, depends on the system (default: %s)"
+        % default_enable_kokkos)
+    parser.option(None, "--use_conda",
+      action="store_true",
+      default=default_use_conda,
+      help="Use conda as the source for Python and dependencies (default: %s)"
+        % default_use_conda)
     parser.option(None, "--opt_resources",
       action="store",
       type="bool",
@@ -2357,11 +3011,12 @@ class pre_process_args:
       action="store_true",
       default=default_enable_cxx11,
       help="use C++11 standard")
-    parser.option(None, "--python3warn", action="store", default=None,
-      help="Python3 migration warnings. "
-           "'warn': print warnings when running code that may cause problems in Python 3. "
-           "'fail': stop execution on warnings. 'none': disable warnings (default)",
-      metavar="none|warn|fail")
+    parser.option(None, "--cxxstd",
+      action="store",
+      type="choice",
+      default=default_cxxstd,
+      choices=['c++14'], # this should just be the argument to the -std flag
+      help="Set the C++ standard. This cannot be set along with --enable_cxx11")
     parser.option("--skip_phenix_dispatchers",
       action="store_true",
       default=False,
@@ -2396,6 +3051,14 @@ class pre_process_args:
         raise RuntimeError(
           "The --msvc_arch_flag option is not valid for this platform.")
 
+      # check that only enable_cxx11 or cxxstd is set
+      if self.command_line.options.enable_cxx11 \
+        and self.command_line.options.cxxstd is not None:
+        raise RuntimeError('''
+Both --enable_cxx11 and --cxxstd have been set. Please only set one of
+these options.
+      ''')
+
   def option_repository(self, option, opt, value, parser):
     if (not op.isdir(value)):
       raise RuntimeError(
@@ -2405,7 +3068,7 @@ class pre_process_args:
 def set_preferred_sys_prefix_and_sys_executable(build_path):
   if (not hasattr(os.path, "samefile")): return
   dirname, basename = op.split(sys.prefix)
-  if (op.samefile(build_path, dirname)):
+  if (dirname and op.samefile(build_path, dirname)):
     new_prefix = op.join(build_path, basename)
     if (op.samefile(new_prefix, sys.prefix)):
       p = op.normpath(op.normcase(sys.prefix))
@@ -2487,83 +3150,210 @@ def cold_start(args):
     env.clear_scons_memory()
   env.refresh()
 
-def unpickle():
-  build_path = os.environ["LIBTBX_BUILD"]
+def unpickle(build_path=None, env_name="libtbx_env"):
+  '''
+  Function for loading a libtbx_env file. The build_path and env_name
+  parameters are for checking additional environment files.
+
+  Parameters
+  ----------
+    build_path: str
+      The directory containing the environment file
+    env_name: str
+      The filename for the environment file, default is "libtbx_env"
+
+  Returns
+  -------
+    env: environment object
+  '''
+  # try default location in build directory
+  if build_path is None:
+    build_path = os.getenv("LIBTBX_BUILD")
+  # try default installed location
+  if not build_path or not os.path.isdir(build_path):
+    build_path = get_installed_path()
   set_preferred_sys_prefix_and_sys_executable(build_path=build_path)
-  libtbx_env = open(op.join(build_path, "libtbx_env"), "rb")
-  env = pickle.load(libtbx_env)
+  with open(op.join(build_path, env_name), "rb") as libtbx_env:
+    env = pickle.load(libtbx_env)
   if (env.python_version_major_minor != sys.version_info[:2]):
     env.raise_python_version_incompatible()
-  # XXX backward compatibility 2009-04-06
-  if (not hasattr(env.build_options, "boost_python_bool_int_strict")):
-    env.build_options.boost_python_bool_int_strict = True
-  # XXX backward compatibility 2009-04-27
-  if( not hasattr(env.build_options, "use_environment_flags") ):
-    env.build_options.use_environment_flags = False
-    env.build_options.env_cxxflags = ""
-    env.build_options.env_cflags = ""
-    env.build_options.env_cppflags = ""
-    env.build_options.env_ldflags = ""
-  # XXX backward compatibility 2009-10-11
-  if (not hasattr(env.build_options, "force_32bit")) :
-    env.build_options.force_32bit = False
-  # XXX backward compatibility 2009-10-13
-  if (not hasattr(env.build_options, "msvc_arch_flag")) :
-    env.build_options.msvc_arch_flag = default_msvc_arch_flag
-  # XXX backward compatibility 2010-05-28
-  if (not hasattr(env.build_options, "precompile_headers")):
-    env.build_options.precompile_headers = False
-  # XXX backward compatibility 2011-04-01
-  if (not hasattr(env.build_options, "opt_resources")):
-    env.build_options.opt_resources = False
-  # XXX backward compatibility 2011-07-05
-  if (not hasattr(env.build_options, "enable_cuda")):
-    env.build_options.enable_cuda = False
-  # XXX backward incompatibility 2011-10
-  if not hasattr(env, 'relocatable'):
-    print ("Please re-configure from scratch your cctbx_build:"
-           "cd cctbx_build; "
-           "/your/path/to/python ../cctbx_project/libtbx/configure.py [options] [modules]")
-    sys.exit(1)
-  # XXX backward compatibility 2011-12-16
-  if (hasattr(env.build_path, "reset")): # future: unconditional
-    if (op.realpath(build_path) != op.realpath(abs(env.build_path))):
-      env.build_path.reset(build_path)
-  # XXX backward compatibility 2012-4-1: this is no April Fool ;-)
-  if not hasattr(env, 'no_bin_python'):
-    env.no_bin_python = False
-  # XXX backward compatibility 2012-8-14
-  try:
-    del env.enable_boost_threads
-  except AttributeError:
-    pass
-  # XXX backward compatibility 2013-08-20
-  if (not hasattr(env.build_options, "enable_cxx11")):
-    env.build_options.enable_cxx11 = False
-  # XXX backward compatibility 2015-07-02
-  if (not hasattr(env.build_options, "skip_phenix_dispatchers")):
-    env.build_options.skip_phenix_dispatchers = False
-  # XXX backward compatibility 2015-09-05
-  if not hasattr(env.build_options, "enable_boost_threads"):
-    env.build_options.enable_boost_threads = default_enable_boost_threads
-  # XXX backward compatibility 2016-01-08
-  if not hasattr(env, 'explicitly_requested_modules'):
-    env.explicitly_requested_modules = set()
-  # XXX backward compatibility 2016-06-06
-  if not hasattr(env, 'extra_command_line_locations'):
-    env.extra_command_line_locations = []
-  # XXX backward compatibility 2017-11-03
-  if not hasattr(env.build_options, "python3warn"):
-    env.build_options.python3warn = 'none'
+  if (op.realpath(build_path) != op.realpath(abs(env.build_path))):
+    env.build_path.reset(build_path)
+  # XXX backward compatibility 2018-12-10
+  if not hasattr(env.build_options, "use_conda"):
+    env.build_options.use_conda = False
+  # XXX backward compatibility 2020-08-21
+  # for installed copies of cctbx, the installed environment is not modifiable
+  if not hasattr(env, "installed"):
+    env.installed = False
+  if not hasattr(env, "installed_modules"):
+    env.installed_modules = []
+  if not hasattr(env, "installed_order"):
+    env.installed_order = []
+  # XXX backward compatibility 2022-01-19
+  if not hasattr(env.build_options, "enable_kokkos"):
+    env.build_options.enable_kokkos = False
+  # XXX backward compatibility 2022-12-07
+  if not hasattr(env.build_options, "cxxstd"):
+    env.build_options.cxxstd = None
+  # update installed location
+  if env.installed:
+    sys_prefix = get_conda_prefix()
+    if sys.platform == 'win32':
+      sys_prefix = op.join(sys_prefix, 'library')
+    sys_prefix = absolute_path(sys_prefix)
+    for i in range(len(env.repository_paths)):
+      env.repository_paths[i]._anchor = sys_prefix
+    env.bin_path._anchor = sys_prefix
+    env.exe_path._anchor = sys_prefix
+    env.include_path._anchor = sys_prefix
+    env.lib_path._anchor = sys_prefix
+    env.path_utility._anchor = sys_prefix
+    if sys.platform == 'win32':
+      for module in env.module_list:
+        for dist_path in module.dist_paths:
+          if dist_path is not None:
+            dist_path._anchor = sys_prefix
   return env
 
 def warm_start(args):
-  pre_processed_args = pre_process_args(args=args[1:])
   env = unpickle()
-  env.process_args(pre_processed_args=pre_processed_args)
-  if (pre_processed_args.command_line.options.clear_scons_memory):
-    env.clear_scons_memory()
-  env.refresh()
+  # ---------------------------------------------------------------------------
+  def _warm_start(env, args):
+    pre_processed_args = pre_process_args(args=args[1:])
+    env.process_args(pre_processed_args=pre_processed_args)
+    if (pre_processed_args.command_line.options.clear_scons_memory):
+      env.clear_scons_memory()
+    env.refresh()
+  # ---------------------------------------------------------------------------
+  # check if the loaded environment is modifiable
+  if env.installed:
+    # fix classes
+    from libtbx.env_config import build_options as _build_options
+    from libtbx.env_config import environment as _environment
+    from libtbx.env_config import module as _module
+
+    globals()['build_options'] = _build_options
+    globals()['environment'] = _environment
+    globals()['module'] = _module
+
+    # load an existing, modifiable environment from the current directory
+    if op.exists(op.join(os.getcwd(), "libtbx_env")):
+      env = unpickle(build_path=os.getcwd())
+      _warm_start(env, args)
+    # or create new environment in current directory if it does not exist
+    # currently can only run configuration in the "build" directory, so
+    # "modules" is one level up.
+    else:
+      repository_paths = ['-r', os.path.join('..', 'modules')]
+      cctbx_project = os.path.join('..', 'modules', 'cctbx_project')
+      if os.path.isdir(cctbx_project):
+        repository_paths += ['-r', cctbx_project]
+      cold_start(args + repository_paths + ['--no_bin_python'])
+      env = unpickle(build_path=os.getcwd())
+      env.pickle()  # need separate call
+  # continue normally
+  else:
+    _warm_start(env, args)
+
+def get_installed_path():
+  """
+  Returns the default location of an installed environment
+  """
+  if sys.platform == 'win32':
+    installed_path = os.path.join(sys.prefix, 'Library', 'share', 'cctbx')
+  else:
+    installed_path = os.path.join(get_conda_prefix(), 'share', 'cctbx')
+  if not os.path.isdir(installed_path):
+    # try libtbx/core
+    import sysconfig
+    paths = sysconfig.get_paths()
+    for key in ['purelib', 'platlib']:
+      site_packages = paths[key]
+      test_path = os.path.join(site_packages, 'libtbx', 'core', 'share', 'cctbx')
+      if os.path.isdir(test_path):
+        installed_path = test_path
+      break
+  return installed_path
+
+def _get_env(build_path, env_name='libtbx_env'):
+  current_env = None
+  if op.isfile(op.join(build_path, env_name)):
+    current_env = unpickle(build_path, env_name)
+  return current_env
+
+def get_installed_env():
+  """
+  Returns the installed environment in the default location or None if
+  it does not exist.
+  """
+  return _get_env(get_installed_path())
+
+def get_local_env(build_dir=None):
+  """
+  Returns the local environment from build_dir or None
+  if it does not exist. By default, build_dir is set to the current
+  working directory.
+
+  Parameters
+  ----------
+    build_dir: str
+      The directory with the local environment. Defaults to the current
+      working directory
+
+  Returns
+  -------
+    env: libtbx.env_config.environment or None
+      The environment loaded from build_dir or None if it does not
+  """
+  if build_dir is None:
+    build_dir = os.getcwd()
+  env = None
+  for p in [build_dir] + sys.path:
+    e = _get_env(p)
+    if e is not None:
+      env = e
+      break
+  return env
+
+def get_boost_library_with_python_version(name, libpath):
+  """
+  Standard Boost.Python libraries may have the Python version appended
+  as a suffix. This function returns the name with the current Python
+  version if there is a file with that name in LIBPATH. Otherwise, it
+  will return the original name. For example, libboost_python.so may be
+  named libboost_python27.so for Python 2.7.
+
+  Parameters
+  ----------
+  name: str
+    The base name for a library (e.g. "boost_python")
+  libpath: list
+    The paths to search for this library
+
+  Returns
+  -------
+  name: str
+    The input name modified with the current Python version, if available
+  """
+
+  version = str(sys.version_info.major) + str(sys.version_info.minor)
+  for p in libpath:
+    name_version = name + version
+    if sys.platform == 'win32':
+      full_names = [os.path.join(p, name_version + '.dll'),
+                    os.path.join(p, name_version + '.lib')]
+    else:
+      full_name = os.path.join(p, 'lib' + name_version)
+      if sys.platform == 'darwin':
+        full_name += '.dylib'
+      else:
+        full_name += '.so'
+      full_names = [full_name]
+    for full_name in full_names:
+      if os.path.isfile(full_name):
+        return name_version
+  return name
 
 if (__name__ == "__main__"):
   if (len(sys.argv) == 2 and sys.argv[1] == "__libtbx_refresh__"):

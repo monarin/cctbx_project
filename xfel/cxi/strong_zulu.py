@@ -1,8 +1,8 @@
-from __future__ import division
+from __future__ import absolute_import, division, print_function
 import os
 
 def integrate_one_image(data):
-  from display_spots import run_one_index_core
+  from .display_spots import run_one_index_core
   from labelit.dptbx.error import NoAutoIndex
   from libtbx.utils import Sorry
 
@@ -34,17 +34,17 @@ def integrate_one_image(data):
 
   try:
     run_one_index_core(horizons_phil)
-  except NoAutoIndex,e:
-    print "NoAutoIndex"
-    print e
-  except Sorry,e:
-    print e
-  except ZeroDivisionError,e:
-    print "ZeroDivisionError"
-    print e
-  except Exception,e:
-    print "ANOTHER exception"
-    print e
+  except NoAutoIndex as e:
+    print("NoAutoIndex")
+    print(e)
+  except Sorry as e:
+    print(e)
+  except ZeroDivisionError as e:
+    print("ZeroDivisionError")
+    print(e)
+  except Exception as e:
+    print("ANOTHER exception")
+    print(e)
 
 if __name__=="__main__":
 
@@ -104,7 +104,7 @@ if __name__=="__main__":
   get_paths = get_paths_single
 
   for path in get_paths():
-    print path
+    print(path)
     from libtbx import easy_pickle
     L = easy_pickle.load(path)
     integrate_one_image(L)

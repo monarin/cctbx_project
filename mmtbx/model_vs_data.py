@@ -1,4 +1,5 @@
-from __future__ import division
+"""Compare model with x-ray data"""
+from __future__ import absolute_import, division, print_function
 import sys, random
 from cctbx.array_family import flex
 from iotbx import pdb
@@ -8,18 +9,18 @@ from libtbx.str_utils import format_value
 import iotbx
 from mmtbx import utils
 from iotbx import pdb
-from cStringIO import StringIO
+from six.moves import cStringIO as StringIO
 import mmtbx.model
 import iotbx.phil
-from cStringIO import StringIO
 import mmtbx.f_model
+from iotbx import extract_xtal_data
 
 if(1):
   random.seed(0)
   flex.set_random_seed(0)
 
 def show_header(l, log):
-  print >> log, l, "-"*(79-len(l))
+  print(l, "-"*(79-len(l)), file=log)
 
 def reflection_file_server(crystal_symmetry, reflection_files):
   return reflection_file_utils.reflection_file_server(
@@ -58,20 +59,25 @@ twin_law = None
   .type = str
 n_bins = 20
   .type = int
+squeeze = False
+  .type = bool
+  .help = Add positive mFo-DFc density in the solvent region that cannot be \
+          modelled with atoms to F_model (see mmtbx.bulk_solvent.squeeze). \
+          Final, complete models at 1.1 A or better only.
 """
 
 def defaults(log, silent):
-  if(not silent): print >> log, "Default params:\n"
+  if(not silent): print("Default params:\n", file=log)
   parsed = iotbx.phil.parse(master_params_str)
   if(not silent): parsed.show(prefix="  ", out=log)
-  if(not silent): print >> log
+  if(not silent): print(file=log)
   return parsed
 
 def run(args,
         out = None,
         log = sys.stdout):
-  if(len(args)==0) or (args == ["--help"]) :
-    print >> log, msg
+  if(len(args)==0) or (args == ["--help"]):
+    print(msg, file=log)
     defaults(log=log, silent=False)
     return
   parsed = defaults(log=log, silent=True)
@@ -93,21 +99,17 @@ def run(args,
   rfs = reflection_file_server(
     crystal_symmetry = crystal_symmetry,
     reflection_files = reflection_files)
-  parameters = utils.data_and_flags_master_params().extract()
+  parameters = extract_xtal_data.data_and_flags_master_params().extract()
   if(params.f_obs_label is not None):
     parameters.labels = params.f_obs_label
   if(params.r_free_flags_label is not None):
     parameters.r_free_flags.label = params.r_free_flags_label
-  if (params.high_resolution is not None) :
+  if (params.high_resolution is not None):
     parameters.high_resolution = params.high_resolution
-  determine_data_and_flags_result = utils.determine_data_and_flags(
-    reflection_file_server  = rfs,
-    parameters              = parameters,
-    data_parameter_scope    = "refinement.input.xray_data",
-    flags_parameter_scope   = "refinement.input.xray_data.r_free_flags",
-    data_description        = "X-ray data",
-    keep_going              = True,
-    log                     = StringIO())
+  determine_data_and_flags_result = extract_xtal_data.run(
+    reflection_file_server = rfs,
+    parameters             = parameters,
+    keep_going             = True)
   f_obs = determine_data_and_flags_result.f_obs
   # Data
   show_header(l="Data:", log=log)
@@ -119,9 +121,9 @@ def run(args,
   if(r_free_flags is None):
     r_free_flags=f_obs.array(data=flex.bool(f_obs.data().size(), False))
     test_flag_value=None
-    print >> log, "  not available"
+    print("  not available", file=log)
   else:
-    print >> log, "  flag value:", test_flag_value
+    print("  flag value:", test_flag_value, file=log)
   # Model
   pdb_combined = iotbx.pdb.combine_unique_pdb_files(
     file_names=processed_args.pdb_file_names)
@@ -132,7 +134,7 @@ def run(args,
   try:
     pdb_inp = iotbx.pdb.input(source_info = None,
                               lines       = flex.std_string(raw_records))
-  except ValueError, e :
+  except ValueError as e :
     raise Sorry("Model format (PDB or mmCIF) error:\n%s" % str(e))
   model = mmtbx.model.manager(
     model_input      = pdb_inp,
@@ -141,7 +143,7 @@ def run(args,
   #
   scattering_table = params.scattering_table
   exptl_method = pdb_inp.get_experiment_type()
-  if(exptl_method is not None) and ("NEUTRON" in exptl_method):
+  if exptl_method.is_neutron():
     scattering_table = "neutron"
   model.setup_scattering_dictionaries(
     scattering_table = scattering_table,
@@ -155,16 +157,19 @@ def run(args,
     f_obs          = f_obs,
     r_free_flags   = r_free_flags,
     twin_law       = params.twin_law)
-  fmodel.update_all_scales(update_f_part1=True)
+  fmodel.update_all_scales(update_f_part1=True, mosaic=True,
+    squeeze=params.squeeze, water_selection=model.solvent_selection())
   fmodel.show(log=log, show_header=False, show_approx=False)
-  print >> log, "  r_work: %6.4f"%fmodel.r_work()
+  if(fmodel.squeeze_result() is not None):
+    fmodel.squeeze_result().show(log=log, prefix="  ")
+  print("  r_work: %6.4f"%fmodel.r_work(), file=log)
   if(test_flag_value is not None):
-    print >> log, "  r_free: %6.4f"%fmodel.r_free()
+    print("  r_free: %6.4f"%fmodel.r_free(), file=log)
   else:
-    print >> log, "  r_free: None"
-  print >> log
+    print("  r_free: None", file=log)
+  print(file=log)
   n_outl = f_obs.data().size() - fmodel.f_obs().data().size()
-  print >> log, "  Number of F-obs outliers:", n_outl
+  print("  Number of F-obs outliers:", n_outl, file=log)
   #
   # Extract information from PDB file header and output (if any)
   #
@@ -188,17 +193,17 @@ def run(args,
   pub_matthews     = pdb_inp.get_matthews_coeff()
   #
   show_header(l="Information extracted from PDB file header:", log=log)
-  print >> log, "  program_name    : %-s"%format_value("%s",pub_program_name)
-  print >> log, "  year            : %-s"%format_value("%s",pdb_inp.extract_header_year())
-  print >> log, "  r_work          : %-s"%format_value("%s",pub_r_work)
-  print >> log, "  r_free          : %-s"%format_value("%s",pub_r_free)
-  print >> log, "  high_resolution : %-s"%format_value("%s",pub_high)
-  print >> log, "  low_resolution  : %-s"%format_value("%s",pub_low)
-  print >> log, "  sigma_cutoff    : %-s"%format_value("%s",pub_sigma)
-  print >> log, "  matthews_coeff  : %-s"%format_value("%s",pub_matthews)
-  print >> log, "  solvent_cont    : %-s"%format_value("%s",pub_solv_cont)
-  if(exptl_method is not None) :
-    print >> log, "  exptl_method    : %-s"%format_value("%s", exptl_method)
+  print("  program_name    : %-s"%format_value("%s",pub_program_name), file=log)
+  print("  year            : %-s"%format_value("%s",pdb_inp.extract_header_year()), file=log)
+  print("  r_work          : %-s"%format_value("%s",pub_r_work), file=log)
+  print("  r_free          : %-s"%format_value("%s",pub_r_free), file=log)
+  print("  high_resolution : %-s"%format_value("%s",pub_high), file=log)
+  print("  low_resolution  : %-s"%format_value("%s",pub_low), file=log)
+  print("  sigma_cutoff    : %-s"%format_value("%s",pub_sigma), file=log)
+  print("  matthews_coeff  : %-s"%format_value("%s",pub_matthews), file=log)
+  print("  solvent_cont    : %-s"%format_value("%s",pub_solv_cont), file=log)
+  if(exptl_method is not None):
+    print("  exptl_method    : %-s"%format_value("%s", exptl_method), file=log)
   #
   # Recompute R-factors using published cutoffs
   fmodel_cut = fmodel
@@ -216,13 +221,16 @@ def run(args,
       f_obs          = fmodel.f_obs().select(tmp_sel),
       r_free_flags   = fmodel.r_free_flags().select(tmp_sel),
       twin_law       = params.twin_law)
-    fmodel.update_all_scales(update_f_part1=True)
+    fmodel.update_all_scales(update_f_part1=True, mosaic=True,
+      squeeze=params.squeeze, water_selection=model.solvent_selection())
     fmodel.show(log=log, show_header=False, show_approx=False)
-    print >> log, "  r_work: %6.4f"%fmodel.r_work()
+    print("  r_work: %6.4f"%fmodel.r_work(), file=log)
     if(test_flag_value is not None):
-      print >> log, "  r_free: %6.4f"%fmodel.r_free()
+      print("  r_free: %6.4f"%fmodel.r_free(), file=log)
     else:
-      print >> log, "  r_free: None"
-    print >> log
+      print("  r_free: None", file=log)
+    print(file=log)
     n_outl = f_obs.data().size() - fmodel.f_obs().data().size()
-    print >> log, "  Number of F-obs outliers:", n_outl
+    print("  Number of F-obs outliers:", n_outl, file=log)
+  return fmodel
+

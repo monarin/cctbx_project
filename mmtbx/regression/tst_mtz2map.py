@@ -1,20 +1,20 @@
 
-from __future__ import division
+from __future__ import absolute_import, division, print_function
 from libtbx.test_utils import Exception_expected
 from libtbx.utils import null_out, Sorry
-from cStringIO import StringIO
+import iotbx.pdb
+from six.moves import cStringIO as StringIO
 import os.path
 
-def exercise () :
+def exercise():
   from mmtbx.regression.make_fake_anomalous_data import generate_cd_cl_inputs
   from mmtbx.command_line import mtz2map
   import mmtbx.utils
   from iotbx import file_reader
   from scitbx.array_family import flex
   mtz_file, pdb_file = generate_cd_cl_inputs(file_base = "tst_mmtbx_mtz2map")
-  pdb_in = file_reader.any_file(pdb_file)
-  hierarchy = pdb_in.file_object.hierarchy
-  xrs = pdb_in.file_object.xray_structure_simple()
+  pdb_in = iotbx.pdb.input(pdb_file)
+  xrs = pdb_in.xray_structure_simple()
   mtz_in = file_reader.any_file(mtz_file)
   f_obs = mtz_in.file_server.miller_arrays[0]
   f_obs_mean = f_obs.average_bijvoet_mates()
@@ -97,7 +97,7 @@ def exercise () :
   try :
     file_info = mtz2map.run([pdb_file, map_file, "selection=\"resname ZN\""],
       log=null_out())
-  except Sorry, s  :
+  except Sorry as s  :
     assert (str(s) == "No atoms found matching the specified selection.")
   else :
     raise Exception_expected
@@ -106,7 +106,7 @@ def exercise () :
   mtz2map.run([pdb_file, "tst_mmtbx_mtz2map_map_coeffs.mtz",
     "r_free_flags.remove=True"], log=out)
   assert (out.getvalue().count("R-free flagged reflections")==4)
-  print "OK"
+  print("OK")
 
-if (__name__ == "__main__") :
+if (__name__ == "__main__"):
   exercise()

@@ -1,4 +1,5 @@
-from __future__ import division
+from __future__ import absolute_import, division, print_function
+# LIBTBX_SET_DISPATCHER_NAME phenix.find_ss_from_ca
 
 # find_ss_from_ca.py
 # a tool to find helices, strands, non-helices/strands in segments of
@@ -11,11 +12,16 @@ from iotbx.pdb import resseq_encode
 import iotbx.phil
 import os,sys
 from libtbx.utils import Sorry
+from libtbx import group_args
 from scitbx.matrix import col
 from scitbx.math import superpose, matrix
 from scitbx.array_family import flex
 from copy import deepcopy
 from iotbx.pdb import secondary_structure
+from six.moves import zip
+from six.moves import range
+from six.moves import cStringIO as StringIO
+from iotbx.pdb.utils import get_pdb_hierarchy
 
 master_phil = iotbx.phil.parse("""
 
@@ -54,13 +60,26 @@ master_phil = iotbx.phil.parse("""
                        #   mmtbx/secondary_structure/__init__.py
      ss_by_chain = True
        .type = bool
-       .help = Find secondary structure only within individual chains. \
+       .help = Only applies if search_method = from_ca. \
+              Find secondary structure only within individual chains. \
                Alternative is to allow H-bonds between chains. Can be \
                much slower with ss_by_chain=False. If your model is complete \
                use ss_by_chain=True. If your model is many fragments, use \
-               ss_by_chain=False. 
+               ss_by_chain=False.
        .short_caption = Secondary structure by chain
        .expert_level = 1
+
+     auto_choose_ca_vs_ca_n_o = True
+       .type = bool
+       .help = Automatically identify whether chains are mostly CA or mostly \
+                contain CA/N/O atoms (requires min_ca_n_o_completeness).
+       .short_caption = Auto choose CA vs CA/N/O
+
+     min_ca_n_o_completeness = 0.95
+       .type = float
+       .help = Minimum completeness of CA/N/O atoms to not use CA-only
+       .short_caption = Minimum completeness of CA/N/O
+
      max_rmsd = 1
        .type = float
        .help = Maximum rmsd to consider two chains with identical sequences \
@@ -126,6 +145,10 @@ master_phil = iotbx.phil.parse("""
        .help = Cut up segments (make short segments of secondary structure)
        .short_caption = Cut up segments
 
+     extend_segments = False
+       .type = bool
+       .help = Try to extend segments in both directions one residue at a time
+       .short_caption = Extend segments
 
      set_up_helices_sheets = True
        .type = bool
@@ -141,6 +164,11 @@ master_phil = iotbx.phil.parse("""
        .type = bool
        .help = Write SHEET records that contain a single strand
        .short_caption = Write single strands
+
+     remove_missing_atom_annotation = False
+       .type = bool
+       .help = Remove annotation that refers to atoms that are not present
+       .short_caption = Remove missing atom annotation
 
      max_h_bond_length = 3.5
        .type = float
@@ -178,6 +206,16 @@ master_phil = iotbx.phil.parse("""
               Note: None means ignore this test, 0 means allow no poor H-bonds.
       .short_caption = Maximum number of poor H bonds
 
+    tolerant = None
+      .type = bool
+      .help = Set values for tolerant search
+      .short_caption = Tolerant search
+
+     tolerant_max_h_bond_length = 5
+       .type = float
+       .help = Tolerant maximum H-bond length to include in \
+           secondary structure
+       .short_caption = Tolerant maximum H-bond length
   }
 
   alpha {
@@ -219,14 +257,111 @@ master_phil = iotbx.phil.parse("""
 """, process_includes=True)
 master_params = master_phil
 
-def apply_atom_selection(atom_selection,hierarchy=None):
-  asc=hierarchy.atom_selection_cache()
-  sel = asc.selection(string = atom_selection)
-  return hierarchy.deep_copy().select(sel)  # deep copy is required
+######## Methods for getting selection strings from a model ############
 
-def get_pdb_hierarchy(text=None):
-  return iotbx.pdb.input(
-     source_info=None,lines=flex.split_lines(text)).construct_hierarchy()
+def get_selection_from_chain_dict(chain_dict, minimum_segment_length = None,
+   return_as_dict = False, skip_chain_id = False):
+  ''' Create a selection based on a dict of residues present in each chain.
+   If minimum_segment_length is set, remove segments shorter than this.
+  if skip_chain_id, ignore chain ID values'''
+
+  from iotbx.pdb import resseq_encode
+  int_type = type(1)
+  selection_list = []
+  if return_as_dict: info_dict = {}
+  if skip_chain_id:
+    all_chain_list = []
+    for chain_id in list(chain_dict.keys()):
+      all_chain_list += chain_dict[chain_id]
+    new_chain_dict = {}
+    for chain_id in list(chain_dict.keys()):
+      new_chain_dict[chain_id] = all_chain_list
+    chain_dict = new_chain_dict
+  for chain_id in list(chain_dict.keys()):
+    residues_to_keep = chain_dict[chain_id]
+    if return_as_dict:
+      info_dict[chain_id] = []
+    for c in compress_indices(residues_to_keep):
+      if type(c) == int_type:
+        if minimum_segment_length and minimum_segment_length > 1:
+          continue # too short
+        i = resseq_encode(c).replace(" ","")
+        if skip_chain_id:
+          selection_list.append(" ( resseq %s:%s) " %(
+            i,i))
+        else:  # usual
+          selection_list.append(" ( chain '%s' and resseq %s:%s) " %(
+            chain_id, i,i))
+      else:
+        if minimum_segment_length and \
+           minimum_segment_length > (c[1] - c[0]) + 1:
+          continue # too short
+        i = resseq_encode(c[0]).replace(" ","")
+        j = resseq_encode(c[1]).replace(" ","")
+        if skip_chain_id:
+          selection_list.append(" (resseq %s:%s) " %(
+            i,j))
+        else: # usual
+          selection_list.append(" (chain '%s' and resseq %s:%s) " %(
+            chain_id, i,j))
+      if return_as_dict:
+        info_dict[chain_id].append([c[0],c[1]])
+  if return_as_dict:
+    return info_dict
+  else: # usual
+    return " or ".join(selection_list)
+
+def get_residue_ranges_from_model(model = None):
+  chain_dict = get_chain_dict(model.get_hierarchy())
+  return get_selection_from_chain_dict(chain_dict, return_as_dict = True)
+
+def get_selection_string_from_model(model = None,
+   hierarchy = None, minimum_segment_length = None, skip_chain_id = False):
+   ''' Get selection string based on the residues present in selected_model
+    If minimum_segment_length is set, remove segments shorter than this '''
+   if not hierarchy:
+     hierarchy = model.get_hierarchy()
+   chain_dict = get_chain_dict(hierarchy)
+   return get_selection_from_chain_dict(chain_dict,
+     minimum_segment_length = minimum_segment_length,
+     skip_chain_id = skip_chain_id)
+
+def get_chain_dict(ph):
+    ''' Get dict of chains and all residue numbers in the chains'''
+    chain_dict = {}
+    for model in ph.models()[:1]:
+      for chain in model.chains():
+        if not chain.id in list(list(chain_dict.keys())):
+          chain_dict[chain.id] = []
+        for rg in chain.residue_groups():
+          resseq = rg.resseq_as_int()
+          if not resseq in chain_dict[chain.id]:
+            chain_dict[chain.id].append(resseq)
+    for chain_id in list(list(chain_dict.keys())):
+      chain_dict[chain.id].sort()
+    return chain_dict
+def compress_indices(values):
+  # Take sorted list of values and compress sequential indices
+  compressed_values = []
+  # Save list of ranges or lists of individual values (if not sequential)
+  n = len(values)
+  n1 = n - 1
+  working_group = None
+  for i in range(n):
+    if working_group and working_group[1] + 1  == values[i]:
+      working_group[1] = values[i]
+    else:
+      working_group = [values[i],values[i]]
+      compressed_values.append(working_group)
+  new_compressed_values = []
+  for c1,c2 in compressed_values:
+    if c1==c2:
+      new_compressed_values.append(c1)
+    else:
+      new_compressed_values.append([c1,c2])
+  return new_compressed_values
+
+######## END Methods for getting selection strings from a model ############
 
 def is_close_to(r,last_r,distance_cutoff=None,use_default_distance_cutoff=True):
   if not r or not last_r:
@@ -257,27 +392,57 @@ def is_close_to(r,last_r,distance_cutoff=None,use_default_distance_cutoff=True):
   else:
     return False
 
+def make_four_char_unique_chain_id(id,used_chain_ids=None):
+  # Make a unique chain id that looks like id but has extra characters as
+  #  necessary.  Use first 2 chars as input part, last 2 chars of 4 as unique
+  original_id=id
+  id=id.strip()
+  if len(id)<1:
+    id="XX"
+  elif len(id)<2:
+    id="%sX" %(id)
+  elif len(id)==2:
+    pass # already good
+  else:
+    raise Sorry(
+      "Cannot use longer-than-2 chain ids in make_four_char_unique_chain_id")
+  new_chars=" abcdefghijklmnopqrstuvwxyz"
+  new_chars+="abcdefghijklmnopqrstuvwxyz".upper()
+  new_chars+="0123456789"
+  for a in new_chars[1:]:
+    for b in new_chars:
+      new_id=id+a+b.strip()
+      if not new_id in used_chain_ids:
+        used_chain_ids.append(new_id)
+        return new_id,used_chain_ids
+  raise Sorry("Unable to generate a new unique chain ID for %s" %(original_id))
+
 def split_model(model=None,hierarchy=None,verbose=False,info=None,
-     only_first_model=None,distance_cutoff=None,use_default_distance_cutoff=True,
+     only_first_model=None,distance_cutoff=None,
+     use_default_distance_cutoff=True,
      out=sys.stdout):
   # XXX NOTE: this splits model at all icode residues (one model per residue)
   # The routine extract_segment below assumes that the residues in an individual
   #  model are sequential (no insertion codes)
   # if CA-CA or P-P distance is > distance-cutoff then split there
-
+  # NOTE: Returns a list of model_info objects (not mmtbx.model objects). These
+  #  objects have an attribute: hierarchy which you can use.
   model_list=[]
   if hierarchy:
     if not info: info={}
   elif hasattr(model,'hierarchy'): # a model object with hierarchy and info
     hierarchy=model.hierarchy
     info=model.info
+  elif hasattr(model,'get_hierarchy'): # mmtbx.model object
+    hierarchy=model.get_hierarchy()
+    info = {}
   else:
     return []  # nothing here
 
   if not hierarchy or hierarchy.overall_counts().n_residues<1:
     return [] # nothing to do
-
   total_models=0
+  base_chain_ids=[]
   for m in hierarchy.models():
     total_models+=1
     if total_models>1:
@@ -333,11 +498,11 @@ def split_model(model=None,hierarchy=None,verbose=False,info=None,
       break
 
   if verbose:
-    print >>out,"Models after splitting:"
+    print("Models after splitting:", file=out)
     for m in model_list:
-      print >>out,"Chain: %d  Residues: %d" %(
+      print("Chain: %d  Residues: %d" %(
         m.info.get('chain_number'),
-        m.hierarchy.overall_counts().n_residues)
+        m.hierarchy.overall_counts().n_residues), file=out)
   return model_list
 
 def sort_models_and_sequences(models,sequences):
@@ -346,9 +511,9 @@ def sort_models_and_sequences(models,sequences):
   for m,s in zip(models,sequences):
     if not m or not m.hierarchy: continue
     chain_type=str(m.info.get('chain_type'))
-    if not chain_type in sort_dict.keys(): sort_dict[chain_type]=[]
+    if not chain_type in sort_dict: sort_dict[chain_type]=[]
     sort_dict[chain_type].append([m,s])
-  keys=sort_dict.keys()
+  keys=list(sort_dict.keys())
   if len(keys)<2:
     return models,sequences # do nothing if only one chain type
 
@@ -365,7 +530,10 @@ def sort_models_and_sequences(models,sequences):
 def merge_hierarchies_from_models(models=None,resid_offset=None,
     renumber=None,first_residue_number=None,
     sequences=None,chain_id=None,trim_side_chains=None,
-    remove_ter_records=False,):
+    remove_ter_records=False,
+    remove_break_records=False,
+    replace_hetatm=False,
+     ):
   # assumes one chain from each model
   # if resid_offset, space by to next even n of this number of residues
   # otherwise if renumber, start at first_residue_number and sequence
@@ -373,10 +541,9 @@ def merge_hierarchies_from_models(models=None,resid_offset=None,
   # If sequence or chain_id are supplied, use them
   # Trim off side chains (and CB for GLY) if trim_side_chains
   # sort by chain_type if provided in one or more
+  # replace hetero=True by hetero=False if replace_hetatm is set
 
-  new_hierarchy=iotbx.pdb.input(
-         source_info="Model",
-             lines=flex.split_lines("")).construct_hierarchy()
+  new_hierarchy=create_new_hierarchy()
   mm=iotbx.pdb.hierarchy.model()
   new_hierarchy.append_model(mm)
   if renumber:  # just get chain once in advance
@@ -433,24 +600,48 @@ def merge_hierarchies_from_models(models=None,resid_offset=None,
           nn=resid_offset*((resid+resid_offset-1)//resid_offset)
           if nn-resid<2: nn+=resid_offset
           resid=nn
+  if replace_hetatm:
+    for atom in new_hierarchy.atoms():
+      atom.hetero = False
+
   new_hierarchy.reset_atom_i_seqs()
   if trim_side_chains:
     atom_selection=\
       "name ca or name c or name o or name n or (name cb and not resname gly)"
-    new_hierarchy=apply_atom_selection(atom_selection,hierarchy=new_hierarchy)
+    new_hierarchy=new_hierarchy.apply_atom_selection(atom_selection)
 
-  if remove_ter_records:
-    new_records=flex.split_lines("")
-    for line in new_hierarchy.as_pdb_string().splitlines():
-      if not line.startswith("TER"):
-        new_records.append(line)
-
-    new_hierarchy=iotbx.pdb.input(
-         source_info="Model", lines=new_records).construct_hierarchy()
+  if remove_ter_records or remove_break_records:
+    new_hierarchy = remove_ter_or_break(new_hierarchy)
 
   new_model=model_info(hierarchy=new_hierarchy,info=info)
 
   return new_model
+
+def pdb_or_mmcif_fn_info(fn):
+  b0,e0 = os.path.splitext(fn)
+  fn_pdb = "%s.pdb" %(b0)
+  fn_cif = "%s.cif" %(b0)
+  if os.path.isfile(fn_pdb):
+    return group_args(
+       file_name = fn_pdb,
+       format = 'pdb')
+  elif os.path.isfile(fn_cif):
+    return group_args(
+       file_name = fn_cif,
+       format = 'mmcif')
+    return fn_cif
+  else:
+    return None
+
+def remove_ter_or_break(ph):
+  for m0 in ph.models():
+      for c0 in m0.chains():
+       first = True
+       for residue_group in c0.residue_groups():
+         if not first:
+           residue_group.link_to_previous = True
+         first = False
+  return ph
 
 def get_average_direction(diffs=None, i=None,j=None):
     if not diffs: return None
@@ -459,40 +650,146 @@ def get_average_direction(diffs=None, i=None,j=None):
       j=len(diffs)-1
     average_direction=col(diffs[i])
     nn=1.
-    for j in xrange(i+1,j):
+    for j in range(i+1,j):
       nn+=1.
       average_direction+=col(diffs[j])
     average_direction/=nn
     return average_direction.normalize()
 
-def get_chain_ids(hierarchy):
-  chain_ids=[]
+def get_first_chain_id_and_resno(hierarchy):
+  text = ""
   if not hierarchy:
-    return chain_ids
-  for model in hierarchy.models():
-    for chain in model.chains():
-      chain_ids.append(chain.id)
-  return chain_ids
-
-def get_chain_id(hierarchy):
-  if not hierarchy:
-    return None
-  for model in hierarchy.models():
-    for chain in model.chains():
-      return chain.id
-  return None # nothing there
-
-def get_sequence(hierarchy):
-  if not hierarchy:
-    return None
-  sequence=[]
+    return text
   for model in hierarchy.models():
     for chain in model.chains():
       for rg in chain.residue_groups():
-        for atom_group in rg.atom_groups():
-          sequence.append(atom_group.resname)
-          break
-  return sequence
+        return "%s%s" %(chain.id,rg.resseq_as_int())
+
+def get_last_chain_id_and_resno(hierarchy):
+  text = ""
+  if not hierarchy:
+    return text
+  for model in hierarchy.models():
+    for chain in model.chains():
+      for rg in chain.residue_groups()[-1:]:
+        text = "%s%s" %(chain.id,rg.resseq_as_int())
+  return text
+
+def remove_all_models_except_first(hierarchy):
+  ''' removes all models except the first in this hierarchy'''
+  model = hierarchy.models()[0]
+  new_hierarchy=iotbx.pdb.input(
+         source_info="Model",
+             lines=flex.split_lines("")).construct_hierarchy()
+  new_hierarchy.append_model(model.detached_copy())
+  return new_hierarchy
+
+
+def offset_residue_numbers(hierarchy, offset = 0):
+  for model in hierarchy.models():
+    for chain in model.chains():
+      for rg in chain.residue_groups():
+        current_resno = rg.resseq_as_int()
+        rg.resseq = resseq_encode(current_resno + offset)
+
+def merge_and_renumber_everything(hierarchy, current_resno = 1,
+    chain_id = 'A'):
+  new_hierarchy, mm = create_new_hierarchy_and_model()
+  cc = iotbx.pdb.hierarchy.chain()
+  cc.id = chain_id
+  mm.append_chain(cc)
+
+  for model in hierarchy.models():
+    for chain in model.chains():
+      for rg in chain.residue_groups():
+        new_rg = rg.detached_copy()
+        new_rg.resseq = resseq_encode(current_resno)
+        cc.append_residue_group(new_rg)
+        current_resno += 1
+  return new_hierarchy
+
+
+def renumber_residues(hierarchy, first_resno = 1,
+    fixed_offset = False, increment_if_insertion_code = True):
+
+  if fixed_offset:
+    offset = None
+    last_resno = None
+    for model in hierarchy.models():
+      for chain in model.chains():
+        for rg in chain.residue_groups():
+          if first_resno is None:
+            first_resno = rg.resseq_as_int()
+          if offset is None:
+            offset = first_resno - rg.resseq_as_int()
+          current_resno = rg.resseq_as_int() + offset
+          if current_resno == last_resno  and increment_if_insertion_code:
+            offset += 1
+            current_resno += 1
+          prev = rg.resseq
+          rg.resseq = resseq_encode(current_resno)
+          last_resno = current_resno
+    return
+
+  # Usual
+  for model in hierarchy.models():
+    for chain in model.chains():
+      current_resno = first_resno
+      for rg in chain.residue_groups():
+        if current_resno is None:
+          current_resno = rg.resseq_as_int()
+        rg.resseq = resseq_encode(current_resno)
+        current_resno += 1
+
+def create_new_hierarchy():
+  from iotbx.pdb import hierarchy
+  return hierarchy.root()
+
+def create_new_hierarchy_and_model():
+  import iotbx.pdb
+  new_hierarchy = create_new_hierarchy()
+  mm = iotbx.pdb.hierarchy.model()
+  new_hierarchy.append_model(mm)
+  return new_hierarchy, mm
+
+def reorder_residues(hierarchy, merge_chains = False, chain_id = None):
+  import iotbx.pdb
+  residue_dict = {}
+  for model in hierarchy.models():
+    for chain in model.chains():
+       if merge_chains and chain_id is None:
+         chain_id = chain.id
+       elif merge_chains:
+         pass # already have chain_id
+       else:
+         chain_id = chain.id # keep it
+       if not chain_id in residue_dict.keys():
+         residue_dict[chain_id] = {}
+       for rg in chain.residue_groups():
+          residue_dict[chain_id][rg.resseq_as_int()] = rg.detached_copy()
+  keys = list(residue_dict.keys())
+  keys = sorted(keys)
+  new_hierarchy, model = create_new_hierarchy_and_model()
+  for chain_id in keys:
+    cc = iotbx.pdb.hierarchy.chain()
+    cc.id = chain_id
+    model.append_chain(cc)
+    residue_numbers = sorted(list(residue_dict[chain_id].keys()))
+    for resseq in residue_numbers:
+      rg = residue_dict[chain_id][resseq]
+      cc.append_residue_group(rg)
+  return new_hierarchy
+
+def set_segid(hierarchy, segid = ""):
+  for atom in hierarchy.atoms():
+    atom.segid = segid
+
+def set_chain_id(hierarchy, chain_id = None, original_id = None):
+  assert chain_id
+  for model in hierarchy.models():
+    for chain in model.chains():
+      if (original_id is None) or (chain.id == original_id):
+        chain.id = chain_id
 
 def get_atom_list(hierarchy):
   atom_list=[]
@@ -552,7 +849,7 @@ def get_last_residue(hierarchy):
   for model in hierarchy.models():
     for chain in model.chains():
       for conformer in chain.conformers():
-        for residue in conformer.residues():
+        for residue in conformer.residues()[-1:]:
           last_residue=residue
   return last_residue
 
@@ -568,30 +865,40 @@ def has_atom(hierarchy,name=None):
               return True
   return False
 
-def get_first_resno(hierarchy):
+def get_all_resno(hierarchy):
+  resno_list=[]
   if not hierarchy:
-    return None
+    return resno_list
   for model in hierarchy.models():
     for chain in model.chains():
       for rg in chain.residue_groups():
-        return rg.resseq_as_int()
+        resno_list.append(rg.resseq_as_int())
+  return resno_list
 
-def get_last_resno(hierarchy):
+def get_middle_resno(hierarchy,first_resno=None,last_resno=None):
   if not hierarchy:
     return None
-  last_resno=None
+  if first_resno is None:
+     first_resno=hierarchy.first_resseq_as_int()
+  if last_resno is None:
+     last_resno=hierarchy.last_resseq_as_int()
+  target_resno=int(0.5+(first_resno+last_resno)/2)
   for model in hierarchy.models():
     for chain in model.chains():
       for rg in chain.residue_groups():
-        last_resno=rg.resseq_as_int()
+        middle_resno=rg.resseq_as_int()
+        if middle_resno >= target_resno:
+          return middle_resno
   return last_resno
 
 def verify_existence(hierarchy=None,
    prev_hierarchy=None,strand=None,registration=None,helix=None):
   ok=True
 
-  if not hierarchy:
-    raise Sorry("Need a model for user annotation input")
+  if hierarchy and is_ca_only_hierarchy(hierarchy):
+    is_ca_only = True
+  else:
+    is_ca_only = False
 
   for sh in [strand,helix]:
     if sh:
@@ -622,14 +929,14 @@ def verify_existence(hierarchy=None,
 
   if registration:
     cur_atom=get_atom_index(hierarchy=hierarchy,
-      atom_name=registration.cur_atom,
+      atom_name= None if is_ca_only else registration.cur_atom,
       resname=registration.cur_resname,
       chain_id=registration.cur_chain_id,
       resseq=registration.cur_resseq,
       icode=registration.cur_icode)
     if cur_atom is None:
         raise Sorry(
-        "A residue in an strand registration is missing in the input model:"+
+        "A residue in a strand registration is missing in the input model:"+
         "%s %s %s %s %s" %(
         registration.cur_atom,registration.cur_resname,
         registration.cur_chain_id,registration.cur_resseq,
@@ -637,26 +944,28 @@ def verify_existence(hierarchy=None,
 
   if registration and prev_hierarchy:
     prev_atom=get_atom_index(hierarchy=prev_hierarchy,
-      atom_name=registration.prev_atom,
+      atom_name=None if is_ca_only else registration.prev_atom,
       resname=registration.prev_resname,
       chain_id=registration.prev_chain_id,
       resseq=registration.prev_resseq,
       icode=registration.prev_icode)
     if prev_atom is None:
       raise Sorry(
-        "A residue in an strand registration is missing in the input model:"+
+        "A residue in a previous strand registration is missing in the input model:"+
         "%s %s %s %s %s" %(
         registration.prev_atom,registration.prev_resname,
         registration.prev_chain_id,registration.prev_resseq,
         registration.prev_icode))
 
 def get_atom_index(hierarchy=None,atom_name=None,resname=None,
- chain_id=None,resseq=None,icode=None):
+ chain_id=None,resseq=None,icode=None,
+   take_first_if_missing = None):
   # NOTE: could speed up using atom cache and iselection
   # find the index in hierarchy of this atom
   if not hierarchy:
     return None
   count=-1
+  first_present = None
   for model in hierarchy.models():
     for chain in model.chains():
       for conformer in chain.conformers():
@@ -667,9 +976,14 @@ def get_atom_index(hierarchy=None,atom_name=None,resname=None,
              or not residue.icode==icode:
             continue
           for atom in residue.atoms():
+            if first_present is None:
+              first_present = count
             if atom_name is None or atom.name==atom_name:
               return count
-  return None
+  if take_first_if_missing:  # XXX Added in case it is ca model and force
+    return first_present
+  else:
+    return None
 
 def have_n_or_o(models):
     have_n=False
@@ -685,6 +999,225 @@ def have_n_or_o(models):
     if have_n and have_o:
       return True
     return False
+
+def are_sites_parallel(sites_1,sites_2, try_reverse=True):
+      point = flex.vec3_double()
+      point.append(sites_1[0])
+      dist, id1, id2 =  point.min_distance_between_any_pair_with_id(sites_2)
+      point = flex.vec3_double()
+      point.append(sites_1[-1])
+      dist, id1, id2b =  point.min_distance_between_any_pair_with_id(sites_2)
+      if id2b < id2:  # antiparallel
+        return False
+      elif id2b > id2: # parallel
+        return True
+      elif not try_reverse:
+        return None
+      else:
+        return are_sites_parallel(sites_2,sites_1,try_reverse=False)
+
+def evaluate_sheet_topology(annotation, hierarchy = None,
+   chain_id = None,
+   out = sys.stdout):
+  print("\nEvaluating sheet topology", file = out)
+  ca_ph=hierarchy.apply_atom_selection("name ca")
+  if chain_id:
+    ca_ph=ca_ph.apply_atom_selection("chain '%s'" %(chain_id))
+  unique_chain_ids = ca_ph.chain_ids(unique_only = True)
+  if len(unique_chain_ids) != 1:
+    raise Sorry("Need just 1 chain for evaluate_sheet_topology (found %s)" %(
+      " ".join(unique_chain_ids)))
+
+  rh_connections = 0
+  lh_connections = 0
+  mixed_on_same_side_of_sheet = 0
+  connection_list = []
+  for sheet in annotation.sheets:
+    rh_on_up_side = 0
+    lh_on_up_side = 0
+    rh_on_down_side = 0
+    lh_on_down_side = 0
+    if len(sheet.strands) <  2: continue # nothing to do
+    # Get first, last residue number in each strand
+    # Get directions for each strand in the sheet
+    new_strands = []
+    previous_direction = 1
+    for strand in sheet.strands:
+      new_strand = deepcopy(strand)
+      if new_strand.sense == -1: # antiparallel to previous
+        new_strand.direction = -1 * previous_direction
+      elif new_strand.sense == 0:
+        new_strand.direction = 1
+      else:
+        new_strand.direction = previous_direction
+      previous_direction = new_strand.direction
+      new_strands.append(new_strand)
+
+    strand_list = sorted(new_strands, key = lambda sheet: sheet.start_resseq)
+    overall_up = None
+    for ii in range(len(strand_list)-1):
+     s1 = strand_list[ii]
+     for jj in range(ii+1, len(strand_list)):
+      s2 = strand_list[jj]
+      if s2.get_start_resseq_as_int() - s1.get_end_resseq_as_int() < 3:
+        continue  # just a continuation
+      sites_1 =ca_ph.apply_atom_selection("resseq %s:%s" %(
+        s1.get_start_resseq_as_int(),
+        s1.get_end_resseq_as_int())).atoms().extract_xyz()
+      sites_2 =ca_ph.apply_atom_selection("resseq %s:%s" %(
+        s2.get_start_resseq_as_int(),
+        s2.get_end_resseq_as_int())).atoms().extract_xyz()
+      sites_between = ca_ph.apply_atom_selection("resseq %s:%s" %(
+        s1.get_end_resseq_as_int() + 1,
+        s2.get_start_resseq_as_int() - 1)).atoms().extract_xyz()
+      if sites_1.size() < 2 or sites_2.size()< 2 or sites_between.size()<2:
+        continue  # nothing to do
+
+      if s1.direction == 0 or s2.direction == 0 or s1.direction != s2.direction:
+        continue # not parallel
+
+
+      # Pare down sites to be only close ones
+      direction_1 = get_direction(sites_1)
+      direction_2 = get_direction(sites_2)
+      up = get_up(sites_1, sites_2)
+      direction_along_strands = direction_1
+      sites_1 = get_close_sites(sites_1, close_to = sites_2,
+        direction_along_strands = direction_along_strands, max_dist = 10)
+      sites_2= get_close_sites(sites_2, close_to = sites_1,
+         direction_along_strands = direction_along_strands, max_dist = 10)
+      if sites_1.size() < 2 or sites_2.size()< 2 or sites_between.size()<2:
+        continue  # nothing to do
+
+      direction_1 = get_direction(sites_1)
+      direction_2 = get_direction(sites_2)
+      up = get_up(sites_1, sites_2)
+      direction_between_strands = direction_1.cross(up)
+      sites_1 = get_close_sites_perp(sites_1, close_to = sites_2,
+        direction_between_strands = direction_between_strands, max_dist = 10)
+      sites_2= get_close_sites_perp(sites_2, close_to = sites_1,
+         direction_between_strands = direction_between_strands, max_dist = 15)
+      if sites_1.size() < 2 or sites_2.size()< 2 or sites_between.size()<2:
+        continue  # nothing to do
+
+      direction_1 = get_direction(sites_1)
+      direction_2 = get_direction(sites_2)
+      up = get_up(sites_1, sites_2)
+
+      # Get direction of "up" if we didn't already. It is direction_1 x (
+      #   (sites_2[0] - sites_1[-1]).  If sites_2 is to left of sites_1, then
+      #   "up"  is up.
+      #  Now if the chain goes "up" then the connection is left_handed
+      if not overall_up: overall_up = up
+
+      #Get location of connection. Find point closest to a point up or down
+      #  from middle of sheet.
+      all_sites = sites_1.deep_copy()
+      all_sites.extend(sites_2)
+      center = col(all_sites.mean())
+      point_up = center + 10 * up
+      point_down = center - 10 * up
+      point = flex.vec3_double()
+      point.append(point_up)
+      dist_up, id1, id2 =  point.min_distance_between_any_pair_with_id(
+         sites_between)
+      point = flex.vec3_double()
+      point.append(point_down)
+      dist_down, id1_down, id2_down =  \
+          point.min_distance_between_any_pair_with_id(sites_between)
+      if dist_up < dist_down:
+        is_right_handed = False
+      else:
+        is_right_handed = True
+      if up.dot(overall_up) > 0:
+        crosses_on_overall_up_side = True
+        if is_right_handed:
+          rh_on_up_side += 1
+        else:
+          lh_on_up_side += 1
+      else:
+        crosses_on_overall_up_side = False
+        if is_right_handed:
+          rh_on_down_side += 1
+        else:
+          lh_on_down_side += 1
+
+      result = group_args(
+       group_args_type = 'connections in sheet',
+       s1 = "resseq %s:%s" %(
+         s1.get_start_resseq_as_int(),
+         s1.get_end_resseq_as_int()),
+       s2 = "resseq %s:%s" %(
+         s2.get_start_resseq_as_int(),
+         s2.get_end_resseq_as_int()),
+       is_right_handed = is_right_handed,
+       crosses_on_overall_up_side = crosses_on_overall_up_side)
+      connection_list.append(result)
+
+      if rh_on_up_side and lh_on_up_side:
+        mixed_on_same_side_of_sheet += (rh_on_up_side + lh_on_up_side)
+      rh_connections += (rh_on_up_side + rh_on_down_side)
+      lh_connections += (lh_on_up_side + lh_on_down_side)
+
+  print("Total right-handed connections: %s" %(rh_connections), file = out)
+  print("Total left-handed connections: %s" %(lh_connections), file = out)
+  print("Total mixed connections on same side of sheet: %s" %(
+     mixed_on_same_side_of_sheet), file = out)
+  return group_args(
+    group_args_type = 'sheet connectivity analysis',
+       rh_connections = rh_connections,
+       lh_connections = lh_connections,
+       mixed_on_same_side_of_sheet = mixed_on_same_side_of_sheet,
+       connection_list = connection_list,
+     )
+
+def get_close_sites_perp(sites_1,
+     close_to = None, direction_between_strands = None,
+       max_dist = 15):
+  close = flex.vec3_double()
+  if sites_1.size()< 1 or close_to.size()<1:
+    return close
+  for i in range(sites_1.size()):
+    dist, id1, id2 =  sites_1[i:i+1].min_distance_between_any_pair_with_id(
+         close_to)
+    vector_between = col(close_to[id2]) - col(sites_1[i])
+    dist_perp= direction_between_strands.dot(vector_between)
+    if abs(dist) <= max_dist:
+       close.append(sites_1[i])
+  return close
+
+def get_close_sites(sites_1, close_to = None, direction_along_strands = None,
+       max_dist = 8):
+  close = flex.vec3_double()
+  if sites_1.size()< 1 or close_to.size()<1:
+    return close
+  for i in range(sites_1.size()):
+    dist, id1, id2 =  sites_1[i:i+1].min_distance_between_any_pair_with_id(
+         close_to)
+    vector_between = col(close_to[id2]) - col(sites_1[i])
+    dist_parallel = direction_along_strands.dot(vector_between)
+    if abs(dist_parallel)<= max_dist:
+       close.append(sites_1[i])
+  return close
+
+
+def get_up(sites_1, sites_2):
+  direction_1 = get_direction(sites_1)
+  one_to_two = normalize(col(sites_2[0]) - col(sites_1[-1]))
+  up = direction_1.cross(one_to_two)
+  return normalize(up)
+
+def normalize(site):
+  dist = site.length()
+  if dist > 0:
+    return site * (1./dist)
+  else:
+    return site
+
+def get_direction(sites_cart):
+  if sites_cart.size() < 2:
+    return None
+  return normalize(col(sites_cart[-1]) - col(sites_cart[0]))
 
 def remove_bad_annotation(annotation,hierarchy=None,
      maximize_h_bonds=True,
@@ -702,14 +1235,13 @@ def remove_bad_annotation(annotation,hierarchy=None,
   deleted_something=False
   new_helices=[]
   for helix in new_annotation.helices:
-    ph=apply_atom_selection(
-      get_string_or_first_element_of_list(helix.as_atom_selections()),
-         hierarchy=hierarchy)
+    ph=hierarchy.apply_atom_selection(get_string_or_first_element_of_list(
+       helix.as_atom_selections()))
     try:
         verify_existence(hierarchy=ph,helix=helix)
         new_helices.append(helix)
-    except Exception,e: # the helix needs to be deleted
-        print >>out,"%s\nDeleting this helix" %(str(e))
+    except Exception as e: # the helix needs to be deleted
+        print("%s\nDeleting this helix" %(str(e)), file=out)
         deleted_something=True
   if deleted_something:
     new_annotation.helices=new_helices
@@ -721,21 +1253,20 @@ def remove_bad_annotation(annotation,hierarchy=None,
     registrations_ok=True
     for strand,registration in zip(sheet.strands,sheet.registrations):
       # verify that first and last atom selections in strand exist
-      ph=apply_atom_selection(
-         get_string_or_first_element_of_list(strand.as_atom_selections()),
-         hierarchy=hierarchy)
+      ph=hierarchy.apply_atom_selection(
+         get_string_or_first_element_of_list(strand.as_atom_selections()))
       try:
         verify_existence(hierarchy=ph,prev_hierarchy=prev_hierarchy,
          strand=strand)
-      except Exception,e: # the strand needs to be deleted
-        print >>out,"%s\nDeleting this strand" %(str(e))
+      except Exception as e: # the strand needs to be deleted
+        print("%s\nDeleting this strand" %(str(e)), file=out)
         strands_ok=False
         deleted_something=True
       try:
         verify_existence(hierarchy=ph,prev_hierarchy=prev_hierarchy,
          registration=registration)
-      except Exception,e: # the registration needs to be deleted
-        print >>out,"Deleting registration\n%s" %(str(e))
+      except Exception as e: # the registration needs to be deleted
+        print("Deleting registration\n%s" %(str(e)), file=out)
         registrations_ok=False
         deleted_something=True
       prev_hierarchy=ph
@@ -747,11 +1278,11 @@ def remove_bad_annotation(annotation,hierarchy=None,
 
   if deleted_something:
     new_annotation.merge_sheets()
-    if new_annotation.as_pdb_str():
-      print >>out, "User annotation after removing bad parts:"
-      print >>out, new_annotation.as_pdb_str()
+    if new_annotation.as_pdb_or_mmcif_str():
+      print("User annotation after removing bad parts:", file=out)
+      print(new_annotation.as_pdb_or_mmcif_str(), file=out)
     else:
-      print >>out,"No annotation left after removing bad parts"
+      print("No annotation left after removing bad parts", file=out)
       return None
 
   if not remove_overlaps:
@@ -767,9 +1298,9 @@ def remove_bad_annotation(annotation,hierarchy=None,
     minimum_overlap=minimum_overlap)
 
   if not no_overlap_annotation.is_same_as(other=new_annotation):
-    print >>out,"Edited annotation without overlaps:"
-    print >>out,no_overlap_annotation.as_pdb_str()
-    print >>out
+    print("Edited annotation without overlaps:", file=out)
+    print(no_overlap_annotation.as_pdb_or_mmcif_str(), file=out)
+    print(file=out)
 
   return no_overlap_annotation
 
@@ -802,7 +1333,7 @@ def sequence_from_hierarchy(hierarchy,chain_type='PROTEIN'):
         for atom_group in rr.atom_groups()[:1]:
            sequence+=ott.get(atom_group.resname,"")
   return sequence
-           
+
 def sites_are_similar(sites1,sites2,max_rmsd=1):
   # return True if sites can be superimposed
   if max_rmsd is None:
@@ -811,7 +1342,8 @@ def sites_are_similar(sites1,sites2,max_rmsd=1):
     return False
   if sites1.size() != sites2.size():
     return False
-
+  if sites1.size() < 3:
+    return False
   lsq_fit_obj=superpose.least_squares_fit(
        reference_sites=sites1,
        other_sites=sites2)
@@ -823,18 +1355,67 @@ def sites_are_similar(sites1,sites2,max_rmsd=1):
     return False
 
 
+def is_ca_only_hierarchy(hierarchy):
+  if not hierarchy: return None
+  return hierarchy.is_ca_only()
+
+def ca_n_and_o_always_present(hierarchy):
+  if not hierarchy: return None
+  total_residues=hierarchy.overall_counts().n_residues
+  asc=hierarchy.atom_selection_cache()
+  for n in ("ca","n","o"):
+    atom_selection="name %s" %(n)
+    sel = asc.selection(string = atom_selection)
+    if sel.count(True) != total_residues:
+      return False
+  return True
+
+
+def get_fraction_complete_backbone(hierarchy):
+  if not hierarchy: return 0
+  total_residues=hierarchy.overall_counts().n_residues
+  asc=hierarchy.atom_selection_cache()
+  minimum_complete=total_residues
+  for n in ("ca","n","o"):
+    atom_selection="name %s" %(n)
+    sel = asc.selection(string = atom_selection)
+    if sel.count(True) < minimum_complete:
+      minimum_complete=sel.count(True)
+  if minimum_complete==total_residues:
+    return 1 # just to make sure it is exactly 1
+  else:
+    return minimum_complete/max(1,total_residues)
+
+def choose_ca_or_complete_backbone(hierarchy, params=None):
+  # Purpose: return a hierarchy that is either completely CA or has no CA-only
+  #   residues
+  fraction_complete_backbone=get_fraction_complete_backbone(hierarchy)
+  if fraction_complete_backbone == 1:
+    return hierarchy # nothing to do
+  if fraction_complete_backbone < \
+       params.find_ss_structure.min_ca_n_o_completeness:
+    # just use CA-only
+    return hierarchy.apply_atom_selection('name CA')
+  else:  # remove CA-only residues
+    hierarchy.remove_incomplete_main_chain_protein()
+    return hierarchy
+
 def sites_and_seq_from_hierarchy(hierarchy):
   atom_selection="name ca"
-  sele=apply_atom_selection(atom_selection,hierarchy=hierarchy)
+  sele=hierarchy.apply_atom_selection(atom_selection)
   if sele.overall_counts().n_residues==0:
     sites=flex.vec3_double()
     sequence=""
   else:
-    sites=sele.extract_xray_structure().sites_cart()
+    sites=sele.extract_xray_structure(min_distance_sym_equiv=0 # REQUIRED
+        ).sites_cart()
     sequence=sequence_from_hierarchy(sele)
-  return sites,sequence
+  start_resno=sele.first_resseq_as_int()
+  end_resno=sele.last_resseq_as_int()
+  return sites,sequence,start_resno,end_resno
 
 class model_info: # mostly just a holder
+  """Holder for information about a segment"""
   def __init__(self,hierarchy=None,id=0,info={},
       find_alpha=None,find_beta=None,find_other=None,
       find_three_ten=None,find_pi=None):
@@ -848,32 +1429,38 @@ class model_info: # mostly just a holder
     self.find_other=find_other
 
   def show_summary(self,out=sys.stdout):
-    keys=self.info.keys()
+    """Summarize this model_info object"""
+    keys=list(self.info.keys())
     keys.sort()
-    print >>out,"\nModel %d" %(self.id)
+    print("\nModel %d" %(self.id), file=out)
     for key in keys:
-      print >>out,"%s: %s" %(key,str(self.info[key]))
+      print("%s: %s" %(key,str(self.info[key])), file=out)
 
   def has_n(self):
+    """Return True if the hierarchy contains an N atom"""
     return has_atom(self.hierarchy,name="N")
 
   def has_o(self):
+    """Return True if the hierarchy contains an O atom"""
     return has_atom(self.hierarchy,name="O")
 
   def first_residue(self):
-    return get_first_resno(self.hierarchy)
+    """Return the first residue number (resseq_as_int()))"""
+    return self.hierarchy.first_resseq_as_int()
 
   def last_residue(self):
-    return get_last_resno(self.hierarchy)
+    """Return the last residue number (resseq_as_int()))"""
+    return self.hierarchy.last_resseq_as_int()
 
   def length(self):
+    """Return the length of this chain"""
     return self.last_residue()-self.first_residue()+1
 
   def set_chain_type(self): # XXX specific for atom names N O2'/O2*
-    # set the chain type if not already set
+    """Set the chain type if not already set"""
     if self.info and self.info.get('chain_type'): return
     if not self.info: self.info={}
-    if has_atom(self.hierarchy,name="N"):
+    if has_atom(self.hierarchy,name="N") or has_atom(self.hierarchy,name="CA"):
       self.info['chain_type']="PROTEIN"
     else:
       if has_atom(self.hierarchy,name="O2'") or  \
@@ -882,7 +1469,8 @@ class model_info: # mostly just a holder
       else:
         self.info['chain_type']="DNA"
 
-class segment:  # object for holding a helix or a strand or other
+class segment:
+  """Object for holding a helix or a strand or other"""
 
   def setup(self,sites=None,start_resno=None,hierarchy=None,
      segment_class=None,
@@ -901,6 +1489,7 @@ class segment:  # object for holding a helix or a strand or other
      verbose=None,
      out=sys.stdout):
 
+    """Set up this segment_object"""
     self.segment_class=segment_class
     self.out=out
     self.verbose=verbose
@@ -938,39 +1527,42 @@ class segment:  # object for holding a helix or a strand or other
     if start_resno is not None:
       self.start_resno=start_resno
     elif self.hierarchy:
-      self.start_resno=get_first_resno(self.hierarchy)
+      self.start_resno=self.hierarchy.first_resseq_as_int()
       assert start_resno is None
     else:
       start_resno=1
       self.start_resno=start_resno
 
   def summary(self):
+    """Return summary of this segment_object"""
     return self.show_summary()
 
   def show_summary(self,return_text=False):
+    """Return or print summary of this segment_object"""
     text="Class: %6s  Length: %d  Start: %d  End: %d" %(
      self.segment_type,self.length(),self.get_start_resno(),
       self.get_start_resno()+self.length()-1)
     if return_text:
       return text
     else:
-      print >>self.out, text
+      print(text, file=self.out)
 
   def get_diffs_and_norms_3(self):
-    # report distances between i and i+3
+    """Report distances between i and i+3"""
     sites_offset_3=self.sites[3:]
     diffs=sites_offset_3-self.sites[:-3]
     return diffs.norms()
 
   def get_min_diff_i_i3(self):
+    """Report minimum distance between i and i+3"""
     norms=self.get_diffs_and_norms_3()
     if norms is None: return
     mm=norms.min_max_mean()
     return mm.min
 
   def trim_ends(self,start_pos=None,end_pos=None):
-    # trim back from start_pos to end_pos (not residue number, position in
-    #   existing segment
+    """Trim back from start_pos to end_pos (not residue number, position in
+      existing segment"""
     start_res=self.get_start_resno()+start_pos
     end_res=self.get_start_resno()+end_pos
     if start_pos==0 and end_pos==self.length()-1:
@@ -978,13 +1570,15 @@ class segment:  # object for holding a helix or a strand or other
     atom_selection="resid %s through %s" %(resseq_encode(start_res),
        resseq_encode(end_res))
 
-    self.hierarchy=apply_atom_selection(atom_selection,hierarchy=self.hierarchy)
+    self.hierarchy=self.hierarchy.apply_atom_selection(atom_selection)
     self.start_resno=self.start_resno+start_pos
     self.get_sites_from_hierarchy()
     if self.optimal_delta_length:
       self.optimal_delta_length=0 # we no longer know how long it should be
 
   def contains_ends(self,first_resno_of_chain=None,last_resno_of_chain=None):
+     """Return whether first resno in chain is present, last resno in
+     chain is present"""
      if first_resno_of_chain>=self.get_start_resno() and \
         first_resno_of_chain<=self.get_end_resno():
        contains_left_end_of_chain=True
@@ -998,54 +1592,61 @@ class segment:  # object for holding a helix or a strand or other
      return contains_left_end_of_chain,contains_right_end_of_chain
 
   def get_sites_from_hierarchy(self):
+    """Get sites from CA atoms in a hierarchy"""
     atom_selection="name ca"
-    sele=apply_atom_selection(atom_selection,hierarchy=self.hierarchy)
+    sele=self.hierarchy.apply_atom_selection(atom_selection)
     if sele.overall_counts().n_residues==0:
       self.sites=flex.vec3_double()
     else:
       # extract coordinates
-      self.sites=sele.extract_xray_structure().sites_cart()
+      self.sites=sele.atoms().extract_xyz()
 
     if sele.overall_counts().n_residues==0:
       self.sites=flex.vec3_double()
     else:
       # extract coordinates
-      self.sites=sele.extract_xray_structure().sites_cart()
+      self.sites=sele.atoms().extract_xyz()
 
   def get_start_resno(self):
+    """Return starting resno in segment"""
     return self.start_resno
 
   def get_end_resno(self):
+    """Return ending resno in segment"""
     return self.start_resno+self.length()-1
 
   def length(self):
+    """Return length of segment"""
     return self.sites.size()
 
   def optimal_delta_length(self):
+    """Return value of self.optimal_delta_length"""
     return self.optimal_delta_length
 
   def get_norms(self):
+    """Report norms of distances between i and average of i+3,i+4."""
     diffs,norms=self.get_diffs_and_norms()
     return self.norms
 
   def get_rise(self):
-    # report mean distance from i to i+span-1
+    """Report mean distance from i to i+span-1"""
     if not self.span: return 0.
     return self.get_norms().min_max_mean().mean/self.span
 
   def segment_average_direction(self):
+    """Get average direction of this segment"""
     diffs,norms=self.get_diffs_and_norms()
     if not diffs: return 0.
     return get_average_direction(diffs=diffs)
 
   def get_cosine(self):
+    """Report mean normalized dot product of diffs with mean direction"""
     self.mean_dot_single=None
-    # report mean normalized dot product of diffs with mean direction
     diffs,norms=self.get_diffs_and_norms()
     if not diffs: return 0.
     average_direction=get_average_direction(diffs=diffs)
     cosines=flex.double()
-    for j in xrange(len(diffs)):
+    for j in range(len(diffs)):
       dot=col(diffs[j]).dot(average_direction)
       cosines.append(dot)
     mean_dot=cosines.min_max_mean().mean
@@ -1053,7 +1654,7 @@ class segment:  # object for holding a helix or a strand or other
     # now get mean cross product and dot with average_direction...
     diffs_single=self.get_diffs_single()
     cosines=flex.double()
-    for j in xrange(len(diffs_single)):
+    for j in range(len(diffs_single)):
       dot=col(diffs_single[j]).dot(average_direction)
       cosines.append(dot)
     self.mean_dot_single=cosines.min_max_mean().mean
@@ -1061,19 +1662,22 @@ class segment:  # object for holding a helix or a strand or other
     return mean_dot
 
   def get_diffs_single(self):
+    """Get diffs between i+1 and i"""
     if self.diffs_single:
       return self.diffs_single
     else:
       sites_offset_1=self.sites[1:]
       self.diffs_single=sites_offset_1-self.sites[:-1]
       norms=self.diffs_single.norms()
+      norms.set_selected(norms==0,1.e-10)
       self.diffs_single=self.diffs_single/norms
     return self.diffs_single
 
   def get_orientation_points(self,start_res=None,end_res=None): # for strand
-    # get 2 points along strand axis and two point at a CA position at end
-    #    These can be used to superimpose strands
-    #   do not depend on the details of the strands
+    """Get 2 points along strand axis and two point at a CA position at end
+    These can be used to superimpose strands
+    do not depend on the details of the strands"""
+
     n=self.length()
     if n < self.minimum_length: return None
     if start_res is None: start_res=self.get_start_resno()
@@ -1098,6 +1702,7 @@ class segment:  # object for holding a helix or a strand or other
     return orientation_points
 
   def get_targets(self):
+    """Set parameters for tolerances"""
     target=self.target_rise*self.span
     tol=self.rise_tolerance
     dot_min=self.dot_min
@@ -1110,13 +1715,14 @@ class segment:  # object for holding a helix or a strand or other
 
   def is_ok(self,check_sub_segments=False,sub_segment_length=8):
 
+    """Return True if this segment is ok"""
     ##########################################
     # Option to check sub-segments instead of the whole thing (not used)
     if check_sub_segments and len(self.sites) > sub_segment_length:
       dd=max(1,sub_segment_length//2)
       start=0
       end=len(self.sites)-sub_segment_length
-      for i in xrange(start,end+dd,dd):
+      for i in range(start,end+dd,dd):
         ii=min(i,end)
         h=self.segment_class(params=self.params,
           sites=self.sites[ii:ii+sub_segment_length])
@@ -1150,14 +1756,14 @@ class segment:  # object for holding a helix or a strand or other
       return True
 
   def get_lsq_fit(self,other=None,start_res=None,end_res=None):
-    # superimpose other segment (sucha as a helix ) on this one using
-    #  orientation points
-    # start_res,end_res are start end in other to match
-    # The lengths do not have to match
+    """Superimpose other segment (sucha as a helix ) on this one using
+     points. start_res,end_res are start end in other to match
+    The lengths do not have to match.
 
-    # the orientation points for helix are center of
-    #  N-term of helix, center of C-term of
-    #  helix, and CA of first and last residues in the helix.
+    the orientation points for helix are center of
+    N-term of helix, center of C-term of
+    helix, and CA of first and last residues in the helix.
+    """
 
     self_orientation_points=self.get_orientation_points()
     other_orientation_points=other.get_orientation_points(
@@ -1188,26 +1794,27 @@ class segment:  # object for holding a helix or a strand or other
 
   def apply_lsq_fit(self,lsq_fit_obj=None,hierarchy=None,
      start_res=None,end_res=None):
+    """Apply lsq_fit obj to a hierarchy"""
     atom_selection="resid %s through %s" %(resseq_encode(start_res),
        resseq_encode(end_res))
-    sele=apply_atom_selection(atom_selection,hierarchy=hierarchy)
 
     asc=hierarchy.atom_selection_cache()
     sel = asc.selection(string = atom_selection)
-    assert sele.overall_counts().n_residues  # should not be None
-    from cStringIO import StringIO
-    f=StringIO()
-    for atom in sele.atoms_with_labels():
-      new_xyz=lsq_fit_obj.r * matrix.col(atom.xyz) + lsq_fit_obj.t
-      atom.set_xyz(new_xyz)
-      print >>f,atom.format_atom_record()
-    return get_pdb_hierarchy(text=f.getvalue())
+    new_ph = hierarchy.select(sel).deep_copy()
+    xyz = new_ph.atoms().extract_xyz()
+    new_xyz = lsq_fit_obj.r.elems * xyz + lsq_fit_obj.t.elems
+    new_ph.atoms().set_xyz(new_xyz)
+    new_ph.sort_atoms_in_place()
+    new_ph.atoms().reset_i_seq()
+    return new_ph
 
   def get_site(self,resno=None):
+    """Get coordinates for site (CA) of resno'th residue starting with 0"""
     first_residue=self.get_start_resno()
     return self.sites[resno-first_residue]
 
   def get_sites(self,start_res=None,end_res=None):
+    """Get sites for residues from start_res to end_res"""
     if start_res is None or end_res is None:
       return self.sites
     else:
@@ -1215,11 +1822,14 @@ class segment:  # object for holding a helix or a strand or other
       return self.sites[start_res-first_residue:end_res-first_residue+1]
 
   def get_centroid(self,start_res=None,end_res=None):
-    # get centroid of residues from start_res to end_res
+    """Get centroid of residues from start_res to end_res"""
     sites=self.get_sites(start_res=start_res,end_res=end_res)
+    if sites.size() < 1:
+      return None
     return sites.mean()
 
-class helix(segment): # Methods specific to helices
+class helix(segment):
+  """Methods specific to helices"""
 
   def __init__(self,params=None,sites=None,start_resno=None,hierarchy=None,
      is_n_terminus=None,
@@ -1254,7 +1864,9 @@ class helix(segment): # Methods specific to helices
      out=out)
 
   def get_diffs_and_norms(self):
-    # report distances between i and average of i+3,i+4
+    """Report distances between i and average of i+3,i+4 (diffs),
+      and norms() of these diffs.
+     """
     if not hasattr(self,'diffs'):
       sites_offset_3=self.sites[3:-1]
       sites_offset_4=self.sites[4:]
@@ -1266,14 +1878,17 @@ class helix(segment): # Methods specific to helices
         average_offset=0.5*(sites_offset_3+sites_offset_4)
       self.diffs=average_offset-self.sites[:-4]
       self.norms=self.diffs.norms()
-      self.diffs=self.diffs/self.diffs.norms()
+      self.norms.set_selected(self.norms<1.e-10,1.e-10)
+      self.diffs=self.diffs/self.norms
+
     return self.diffs,self.norms
 
 
   def get_orientation_points(self,start_res=None,end_res=None):
-    # get 3 points along helix axis, two CA at ends
-    #   These can be used to superimpose helices and
-    #   do not depend on the details of the helix
+    """Get 3 points along helix axis, two CA at ends
+    These can be used to superimpose helices and
+    do not depend on the details of the helix"""
+
     n=self.length()
     if n < self.minimum_length: return None
     if start_res is None: start_res=self.get_start_resno()
@@ -1287,8 +1902,10 @@ class helix(segment): # Methods specific to helices
       im=(start_res+end_res)//2 # middle residue
       cm1=self.get_centroid(start_res=im-2,end_res=im+1)
       cm2=self.get_centroid(start_res=im-1,end_res=im+2)
-      center_middle=0.5*(matrix.col(cm1)+matrix.col(cm2))
-
+      if (cm1 is not None) and (cm2 is not None):
+        center_middle=0.5*(matrix.col(cm1)+matrix.col(cm2))
+      else:
+        return None # cannot do it
     center_1=self.get_centroid(start_res=start_res,end_res=start_res+3)
     center_2=self.get_centroid(start_res=end_res-3,end_res=end_res)
     ca_1=self.get_site(resno=start_res)
@@ -1299,7 +1916,7 @@ class helix(segment): # Methods specific to helices
 
 class strand(segment):
 
-  # Methods specific to strands
+  """Methods specific to strands"""
 
   def __init__(self,params=None,sites=None,start_resno=None,hierarchy=None,
      is_n_terminus=None,
@@ -1334,20 +1951,22 @@ class strand(segment):
       out=out)
 
   def get_diffs_and_norms(self):
-    # report distances between i and i+2
+    """Report distances between i and i+2"""
     assert self.span==2
     if not hasattr(self,'diffs'):
       sites_offset_2=self.sites[2:]
       self.diffs=sites_offset_2-self.sites[:-2]
       self.norms=self.diffs.norms()
+      if self.norms.count(0) > 0:
+        self.norms.set_selected(self.norms==0,1.e-10)
       self.diffs=self.diffs/self.norms
 
     return self.diffs,self.norms
 
   def get_orientation_points(self,start_res=None,end_res=None): # for strand
-    # get 2 points along strand axis and two point at a CA position at end
-    #    These can be used to superimpose strands
-    #   do not depend on the details of the strands
+    """Get 2 points along strand axis and two point at a CA position at end
+    These can be used to superimpose strands
+    do not depend on the details of the strands """
     n=self.length()
     if n < self.minimum_length: return None
     if start_res is None: start_res=self.get_start_resno()
@@ -1360,7 +1979,9 @@ class strand(segment):
     else:  # odd number of residues average just before and after
       im=(start_res+end_res)//2 # middle residue
       cm1=self.get_centroid(start_res=im-1,end_res=im)
+      if cm1 is None: return None
       cm2=self.get_centroid(start_res=im,end_res=im+1)
+      if cm2 is None: return None
       center_middle=0.5*(matrix.col(cm1)+matrix.col(cm2))
 
     center_1=self.get_centroid(start_res=start_res,end_res=start_res+1)
@@ -1373,7 +1994,8 @@ class strand(segment):
 
 class other(segment):
 
-  # Methods specific to other (not strand, not helix). Looks like strand mostly
+  """Methods specific to other (not strand, not helix).
+     Looks like strand mostly"""
 
   def __init__(self,params=None,sites=None,start_resno=None,hierarchy=None,
      is_n_terminus=None,
@@ -1408,12 +2030,13 @@ class other(segment):
       out=out)
 
   def get_diffs_and_norms(self):
+    """No diffs and norms for this class"""
     self.diffs=None
     self.norms=None
     return self.diffs,self.norms
 
   def get_orientation_points(self,start_res=None,end_res=None): # for other
-    # just use all points
+    """Just use all points for orientation for this class"""
     if not self.orientation_points or \
         not start_res==self.orientation_points_start or \
         not end_res==self.orientation_points_end: # calculate it
@@ -1428,22 +2051,27 @@ class other(segment):
         self.orientation_points_end=end_res
     return self.orientation_points
 
-class find_segment: # class to look for a type of segment
+class find_segment:
+  """Look for a type of segment (e.g., helices or strands) in a chain"""
 
   def setup(self,params=None,model=None,segment_type='helix',
       extract_segments_from_pdb=None,
       make_unique=None,
       cut_up_segments=None,
+      extend_segments=None,
       model_as_segment=None, # take the whole model as a segment
       verbose=None,
       out=sys.stdout):
-    # Assumes model is just 1 chain of sequential residues
-    #   obtained with split_model
+
+    """ Set up to find a type of segment
+    Assumes model is just 1 chain of sequential residues
+    obtained with split_model"""
 
     self.out=out
     self.extract_segments_from_pdb=extract_segments_from_pdb
     self.make_unique=make_unique
     self.cut_up_segments=cut_up_segments
+    self.extend_segments=extend_segments
     self.model_as_segment=model_as_segment
     self.verbose=verbose
     self.params=params
@@ -1479,7 +2107,7 @@ class find_segment: # class to look for a type of segment
       self.last_residue_offset=0
 
     # set start residue number if not set.
-    self.start_resno=get_first_resno(self.model.hierarchy)
+    self.start_resno=self.model.hierarchy.first_resseq_as_int()
 
     self.segments=[]
 
@@ -1500,7 +2128,7 @@ class find_segment: # class to look for a type of segment
     # create segment object (helix,strand) for each segment
     # If longer than the standard length, make a series of shorter segments
 
-    keys=segment_dict.keys()
+    keys=list(segment_dict.keys())
     keys.sort()
     # Specify which residues are in each segment
     #    (self.last_residue_offset past start)
@@ -1523,7 +2151,7 @@ class find_segment: # class to look for a type of segment
       overall_start_res=i
       overall_end_res=segment_dict[i]+self.last_residue_offset
       overall_length=overall_end_res-overall_start_res+1
-      optimal_delta_length=optimal_delta_length_dict[overall_start_res]
+      optimal_delta_length=optimal_delta_length_dict.get(overall_start_res, 0)
       if (optimal_delta_length > 0 and not self.allow_insertions) or \
          (optimal_delta_length < 0 and not self.allow_deletions):
         optimal_delta_length=0
@@ -1532,7 +2160,7 @@ class find_segment: # class to look for a type of segment
       if (not self.cut_up_segments) or overall_length<=self.standard_length:
         start_end_list.append([overall_start_res,overall_end_res])
       else:
-        for start_res_use in xrange(
+        for start_res_use in range(
            overall_start_res,
            overall_start_res+overall_length-self.standard_length+1):
           start_end_list.append(
@@ -1547,21 +2175,21 @@ class find_segment: # class to look for a type of segment
           del self.segment_start_end_dict[start_res_use]
 
   def show_summary(self,out=None):
+    """Summarize this find_segment object"""
     if not out: out=self.out
     for h in self.segments:
-      print >>out,\
-       "Class: %12s  N: %d Start: %d End: %d " %(
+      print("Class: %12s  N: %d Start: %d End: %d " %(
           self.name,h.get_end_resno()-h.get_start_resno()+1,
            h.get_start_resno(),h.get_end_resno(),
          ) +" Rise:%5.2f A Dot:%5.2f" %(
-          h.get_rise(),h.get_cosine())
+          h.get_rise(),h.get_cosine()), file=out)
 
   def get_used_residues_list(self,end_buffer=1):
-    # just return a list of used residues
+    """Just return a list of used residues in this find_segment object"""
     used_residues=[]
     if hasattr(self,'segment_dict'):
       for i in self.segment_start_end_dict.keys():
-        for j in xrange(
+        for j in range(
              i+end_buffer,self.segment_start_end_dict[i]+1-end_buffer):
           # Note this segment_start_end_dict lists exact residues used,
           #  not starting points as in segment_dict
@@ -1571,7 +2199,8 @@ class find_segment: # class to look for a type of segment
 
   def extract_segment(self,params=None,start_res=None,end_res=None,sites=None,
        optimal_delta_length=None):
-
+      """Extract coordinates of atoms and secondary structure
+         information for a segment of secondary structure"""
       start_res_with_buffer=start_res  # -self.buffer_residues
       end_res_with_buffer=end_res   #  +self.buffer_residues
 
@@ -1586,7 +2215,8 @@ class find_segment: # class to look for a type of segment
       else:
         is_c_terminus=False
 
-      assert len(sites)>=end_res  # make sure we are in bounds
+      if len(sites) < end_res: # make sure we are in bounds
+        return False
 
       # get the hierarchy if necessary
       if self.extract_segments_from_pdb or self.model_as_segment:
@@ -1598,8 +2228,7 @@ class find_segment: # class to look for a type of segment
         atom_selection="resseq %s:%s" %(
            resseq_encode(start_resno).replace(" ",""),
            resseq_encode(end_resno).replace(" ",""))
-        hierarchy=apply_atom_selection(
-           atom_selection,hierarchy=self.model.hierarchy)
+        hierarchy=self.model.hierarchy.apply_atom_selection(atom_selection)
         if hierarchy.overall_counts().n_residues==0:
           return False # did not find anything here and needed to
       else:
@@ -1619,21 +2248,25 @@ class find_segment: # class to look for a type of segment
         return False
 
   def get_sites(self):
+    """Get CA sites from hierarchy"""
     atom_selection="name ca"
-    sele=apply_atom_selection(atom_selection,hierarchy=self.model.hierarchy)
+    sele=self.model.hierarchy.apply_atom_selection(atom_selection)
     if not sele.overall_counts().n_residues:
       return []
     else:
       # extract coordinates
-      sites=sele.extract_xray_structure().sites_cart()
+      sites=sele.extract_xray_structure(min_distance_sym_equiv=0 # REQUIRED
+         ).sites_cart()
       return sites
 
   def get_segments(self):
+    """Return segments of secondary structure in this find_segments object"""
     return self.segments
 
   def find_segments(self,params=None,sites=None): # helix/strand
-    # set up segment class for this kind of segment
-    # for example, helix(sites=sites)
+    """Set up segment class for this kind of segment
+    for example, helix(sites=sites)"""
+
     h=self.segment_class(params=params,sites=sites)
 
     # get difference vectors i to i+2 (strands) or i to avg of i+3/i+4 (helix)
@@ -1653,13 +2286,13 @@ class find_segment: # class to look for a type of segment
       segment_dict[0]=n-1
       return diffs,norms,segment_dict
 
-    for i in xrange(n):
+    for i in range(n):
       if i in used_residues or abs(norms[i]-target)>tol: continue
       if i in self.previously_used_residues: continue
       # i is start of segment
       segment_dict[i]=i  # lists end of segment
       used_residues.append(i)
-      for j in xrange(i+1,n):
+      for j in range(i+1,n):
         if abs(norms[j]-target)>tol: break
         if target_i_ip3 is not None and tol_i_ip3 is not None and \
            j<len(norms_3) and abs(norms_3[j]-target_i_ip3)>tol_i_ip3: break
@@ -1668,8 +2301,9 @@ class find_segment: # class to look for a type of segment
         if dot < dot_min: break
         segment_dict[i]=j
         used_residues.append(j)
+
     # skip if only as long as a single span (requires 2 to be sure)
-    for i in segment_dict.keys():
+    for i in list(segment_dict.keys()):
       segment_length=segment_dict[i]+1+self.last_residue_offset-i
       if segment_length<minimum_length:
         del segment_dict[i]
@@ -1680,9 +2314,13 @@ class find_segment: # class to look for a type of segment
       diffs=diffs,dot_min=dot_min,minimum_length=minimum_length)
 
     # merge any segments that can be combined
-
     segment_dict=self.merge_segments(params=params,
        segment_dict=segment_dict,sites=sites)
+
+    # try to extend by 1 in each direction if it doesn't overlap anything
+    if self.extend_segments:
+      segment_dict=self.try_to_extend_segments(params=params,
+        segment_dict=segment_dict,sites=sites)
 
     # trim ends of any segments that are connected by fewer than n_link_min=3
     #  residues and that go in opposite directions (connected by tight turns).
@@ -1690,18 +2328,60 @@ class find_segment: # class to look for a type of segment
     segment_dict=self.trim_short_linkages(
      params=params,segment_dict=segment_dict,sites=sites)
 
+    # again merge any segments that can be combined
+    segment_dict=self.merge_segments(params=params,
+       segment_dict=segment_dict,sites=sites)
+
     return diffs,norms,segment_dict
+
+
+  def try_to_extend_segments(self,params=None,segment_dict=None,sites=None):
+    """Try to extend segments if they do not overlap"""
+    found=True
+    n_cycles=0
+    while found and n_cycles <=len(segment_dict):
+      found=False
+      n_cycles+=1
+      keys=list(segment_dict.keys())
+      keys.sort()  # sorted on start
+      n_space=2  # at least 2 apart in the end
+      for i1,i2,i3 in zip([None]+keys[:-2],keys,keys[1:]+[None]):
+        if found: break
+        if i2 > 0 and ( i1 is None or
+            i2 > segment_dict[i1]+self.last_residue_offset+1+n_space):
+          # try adding before i2
+          h=self.segment_class(params=params,
+             sites=sites[i2-1:segment_dict[i2]+self.last_residue_offset+1],
+             start_resno=i2-1+self.start_resno)
+          if h.is_ok():
+           found=True
+           segment_dict[i2-1]=segment_dict[i2]
+           del segment_dict[i2]
+        if found: break
+        if segment_dict[i2]+self.last_residue_offset+1+1 < sites.size()  and (
+           i3 is None or
+            segment_dict[i2]+self.last_residue_offset+1+n_space  < i3):
+          # try adding after i2
+          h=self.segment_class(params=params,
+             sites=sites[i2:segment_dict[i2]+self.last_residue_offset+1+1],
+             start_resno=i2+self.start_resno)
+          if h.is_ok():
+           found=True
+           segment_dict[i2]=segment_dict[i2]+1
+
+    return segment_dict
 
 
   def merge_segments(self,params=None,segment_dict=None,sites=None):
 
-    # merge any segments that can be combined
+    """Merge any segments that can be combined"""
+
     found=True
     n_cycles=0
-    while found and n_cycles <=len(segment_dict.keys()):
+    while found and n_cycles <=len(segment_dict):
       found=False
       n_cycles+=1
-      keys=segment_dict.keys()
+      keys=list(segment_dict.keys())
       keys.sort()  # sorted on start
       for i1,i2 in zip(keys[:-1],keys[1:]):
         if found: break
@@ -1713,24 +2393,26 @@ class find_segment: # class to look for a type of segment
           if h.is_ok():
            found=True
            segment_dict[i1]=segment_dict[i2]
-           del segment_dict[i2]
+           if i1 != i2:
+             del segment_dict[i2]
     return segment_dict
 
   def remove_bad_residues(self,segment_dict=None,diffs=None,dot_min=None,
     minimum_length=None):
+    """Remove bad residues from segments"""
     still_changing=True
     n_cycles=0
     max_cycles=2
     while still_changing and n_cycles < max_cycles:
       still_changing=False
       new_segment_dict={}
-      keys=segment_dict.keys()
+      keys=list(segment_dict.keys())
       keys.sort()
       for i in keys:
         average_direction=get_average_direction(
           diffs=diffs,i=i,j=segment_dict[i])
         segment_start=None
-        for j in xrange(i,segment_dict[i]+1):
+        for j in range(i,segment_dict[i]+1):
           dot=col(diffs[j]).dot(average_direction)
           if dot >= dot_min:
             if segment_start is None:
@@ -1740,7 +2422,7 @@ class find_segment: # class to look for a type of segment
             segment_start=None
             still_changing=True
       segment_dict=new_segment_dict
-      for i in segment_dict.keys():
+      for i in list(segment_dict.keys()):
         segment_length=segment_dict[i]+1+self.last_residue_offset-i
         if segment_length<minimum_length:
           del segment_dict[i] # not long enough
@@ -1748,12 +2430,15 @@ class find_segment: # class to look for a type of segment
     return segment_dict
 
   def trim_short_linkages(self,params=None,segment_dict=None,sites=None):
+    """Trim ends of any segments that are connected by fewer than n_link_min=3
+    residues and that go in opposite directions (connected by tight turns)."""
+
     found=True
     n_cycles=0
-    while found and n_cycles <=len(segment_dict.keys()):
+    while found and n_cycles <=len(segment_dict):
       found=False
       n_cycles+=1
-      keys=segment_dict.keys()
+      keys=list(segment_dict.keys())
       keys.sort()  # sorted on start
       for i1,i2 in zip(keys[:-1],keys[1:]):
         if found: break
@@ -1792,14 +2477,16 @@ class find_segment: # class to look for a type of segment
         if ok:
           segment_dict[new_i2]=segment_dict[i2]
         # remove original
-        del segment_dict[i2]
+        if new_i2 != i2:
+          del segment_dict[i2]
 
     return segment_dict
 
 
   def get_optimal_lengths(self,segment_dict=None,norms=None):
+    """Figure out how many residues really should be in these segments"""
 
-    keys=segment_dict.keys()
+    keys=list(segment_dict.keys())
     keys.sort()
 
     # get average distance i to i+3/i+4 for this segment (to see if it is
@@ -1822,21 +2509,21 @@ class find_segment: # class to look for a type of segment
       optimal_delta_length_dict[i]=optimal_length-segment_length
       norm_dict[i]=mean_norm
       if self.verbose:
-        print >>self.out,\
-       "Chain start: %d  end: %d  N: %d  Rise: %7.2f  Optimal length: %d" %(
+        print("Chain start: %d  end: %d  N: %d  Rise: %7.2f  Optimal length: %d" %(
          i+self.start_resno,i+segment_length-1+self.start_resno,
-         segment_length,segment_rise,optimal_length)
+         segment_length,segment_rise,optimal_length), file=self.out)
 
     return optimal_delta_length_dict,norm_dict
 
 class find_helix(find_segment):
-
+  """Look for helices in a chain"""
   def __init__(self,params=None,model=None,verbose=None,
     extract_segments_from_pdb=None,
     make_unique=None,
     previously_used_residues=None,
     model_as_segment=None,
     cut_up_segments=None,
+    extend_segments=None,
     out=sys.stdout):
     self.previously_used_residues=previously_used_residues
 
@@ -1845,6 +2532,7 @@ class find_helix(find_segment):
      make_unique=make_unique,
      model_as_segment=model_as_segment,
      cut_up_segments=cut_up_segments,
+     extend_segments=extend_segments,
      verbose=verbose,out=out)
 
   def pdb_records(self,segment_list=None,last_id=0,helix_type='alpha',
@@ -1854,14 +2542,13 @@ class find_helix(find_segment):
      minimum_h_bonds=None,
      maximum_poor_h_bonds=None,
      allow_ca_only_model=None,out=sys.stdout): # helix
-
+    """Construct pdb records for segments in this find_helix object"""
     records=[]
     number_of_good_h_bonds=0
     number_of_poor_h_bonds=0
     k=last_id
     for s in segment_list:
       if not s.hierarchy: continue
-      from cStringIO import StringIO
       f=StringIO()
       all_h_bonds,n_good,n_poor=self.list_h_bonds(
           segment=s,helix_type=helix_type,
@@ -1873,12 +2560,12 @@ class find_helix(find_segment):
             maximum_poor_h_bonds is not None and n_poor>maximum_poor_h_bonds):
           continue
 
-      print >>out,f.getvalue(),
+      print(f.getvalue(), end=' ', file=out)
       number_of_good_h_bonds+=n_good
       number_of_poor_h_bonds+=n_poor
       start=get_first_residue(s.hierarchy)
       end=get_last_residue(s.hierarchy)
-      chain_id=get_chain_id(s.hierarchy)
+      chain_id=s.hierarchy.first_chain_id()
       k=k+1
       record = secondary_structure.pdb_helix(
         serial=k,
@@ -1903,6 +2590,7 @@ class find_helix(find_segment):
      force_secondary_structure_input=None,
      allow_ca_only_model=None,out=sys.stdout):
 
+    """List H-bonds in this find_helix object"""
     helix_class=secondary_structure.pdb_helix.helix_class_to_int(
            helix_type) # 1=alpha 3=pi  5=3_10
 
@@ -1918,8 +2606,7 @@ class find_helix(find_segment):
     number_of_good_h_bonds=0
     number_of_poor_h_bonds=0
 
-    for i in xrange(segment.length()-next_i):
-
+    for i in range(segment.length()-next_i):
       cur_residue=get_indexed_residue(
         segment.hierarchy,index=i)
       cur_atom,cur_xyz=get_atom_from_residue(
@@ -1946,12 +2633,12 @@ class find_helix(find_segment):
         new_h_bond=h_bond(
            prev_atom=cur_atom,
            prev_resname=cur_residue.resname,
-           prev_chain_id=get_chain_id(segment.hierarchy),
+           prev_chain_id=segment.hierarchy.first_chain_id(),
            prev_resseq=cur_residue.resseq,
            prev_icode=cur_residue.icode,
            cur_atom=next_atom,
            cur_resname=next_residue.resname,
-           cur_chain_id=get_chain_id(segment.hierarchy),
+           cur_chain_id=segment.hierarchy.first_chain_id(),
            cur_resseq=next_residue.resseq,
            cur_icode=next_residue.icode,
            dist=dist,
@@ -1966,11 +2653,13 @@ class find_helix(find_segment):
     return all_h_bonds,number_of_good_h_bonds,number_of_poor_h_bonds
 
 class find_beta_strand(find_segment):
+  """Look for beta_strands in a chain"""
 
   def __init__(self,params=None,model=None,verbose=None,
       extract_segments_from_pdb=None,
       make_unique=None,
       cut_up_segments=None,
+      extend_segments=None,
       model_as_segment=None,
       previously_used_residues=None,
       out=sys.stdout):
@@ -1983,11 +2672,12 @@ class find_beta_strand(find_segment):
       make_unique=make_unique,
       model_as_segment=model_as_segment,
       cut_up_segments=cut_up_segments,
+      extend_segments=extend_segments,
       verbose=verbose,out=out)
 
   def get_pdb_strand(self,sheet_id=None,strand_id=1,segment=None,
      sense=0,start_index=None,end_index=None):
-
+    """Return a secondary_structure.pdb_strand object for strand_id"""
     if start_index is None:
       start=get_first_residue(segment.hierarchy)
     else:
@@ -1999,7 +2689,7 @@ class find_beta_strand(find_segment):
     if start is None or end is None:
       return None
 
-    chain_id=get_chain_id(segment.hierarchy)
+    chain_id=segment.hierarchy.first_chain_id()
     pdb_strand = secondary_structure.pdb_strand(
         sheet_id=sheet_id,
         strand_id=strand_id,
@@ -2015,6 +2705,7 @@ class find_beta_strand(find_segment):
     return pdb_strand
 
   def get_required_start_end(self,sheet=None,info_dict=None):
+      """Return start_dict and end_dict for this sheet"""
       start_dict={}
       end_dict={}
       for i in sheet:
@@ -2047,12 +2738,13 @@ class find_beta_strand(find_segment):
      maximum_poor_h_bonds=None,
      out=sys.stdout):
 
-    # sheet_list is list of sheets. Each sheet is a list of strands (the index
-    #  of the strand in segment_list). Info_dict has the relationship between
-    #  pairs of strands, indexed with the key "%d:%d:" %(i,j) where i and j are
-    #  the indices of the two strands. The dictionary returns
-    #  [first_ca_1,last_ca_1,first_ca_2,last_ca_2,is_parallel,i_index,j_index]
-    #    for the two strands
+    """Construct pdb records for segments in this find_sheet object.
+    sheet_list is list of sheets. Each sheet is a list of strands (the index
+    of the strand in segment_list). Info_dict has the relationship between
+    pairs of strands, indexed with the key "%d:%d:" %(i,j) where i and j are
+    the indices of the two strands. The dictionary returns
+    [first_ca_1,last_ca_1,first_ca_2,last_ca_2,is_parallel,i_index,j_index]
+    for the two strands"""
 
     records=[]
     number_of_good_h_bonds=0
@@ -2061,7 +2753,6 @@ class find_beta_strand(find_segment):
     for sheet in sheet_list:
       good_in_sheet=0
       poor_in_sheet=0
-      from cStringIO import StringIO
       f=StringIO()
 
       sheet_id+=1
@@ -2087,8 +2778,8 @@ class find_beta_strand(find_segment):
       first_strand = self.get_pdb_strand(sheet_id=sheet_id,strand_id=strand_id,
         segment=s,sense=0,start_index=start_dict[k],end_index=end_dict[k])
       if first_strand is None:
-        print >>out,"Note: failed to identify strand %s in sheet %s index %s" %(
-          k,strand_id,sheet_id)
+        print("Note: failed to identify strand %s in sheet %s index %s" %(
+          k,strand_id,sheet_id), file=out)
         ok=False
         continue # found nothing (something went wrong in get_pdb_strand)
 
@@ -2117,8 +2808,8 @@ class find_beta_strand(find_segment):
         next_strand = self.get_pdb_strand(sheet_id=sheet_id,strand_id=strand_id,
           segment=s,sense=sense,start_index=start_dict[j],end_index=end_dict[j])
         if next_strand is None:
-          print >>out,"Note: failed to "+\
-            "identify strand %s in sheet %s index %s" %(j,strand_id,sheet_id)
+          print("Note: failed to "+\
+            "identify strand %s in sheet %s index %s" %(j,strand_id,sheet_id), file=out)
           ok=False
           continue# found nothing (something went wrong in get_pdb_strand)
 
@@ -2131,7 +2822,6 @@ class find_beta_strand(find_segment):
           allow_ca_only_model=allow_ca_only_model,out=f)
         good_in_sheet+=n_good
         poor_in_sheet+=n_poor
-
         register=self.get_pdb_strand_register(segment=s,
           previous_segment=previous_s,first_last_1_and_2=first_last_1_and_2,
           allow_ca_only_model=allow_ca_only_model,
@@ -2147,7 +2837,7 @@ class find_beta_strand(find_segment):
             maximum_poor_h_bonds is not None and n_poor>maximum_poor_h_bonds):
           sheet_id-=1
           continue
-      print >>out,f.getvalue(),
+      print(f.getvalue(), end=' ', file=out)
       number_of_good_h_bonds+=good_in_sheet
       number_of_poor_h_bonds+=poor_in_sheet
       records.append(current_sheet)
@@ -2157,13 +2847,14 @@ class find_beta_strand(find_segment):
 
 
   def is_even(self,i):
+    """Return True if i is even"""
     if 2*(i//2)==i: return True
     return False
 
   def get_pdb_strand_register(self,segment=None,previous_segment=None,
      first_last_1_and_2=None,allow_ca_only_model=None,
      all_h_bonds=None):
-
+    """Return a pdb_strand_register object for the first H-bond that is OK"""
     for h_bond in all_h_bonds: # choose first that is ok
       if not h_bond.is_ok():
         continue
@@ -2188,6 +2879,7 @@ class find_beta_strand(find_segment):
      force_secondary_structure_input=None,
      first_last_1_and_2=None,allow_ca_only_model=None,out=sys.stdout):
 
+    """List H-bonds in this find_beta_trand object"""
     #  Looking down a strand in direction from N to C...
     #    the CA go up-down-up-down.
     #    The ones that are up have their O pointing to the right
@@ -2226,11 +2918,9 @@ class find_beta_strand(find_segment):
 
     first_ca_1,last_ca_1,first_ca_2,last_ca_2,is_parallel,i_index,j_index=\
            first_last_1_and_2
-
-    for i in xrange(previous_segment.length()):
+    for i in range(previous_segment.length()):
       if i_index is None or j_index is None: continue
       if not self.is_even(i-i_index): continue
-
       local_i_index=i_index+(i-i_index)
       if is_parallel:
         local_j_index=j_index+(i-i_index)
@@ -2301,12 +2991,12 @@ class find_beta_strand(find_segment):
         new_h_bond=h_bond(
              prev_atom=local_prev_atom,
              prev_resname=local_prev_residue.resname,
-             prev_chain_id=get_chain_id(previous_segment.hierarchy),
+             prev_chain_id=previous_segment.hierarchy.first_chain_id(),
              prev_resseq=local_prev_residue.resseq,
              prev_icode=local_prev_residue.icode,
              cur_atom=local_cur_atom,
              cur_resname=local_cur_residue.resname,
-             cur_chain_id=get_chain_id(segment.hierarchy),
+             cur_chain_id=segment.hierarchy.first_chain_id(),
              cur_resseq=local_cur_residue.resseq,
              cur_icode=local_cur_residue.icode,
              dist=dist,
@@ -2317,7 +3007,8 @@ class find_beta_strand(find_segment):
         all_h_bonds.append(new_h_bond)
     return all_h_bonds,number_of_good_h_bonds,number_of_poor_h_bonds
 
-class h_bond:  # holder for a pair of atoms
+class h_bond:
+  """Holder for a pair of atoms involved in an H-bond"""
   def __init__(self,
              prev_atom=None,
              prev_resname=None,
@@ -2335,6 +3026,7 @@ class h_bond:  # holder for a pair of atoms
     adopt_init_args(self, locals())
 
   def is_ok(self):
+    """Return True if this object is ok"""
     if self.anything_is_ok:
       return True
     if self.dist is None:  # was CA-only so no information
@@ -2345,8 +3037,9 @@ class h_bond:  # holder for a pair of atoms
       return False
 
   def show_summary(self,show_non_existent=False,out=sys.stdout):
+    """Summarize this h_bond object"""
     if self.dist is not None:
-      print >>out," %4s%4s%4s%5s%s : %4s%4s%4s%5s%s :: %5.2f   %s" %(
+      print(" %4s%4s%4s%5s%s : %4s%4s%4s%5s%s :: %5.2f   %s" %(
              self.prev_atom,
              self.prev_resname,
              self.prev_chain_id,
@@ -2358,9 +3051,9 @@ class h_bond:  # holder for a pair of atoms
              self.cur_resseq,
              self.cur_icode,
              self.dist,
-             self.bad_one)
+             self.bad_one), file=out)
     elif self.bad_one is not None:
-      print >>out," %4s%4s%4s%5s%s : %4s%4s%4s%5s%s" %(
+      print(" %4s%4s%4s%5s%s : %4s%4s%4s%5s%s" %(
              self.prev_atom,
              self.prev_resname,
              self.prev_chain_id,
@@ -2370,16 +3063,17 @@ class h_bond:  # holder for a pair of atoms
              self.cur_resname,
              self.cur_chain_id,
              self.cur_resseq,
-             self.cur_icode,)
+             self.cur_icode,), file=out)
 
 
 class find_other_structure(find_segment):
-
+  """Look for other_structure in a chain"""
   def __init__(self,previously_used_residues=None,
       params=None,model=None,
       extract_segments_from_pdb=None,
       make_unique=None,
       cut_up_segments=None,
+      extend_segments=None,
       verbose=None,out=sys.stdout):
 
     self.previously_used_residues=previously_used_residues
@@ -2388,24 +3082,26 @@ class find_other_structure(find_segment):
       extract_segments_from_pdb=extract_segments_from_pdb,
       make_unique=make_unique,
       cut_up_segments=cut_up_segments,
+      extend_segments=extend_segments,
       verbose=verbose,out=out)
 
   def pdb_records(self,last_id=0,out=sys.stdout):   #other (nothing)
+    """No pdb records for this type of secondary structure"""
     return []
 
   def get_optimal_lengths(self,segment_dict=None,norms=None):
-    # always zero
-    keys=segment_dict.keys()
+    """Always zero for other_structure"""
     optimal_delta_length_dict={}
     norm_dict={}
-    for i in keys:
-      optimal_delta_length_dict[i]=0
-      norm_dict[i]=None
+    for key in segment_dict:
+      optimal_delta_length_dict[key]=0
+      norm_dict[key]=None
     return optimal_delta_length_dict,norm_dict
 
   def add_start_end_to_segment_dict(self,
        params,n=None,n_buf=None,segment_start=None,
        segment_end=None,segment_dict=None):
+    """Add a start and end to segment dict for this other_structure"""
     if self.make_unique:
       nn=0
     else:
@@ -2420,8 +3116,8 @@ class find_other_structure(find_segment):
     return segment_dict
 
   def find_segments(self,params=None,sites=None): # other
-    # find everything that is not alpha and not beta, put buffer_residues
-    #  buffer on the end of each one.
+    """Find everything that is not alpha and not beta, put buffer_residues
+    buffer on the end of each one."""
 
     # set up segment class for this kind of segment SPECIFIC FOR OTHER
     # for example, helix(sites=sites)
@@ -2436,7 +3132,7 @@ class find_other_structure(find_segment):
     n_buf=params.buffer_residues
     used_residues=n*[False]
     used_residues=[]
-    for i in xrange(n+1):
+    for i in range(n+1):
       if i in self.previously_used_residues:
         used_residues.append(True)
       else:
@@ -2445,7 +3141,7 @@ class find_other_structure(find_segment):
     segment_dict={}
     segment_start=None
     segment_end=None
-    for i,used in zip(xrange(n),used_residues):
+    for i,used in zip(range(n),used_residues):
       if not used: # use it
         segment_end=i
         if segment_start is None:
@@ -2466,6 +3162,7 @@ class find_other_structure(find_segment):
     return None,None,segment_dict
 
 class helix_strand_segments:
+  """Holder for all helices and strands in a model"""
   def __init__(self):
     self.h_bond_text=""
     self.all_strands=[]
@@ -2481,8 +3178,15 @@ class helix_strand_segments:
     self.pdb_three_ten_helix_list=[]
     self.pdb_pi_helix_list=[]
     self.pdb_sheet_list=[]
+    self._have_annotations = False
+
+  def have_annotations(self):
+    """Return True if annotations are present"""
+    return self._have_annotations
 
   def add_from_model(self,model):
+      """Add in strands, helices from a local model object that has
+        find_beta, find_alpha etc already present"""
       if model.find_beta:
         self.all_strands+=model.find_beta.segments
       if model.find_alpha:
@@ -2496,9 +3200,10 @@ class helix_strand_segments:
      max_sheet_ca_ca_dist=6.,
      min_sheet_length=4,
      include_single_strands=None):
+    """Find sheets from previously-identified strands"""
     if not self.all_strands: return
-    print >>out,"\nFinding sheets from %d strands" %(len(
-        self.all_strands))
+    print("\nFinding sheets from %d strands" %(len(
+        self.all_strands)), file=out)
     self.get_strand_pairs(tol=max_sheet_ca_ca_dist,
         min_sheet_length=min_sheet_length)
     # pair_dict is list of all the strands that each strand matches with
@@ -2536,7 +3241,7 @@ class helix_strand_segments:
     # any pairs remaining? Create specialized "sheet" for each one
     existing_pairs_in_sheets=self.get_existing_pairs_in_sheets()
     missing_pairs=[]
-    for i in xrange(len(self.all_strands)):
+    for i in range(len(self.all_strands)):
       for j in self.pair_dict.get(i,[]):
         if not [i,j] in existing_pairs_in_sheets and \
            not [i,j] in missing_pairs and not [j,i] in missing_pairs:
@@ -2551,6 +3256,7 @@ class helix_strand_segments:
     #   self.info_dict
 
   def get_existing_pairs_in_sheets(self=None):
+    """Get existing pairs of sheets in sheet_list"""
     existing_pairs=[]
     for sheet in self.sheet_list:
       for i,j in zip(sheet[:-1],sheet[1:]):
@@ -2559,6 +3265,7 @@ class helix_strand_segments:
     return existing_pairs
 
   def get_sheets_from_edges(self,pair_strands=None):
+    """Find sheets from paired strands"""
     sheet_list=[]
     for i in pair_strands:
       if i in self.used_strands:continue
@@ -2577,14 +3284,16 @@ class helix_strand_segments:
 
 
   def get_available_strand(self,current_strand=None,strand_list=None):
+    """Find a strand that is not used and not in strand_list"""
     for i in self.pair_dict.get(current_strand,[]):
       if not i in self.used_strands and not i in strand_list:
          return i
     return None
 
   def get_strands_by_pairs(self,pairs=None):
+    """Collect strands in groups of n=pairs"""
     strand_list=[]
-    while 1:  # get all single strands
+    while 1:  # get all strands in groups of n=pairs
       i=self.get_unused_strand(n=len(self.all_strands),
          used_strands=self.used_strands,pairs=pairs)
       if i is None: break
@@ -2593,19 +3302,23 @@ class helix_strand_segments:
     return strand_list
 
   def get_unused_strand(self,n=None,used_strands=None,pairs=None):
-    for i in xrange(n):
+    """Find an unused strand that can be part of a sheet with n=pairs
+     strands"""
+    for i in range(n):
       if i in used_strands: continue
       if pairs is None or len(self.pair_dict.get(i,[]))==pairs:
         return i
     return None
 
   def get_strand_pairs(self,tol=None,min_sheet_length=None):
+    """Get pairs of strands and save in self.pair_dict where
+     self.pair_dict[i] contains j if strands i and j could be paired"""
     self.info_dict={}
     self.pair_dict={}
-    for i in xrange(len(self.all_strands)):
+    for i in range(len(self.all_strands)):
       self.pair_dict[i]=[]
-    for i in xrange(len(self.all_strands)):
-      for j in xrange(i+1,len(self.all_strands)):
+    for i in range(len(self.all_strands)):
+      for j in range(i+1,len(self.all_strands)):
         self.ca1=None
         self.ca2=None
         if self.ca_pair_is_close(self.all_strands[i],self.all_strands[j],
@@ -2645,6 +3358,10 @@ class helix_strand_segments:
       registration=None,force_secondary_structure_input=None,
       sense=None):
 
+    """
+    Identify residues i_index,j_index that are next to each other in two
+     adjacent strands of a sheet
+    """
     if switch_i_j:
       xx=i
       i=j
@@ -2667,13 +3384,15 @@ class helix_strand_segments:
            resname=registration.cur_resname,
            chain_id=registration.cur_chain_id,
            resseq=registration.cur_resseq,
-           icode=registration.cur_icode)
+           icode=registration.cur_icode,
+           take_first_if_missing = True)
           j_bond=get_atom_index(hierarchy=strand_j.hierarchy,
            atom_name=registration.prev_atom,
            resname=registration.prev_resname,
            chain_id=registration.prev_chain_id,
            resseq=registration.prev_resseq,
-           icode=registration.prev_icode)
+           icode=registration.prev_icode,
+           take_first_if_missing = True)
         else:
           prev_atom=registration.prev_atom
           strand_i=self.all_strands[i]
@@ -2683,13 +3402,15 @@ class helix_strand_segments:
            resname=registration.prev_resname,
            chain_id=registration.prev_chain_id,
            resseq=registration.prev_resseq,
-           icode=registration.prev_icode)
+           icode=registration.prev_icode,
+           take_first_if_missing = True)
           j_bond=get_atom_index(hierarchy=strand_j.hierarchy,
            atom_name=registration.cur_atom,
            resname=registration.cur_resname,
            chain_id=registration.cur_chain_id,
            resseq=registration.cur_resseq,
-           icode=registration.cur_icode)
+           icode=registration.cur_icode,
+           take_first_if_missing = True)
 
         assert sense in [-1,1]
         i_index=i_bond
@@ -2717,7 +3438,6 @@ class helix_strand_segments:
           #  O of residue i in strand n H-bonds to N of residue i' in strand n+1
           #  N of residue i in strand n H-bonds to O of residue i' in strand n+1
           j_index=j_bond# everything is ok already
-
 
         return i_index,j_index
 
@@ -2756,7 +3476,7 @@ class helix_strand_segments:
     n_dot=0.
     sum_dot=0.
     last_offset_index=len(strand_i.get_sites())-i_index-2
-    for i in xrange(last_offset_index//2+1):
+    for i in range(last_offset_index//2+1):
       offset=2*i
       delta=col(strand_i.get_sites()[i_index+1+offset])- \
             col(strand_i.get_sites()[i_index+offset])
@@ -2785,7 +3505,7 @@ class helix_strand_segments:
 
   def align_strands(self,s1,s2,tol=None,
      min_sheet_length=None):
-    # figure out best alignment and directions. Require at least 2 residues
+    """Figure out best alignment and directions. Require at least 2 residues"""
     sites1=s1.get_sites()
     sites2=s2.get_sites()
     sites2_reversed=sites2.deep_copy().reversed()
@@ -2847,7 +3567,7 @@ class helix_strand_segments:
 
   def get_residue_pairs_in_sheet(self,sites1,sites2,
      center1=None,center2=None,tol=None):
-    # figure out pairs that are within tol. Center pairs are center1-center2
+    """Figure out pairs that are within tol. Center pairs are center1-center2"""
     dd=(col(sites1[center1])-col(sites2[center2])).norm_sq()
     keep1_list=[]
     keep2_list=[]
@@ -2855,7 +3575,7 @@ class helix_strand_segments:
     if dd<=tol**2: # plausible at least
       start_offset=max(-center1,-center2)
       end_offset=min(len(sites1)-(center1+1),len(sites2)-(center2+1))
-      for offset in xrange(start_offset,end_offset+1):
+      for offset in range(start_offset,end_offset+1):
         i1=center1+offset
         i2=center2+offset
         dd=(col(sites1[i1])-col(sites2[i2])).norm_sq()
@@ -2874,6 +3594,8 @@ class helix_strand_segments:
 
   def ca_pair_is_close(self,s1,s2,tol=None,
       dist_per_residue=3.5,jump=4):
+    """Return True if CA pair is close enough to consider for H-bonding
+    """
     best_dist_sq=None
     self.ca1=None
     self.ca2=None
@@ -2881,8 +3603,8 @@ class helix_strand_segments:
     sites2=s2.get_sites()
     while jump > 0:
       # see if it is even close
-      for i in xrange(jump//2,len(sites1),jump):
-        for j in xrange(jump//2,len(sites2),jump):
+      for i in range(jump//2,len(sites1),jump):
+        for j in range(jump//2,len(sites2),jump):
           dd=(col(sites1[i])-col(sites2[j])).norm_sq()
           if best_dist_sq is None or dd < best_dist_sq:
             best_dist_sq=dd
@@ -2907,8 +3629,9 @@ class helix_strand_segments:
     maximum_poor_h_bonds=None,
     models=None,out=sys.stdout):
 
-    # skip any secondary structure elements that have fewer than minimum_h_bonds
-    #   if require_h_bonds is True
+    """Set up PDB records for all helices and strands.
+    Skip any secondary structure elements that have fewer than minimum_h_bonds.
+    if require_h_bonds is True"""
 
     number_of_good_h_bonds=0
     number_of_poor_h_bonds=0
@@ -2918,17 +3641,18 @@ class helix_strand_segments:
 
     # determine if there are N and O atoms present.
     # If not, set allow_ca_only_model=True
-    allow_ca_only_model=(not have_n_or_o(models))
+    if (allow_ca_only_model is None):
+      allow_ca_only_model=(not have_n_or_o(models))
+    if force_secondary_structure_input:
+      allow_ca_model_only = True
 
-    from cStringIO import StringIO
     f=StringIO()
-    print >>f,\
-       "\nList of H-bonds expected from helices and from strand pairings"
-    print >>f,"Distances > %3.1f A indicated by **" %(max_h_bond_length)
-    print >>f,\
-      "H-bonds not included in HELIX/SHEET records marked 'Not included'"
-    print >>f,"\n      ATOM 1               ATOM 2           Dist (A)\n"
+    print("\nList of H-bonds expected from helices and from strand pairings", file=f)
+    print("Distances > %3.1f A indicated by **" %(max_h_bond_length), file=f)
+    print("H-bonds not included in HELIX/SHEET records marked 'Not included'", file=f)
+    print("\n      ATOM 1               ATOM 2           Dist (A)\n", file=f)
     def get_fa(find_what='find_alpha',models=None):
+       """Method to find something (like alpha)"""
        for model in models:
         if getattr(model,find_what):
           return getattr(model,find_what)
@@ -2988,59 +3712,61 @@ class helix_strand_segments:
       number_of_good_h_bonds+=n_good
       number_of_poor_h_bonds+=n_poor
     text=f.getvalue()
-    print >>out,text
+    print(text, file=out)
     self.h_bond_text=text
     return number_of_good_h_bonds,number_of_poor_h_bonds
 
-  def save_pdb_records_as_string(self):
-    from cStringIO import StringIO
-    all_pdb_records=StringIO()
-    self.all_selection_records=[]
+  def get_annotation(self):
+    """Get annotation object for this analysis"""
+    all_helices = []
+    all_sheets = []
+    self._have_annotations = False
+    self.all_selection_records = []
     for helix in self.pdb_alpha_helix_list:
-      print >>all_pdb_records,helix.as_pdb_str()
+      all_helices.append(helix)
       self.all_selection_records+=helix.as_atom_selections()
+      self._have_annotations = True
 
     for helix in self.pdb_three_ten_helix_list:
-      print >>all_pdb_records,helix.as_pdb_str()
+      all_helices.append(helix)
       self.all_selection_records+=helix.as_atom_selections()
+      self._have_annotations = True
 
     for helix in self.pdb_pi_helix_list:
-      print >>all_pdb_records,helix.as_pdb_str()
+      all_helices.append(helix)
       self.all_selection_records+=helix.as_atom_selections()
+      self._have_annotations = True
 
     for sheet in self.pdb_sheet_list:
-      print >>all_pdb_records,sheet.as_pdb_str()
+      all_sheets.append(sheet)
       self.all_selection_records+=sheet.as_atom_selections()
-
-    self.all_pdb_records=all_pdb_records.getvalue()
+      self._have_annotations = True
+    from iotbx.pdb.secondary_structure import annotation
+    all_annotations = annotation(helices = all_helices, sheets = all_sheets)
+    return all_annotations
 
   def get_pdb_alpha_helix_list(self):
+    """Get annotations for alpha helix"""
     if hasattr(self,'pdb_alpha_helix_list'):
       return self.pdb_alpha_helix_list
 
   def get_pdb_three_ten_helix_list(self):
+    """Get annotations for three_ten helix"""
     if hasattr(self,'pdb_three_ten_helix_list'):
       return self.pdb_three_ten_helix_list
 
   def get_pdb_pi_helix_list(self):
+    """Get annotations for pi helix"""
     if hasattr(self,'pdb_pi_helix_list'):
       return self.pdb_pi_helix_list
 
   def get_pdb_sheet_list(self):
+    """Get annotations for sheets"""
     if hasattr(self,'pdb_sheet_list'):
       return self.pdb_sheet_list
 
-  def get_all_pdb_records(self):
-    if hasattr(self,'all_pdb_records'):
-      return self.all_pdb_records
-
-  def get_annotation(self):
-    self.save_pdb_records_as_string()
-    records=self.all_pdb_records
-    import iotbx.pdb.secondary_structure as ioss
-    return ioss.annotation.from_records(records=flex.split_lines(records))
-
   def get_all_selection_records(self):
+    """Get selections for secondary structure"""
     if not hasattr(self,'all_selection_records'):
        return
     text='"'
@@ -3054,7 +3780,7 @@ class helix_strand_segments:
     return text
 
 class fss_result_object:
-  # A holder for results of find_secondary_structure
+  """A holder for results of find_secondary_structure"""
   def __init__(self,
       id=None,
       chain_id=None,
@@ -3065,27 +3791,33 @@ class fss_result_object:
       annotation=None,
       sequence=None,
       sites=None,
+      start_resno=None,
+      end_resno=None,
       max_rmsd=1):
     adopt_init_args(self, locals())
 
     if hierarchy:  #
-      self.sites,self.sequence=sites_and_seq_from_hierarchy(hierarchy)
+      self.sites,self.sequence,self.start_resno,self.end_resno=\
+         sites_and_seq_from_hierarchy( hierarchy)
 
     self.chain_id_list=[]
     if self.chain_id:
       self.chain_id_list.append(self.chain_id)
 
   def show_summary(self,out=sys.stdout):
-    print >>out,"\nSummary of find_secondary_structure object %s" %(self.id),
-    print >>out,"for sequence: %s\n" %(self.sequence)
-    print >>out,"Chain ID's where this applies: %s" %(
-      " ".join(self.get_chain_id_list()))
-    print >>out,"Good H-bonds: %s  Poor H-bonds: %s " %(
-      self.number_of_good_h_bonds,self.number_of_poor_h_bonds)
-    print >>out,"H-bond text:\n%s" %(self.h_bond_text)
-    print >>out,"Annotation:\n%s" %(self.get_annotation())
+    """Summarize fss_result_object object"""
+    print("\nSummary of find_secondary_structure object %s" %(self.id), end=' ', file=out)
+    print("for sequence: %s_%s::%s\n" %(self.start_resno,self.end_resno,
+       self.sequence), file=out)
+    print("Chain ID's where this applies: %s" %(
+      " ".join(self.get_chain_id_list())), file=out)
+    print("Good H-bonds: %s  Poor H-bonds: %s " %(
+      self.number_of_good_h_bonds,self.number_of_poor_h_bonds), file=out)
+    print("H-bond text:\n%s" %(self.h_bond_text), file=out)
+    print("Annotation:\n%s" %(self.get_annotation()), file=out)
 
   def add_chain_id(self,chain_id=None):
+    """Add a chain_id to this fss_result_object"""
     if chain_id is not None:
       self.chain_id_list.append(chain_id)
 
@@ -3095,6 +3827,7 @@ class fss_result_object:
       number_of_poor_h_bonds=None,
       h_bond_text=None,
       annotation=None,):
+    """Add info to this fss_result_object"""
     if chain_id is not None:
       self.chain_id_list.append(chain_id)
     if number_of_good_h_bonds is not None:
@@ -3107,21 +3840,28 @@ class fss_result_object:
       self.annotation=annotation
 
   def get_annotation(self):
+    """Return annotation for this fss_result_object"""
     return self.annotation
 
   def get_chain_id_list(self):
+    """Return list of chain IDs in this fss_result_object"""
     return self.chain_id_list
 
   def is_similar_fss_result(self,other):
+    """Return True if this fss_result_object is similar to other"""
     if self.sequence != other.sequence:
        return False
     if not sites_are_similar(self.sites,other.sites,max_rmsd=self.max_rmsd):
        return False
+    if self.start_resno != other.start_resno:
+       return False
+    if self.end_resno != other.end_resno:
+       return False
     return True
 
 class conformation_group:
-  # A group of fss_results with the same sequence but different 
-  #  conformations
+  """A group of fss_results with the same sequence but different
+  conformations"""
   def __init__(self,
     fss_result=None,
     ):
@@ -3141,22 +3881,27 @@ class conformation_group:
     return text
 
   def get_fss_result_list(self):
+    """Return all find_secondary_structure results"""
     return self.fss_results
 
   def add_fss_result(self,fss_result=None):
+    """Add a find_secondary_structure result"""
     if fss_result:
        self.last_id+=1
        fss_result.id=self.last_id
        self.fss_results.append(fss_result)
 
   def get_similar_fss_result(self,fss_result=None):
+    """Return an fss_result from this group that is similar to supplied
+       fss_result, if any"""
     for fss_r in self.fss_results:
       if fss_r.is_similar_fss_result(fss_result):
         return fss_r
     return None
-      
-   
-class find_secondary_structure: # class to look for secondary structure
+
+
+class find_secondary_structure:
+  """Class to look for secondary structure"""
 
   def __init__(self,params=None,args=None,hierarchy=None,models=None,
       user_annotation_text=None,max_h_bond_length=None,
@@ -3168,6 +3913,7 @@ class find_secondary_structure: # class to look for secondary structure
       maximum_poor_h_bonds=None,
       helices_are_alpha=False,
       ss_by_chain=None,
+      evaluate_sheet_topology=None,
       use_representative_chains=None,
       max_representative_chains=None,
       max_rmsd=None,
@@ -3204,6 +3950,8 @@ class find_secondary_structure: # class to look for secondary structure
       params.input_files.force_secondary_structure_input
     if ss_by_chain is not None:
       params.find_ss_structure.ss_by_chain=ss_by_chain
+    if evaluate_sheet_topology is not None:
+      params.find_ss_structure.evaluate_sheet_topology=evaluate_sheet_topology
     if max_rmsd is not None:
       params.find_ss_structure.max_rmsd=max_rmsd
     if use_representative_chains is not None:
@@ -3212,6 +3960,40 @@ class find_secondary_structure: # class to look for secondary structure
     if max_representative_chains is not None:
       params.find_ss_structure.max_representative_chains=\
         max_representative_chains
+
+    # Overwrite parameters for tolerant search
+    if params.find_ss_structure.tolerant:
+      print("Setting parameters for tolerant search", file = out)
+      if params.find_ss_structure.ss_by_chain:
+        params.find_ss_structure.ss_by_chain=False
+        print("Set ss_by_chain=%s" %(
+          params.find_ss_structure.ss_by_chain), file = out)
+      if not params.find_ss_structure.include_single_strands:
+        params.find_ss_structure.include_single_strands=True
+        print("Set include_single_strands=%s" %(
+          params.find_ss_structure.include_single_strands), file = out)
+      if params.find_ss_structure.max_h_bond_length < \
+          params.find_ss_structure.tolerant_max_h_bond_length:
+        params.find_ss_structure.max_h_bond_length = \
+          params.find_ss_structure.tolerant_max_h_bond_length
+        print("Set max_h_bond_length=%s" %(
+          params.find_ss_structure.tolerant_max_h_bond_length),
+          file = out)
+      if params.beta.max_sheet_ca_ca_dist < \
+          params.beta.tolerant_max_sheet_ca_ca_dist:
+        params.beta.max_sheet_ca_ca_dist = \
+          params.beta.tolerant_max_sheet_ca_ca_dist
+        print("Set max_sheet_ca_ca_dist=%s" %(
+          params.beta.tolerant_max_sheet_ca_ca_dist),
+          file = out)
+      if params.beta.min_sheet_length > \
+          params.beta.tolerant_min_sheet_length:
+        params.beta.min_sheet_length = \
+          params.beta.tolerant_min_sheet_length
+        print("Set min_sheet_length=%s" %(
+          params.beta.tolerant_min_sheet_length),
+          file = out)
+
 
     secondary_structure_input=params.input_files.secondary_structure_input
 
@@ -3257,6 +4039,14 @@ class find_secondary_structure: # class to look for secondary structure
         hierarchy=get_pdb_hierarchy(text=open(params.input_files.pdb_in).read())
     if hierarchy:
       hierarchy.remove_alt_confs(always_keep_one_conformer=False)
+      atom_selection="protein"
+      try:
+        hierarchy=hierarchy.apply_atom_selection(atom_selection)
+      except Exception as e:
+        hierarchy=None
+
+    if hierarchy and params.find_ss_structure.auto_choose_ca_vs_ca_n_o:
+      hierarchy=choose_ca_or_complete_backbone(hierarchy,params=params)
 
     if force_secondary_structure_input and not \
         (params.input_files.secondary_structure_input or user_annotation_text):
@@ -3311,26 +4101,33 @@ class find_secondary_structure: # class to look for secondary structure
           force_secondary_structure_input=force_secondary_structure_input,
           allow_ca_only_model=params.beta.allow_ca_only_model,out=local_out)
         self.h_bond_text=self.helix_strand_segments.h_bond_text
-        print >>local_out,\
-          "\nNumber of good H-bonds: %d  Number of poor H-bonds: %d" %(
-          self.number_of_good_h_bonds,self.number_of_poor_h_bonds)
+        print("\nNumber of good H-bonds: %d  Number of poor H-bonds: %d" %(
+          self.number_of_good_h_bonds,self.number_of_poor_h_bonds), file=local_out)
 
       # get annotation:
-      print >>out,"\nNew working annotation:"
+      print("\nNew working annotation:", file=out)
       working_annotation=self.helix_strand_segments.get_annotation()
-      print >>out,working_annotation.as_pdb_str()
+      print(working_annotation.as_pdb_or_mmcif_str(), file=out)
 
       if params.find_ss_structure.combine_annotations and \
           composite_user_annotation:
-        print >>out,"\nMerging edited input annotation and working annotation"
+        print("\nMerging edited input annotation and working annotation", file=out)
         working_annotation=composite_user_annotation.combine_annotations(
           hierarchy=hierarchy, other=working_annotation)
-        print >>out,"\nMerged annotation:\n"
-        print >>out,working_annotation.as_pdb_str()
+        print("\nMerged annotation:\n", file=out)
+        print(working_annotation.as_pdb_or_mmcif_str(), file=out)
 
+
+    #  Remove annotation that does not match model
+    if params.find_ss_structure.remove_missing_atom_annotation:
+      working_annotation=remove_bad_annotation(
+        working_annotation,
+        hierarchy=hierarchy,
+        max_h_bond_length=params.find_ss_structure.max_h_bond_length,
+        remove_overlaps=False, # XXX Required to prevent recursion
+        out=out)
 
     # Now get final values of H-bonds etc with our final annotation
-
     if params.find_ss_structure.require_h_bonds:
       remove_text=""
       if params.find_ss_structure.minimum_h_bonds>0:
@@ -3348,8 +4145,8 @@ class find_secondary_structure: # class to look for secondary structure
 
     if self.helix_strand_segments and not secondary_structure_input:
       # Use analysis from working annotation (no user input)
-      if remove_text: print >>out,remove_text
-      print >>out,"\nGetting H-bonds from working annotation"
+      if remove_text: print(remove_text, file=out)
+      print("\nGetting H-bonds from working annotation", file=out)
       self.number_of_good_h_bonds,self.number_of_poor_h_bonds=\
          self.helix_strand_segments.set_up_pdb_records(models=self.models,
          max_h_bond_length=params.find_ss_structure.max_h_bond_length,
@@ -3366,7 +4163,7 @@ class find_secondary_structure: # class to look for secondary structure
         not params.find_ss_structure.combine_annotations:
       # use analysis of user input (as is)
       if remove_text and not force_secondary_structure_input:
-        print >>out,remove_text
+        print(remove_text, file=out)
         require_h_bonds=params.find_ss_structure.require_h_bonds
         minimum_h_bonds=params.find_ss_structure.minimum_h_bonds
         maximum_poor_h_bonds=params.find_ss_structure.maximum_poor_h_bonds,
@@ -3376,7 +4173,7 @@ class find_secondary_structure: # class to look for secondary structure
         minimum_h_bonds=None
         maximum_poor_h_bonds=None
 
-      print >>out,"\nGetting H-bonds from user annotation"
+      print("\nGetting H-bonds from user annotation", file=out)
       self.number_of_good_h_bonds,self.number_of_poor_h_bonds=\
          self.user_helix_strand_segments.set_up_pdb_records(
          models=self.user_models,
@@ -3392,11 +4189,11 @@ class find_secondary_structure: # class to look for secondary structure
 
     else: # need to redo it from the beginning with our new annotation
       # user annotation combined with new annotation
-      if remove_text: print >>out,remove_text
-      print >>out,"\nRunning analysis with new annotation"
-      if working_annotation and working_annotation.as_pdb_str():
+      if remove_text: print(remove_text, file=out)
+      print("\nRunning analysis with new annotation", file=out)
+      if working_annotation and working_annotation.as_pdb_or_mmcif_str():
         fss=find_secondary_structure(hierarchy=hierarchy,
-          user_annotation_text=working_annotation.as_pdb_str(),
+          user_annotation_text=working_annotation.as_pdb_or_mmcif_str(),
           force_secondary_structure_input=True,
           combine_annotations=False,
           max_h_bond_length=params.find_ss_structure.max_h_bond_length,
@@ -3410,7 +4207,7 @@ class find_secondary_structure: # class to look for secondary structure
             params.find_ss_structure.max_representative_chains,
           max_rmsd=params.find_ss_structure.max_rmsd,
           out=local_out)
-        print >>out,fss.h_bond_text
+        print(fss.h_bond_text, file=out)
         self.number_of_good_h_bonds=fss.number_of_good_h_bonds
         self.number_of_poor_h_bonds=fss.number_of_poor_h_bonds
         working_annotation=fss.get_annotation()
@@ -3418,9 +4215,8 @@ class find_secondary_structure: # class to look for secondary structure
         self.number_of_good_h_bonds=0
         self.number_of_poor_h_bonds=0
 
-    print >>out,\
-         "\nNumber of good H-bonds: %d  Number of poor H-bonds: %d" %(
-          self.number_of_good_h_bonds,self.number_of_poor_h_bonds)
+    print("\nNumber of good H-bonds: %d  Number of poor H-bonds: %d" %(
+          self.number_of_good_h_bonds,self.number_of_poor_h_bonds), file=out)
 
     self.annotation=working_annotation
 
@@ -3430,8 +4226,8 @@ class find_secondary_structure: # class to look for secondary structure
   def need_to_run_in_parts(self,
      min_residues_for_parts=None,
      min_average_chain_length=None,):
-    # run in parts if lots of ncs or big chains.
-    # Don't if lots of little fragments or model objects are supplied.
+    """Run in parts if lots of ncs or big chains.
+    Don't if lots of little fragments or model objects are supplied."""
     if not self.params.find_ss_structure.ss_by_chain:
       return # not going to do this at all
     if not self.hierarchy:
@@ -3444,24 +4240,32 @@ class find_secondary_structure: # class to look for secondary structure
        oc.n_residues/max(1,oc.n_chains) < min_average_chain_length:
       return
 
+    # If not a CA-only model, require N and O to be present on all residues
+    #   to run with representative chains (otherwise there may be some N/O
+    #   that are present in only some chains)
+    if (not is_ca_only_hierarchy(self.hierarchy))  and (
+          not ca_n_and_o_always_present(self.hierarchy)):
+      return
+
     # Worth running on individual chains
     return True
 
   def run_in_parts(self):
-    print >>self.out, "\nRunning on full chains (no "+\
-        "intra-chain secondary structure)"
+    """Just run through all the chains and get their ss.  If duplicate chains
+    #   and use_representative_chains, copy results"""
+    print("\nRunning on full chains (no "+\
+        "intra-chain secondary structure)", file=self.out)
 
-    # Just run through all the chains and get their ss.  If duplicate chains
-    #   and use_representative_chains, copy results
     local_params=deepcopy(self.params)
     local_params.find_ss_structure.ss_by_chain=False
-    if self.params.control.verbose: 
+    if self.params.control.verbose:
       local_out=self.out
     else:
       from libtbx.utils import null_out
       local_out=null_out()
     result_dict={} # fss_conformation_groups keyed by sequence to find quickly
     unique_sequence_list=[]
+
     for model in self.hierarchy.models()[:1]:
       for chain in model.chains():
         chain_id=chain.id
@@ -3474,7 +4278,10 @@ class find_secondary_structure: # class to look for secondary structure
           len(unique_sequence_list)< \
             self.params.find_ss_structure.max_representative_chains:
           # See if this sequence has been analyzed already:
-          cg=result_dict.get(current_fss_result.sequence,conformation_group())
+          test_sequence_string="%s_%s::%s" %(
+            current_fss_result.start_resno,current_fss_result.end_resno,
+            current_fss_result.sequence)
+          cg=result_dict.get(test_sequence_string,conformation_group())
           # cg is either empty or a conformation_group with current sequence
           existing_fss_result=cg.get_similar_fss_result(current_fss_result)
           # if present, existing_fss_result is same conformation as current
@@ -3503,27 +4310,31 @@ class find_secondary_structure: # class to look for secondary structure
              annotation=fss.get_annotation())
           # add new fss_result to empty conformation_group and save
           cg.add_fss_result(fss_result=current_fss_result)
-          result_dict[current_fss_result.sequence]=cg
-          unique_sequence_list.append(current_fss_result.sequence)
+          sequence_string="%s_%s::%s" %(
+            current_fss_result.start_resno,current_fss_result.end_resno,
+            current_fss_result.sequence)
+          result_dict[sequence_string]=cg
+          if not sequence_string in unique_sequence_list:
+            unique_sequence_list.append(sequence_string)
 
-       
-    # Go through all chains and save annotation and number of good/poor h bonds 
-    print >>self.out,"\nAnalysis using %s unique sequences:" %(
-       len(unique_sequence_list))
-    print >>self.out,"Unique part of the analysis:"
+
+    # Go through all chains and save annotation and number of good/poor h bonds
+    print("\nAnalysis using %s unique sequences:" %(
+       len(unique_sequence_list)), file=self.out)
+    print("Unique part of the analysis:", file=self.out)
     all_sheets=[]
     all_helices=[]
     number_of_good_h_bonds=0
     number_of_poor_h_bonds=0
     import iotbx.pdb.secondary_structure as ioss
     i=0
-    for sequence in unique_sequence_list:
-      cg=result_dict[sequence]
+    for sequence_string in unique_sequence_list:
+      cg=result_dict[sequence_string]
       i+=1
-      print >>self.out,80*"="
-      print >>self.out,"\nAnalysis of chains with sequence %s: %s\n" %(
-        i,sequence)
-      print >>self.out,80*"="
+      print(80*"=", file=self.out)
+      print("\nAnalysis of chains with sequence %s: %s\n" %(
+        i,sequence_string), file=self.out)
+      print(80*"=", file=self.out)
       for fss_result in cg.get_fss_result_list():
         fss_result.show_summary(out=self.out)
         chain_id_list=fss_result.get_chain_id_list()
@@ -3537,25 +4348,25 @@ class find_secondary_structure: # class to look for secondary structure
         all_sheets+=annotation.sheets
         number_of_good_h_bonds+=n*fss_result.number_of_good_h_bonds
         number_of_poor_h_bonds+=n*fss_result.number_of_poor_h_bonds
-        
+
     self.annotation=ioss.annotation(sheets=all_sheets,helices=all_helices)
     self.annotation.renumber_helices_and_sheets()
     self.number_of_good_h_bonds=number_of_good_h_bonds
     self.number_of_poor_h_bonds=number_of_poor_h_bonds
-    print >>self.out,80*"="
-    print >>self.out,"\nFinal annotation and selections"
-    print >>self.out,80*"="
+    print(80*"=", file=self.out)
+    print("\nFinal annotation and selections", file=self.out)
+    print(80*"=", file=self.out)
     self.show_summary(out=self.out)
-    
-  
+
+
 
   def show_summary(self,verbose=None,pdb_records_file=None,out=sys.stdout):
-
+    """Summarize find_secondary_structure object"""
     for model in self.models:
       if verbose:
-        print >>out,"\nModel %d  N: %d  Start: %d End: %d" %(
+        print("\nModel %d  N: %d  Start: %d End: %d" %(
           model.info.get('chain_number',0),
-          model.length(),model.first_residue(),model.last_residue())
+          model.length(),model.first_residue(),model.last_residue()), file=out)
       if verbose:
         if model.find_alpha:
           model.find_alpha.show_summary(out=out)
@@ -3567,27 +4378,39 @@ class find_secondary_structure: # class to look for secondary structure
           model.find_beta.show_summary(out=out)
         if model.find_other:
           model.find_other.show_summary(out=out)
-    if self.annotation and self.annotation.as_pdb_str():
-      print >>out,"\nFINAL PDB RECORDS:"
-      print >>out,self.annotation.as_pdb_str()
-      print >>out,"\n\nFINAL PDB selections:"
-      print >>out,'"%s"' %(self.annotation.overall_selection())
+    if self.annotation and self.annotation.as_pdb_or_mmcif_str():
+      print("\nFINAL PDB RECORDS:", file=out)
+      print(self.annotation.as_pdb_or_mmcif_str(), file=out)
+
+      if self.params.control.verbose:
+        print("\n\nFINAL HELIX selections:", file=out)
+        print('"%s"' %(self.annotation.overall_helix_selection()), file=out)
+        print("\n\nFINAL SHEET selections:", file=out)
+        print('"%s"' %(self.annotation.overall_sheet_selection()), file=out)
+
+      print("\n\nFINAL PDB selections:", file=out)
+      print('"%s"' %(self.annotation.overall_selection()), file=out)
+
 
     if pdb_records_file and self.annotation:
       f=open(pdb_records_file,'w')
-      print >>f,self.annotation.as_pdb_str()
+      print(self.annotation.as_pdb_or_mmcif_str(), file=f)
       f.close()
-      print >>out,"\nRecords written to %s\n" %(
-         pdb_records_file)
+      print("\nRecords written to %s\n" %(
+         pdb_records_file), file=out)
 
+  def get_results(self):
+    """Return annotation for this find_secondary_structure result"""
+    return self.get_annotation()
 
   def get_annotation(self):
+    """Return annotation for this find_secondary_structure result"""
     if hasattr(self,'annotation'):
       return self.annotation
 
   def get_user_ss(self,params=None,hierarchy=None,
      user_annotation_text=None,out=sys.stdout):
-
+    """Return user-supplied annotation"""
     if not user_annotation_text:
       file_name=params.input_files.secondary_structure_input
       if file_name and not os.path.isfile(file_name):
@@ -3595,29 +4418,29 @@ class find_secondary_structure: # class to look for secondary structure
          str(file_name)))
 
       # Read ss structure from this file now
-      print >>out,"\nReading secondary structure records from %s\n" %(file_name)
+      print("\nReading secondary structure records from %s\n" %(file_name), file=out)
       user_annotation_text=open(file_name).read()
+    import iotbx.pdb
+    user_annotation=iotbx.pdb.input(source_info=None,
+       lines = flex.split_lines(
+       user_annotation_text)).extract_secondary_structure()
 
-    import iotbx.pdb.secondary_structure as ioss
-    user_annotation=ioss.annotation.from_records(
-        records=flex.split_lines(user_annotation_text))
-
-    print >>out,"\nUser helix/strand records as input:\n"
-    print >>out,user_annotation.as_pdb_str()
+    print("\nUser helix/strand records as input:\n", file=out)
+    print(user_annotation.as_pdb_or_mmcif_str(), file=out)
     if params.input_files.force_secondary_structure_input:
       if params.find_ss_structure.combine_annotations:
-        print >>out,\
-         "\nThis secondary structure annotation will be taken as is and"+\
-         " then will be \ncombined with an edited version (updating H-bonding)"
+       print("\nThis secondary structure annotation will be taken as is and"+\
+       " then will be \ncombined with an edited version (updating H-bonding)",
+         file=out)
       else:
-        print >>out,\
-         "\nThis secondary structure annotation will be used as is.\n"
+        print("\nThis secondary structure annotation will be used as is.\n",
+             file=out)
       remove_overlaps=False
     else:
-      print >>out,\
-       "\nThis secondary structure annotation will be modified if necessary\n"
+      print(
+      "\nThis secondary structure annotation will be modified if necessary\n",
+           file=out)
       remove_overlaps=True
-
     # Remove any parts of this annotation that do not exist in the hierarchy
     user_annotation=remove_bad_annotation(
         user_annotation,
@@ -3640,9 +4463,8 @@ class find_secondary_structure: # class to look for secondary structure
 
     # Helix classes:   'alpha', 'pi', '3_10',
     for helix in user_annotation.helices:
-      ph=apply_atom_selection(
-       get_string_or_first_element_of_list(helix.as_atom_selections()),
-       hierarchy=hierarchy)
+      ph=hierarchy.apply_atom_selection(
+       get_string_or_first_element_of_list(helix.as_atom_selections()))
       model=model_info(hierarchy=ph,info={'class':helix.helix_class})
       self.user_models.append(model)
       if helix.helix_class=='alpha':
@@ -3684,9 +4506,8 @@ class find_secondary_structure: # class to look for secondary structure
         else:
           is_parallel=None
 
-        ph=apply_atom_selection(
-         get_string_or_first_element_of_list(strand.as_atom_selections()),
-         hierarchy=hierarchy)
+        ph=hierarchy.apply_atom_selection(
+         get_string_or_first_element_of_list(strand.as_atom_selections()))
 
         model=model_info(hierarchy=ph,info={'class':'strand'})
         self.user_models.append(model)
@@ -3710,10 +4531,10 @@ class find_secondary_structure: # class to look for secondary structure
           last_ca_2=current_strand_as_segment.length()-1
 
           if not prev_strand_id in \
-              self.user_helix_strand_segments.pair_dict.keys():
+              self.user_helix_strand_segments.pair_dict:
             self.user_helix_strand_segments.pair_dict[prev_strand_id]=[]
           if not current_strand_id in \
-              self.user_helix_strand_segments.pair_dict.keys():
+              self.user_helix_strand_segments.pair_dict:
             self.user_helix_strand_segments.pair_dict[current_strand_id]=[]
 
           # identify residues i_index,j_index that are next to each other
@@ -3751,46 +4572,48 @@ class find_secondary_structure: # class to look for secondary structure
         prev_strand_id=len(self.user_helix_strand_segments.all_strands)-1
         prev_hierarchy=ph
 
+
+
     self.user_number_of_good_h_bonds,self.user_number_of_poor_h_bonds=\
      self.user_helix_strand_segments.set_up_pdb_records(models=self.user_models,
          max_h_bond_length=params.find_ss_structure.max_h_bond_length,
          force_secondary_structure_input=\
                 params.input_files.force_secondary_structure_input,
          allow_ca_only_model=params.beta.allow_ca_only_model,out=local_out)
-    print >>out,\
-         "\nNumber of good H-bonds: %d  Number of poor H-bonds: %d" %(
-          self.user_number_of_good_h_bonds,self.user_number_of_poor_h_bonds)
+    print("\nNumber of good H-bonds: %d  Number of poor H-bonds: %d" %(
+        self.user_number_of_good_h_bonds,self.user_number_of_poor_h_bonds),
+          file=out)
     edited_annotation=self.user_helix_strand_segments.get_annotation()
 
 
-    if self.user_helix_strand_segments.get_all_pdb_records():
+    if self.user_helix_strand_segments.have_annotations():
       if params.input_files.force_secondary_structure_input:
-        print >>out,"\nWorking PDB RECORDS (equivalent to input records):"
+        print("\nWorking PDB RECORDS (equivalent to input records):", file=out)
       else:
-        print >>out,"\nInput PDB RECORDS as modified:"
-      print >>out,edited_annotation.as_pdb_str()
+        print("\nInput PDB RECORDS as modified:", file=out)
+      print(edited_annotation.as_pdb_or_mmcif_str(), file=out)
 
     if params.find_ss_structure.combine_annotations:
-      print >>out,"\nMerging input and edited annotation"
+      print("\nMerging input and edited annotation", file=out)
       edited_annotation=self.user_helix_strand_segments.get_annotation()
-      print >>out,"\nEdited annotation:"
-      print >>out,edited_annotation.as_pdb_str()
+      print("\nEdited annotation:", file=out)
+      print(edited_annotation.as_pdb_or_mmcif_str(), file=out)
 
-      print >>out,"\nUser annotation:"
-      print >>out,user_annotation.as_pdb_str()
+      print("\nUser annotation:", file=out)
+      print(user_annotation.as_pdb_or_mmcif_str(), file=out)
 
       combined_annotation=edited_annotation.combine_annotations(
         hierarchy=hierarchy, other=user_annotation) # will take edited if equal
       if combined_annotation:
-        print >>out,"\nMerged annotation (input and edited input annotation):\n"
-        print >>out,combined_annotation.as_pdb_str()
+        print("\nMerged annotation (input and edited input annotation):\n", file=out)
+        print(combined_annotation.as_pdb_or_mmcif_str(), file=out)
 
       return combined_annotation
     else:
       return edited_annotation
 
   def find_ss_in_model(self,params=None,model=None,out=sys.stdout):
-
+    """Find secondary structure in model"""
     previously_used_residues=[]
     if params.find_ss_structure.find_alpha:
       model.find_alpha=find_helix(params=params.alpha,
@@ -3798,6 +4621,7 @@ class find_secondary_structure: # class to look for secondary structure
         make_unique=params.find_ss_structure.make_unique,
         extract_segments_from_pdb=params.extract_segments_from_pdb.extract,
         cut_up_segments=params.find_ss_structure.cut_up_segments,
+        extend_segments=params.find_ss_structure.extend_segments,
         previously_used_residues=previously_used_residues,
         out=out)
       if params.find_ss_structure.exclude_alpha_in_beta:
@@ -3809,6 +4633,7 @@ class find_secondary_structure: # class to look for secondary structure
         make_unique=params.find_ss_structure.make_unique,
         extract_segments_from_pdb=params.extract_segments_from_pdb.extract,
         cut_up_segments=params.find_ss_structure.cut_up_segments,
+        extend_segments=params.find_ss_structure.extend_segments,
         previously_used_residues=previously_used_residues,
         out=out)
       if params.find_ss_structure.exclude_alpha_in_beta:
@@ -3820,6 +4645,7 @@ class find_secondary_structure: # class to look for secondary structure
         make_unique=params.find_ss_structure.make_unique,
         extract_segments_from_pdb=params.extract_segments_from_pdb.extract,
         cut_up_segments=params.find_ss_structure.cut_up_segments,
+        extend_segments=params.find_ss_structure.extend_segments,
         previously_used_residues=previously_used_residues,
         out=out)
       if params.find_ss_structure.exclude_alpha_in_beta:
@@ -3833,6 +4659,7 @@ class find_secondary_structure: # class to look for secondary structure
         make_unique=params.find_ss_structure.make_unique,
         extract_segments_from_pdb=params.extract_segments_from_pdb.extract,
         cut_up_segments=params.find_ss_structure.cut_up_segments,
+        extend_segments=params.find_ss_structure.extend_segments,
         previously_used_residues=previously_used_residues,
         out=out)
       if params.find_ss_structure.exclude_alpha_in_beta:
@@ -3848,14 +4675,15 @@ class find_secondary_structure: # class to look for secondary structure
         make_unique=params.find_ss_structure.make_unique,
         extract_segments_from_pdb=params.extract_segments_from_pdb.extract,
         cut_up_segments=params.find_ss_structure.cut_up_segments,
+        extend_segments=params.find_ss_structure.extend_segments,
         previously_used_residues=previously_used_residues,
         out=out)
 
   def make_unique(self,model):
-    # iteratively work down residues in this model starting with helix, then
-    #  strand, then anything left
-    # trim in from end if overlapping with previous, delete to nearest end
-    # if a used residue in the middle
+    """Iteratively work down residues in this model starting with helix, then
+    strand, then anything left
+    trim in from end if overlapping with previous, delete to nearest end
+    if a used residue in the middle."""
 
     is_used_list=model.length()*[None]
     first_res=model.first_residue()
@@ -3884,7 +4712,7 @@ class find_secondary_structure: # class to look for secondary structure
             continue
 
         # mark used residues
-        for i in xrange(first_pos+new_start,first_pos+new_end+1):
+        for i in range(first_pos+new_start,first_pos+new_end+1):
           is_used_list[i]=True
 
         #save it
@@ -3893,10 +4721,11 @@ class find_secondary_structure: # class to look for secondary structure
 
 
   def get_start_end(self,already_used=None):
-    # goes from first available to end of available (not necessarily optimal)
+    """Goes from first available to end of
+       available (not necessarily optimal)"""
     new_start=None
     new_end=None
-    for i in xrange(len(already_used)):
+    for i in range(len(already_used)):
       if already_used[i]:
         if new_end is not None:
           return new_start,new_end
@@ -3911,13 +4740,14 @@ class find_secondary_structure: # class to look for secondary structure
     return new_start,new_end
 
   def get_params(self,args,out=sys.stdout):
+    """Get params from args"""
     command_line = iotbx.phil.process_command_line_with_files(
       args=args,
       master_phil=master_phil,
       pdb_file_def="input_files.pdb_in")
 
     params = command_line.work.extract()
-    print >>out,"\nFind secondary structure in hierarchy"
+    print("\nFind secondary structure in hierarchy", file=out)
     master_phil.format(python_object=params).show(out=out)
     return params
 
@@ -3932,8 +4762,8 @@ if __name__=="__main__":
   sheets=fss.get_pdb_sheet_list()
   print "\nHelix Summary"
   for helix in alpha_helices:
-    print helix.as_pdb_str()
+    print helix.as_pdb_or_mmcif_str()
   print "\nSheet Summary"
   for sheet in sheets:
-    print sheet.as_pdb_str()
+    print sheet.as_pdb_or_mmcif_str()
   """

@@ -1,4 +1,5 @@
-from __future__ import division
+"""Extensive testing of hierarchy methods"""
+from __future__ import absolute_import, division, print_function
 from iotbx import pdb
 from cctbx.array_family import flex
 from libtbx.test_utils import Exception_expected, approx_equal, show_diff
@@ -7,10 +8,12 @@ import hashlib
 from libtbx.utils import Sorry, format_cpu_times
 import libtbx.load_env
 from libtbx import Auto
-from cStringIO import StringIO
+from six.moves import cStringIO as StringIO
 import math
+from six.moves import range
+from six.moves import zip
 try:
-  import cPickle as pickle
+  from six.moves import cPickle as pickle
 except ImportError:
   import pickle
 import random
@@ -22,7 +25,7 @@ def exercise_atom():
   a.name = "abcd"
   assert a.name == "abcd"
   try: a.name = "xyzhkl"
-  except (ValueError, RuntimeError), e:
+  except (ValueError, RuntimeError) as e:
     assert str(e) == "string is too long for target variable " \
       "(maximum length is 4 characters, 6 given)."
   else: raise Exception_expected
@@ -78,6 +81,9 @@ def exercise_atom():
   assert a.fdp == 0
   a.fdp = 0.2
   assert a.fdp == 0.2
+  assert a.resolution == 0
+  a.resolution = 3.5
+  assert a.resolution == 3.5
   assert not a.hetero
   a.hetero = True
   assert a.hetero
@@ -105,6 +111,7 @@ def exercise_atom():
     .set_uij(new_uij=(1.3,2.1,3.2,4.3,2.7,9.3))
     .set_fp(new_fp=0.3)
     .set_fdp(new_fdp=0.4)
+    .set_resolution(new_resolution=3.5)
     .set_hetero(new_hetero=True))
   if (pdb.hierarchy.atom.has_siguij()):
     assert a.set_siguij(new_siguij=(.1,.2,.3,.6,.1,.9)) is a
@@ -125,9 +132,10 @@ def exercise_atom():
   assert a.hetero
   assert approx_equal(a.fp, 0.3)
   assert approx_equal(a.fdp, 0.4)
+  assert approx_equal(a.resolution, 3.5)
   assert a.tmp == 0
   try: a.set_name(new_name="12345")
-  except (ValueError, RuntimeError), e:
+  except (ValueError, RuntimeError) as e:
     assert str(e) == "string is too long for target variable " \
       "(maximum length is 4 characters, 5 given)."
   else: raise Exception_expected
@@ -152,6 +160,7 @@ def exercise_atom():
   assert ac.hetero
   assert approx_equal(a.fp, 0.3)
   assert approx_equal(a.fdp, 0.4)
+  assert approx_equal(a.resolution, 3.5)
   #
   for e in ["H", "H ", " H", "D", "D ", " D"]:
     a.element = e
@@ -159,6 +168,26 @@ def exercise_atom():
   for e in ["", "h", "h ", " h", "d", "d ", " d"]:
     a.element = e
     assert not a.element_is_hydrogen()
+  # Spot-check some elements to see if they are positive ions and ions
+  for e in ["LI", "RH", "SI", "SN", "V", "GE", "GA", "CU", "ZN", "Cu", "Zn"]:
+    a.element = e
+    assert a.element_is_positive_ion(), e + " was not seen as a positive ion"
+    assert a.element_is_ion(), e + " was not seen as an ion"
+  for e in ["HE", "C", "XE", "RN", "KR", "F", "CL", "BR", "I"]:
+    a.element = e
+    assert not a.element_is_positive_ion(), e + " was not seen as a positive ion"
+  # Spot-check some elements to see if they are negative ions and ions
+  for e in ["F", "CL", "BR", "I"]:
+    a.element = e
+    assert a.element_is_negative_ion(), e + " was not seen as a negative ion"
+    assert a.element_is_ion(), e + " was not seen as an ion"
+  for e in ["HE", "C", "XE", "RN", "KR", "B", "LI", "RH", "SI", "SN", "V", "GE", "Sn", "Ge"]:
+    a.element = e
+    assert not a.element_is_negative_ion(), e + " was seen as a negative ion"
+  # Spot-check some elements to ensure they are not ions of either polarity
+  for e in ["HE", "C", "XE", "RN", "KR"]:
+    a.element = e
+    assert not a.element_is_ion(), e + " was seen as an ion"
   #
   a.name = "1234"
   a.element = "El"
@@ -309,24 +338,24 @@ def exercise_atom():
   a.serial = 100000
   assert a.serial == "A0000"
   try: a.set_serial(new_serial="ABCDEF")
-  except (ValueError, RuntimeError), e:
+  except (ValueError, RuntimeError) as e:
     assert str(e) == "string is too long for target variable " \
       "(maximum length is 5 characters, 6 given)."
   else: raise Exception_expected
   try: a.set_serial(new_serial=-10000)
-  except ValueError, e:
+  except ValueError as e:
     assert str(e) == "value is less than -9999"
   else: raise Exception_expected
   try: a.set_serial(new_serial=87440032)
-  except ValueError, e:
+  except ValueError as e:
     assert str(e) == "value is greater than 87440031"
   else: raise Exception_expected
   try: a.set_serial(new_serial=sys)
-  except TypeError, e:
+  except TypeError as e:
     assert str(e) == "value must be a Python str or int."
   else: raise Exception_expected
   try: a.serial = sys
-  except TypeError, e:
+  except TypeError as e:
     assert str(e) == "value must be a Python str or int."
   else: raise Exception_expected
   #
@@ -378,7 +407,7 @@ def exercise_atom():
   #
   sentinel = atoms.reset_tmp()
   try: atoms.reset_tmp()
-  except RuntimeError, e:
+  except RuntimeError as e:
     assert str(e) == \
       "Another associated atom_tmp_sentinel instance still exists."
   else: raise Exception_expected
@@ -404,7 +433,7 @@ def exercise_atom():
   assert sorted([atom.name for atom in d.values()]) == ["NA  ", "x   "]
   try:
     atoms.build_dict(strip_names=True, upper_names=True)
-  except RuntimeError, e:
+  except RuntimeError as e:
     assert not show_diff(str(e), '''\
 Duplicate keys in build_dict(strip_names=true, upper_names=true,\
  convert_stars_to_primes=false):
@@ -446,9 +475,13 @@ def exercise_atom_group():
   ag = pdb.hierarchy.atom_group()
   assert ag.altloc == ""
   assert ag.resname == ""
-  ag = pdb.hierarchy.atom_group(altloc=None, resname=None)
-  assert ag.altloc == ""
-  assert ag.resname == ""
+  ag = pdb.hierarchy.atom_group(altloc="abc", resname="longxyz")
+  assert ag.altloc == "abc"
+  assert ag.resname == "longxyz"
+  # Does not work anymore
+  # ag = pdb.hierarchy.atom_group(altloc=None, resname=None)
+  # assert ag.altloc == ""
+  # assert ag.resname == ""
   ag = pdb.hierarchy.atom_group(altloc="a", resname="xyz")
   assert ag.altloc == "a"
   assert ag.resname == "xyz"
@@ -456,7 +489,11 @@ def exercise_atom_group():
   ag.resname = None
   assert ag.altloc == ""
   assert ag.resname == ""
-  assert ag.confid() == "    "
+  assert ag.confid() == "  ", "'%s'" % ag.confid()
+  ag = pdb.hierarchy.atom_group(altloc="", resname="5char")
+  assert ag.altloc == ""
+  assert ag.resname == "5char"
+  assert ag.confid() == " 5char", "'%s'" % ag.confid()
   #
   ag.altloc = "l"
   ag.resname = "res"
@@ -492,7 +529,7 @@ def exercise_atom_group():
   assert ag.parent() is None
   try:
     ag.parent(optional=False)
-  except RuntimeError, e:
+  except RuntimeError as e:
     assert not show_diff(str(e), "atom_group has no parent residue_group")
   else: raise Exception_expected
   #
@@ -516,7 +553,7 @@ def exercise_atom_group():
   assert ag.atoms().size() == 2
   assert (ag.get_atom("ca").name == "ca")
   assert [atom.name for atom in ag.atoms()] == ["ca", "n"]
-  for i in xrange(3):
+  for i in range(3):
     ag.append_atom(pdb.hierarchy.atom())
   assert ag.atoms_size() == 5
   assert ag.atoms().size() == 5
@@ -544,7 +581,7 @@ def exercise_atom_group():
   a = pdb.hierarchy.atom().set_name(new_name="y")
   assert ag.find_atom_index(atom=a) == -1
   try: ag.find_atom_index(atom=a, must_be_present=True)
-  except RuntimeError, e:
+  except RuntimeError as e:
     assert str(e) == "atom not in atom_group."
   else: raise Exception_expected
   ag.insert_atom(i=4, atom=a)
@@ -560,11 +597,12 @@ def exercise_atom_group():
     pass
   else: raise Exception_expected
   #
-  try: pdb.hierarchy.atom_group(altloc="ab")
-  except (ValueError, RuntimeError), e:
-    assert str(e) == "string is too long for target variable " \
-      "(maximum length is 1 character, 2 given)."
-  else: raise Exception_expected
+  # Now works
+  # try: pdb.hierarchy.atom_group(altloc="ab")
+  # except (ValueError, RuntimeError) as e:
+  #   assert str(e) == "string is too long for target variable " \
+  #     "(maximum length is 1 character, 2 given)."
+  # else: raise Exception_expected
   #
   ag1 = pdb.hierarchy.atom_group()
   atom = pdb.hierarchy.atom()
@@ -578,7 +616,7 @@ def exercise_atom_group():
   assert atom.parent() is None
   try:
     atom.parent(optional=False)
-  except RuntimeError, e:
+  except RuntimeError as e:
     assert not show_diff(str(e), "atom has no parent atom_group")
   else: raise Exception_expected
 
@@ -639,7 +677,7 @@ def exercise_residue_group():
   assert rg.parent() is None
   try:
     rg.parent(optional=False)
-  except RuntimeError, e:
+  except RuntimeError as e:
     assert not show_diff(str(e), "residue_group has no parent chain")
   else: raise Exception_expected
   #
@@ -653,7 +691,7 @@ def exercise_residue_group():
   c1.pre_allocate_residue_groups(number_of_additional_residue_groups=2)
   assert c1.residue_groups_size() == 0
   assert len(c1.residue_groups()) == 0
-  for i in xrange(2):
+  for i in range(2):
     c1.append_residue_group(residue_group=pdb.hierarchy.residue_group())
   assert c1.residue_groups_size() == 2
   assert len(c1.residue_groups()) == 2
@@ -675,7 +713,7 @@ def exercise_residue_group():
   assert ag.parent() is None
   assert rg.find_atom_group_index(atom_group=ag) == -1
   try: rg.find_atom_group_index(atom_group=ag, must_be_present=True)
-  except RuntimeError, e:
+  except RuntimeError as e:
     assert str(e) == "atom_group not in residue_group."
   else: raise Exception_expected
   #
@@ -684,7 +722,7 @@ def exercise_residue_group():
   a = pdb.hierarchy.atom()
   ag1.append_atom(atom=a)
   try: ag2.append_atom(atom=a)
-  except RuntimeError, e:
+  except RuntimeError as e:
     assert str(e) == "atom has another parent atom_group already."
   else: raise Exception_expected
   #
@@ -722,7 +760,7 @@ def exercise_residue_group():
   rg = pdb.hierarchy.residue_group()
   rg.resseq = "x"
   try: rg.resseq_as_int()
-  except (ValueError, RuntimeError), e:
+  except (ValueError, RuntimeError) as e:
     assert not show_diff(str(e), 'invalid residue sequence number: "x"')
   else: raise Exception_expected
   #
@@ -747,10 +785,16 @@ def exercise_residue_group():
 def exercise_chain():
   c = pdb.hierarchy.chain()
   assert c.id == ""
+  c = pdb.hierarchy.chain(id=None)
+  assert c.id == ""
   c = pdb.hierarchy.chain(id="a")
   assert c.id == "a"
+  c = pdb.hierarchy.chain(id="long_chain_id")
+  assert c.id == "long_chain_id"
   c.id = "x"
   assert c.id == "x"
+  c.id = None
+  assert c.id == ""
   #
   m1 = pdb.hierarchy.model(id="1")
   m2 = pdb.hierarchy.model(id="2")
@@ -763,7 +807,7 @@ def exercise_chain():
   assert c.parent() is None
   try:
     c.parent(optional=False)
-  except RuntimeError, e:
+  except RuntimeError as e:
     assert not show_diff(str(e), "chain has no parent model")
   else: raise Exception_expected
   #
@@ -773,7 +817,7 @@ def exercise_chain():
   c.pre_allocate_residue_groups(number_of_additional_residue_groups=2)
   assert c.residue_groups_size() == 0
   assert len(c.residue_groups()) == 0
-  for i in xrange(2):
+  for i in range(2):
     c.append_residue_group(residue_group=pdb.hierarchy.residue_group())
   assert c.residue_groups_size() == 2
   assert len(c.residue_groups()) == 2
@@ -820,7 +864,7 @@ def exercise_chain():
   assert rg.parent() is None
   assert c.find_residue_group_index(residue_group=rg) == -1
   try: c.find_residue_group_index(residue_group=rg, must_be_present=True)
-  except RuntimeError, e:
+  except RuntimeError as e:
     assert str(e) == "residue_group not in chain."
   else: raise Exception_expected
   #
@@ -829,7 +873,7 @@ def exercise_chain():
   ag = pdb.hierarchy.atom_group()
   rg1.append_atom_group(atom_group=ag)
   try: rg2.append_atom_group(atom_group=ag)
-  except RuntimeError, e:
+  except RuntimeError as e:
     assert str(e) == "atom_group has another parent residue_group already."
   else: raise Exception_expected
   #
@@ -838,15 +882,15 @@ def exercise_chain():
   r.append_model(m)
   c = pdb.hierarchy.chain(id="c")
   m.append_chain(c)
-  assert r.as_pdb_string() == "TER\n"
+  assert r.as_pdb_string() == "", r.as_pdb_string()
   rg = pdb.hierarchy.residue_group(resseq="s", icode="j")
   c.append_residue_group(residue_group=rg)
-  ag = pdb.hierarchy.atom_group(altloc="a", resname="r")
+  ag = pdb.hierarchy.atom_group(altloc="a", resname="ALA")
   rg.append_atom_group(atom_group=ag)
   ag.append_atom(pdb.hierarchy.atom().set_name("n"))
-  assert ag.only_atom().pdb_label_columns() == "n   a  r c   sj"
+  assert ag.only_atom().pdb_label_columns() == "n   aALA c   sj"
   assert not show_diff(r.as_pdb_string(), """\
-ATOM        n   a  r c   sj      0.000   0.000   0.000  0.00  0.00
+ATOM        n   aALA c   sj      0.000   0.000   0.000  0.00  0.00
 TER
 """)
   rg = pdb.hierarchy.residue_group(resseq="t", icode="k")
@@ -862,11 +906,10 @@ TER
   rg.append_atom_group(atom_group=ag)
   ag.append_atom(pdb.hierarchy.atom().set_name("o"))
   assert not show_diff(r.as_pdb_string(), """\
-ATOM        n   a  r c   sj      0.000   0.000   0.000  0.00  0.00
+ATOM        n   aALA c   sj      0.000   0.000   0.000  0.00  0.00
 ATOM        m   b  q c   tk      0.000   0.000   0.000  0.00  0.00
 BREAK
 ATOM        o   d  p c   ul      0.000   0.000   0.000  0.00  0.00
-TER
 """)
   #
   atoms = c.atoms()
@@ -880,21 +923,19 @@ TER
 SIGUIJ      o   d  p c   ul    6000   7000   8000   3000   5000   4000
 """
   assert not show_diff(r.as_pdb_string(), """\
-ATOM        n   a  r c   sj      0.000   0.000   0.000  0.00  0.00
-SIGATM      n   a  r c   sj      1.000   2.000   3.000  4.00  5.00
+ATOM        n   aALA c   sj      0.000   0.000   0.000  0.00  0.00
+SIGATM      n   aALA c   sj      1.000   2.000   3.000  4.00  5.00
 ATOM        m   b  q c   tk      0.000   0.000   0.000  0.00  0.00
 ANISOU      m   b  q c   tk   60000  70000  80000  30000  50000  40000
 BREAK
 ATOM        o   d  p c   ul      0.000   0.000   0.000  0.00  0.00
-%sTER
-""" % siguij_2_line)
+%s""" % siguij_2_line)
   assert r.as_pdb_string(output_break_records=False) == """\
-ATOM        n   a  r c   sj      0.000   0.000   0.000  0.00  0.00
-SIGATM      n   a  r c   sj      1.000   2.000   3.000  4.00  5.00
+ATOM        n   aALA c   sj      0.000   0.000   0.000  0.00  0.00
+SIGATM      n   aALA c   sj      1.000   2.000   3.000  4.00  5.00
 ATOM        m   b  q c   tk      0.000   0.000   0.000  0.00  0.00
 ANISOU      m   b  q c   tk   60000  70000  80000  30000  50000  40000
 ATOM        o   d  p c   ul      0.000   0.000   0.000  0.00  0.00
-TER
 """
   atoms[0].set_uij((6,3,8,2,9,1))
   siguij_0_line = ""
@@ -905,15 +946,14 @@ SIGUIJ      n   a  r c   sj    6000   3000   8000   2000   9000   1000        Cg
 """
   atoms[0].set_charge("Cg")
   assert not show_diff(r.as_pdb_string(), """\
-ATOM        n   a  r c   sj      0.000   0.000   0.000  0.00  0.00            Cg
-SIGATM      n   a  r c   sj      1.000   2.000   3.000  4.00  5.00            Cg
-ANISOU      n   a  r c   sj   60000  30000  80000  20000  90000  10000        Cg
+ATOM        n   aALA c   sj      0.000   0.000   0.000  0.00  0.00            Cg
+SIGATM      n   aALA c   sj      1.000   2.000   3.000  4.00  5.00            Cg
+ANISOU      n   aALA c   sj   60000  30000  80000  20000  90000  10000        Cg
 %sATOM        m   b  q c   tk      0.000   0.000   0.000  0.00  0.00
 ANISOU      m   b  q c   tk   60000  70000  80000  30000  50000  40000
 BREAK
 ATOM        o   d  p c   ul      0.000   0.000   0.000  0.00  0.00
-%sTER
-""" % (siguij_0_line, siguij_2_line))
+%s""" % (siguij_0_line, siguij_2_line))
   sio = StringIO()
   assert r.as_pdb_string(cstringio=sio, interleaved_conf=1) is sio
   assert r.as_pdb_string(cstringio=sio, interleaved_conf=2) is sio
@@ -924,58 +964,52 @@ ATOM        o   d  p c   ul      0.000   0.000   0.000  0.00  0.00
     r.as_pdb_string(cstringio=sio, siguij=False, return_cstringio=False),
     str)
   expected = """\
-ATOM        n   a  r c   sj      0.000   0.000   0.000  0.00  0.00            Cg
-SIGATM      n   a  r c   sj      1.000   2.000   3.000  4.00  5.00            Cg
-ANISOU      n   a  r c   sj   60000  30000  80000  20000  90000  10000        Cg
+ATOM        n   aALA c   sj      0.000   0.000   0.000  0.00  0.00            Cg
+SIGATM      n   aALA c   sj      1.000   2.000   3.000  4.00  5.00            Cg
+ANISOU      n   aALA c   sj   60000  30000  80000  20000  90000  10000        Cg
 SIGUIJ      n   a  r c   sj    6000   3000   8000   2000   9000   1000        Cg
 ATOM        m   b  q c   tk      0.000   0.000   0.000  0.00  0.00
 ANISOU      m   b  q c   tk   60000  70000  80000  30000  50000  40000
 BREAK
 ATOM        o   d  p c   ul      0.000   0.000   0.000  0.00  0.00
 SIGUIJ      o   d  p c   ul    6000   7000   8000   3000   5000   4000
-TER
-ATOM        n   a  r c   sj      0.000   0.000   0.000  0.00  0.00            Cg
-SIGATM      n   a  r c   sj      1.000   2.000   3.000  4.00  5.00            Cg
-ANISOU      n   a  r c   sj   60000  30000  80000  20000  90000  10000        Cg
-SIGUIJ      n   a  r c   sj    6000   3000   8000   2000   9000   1000        Cg
+ATOM        n   aALA c   sj      0.000   0.000   0.000  0.00  0.00            Cg
+SIGATM      n   aALA c   sj      1.000   2.000   3.000  4.00  5.00            Cg
+ANISOU      n   aALA c   sj   60000  30000  80000  20000  90000  10000        Cg
+SIGUIJ      n   aALA c   sj    6000   3000   8000   2000   9000   1000        Cg
 ATOM        m   b  q c   tk      0.000   0.000   0.000  0.00  0.00
 ANISOU      m   b  q c   tk   60000  70000  80000  30000  50000  40000
 BREAK
 ATOM        o   d  p c   ul      0.000   0.000   0.000  0.00  0.00
 SIGUIJ      o   d  p c   ul    6000   7000   8000   3000   5000   4000
-TER
-SIGATM      n   a  r c   sj      1.000   2.000   3.000  4.00  5.00            Cg
-ANISOU      n   a  r c   sj   60000  30000  80000  20000  90000  10000        Cg
-SIGUIJ      n   a  r c   sj    6000   3000   8000   2000   9000   1000        Cg
+SIGATM      n   aALA c   sj      1.000   2.000   3.000  4.00  5.00            Cg
+ANISOU      n   aALA c   sj   60000  30000  80000  20000  90000  10000        Cg
+SIGUIJ      n   aALA c   sj    6000   3000   8000   2000   9000   1000        Cg
 ANISOU      m   b  q c   tk   60000  70000  80000  30000  50000  40000
 BREAK
 SIGUIJ      o   d  p c   ul    6000   7000   8000   3000   5000   4000
-TER
-ATOM        n   a  r c   sj      0.000   0.000   0.000  0.00  0.00            Cg
-ANISOU      n   a  r c   sj   60000  30000  80000  20000  90000  10000        Cg
-SIGUIJ      n   a  r c   sj    6000   3000   8000   2000   9000   1000        Cg
+ATOM        n   aALA c   sj      0.000   0.000   0.000  0.00  0.00            Cg
+ANISOU      n   aALA c   sj   60000  30000  80000  20000  90000  10000        Cg
+SIGUIJ      n   aALA c   sj    6000   3000   8000   2000   9000   1000        Cg
 ATOM        m   b  q c   tk      0.000   0.000   0.000  0.00  0.00
 ANISOU      m   b  q c   tk   60000  70000  80000  30000  50000  40000
 BREAK
 ATOM        o   d  p c   ul      0.000   0.000   0.000  0.00  0.00
 SIGUIJ      o   d  p c   ul    6000   7000   8000   3000   5000   4000
-TER
-ATOM        n   a  r c   sj      0.000   0.000   0.000  0.00  0.00            Cg
-SIGATM      n   a  r c   sj      1.000   2.000   3.000  4.00  5.00            Cg
-SIGUIJ      n   a  r c   sj    6000   3000   8000   2000   9000   1000        Cg
+ATOM        n   aALA c   sj      0.000   0.000   0.000  0.00  0.00            Cg
+SIGATM      n   aALA c   sj      1.000   2.000   3.000  4.00  5.00            Cg
+SIGUIJ      n   aALA c   sj    6000   3000   8000   2000   9000   1000        Cg
 ATOM        m   b  q c   tk      0.000   0.000   0.000  0.00  0.00
 BREAK
 ATOM        o   d  p c   ul      0.000   0.000   0.000  0.00  0.00
 SIGUIJ      o   d  p c   ul    6000   7000   8000   3000   5000   4000
-TER
-ATOM        n   a  r c   sj      0.000   0.000   0.000  0.00  0.00            Cg
-SIGATM      n   a  r c   sj      1.000   2.000   3.000  4.00  5.00            Cg
-ANISOU      n   a  r c   sj   60000  30000  80000  20000  90000  10000        Cg
+ATOM        n   aALA c   sj      0.000   0.000   0.000  0.00  0.00            Cg
+SIGATM      n   aALA c   sj      1.000   2.000   3.000  4.00  5.00            Cg
+ANISOU      n   aALA c   sj   60000  30000  80000  20000  90000  10000        Cg
 ATOM        m   b  q c   tk      0.000   0.000   0.000  0.00  0.00
 ANISOU      m   b  q c   tk   60000  70000  80000  30000  50000  40000
 BREAK
 ATOM        o   d  p c   ul      0.000   0.000   0.000  0.00  0.00
-TER
 """
   if (pdb.hierarchy.atom.has_siguij()):
     assert not show_diff(sio.getvalue(), expected)
@@ -990,7 +1024,6 @@ TER
   assert not show_diff(r.as_pdb_string(
     atom_hetatm=False, sigatm=False, anisou=False, siguij=False), """\
 BREAK
-TER
 """)
   #
   a = pdb.hierarchy.atom()
@@ -1011,7 +1044,7 @@ TER
   a.set_element("e")
   assert a.pdb_element_charge_columns() == " e  "
   a.set_charge("+")
-  assert a.pdb_element_charge_columns() == " e+ "
+  assert a.pdb_element_charge_columns() == " e+ ", "'%s'" % a.pdb_element_charge_columns()
   a.set_element("el")
   a.set_charge("2+")
   assert a.pdb_element_charge_columns() == "el2+"
@@ -1021,8 +1054,12 @@ def exercise_model():
   assert m.id == ""
   m = pdb.hierarchy.model(id="42")
   assert m.id == "42"
+  m = pdb.hierarchy.model(id=None)
+  assert m.id == ""
   m.id = "-23"
   assert m.id == "-23"
+  m.id = None
+  assert m.id == ""
   #
   m = pdb.hierarchy.model(id="17")
   assert m.parent() is None
@@ -1044,7 +1081,7 @@ def exercise_model():
   assert len(chains) == 2
   assert chains[0].memory_id() == ch_a.memory_id()
   assert chains[1].memory_id() == ch_b.memory_id()
-  for i in xrange(3):
+  for i in range(3):
     m.append_chain(pdb.hierarchy.chain())
   assert m.chains_size() == 5
   assert len(m.chains()) == 5
@@ -1086,7 +1123,7 @@ def exercise_model():
   assert c.parent() is None
   assert m.find_chain_index(chain=c) == -1
   try: m.find_chain_index(chain=c, must_be_present=True)
-  except RuntimeError, e:
+  except RuntimeError as e:
     assert str(e) == "chain not in model."
   else: raise Exception_expected
   #
@@ -1095,7 +1132,7 @@ def exercise_model():
   c = pdb.hierarchy.chain()
   m1.append_chain(chain=c)
   try: m2.append_chain(chain=c)
-  except RuntimeError, e:
+  except RuntimeError as e:
     assert str(e) == "chain has another parent model already."
   else: raise Exception_expected
 
@@ -1113,7 +1150,7 @@ def exercise_root():
   assert m.parent() is None
   try:
     m.parent(optional=False)
-  except RuntimeError, e:
+  except RuntimeError as e:
     assert not show_diff(str(e), "model has no parent root")
   else: raise Exception_expected
   #
@@ -1140,7 +1177,7 @@ def exercise_root():
   assert len(models) == 2
   assert models[0].memory_id() == m_a.memory_id()
   assert models[1].memory_id() == m_b.memory_id()
-  for i in xrange(3):
+  for i in range(3):
     r.append_model(model=pdb.hierarchy.model())
   assert r.models_size() == 5
   assert len(r.models()) == 5
@@ -1180,7 +1217,7 @@ def exercise_root():
   assert m.parent() is None
   assert r.find_model_index(model=m) == -1
   try: r.find_model_index(model=m, must_be_present=True)
-  except RuntimeError, e:
+  except RuntimeError as e:
     assert str(e) == "model not in root."
   else: raise Exception_expected
   #
@@ -1189,7 +1226,7 @@ def exercise_root():
   m = pdb.hierarchy.model()
   r1.append_model(model=m)
   try: r2.append_model(model=m)
-  except RuntimeError, e:
+  except RuntimeError as e:
     assert str(e) == "model has another parent root already."
   else: raise Exception_expected
 
@@ -1272,7 +1309,7 @@ def exercise_atom_id_str():
   assert rd.id_str(suppress_segid=1) == 'model="12345678" pdbres="GLYCh1234J"'
   assert rd.id_str(suppress_segid=-1) == 'model="12345678" pdbres="GLYCh1234J"'
   try: rd.id_str()
-  except ValueError, e:
+  except ValueError as e:
     assert not show_diff(str(e), '''\
 residue.id_str(suppress_segid=false): segid is not unique:
   model="12345678" pdbres="GLYCh1234J" segid="1234"''')
@@ -1429,7 +1466,7 @@ B1234 NaMexuvw%2spqrst  -10000 -10000 -10000 -10000 -10000 -10000  \
 ATOM        NaMe              1000000.-100000.100000.09999.099999.""")
   atom.xyz = (0,1.e7,0)
   try: atom.format_atom_record()
-  except RuntimeError, e: assert not show_diff(str(e), """\
+  except RuntimeError as e: assert not show_diff(str(e), """\
 atom Y coordinate value does not fit into F8.3 format:
   "ATOM        NaMe           "
   value: 10000000.000""")
@@ -1437,7 +1474,7 @@ atom Y coordinate value does not fit into F8.3 format:
   atom.xyz = (0,0,0)
   atom.occ = 100000
   try: atom.format_atom_record()
-  except RuntimeError, e: assert not show_diff(str(e), """\
+  except RuntimeError as e: assert not show_diff(str(e), """\
 atom occupancy factor does not fit into F6.2 format:
   "ATOM        NaMe           "
   occupancy factor: 100000.00""")
@@ -1445,7 +1482,7 @@ atom occupancy factor does not fit into F6.2 format:
   atom.occ = 0
   atom.b = 200000
   try: atom.format_atom_record()
-  except RuntimeError, e: assert not show_diff(str(e), """\
+  except RuntimeError as e: assert not show_diff(str(e), """\
 atom B-factor does not fit into F6.2 format:
   "ATOM        NaMe           "
   B-factor: 200000.00""")
@@ -1458,7 +1495,7 @@ atom B-factor does not fit into F6.2 format:
 SIGATM      NaMe              1000000.-100000.100000.099999.9999.0""")
   atom.sigxyz = (0,0,2.e7)
   try: atom.format_sigatm_record()
-  except RuntimeError, e: assert not show_diff(str(e), """\
+  except RuntimeError as e: assert not show_diff(str(e), """\
 atom sigma Z coordinate value does not fit into F8.3 format:
   "SIGATM      NaMe           "
   value: 20000000.000""")
@@ -1466,7 +1503,7 @@ atom sigma Z coordinate value does not fit into F8.3 format:
   atom.sigxyz = (0,0,0)
   atom.sigocc = 200000
   try: atom.format_sigatm_record()
-  except RuntimeError, e: assert not show_diff(str(e), """\
+  except RuntimeError as e: assert not show_diff(str(e), """\
 atom sigma occupancy factor does not fit into F6.2 format:
   "SIGATM      NaMe           "
   sigma occupancy factor: 200000.00""")
@@ -1474,7 +1511,7 @@ atom sigma occupancy factor does not fit into F6.2 format:
   atom.sigocc = 0
   atom.sigb = 300000
   try: atom.format_sigatm_record()
-  except RuntimeError, e: assert not show_diff(str(e), """\
+  except RuntimeError as e: assert not show_diff(str(e), """\
 atom sigma B-factor does not fit into F6.2 format:
   "SIGATM      NaMe           "
   sigma B-factor: 300000.00""")
@@ -1482,7 +1519,7 @@ atom sigma B-factor does not fit into F6.2 format:
   #
   atom.uij = (0,1000,0,0,0,0)
   try: atom.format_anisou_record()
-  except RuntimeError, e: assert not show_diff(str(e), """\
+  except RuntimeError as e: assert not show_diff(str(e), """\
 atom U22 value * 10000 does not fit into F7.0 format:
   "ANISOU      NaMe           "
   value * 10000: 10000000""")
@@ -1491,7 +1528,7 @@ atom U22 value * 10000 does not fit into F7.0 format:
   atom.siguij = (0,0,0,0,3333,0)
   if (pdb.hierarchy.atom.has_siguij()):
     try: atom.format_siguij_record()
-    except RuntimeError, e: assert not show_diff(str(e), """\
+    except RuntimeError as e: assert not show_diff(str(e), """\
 atom sigma U13 value * 10000 does not fit into F7.0 format:
   "SIGUIJ      NaMe           "
   value * 10000: 33330000""")
@@ -2015,7 +2052,7 @@ ATOM      1  CB  LYS   109
 BREAK
 ATOM      2  CG  LYS   109
 """)).construct_hierarchy()
-  except RuntimeError, e:
+  except RuntimeError as e:
     assert not show_diff(str(e), "Misplaced BREAK record (input line 3).")
   else: raise Exception_expected
   try: pdb.input(
@@ -2029,7 +2066,7 @@ ATOM      3  CA  LYS   110
 BREAK
 ATOM      4  CB  LYS   110
 """)).construct_hierarchy()
-  except RuntimeError, e:
+  except RuntimeError as e:
     assert not show_diff(str(e), "Misplaced BREAK record (file abc, line 6).")
   else: raise Exception_expected
   #
@@ -2300,7 +2337,7 @@ ATOM     73  HD2 LEU B 441
   oc.raise_improper_alt_conf_if_necessary()
   oc.raise_chains_with_mix_of_proper_and_improper_alt_conf_if_necessary()
   try: oc.raise_duplicate_atom_labels_if_necessary(max_show=1)
-  except Sorry, e:
+  except Sorry as e:
     assert not show_diff(str(e), '''\
 number of groups of duplicate atom labels: 2
   total number of affected atoms:          6
@@ -2372,7 +2409,7 @@ ATOM     72  HD1 LEU   441
       oc.raise_duplicate_atom_labels_if_necessary()
     else:
       try: oc.raise_duplicate_atom_labels_if_necessary()
-      except Sorry, e:
+      except Sorry as e:
         assert not show_diff(str(e), '''\
 number of groups of duplicate atom labels: 1
   total number of affected atoms:          2
@@ -2702,7 +2739,7 @@ ATOM         N2  R02     2
   assert len(oc.warnings()) == 0
   oc.raise_duplicate_atom_labels_if_necessary()
   try: oc.raise_improper_alt_conf_if_necessary()
-  except Sorry, e:
+  except Sorry as e:
     assert not show_diff(str(e), '''\
 residue with proper altloc
   "ATOM         N2  R02     2 .*.        "
@@ -2713,7 +2750,7 @@ residue with improper altloc
   "ATOM         N1 BR01     1 .*.        "''')
   else: raise Exception_expected
   try: oc.raise_chains_with_mix_of_proper_and_improper_alt_conf_if_necessary()
-  except Sorry, e:
+  except Sorry as e:
     assert not show_diff(str(e), '''\
 chains with mix of proper and improper alt. conf.: 1
   residue with proper altloc
@@ -2725,34 +2762,6 @@ chains with mix of proper and improper alt. conf.: 1
     "ATOM         N1 BR01     1 .*.        "''')
   else: raise Exception_expected
   #
-  sio = StringIO()
-  summary = pdb.hierarchy.show_summary(
-    out=sio,
-    residue_groups_max_show=None,
-    duplicate_atom_labels_max_show=None,
-    pdb_string="""\
-HEADER    HYDROLASE (SERINE PROTEINASE)           24-APR-89   1P04
-HETATM 1410  N   B2I P   1      14.927  32.740  15.704  1.00 12.51           N
-HETATM 1411  CA  B2I P   1      14.664  32.247  14.329  1.00 13.81           C
-HETATM 1412  CB  B2I P   1      15.498  33.033  13.284  1.00 15.18           C
-HETATM 1413  CG1 B2I P   1      15.052  34.514  13.266  1.00 15.84           C
-HETATM 1414  CG2 B2I P   1      17.012  33.028  13.465  1.00 13.83           C
-HETATM 1415  CD1 B2I P   1      13.720  34.655  12.538  1.00 16.03           C
-HETATM 1416  B   B2I P   1      14.742  30.705  14.151  1.00 13.29           B
-HETATM 1417  O1  B2I P   1      14.883  30.181  12.718  1.00 12.46           O
-HETATM 1418  O2  B2I P   1      13.824  30.019  15.080  1.00 12.11           O
-TER    1419      B2I P   1
-HETATM 1420  S   SO4     1      32.724  31.060  29.009  0.99 34.51           S
-HETATM 1421  O1  SO4     1      33.557  31.197  30.235  0.95 37.71           O
-HETATM 1422  O2  SO4     1      31.648  32.120  28.923  0.86 36.50           O
-HETATM 1423  O3  SO4     1      33.681  31.215  27.852  0.96 31.36           O
-HETATM 1424  O4  SO4     1      32.067  29.709  28.958  1.00 44.58           O
-""")
-  assert summary.input.atoms().size() == 14
-  assert summary.hierarchy.atoms().size() == 14
-  oc = summary.overall_counts
-  assert len(oc.consecutive_residue_groups_with_same_resid) == 0
-  assert len(sio.getvalue().splitlines()) == 27
   #
   pdb_inp = pdb.input(source_info=None, lines=flex.split_lines("""\
 ATOM         CA  ASN     1
@@ -2837,7 +2846,7 @@ ATOM         CA AGLY     2
   try: oc \
    .raise_residue_groups_with_multiple_resnames_using_same_altloc_if_necessary(
       max_show=1)
-  except Sorry, e:
+  except Sorry as e:
     assert not show_diff(str(e), """\
 residue groups with multiple resnames using same altloc: 2
   residue group:
@@ -2847,7 +2856,7 @@ residue groups with multiple resnames using same altloc: 2
   ... 1 remaining instance not shown""")
   else: raise Exception_expected
 
-def exercise_set_i_seq  () :
+def exercise_set_i_seq():
   pdb_str = """\
 HEADER    HYDROLASE                               19-JUL-05   2BWX
 ATOM   2038  N   CYS A 249      68.746  44.381  71.143  0.70 21.04           N
@@ -3028,7 +3037,7 @@ ATOM      5      R01 B
   for chain in hierarchy.chains():
     for residue in chain.residues():
       for atom in residue.atoms():
-        print >> sio, atom.quote()
+        print(atom.quote(), file=sio)
   assert not show_diff(sio.getvalue(), """\
 "ATOM      1      R01 A     .*.        "
 "ATOM      2      R01 A     .*.        "
@@ -3082,7 +3091,7 @@ def exercise_merge_atom_groups():
       residue_groups[0].merge_atom_groups(
         primary=secondary_atom_group,
         secondary=primary_atom_group)
-    except RuntimeError, e:
+    except RuntimeError as e:
       assert not show_diff(str(e), """\
 "primary" atom_group has a different or no parent\
  (this residue_group must be the parent).""")
@@ -3091,7 +3100,7 @@ def exercise_merge_atom_groups():
       residue_groups[0].merge_atom_groups(
         primary=primary_atom_group,
         secondary=primary_atom_group)
-    except RuntimeError, e:
+    except RuntimeError as e:
       assert not show_diff(str(e), """\
 "primary" and "secondary" atom_groups are identical.""")
     else: raise Exception_expected
@@ -3099,7 +3108,7 @@ def exercise_merge_atom_groups():
       residue_groups[0].merge_atom_groups(
         primary=primary_atom_group,
         secondary=residue_groups[2].atom_groups()[i_ag])
-    except RuntimeError, e:
+    except RuntimeError as e:
       assert str(e).find("secondary.data->altloc == primary.data->altloc") > 0
     else: raise Exception_expected
     assert primary_atom_group.atoms_size() == 4
@@ -3111,7 +3120,7 @@ def exercise_merge_atom_groups():
     assert secondary_atom_group.atoms_size() == 0
     sio = StringIO()
     for atom in primary_atom_group.atoms():
-      print >> sio, atom.format_atom_record()
+      print(atom.format_atom_record(), file=sio)
     assert not show_diff(sio.getvalue(), ["""\
 ATOM   1716  N  ALEU   190      28.628   4.549  20.230  0.70  3.78           N
 ATOM   1717  CA ALEU   190      27.606   5.007  19.274  0.70  3.71           C
@@ -3140,7 +3149,7 @@ def exercise_merge_residue_groups():
     chain.merge_residue_groups(
       primary=residue_groups[0],
       secondary=residue_groups[1])
-  except RuntimeError, e:
+  except RuntimeError as e:
     assert str(e).find("secondary.data->resseq == primary.data->resseq") > 0
   else: raise Exception_expected
   assert residue_groups[0].atom_groups_size() == 2
@@ -3157,7 +3166,7 @@ def exercise_merge_residue_groups():
   sio = StringIO()
   for atom_group in residue_groups[0].atom_groups():
     for atom in atom_group.atoms():
-      print >> sio, atom.format_atom_record()
+      print(atom.format_atom_record(), file=sio)
   assert not show_diff(sio.getvalue(), """\
 ATOM   1716  N  ALEU   190      28.628   4.549  20.230  0.70  3.78           N
 ATOM   1717  CA ALEU   190      27.606   5.007  19.274  0.70  3.71           C
@@ -3183,7 +3192,7 @@ ATOM   9723  O  CLEU   190      25.693   5.796  20.563  0.70  3.68           O
       chain.merge_residue_groups(
         primary=residue_groups[i_rg],
         secondary=residue_groups[j_rg])
-    except RuntimeError, e:
+    except RuntimeError as e:
       assert not show_diff(str(e), """\
 "%s" residue_group has a different or no parent\
  (this chain must be the parent).""" % s)
@@ -3226,7 +3235,7 @@ HETATM 9367  O  XHOH B2052
   assert chain.residue_groups_size() == 3
   indices = chain.merge_disconnected_residue_groups_with_pure_altloc()
   assert indices.size() == 0
-  for i_trial in xrange(n_trials):
+  for i_trial in range(n_trials):
     pdb_inp = pdb.input(
       source_info=None,
       lines=lines.select(flex.random_permutation(size=lines.size())))
@@ -3414,7 +3423,7 @@ ATOM         N2
 ATOM         N3 B
 ATOM         N3
 """)
-  for i_trial in xrange(n_trials):
+  for i_trial in range(n_trials):
     pdb_inp = pdb.input(source_info=None, lines=lines)
     residue_group = pdb_inp.construct_hierarchy(
       residue_group_post_processing=False).only_residue_group()
@@ -3886,17 +3895,17 @@ ATOM      4  O  BHOH B   1                                                   O
 def conformers_as_str(conformers):
   s = StringIO()
   for cf in conformers:
-    print >> s, "conformer:", show_string(cf.altloc)
+    print("conformer:", show_string(cf.altloc), file=s)
     for rd in cf.residues():
       assert rd.resseq_as_int() == pdb.hy36decode(width=4, s=rd.resseq)
-      print >> s, "  residue:", \
+      print("  residue:", \
         show_string(rd.resname), \
         show_string(rd.resseq), \
         show_string(rd.icode), \
         int(rd.link_to_previous), \
-        int(rd.is_pure_main_conf)
+        int(rd.is_pure_main_conf), file=s)
       for atom in rd.atoms():
-        print >> s, "    atom:", show_string(atom.name)
+        print("    atom:", show_string(atom.name), file=s)
   return s.getvalue()
 
 def exercise_conformers():
@@ -3923,7 +3932,7 @@ def exercise_conformers():
         assert cf.residues_size() == 1
         try:
           cf.parent(optional=False)
-        except RuntimeError, e:
+        except RuntimeError as e:
           assert not show_diff(str(e), "conformer has no parent chain")
         else: raise Exception_expected
       #
@@ -4407,7 +4416,7 @@ ATOM      2  CA  MET A   1
   assert residue.find_atom_by(name=" CA ").name == " CA "
   try:
     residue.parent(optional=False)
-  except RuntimeError, e:
+  except RuntimeError as e:
     assert not show_diff(str(e), "residue has no parent conformer")
   else: raise Exception_expected
 
@@ -4511,6 +4520,65 @@ ENDMDL
       .is_similar_hierarchy(
         other=h2.models()[0].only_chain().residue_groups()[0]) == (an == "N ")
 
+def exercise_is_similar_hierarchy_long():
+  s0 = """\
+loop_
+_atom_site.group_PDB
+_atom_site.id
+_atom_site.type_symbol
+_atom_site.label_atom_id
+_atom_site.label_alt_id
+_atom_site.label_comp_id
+_atom_site.label_asym_id
+_atom_site.label_entity_id
+_atom_site.label_seq_id
+_atom_site.pdbx_PDB_ins_code
+_atom_site.Cartn_x
+_atom_site.Cartn_y
+_atom_site.Cartn_z
+_atom_site.occupancy
+_atom_site.B_iso_or_equiv
+_atom_site.Cartn_x_esd
+_atom_site.Cartn_y_esd
+_atom_site.Cartn_z_esd
+_atom_site.occupancy_esd
+_atom_site.B_iso_or_equiv_esd
+_atom_site.pdbx_formal_charge
+_atom_site.auth_seq_id
+_atom_site.auth_comp_id
+_atom_site.auth_asym_id
+_atom_site.auth_atom_id
+_atom_site.pdbx_PDB_model_num
+ATOM   9414   C CA   . %s A-2  1 1   ? 71.805  71.447  63.447  1.00 78.79  ? ? ? ? ? ? 2   SER A-2  CA   1
+ATOM   9414   C CA   . %s A-2  2 2   ? 71.805  71.447  63.447  1.00 78.79  ? ? ? ? ? ? 2   SER A-2  CA   1
+ATOM   9414   C CA   . %s A-2  3 3   ? 71.805  71.447  63.447  1.00 78.79  ? ? ? ? ? ? 2   SER A-2  CA   1
+"""
+
+  i1 = pdb.input(source_info=None, lines=flex.split_lines(
+    s0 % ("SERine", "SERine", "SERine")))
+  h1 = i1.construct_hierarchy()
+  assert h1.is_similar_hierarchy(other=h1)
+  assert h1.is_similar_hierarchy(other=h1.deep_copy())
+  assert h1.models()[0].is_similar_hierarchy(
+    other=h1.models()[1])
+  assert h1.models()[0].only_chain().is_similar_hierarchy(
+    other=h1.models()[1].only_chain())
+  assert h1.models()[0].only_chain().residue_groups()[0].is_similar_hierarchy(
+    other=h1.models()[1].only_chain().residue_groups()[0])
+  for rn in ["SER","Alanine"]:
+    i2 = pdb.input(source_info=None, lines=flex.split_lines(
+      s0 % (rn, rn, rn)))
+    h2 = i2.construct_hierarchy()
+    assert not h1.is_similar_hierarchy(other=h2)
+    assert not h2.is_similar_hierarchy(other=h1)
+    assert not h1.models()[0].is_similar_hierarchy(
+      other=h2.models()[0]) == (rn == "GLY")
+    assert h1.models()[0].only_chain().is_similar_hierarchy(
+      other=h2.models()[0].only_chain()) == (an == "N ")
+    assert h1.models()[0].only_chain().residue_groups()[0] \
+      .is_similar_hierarchy(
+        other=h2.models()[0].only_chain().residue_groups()[0]) == (an == "N ")
+
 def exercise_atoms():
   pdb_inp = pdb.input(source_info=None, lines=flex.split_lines("""\
 ATOM      1  N   GLN A   3      35.299  11.075  19.070  1.00 36.89           N
@@ -4589,7 +4657,7 @@ HETATM    7 CA   ION B   2      30.822  10.665  17.190  1.00 36.87
   assert atoms.extract_element(strip=False).all_eq(atoms.extract_element())
   assert list(atoms.extract_element(strip=True)) ==["N","C","C","","X","CA",""]
   atoms.reset_i_seq()
-  assert list(atoms.extract_i_seq()) == range(7)
+  assert list(atoms.extract_i_seq()) == list(range(7))
   assert list(
     pdb.hierarchy.af_shared_atom([atoms[3], atoms[6]]).extract_i_seq()) == \
       [3, 6]
@@ -4598,7 +4666,7 @@ HETATM    7 CA   ION B   2      30.822  10.665  17.190  1.00 36.87
   assert list(atoms.extract_tmp_as_size_t()) == [3,4,5,6,7,8,9]
   atoms[3].tmp = -1
   try: atoms.extract_tmp_as_size_t()
-  except RuntimeError, e:
+  except RuntimeError as e:
     assert not show_diff(str(e),
       "atom.tmp less than zero: cannot convert to unsigned value.")
   else: raise Exception_expected
@@ -4647,21 +4715,26 @@ HETATM    7 CA   ION B   2      30.822  10.665  17.190  1.00 36.87
       (-1,-1,-1,-1,-1,-1)])
   new_fp = flex.double([0, 0.1, 0.2, 0, 0, 0, 0])
   new_fdp = flex.double([0, 0.2, 0.3, 0.1, 0, 0, 0])
+  new_res = flex.double([3.5, 3.5, 3.3, 3.3, 3.7, 3.7, 0])
   assert atoms.set_fp(new_fp=new_fp) is atoms
   assert atoms.set_fdp(new_fdp=new_fdp) is atoms
+  assert atoms.set_resolution(new_resolution=new_res) is atoms
   assert approx_equal(atoms.extract_fp(), new_fp)
   assert approx_equal(atoms.extract_fdp(), new_fdp)
+  assert approx_equal(atoms.extract_resolution(), new_res)
   #
   h = pdb_inp.construct_hierarchy(set_atom_i_seq=False, sort_atoms=False)
-  for i in xrange(2):
+  for i in range(2):
     s = h.as_pdb_string()
-    d = hashlib.md5(s).hexdigest()
+    d = hashlib.md5(s.encode()).hexdigest()
     if (pdb.hierarchy.atom.has_siguij()):
-      assert d == "c4089359af431bb2962d6a8e457dd86f"
+      assert d == "c4089359af431bb2962d6a8e457dd86f", d
     else:
-      assert d == "a1dd6605ed08b56862b9d7ae6b9a547b"
+      assert d == "2c78c9a2e7113216a442c1866979ff26", d
     h.write_pdb_file(file_name="tmp_tst_hierarchy.pdb")
-    assert not show_diff(open("tmp_tst_hierarchy.pdb").read(), s)
+    with open("tmp_tst_hierarchy.pdb") as f:
+      lines = f.read()
+    assert not show_diff(lines, s)
     h = pdb.input(
       source_info=None, lines=flex.split_lines(s)).construct_hierarchy(
         set_atom_i_seq=False, sort_atoms=False)
@@ -4692,7 +4765,8 @@ def check_wpf(hierarchy, kwargs={}, trailing=None, expected=None):
   else:
     assert not show_diff(pdb_str, expected)
   hierarchy.write_pdb_file(file_name="tmp_tst_hierarchy.pdb", **kwargs)
-  pdb_file = open("tmp_tst_hierarchy.pdb").read()
+  with open("tmp_tst_hierarchy.pdb") as f:
+    pdb_file = f.read()
   if (trailing is not None): pdb_file = pdb_file.replace(trailing, "")
   assert not show_diff(pdb_file, pdb_str)
   #
@@ -4703,7 +4777,9 @@ def check_wpf(hierarchy, kwargs={}, trailing=None, expected=None):
     if (discard in kwargs): del kwargs[discard]
   pdb_inp.write_pdb_file(file_name="tmp2.pdb", **kwargs)
   pdb_str2 = pdb_inp.as_pdb_string(**kwargs)
-  assert not show_diff(open("tmp2.pdb").read(), pdb_str2)
+  with open("tmp2.pdb") as f:
+    lines = f.read()
+  assert not show_diff(lines, pdb_str2)
   pdb_inp2 = pdb.input(file_name="tmp2.pdb")
   assert pdb_inp2.atoms().size() == pdb_inp.atoms().size()
   assert pdb_inp.extract_cryst1_z_columns() \
@@ -4903,14 +4979,30 @@ ATOM    146  C8 ADA7  3015       9.021 -13.845  22.131  0.50 26.57           C
 """
   pdb_inp = pdb.input(source_info=None, lines=flex.split_lines(pdb_string))
   hierarchy = pdb_inp.construct_hierarchy(sort_atoms=False)
-  check_wpf(hierarchy, expected=pdb_string+"TER\n")
+  check_wpf(hierarchy, expected=pdb_string)
   rem = "REMARK EXERCISE"
-  for obj in [pdb_inp, hierarchy]:
-    print >> open("tmp_tst_hierarchy.pdb", "w"), rem
-    obj.write_pdb_file(
-      file_name="tmp_tst_hierarchy.pdb", open_append=True, append_end=True)
-    assert not show_diff(
-      open("tmp_tst_hierarchy.pdb").read(), rem+"\n"+pdb_string+"TER\nEND\n")
+
+  # XXX Yes, pdb_inp and hierarchy are not consistent in terms of TER
+  # records. It looks like a minor issue nowadays. hierarchy is compliant
+  # with current PDB policy on TER. If pdb_inp is absolutely needed to
+  # comply too, welcome to figure out how to modify
+  # iotbx/pdb/construct_hierarchy.cpp: input_atoms_with_labels_generator::run
+  with open("tmp_tst_hierarchy.pdb", "w") as f:
+    print(rem, file=f)
+  pdb_inp.write_pdb_file(
+    file_name="tmp_tst_hierarchy.pdb", open_append=True, append_end=True)
+  with open("tmp_tst_hierarchy.pdb") as f:
+    lines = f.read()
+  assert not show_diff(lines, rem+"\n"+pdb_string+"TER\nEND\n")
+  with open("tmp_tst_hierarchy.pdb", "w") as f:
+    print(rem, file=f)
+  hierarchy.write_pdb_file(
+    file_name="tmp_tst_hierarchy.pdb", open_append=True, append_end=True)
+  with open("tmp_tst_hierarchy.pdb") as f:
+    lines = f.read()
+  assert not show_diff(lines, rem+"\n"+pdb_string+"END\n")
+
+
   check_wpf(
     hierarchy,
     kwargs={"crystal_symmetry": (2,3,4,80,90,100), "cryst1_z": 5},
@@ -4919,23 +5011,40 @@ CRYST1    2.000    3.000    4.000  80.00  90.00 100.00 P 1           5
 SCALE1      0.500000  0.088163 -0.015793        0.00000
 SCALE2      0.000000  0.338476 -0.060632        0.00000
 SCALE3      0.000000  0.000000  0.253979        0.00000
-""" + pdb_string+"TER\n")
+""" + pdb_string)
   check_wpf(
     hierarchy,
     kwargs={"cryst1_z": 7, "write_scale_records": False},
     expected="""\
 CRYST1    1.000    1.000    1.000  90.00  90.00  90.00 P 1           7
-""" + pdb_string+"TER\n")
-  for obj in [pdb_inp, hierarchy]:
-    print >> open("tmp_tst_hierarchy.pdb", "w"), rem
-    obj.write_pdb_file(
-      file_name="tmp_tst_hierarchy.pdb",
-      cryst1_z="",
-      write_scale_records=False,
-      open_append=True)
-    assert not show_diff(open("tmp_tst_hierarchy.pdb").read(), rem + """
+""" + pdb_string)
+
+  # XXX see comment on L 4898
+  with open("tmp_tst_hierarchy.pdb", "w") as f:
+    print(rem, file=f)
+  pdb_inp.write_pdb_file(
+    file_name="tmp_tst_hierarchy.pdb",
+    cryst1_z="",
+    write_scale_records=False,
+    open_append=True)
+  with open("tmp_tst_hierarchy.pdb") as f:
+    lines = f.read()
+  assert not show_diff(lines, rem + """
 CRYST1    1.000    1.000    1.000  90.00  90.00  90.00 P 1
 """ + pdb_string+"TER\n")
+  with open("tmp_tst_hierarchy.pdb", "w") as f:
+    print(rem, file=f)
+  hierarchy.write_pdb_file(
+    file_name="tmp_tst_hierarchy.pdb",
+    cryst1_z="",
+    write_scale_records=False,
+    open_append=True)
+  with open("tmp_tst_hierarchy.pdb") as f:
+    lines = f.read()
+  assert not show_diff(lines, rem + """
+CRYST1    1.000    1.000    1.000  90.00  90.00  90.00 P 1
+""" + pdb_string)
+
   #
   # only pdb entry (as of 2008 Mar 26) for which
   # s1 = h1.as_pdb_string(interleaved_conf=1)
@@ -4985,51 +5094,8 @@ TER
   assert h1.is_similar_hierarchy(other=h2)
   assert h2.is_similar_hierarchy(other=h1)
   #
-  open("tmp_tst_hierarchy.pdb", "wb").write("""\
-CRYST1    2.000    3.000    4.000  90.00  80.00  90.00 P 2           5
-ATOM      0  S   SO4     0       3.302   8.419   8.560  1.00 10.00           S
-ATOM      1  O1  SO4     0       3.497   8.295   7.118  1.00 10.00           O
-ATOM      2  O2 ASO4     0       3.098   7.095   9.140  0.80 10.00           O
-ATOM      3  O2 BSO4     0       3.498   7.495   9.440  0.20 10.00           O
-ATOM      4  O3  SO4     0       4.481   9.037   9.159  1.00 10.00           O
-ATOM      5  O4  SO4     0       2.131   9.251   8.823  1.00 10.00           O
-""")
-  pdb.rewrite_normalized(
-    input_file_name="tmp_tst_hierarchy.pdb",
-    output_file_name="tmp_norm.pdb")
-  assert not show_diff(open("tmp_norm.pdb").read(), """\
-CRYST1    2.000    3.000    4.000  90.00  80.00  90.00 P 1 2 1
-SCALE1      0.500000  0.000000 -0.088163        0.00000
-SCALE2      0.000000  0.333333  0.000000        0.00000
-SCALE3      0.000000  0.000000  0.253857        0.00000
-ATOM      1  O1  SO4     0       3.497   8.295   7.118  1.00 10.00           O
-ATOM      2  O3  SO4     0       4.481   9.037   9.159  1.00 10.00           O
-ATOM      3  O4  SO4     0       2.131   9.251   8.823  1.00 10.00           O
-ATOM      4  S   SO4     0       3.302   8.419   8.560  1.00 10.00           S
-ATOM      5  O2 ASO4     0       3.098   7.095   9.140  0.80 10.00           O
-ATOM      6  O2 BSO4     0       3.498   7.495   9.440  0.20 10.00           O
-TER
-END
-""")
-  pdb.rewrite_normalized(
-    input_file_name="tmp_tst_hierarchy.pdb",
-    output_file_name="tmp_norm.pdb",
-    keep_original_crystallographic_section=True,
-    keep_original_atom_serial=True)
-  assert not show_diff(open("tmp_norm.pdb").read(), """\
-CRYST1    2.000    3.000    4.000  90.00  80.00  90.00 P 2           5
-ATOM      1  O1  SO4     0       3.497   8.295   7.118  1.00 10.00           O
-ATOM      2  O3  SO4     0       4.481   9.037   9.159  1.00 10.00           O
-ATOM      3  O4  SO4     0       2.131   9.251   8.823  1.00 10.00           O
-ATOM      4  S   SO4     0       3.302   8.419   8.560  1.00 10.00           S
-ATOM      5  O2 ASO4     0       3.098   7.095   9.140  0.80 10.00           O
-ATOM      6  O2 BSO4     0       3.498   7.495   9.440  0.20 10.00           O
-TER
-END
-""")
-  #
   if (pdb_file_names is None):
-    print "Skipping exercise_as_pdb_string(): input files not available"
+    print("Skipping exercise_as_pdb_string(): input files not available")
     return
   prev_file_name = None
   for file_name in pdb_file_names:
@@ -5055,9 +5121,9 @@ END
         c = os.path.basename(     file_name)
         if (    p[:3] != c[:3]
             and (len(p) < 15 or len(c) < 15 or p[-12:] != c[-12:])):
-          print "WARNING: similar hierarchies:"
-          print " ", show_string(prev_file_name)
-          print " ", show_string(file_name)
+          print("WARNING: similar hierarchies:")
+          print(" ", show_string(prev_file_name))
+          print(" ", show_string(file_name))
     prev_file_name = file_name
     prev_pdb_str = pdb_str_1
     prev_hierarchy = hierarchy_1
@@ -5066,10 +5132,10 @@ END
     for obj in [pdb_inp_2, hierarchy_2]:
       sio = StringIO()
       for awl in obj.atoms_with_labels():
-        print >> sio, awl.format_atom_record_group(), \
+        print(awl.format_atom_record_group(), \
           int(awl.is_first_in_chain), \
           int(awl.is_first_after_break), \
-          awl.model_id
+          awl.model_id, file=sio)
       awls.append(sio.getvalue())
     assert not show_diff(*awls), file_name
 
@@ -5171,13 +5237,13 @@ ATOM  12345 NaMelrNmChABCDI      0.000   0.000   0.000  0.00  0.00""")
   a = pdb.hierarchy.atom()
   a.serial = "   1A"
   try: a.serial_as_int()
-  except (RuntimeError, ValueError), e:
+  except (RuntimeError, ValueError) as e:
     assert not show_diff(str(e), 'invalid atom serial number: "   1A"')
   else: raise Exception_expected
   #
   awl.serial = "   1A"
   try: awl.serial_as_int()
-  except (RuntimeError, ValueError), e:
+  except (RuntimeError, ValueError) as e:
     assert not show_diff(str(e), """\
 invalid atom serial number:
   ATOM     1A NaMelrNmChABCDI      0.000   0.000   0.000  0.00  0.00
@@ -5186,7 +5252,7 @@ invalid atom serial number:
   #
   awl.resseq = " 18A"
   try: awl.resseq_as_int()
-  except (RuntimeError, ValueError), e:
+  except (RuntimeError, ValueError) as e:
     assert not show_diff(str(e), """\
 invalid residue sequence number:
   ATOM     1A NaMelrNmCh 18AI      0.000   0.000   0.000  0.00  0.00
@@ -5198,7 +5264,7 @@ ATOM                    1B
 """)).construct_hierarchy(sort_atoms=False)
   for r in [h.only_residue_group(), h.only_residue()]:
     try: r.resseq_as_int()
-    except (RuntimeError, ValueError), e:
+    except (RuntimeError, ValueError) as e:
       assert not show_diff(str(e), """\
 invalid residue sequence number:
   ATOM                    1B       0.000   0.000   0.000  0.00  0.00
@@ -5210,7 +5276,7 @@ invalid residue sequence number:
   ch.residue_groups()[0].append_atom_group(pdb.hierarchy.atom_group())
   for r in[ch.only_residue_group(), ch.only_conformer().only_residue()]:
     try: r.resseq_as_int()
-    except (RuntimeError, ValueError), e:
+    except (RuntimeError, ValueError) as e:
       assert not show_diff(str(e), 'invalid residue sequence number: "  1C"')
     else: raise Exception_expected
   #
@@ -5239,13 +5305,13 @@ ENDMDL
         assert awlc.parent() is None
         try:
           awlc.parent(optional=False)
-        except RuntimeError, e:
+        except RuntimeError as e:
           assert not show_diff(str(e), "atom has no parent atom_group")
         else: raise Exception_expected
-        print >> sio, getattr(awl, fmt)(), \
+        print(getattr(awl, fmt)(), \
           int(awl.is_first_in_chain), \
           int(awl.is_first_after_break), \
-          awl.model_id
+          awl.model_id, file=sio)
       assert not show_diff(sio.getvalue(), """\
 ATOM      1  C   MET A   1       0.000   0.000   0.000  0.00  0.00 1 0    0
 ATOM      2  CA AMET A   1       0.000   0.000   0.000  0.00  0.00 0 0    0
@@ -5279,7 +5345,9 @@ ENDMDL
     if (append_end): expected += "END\n"
     assert not show_diff(pdb_inp.as_pdb_string(append_end=append_end),expected)
     pdb_inp.write_pdb_file(file_name="tmp_tst_hierarchy.pdb", append_end=append_end)
-    assert not show_diff(open("tmp_tst_hierarchy.pdb").read(), expected)
+    with open("tmp_tst_hierarchy.pdb") as f:
+      lines = f.read()
+    assert not show_diff(lines, expected)
   #
   lines = flex.split_lines("""\
 MODEL     SKDI
@@ -5321,16 +5389,12 @@ ENDMDL
   check_wpf(hierarchy, trailing=trailing, expected="""\
 ATOM      1  X1      A
 ATOM      2  X2      A
-TER
 ATOM      3  X1      B
 ATOM      4  X2      B
-TER
 ATOM      1  Y1      A
 ATOM      2  Y2      A
-TER
 ATOM      3  Y1      B
 ATOM      4  Y2      B
-TER
 """)
   #
   for suffixes in [Auto, "FG"]:
@@ -5346,16 +5410,12 @@ TER
     check_wpf(joined, trailing=trailing, expected="""\
 ATOM      1  X1     A%s
 ATOM      2  X2     A%s
-TER
 ATOM      3  X1     B%s
 ATOM      4  X2     B%s
-TER
 ATOM      1  Y1     A%s
 ATOM      2  Y2     A%s
-TER
 ATOM      3  Y1     B%s
 ATOM      4  Y2     B%s
-TER
 """ % (f,f,f,f,g,g,g,g))
   #
   roots = [pdb_inp.construct_hierarchy() for pdb_inp in [
@@ -5384,38 +5444,28 @@ ENDMDL
 MODEL        1
 ATOM      1  X1     A1
 ATOM      2  X2     A1
-TER
 ATOM      3  X1     B1
 ATOM      4  X2     B1
-TER
 ATOM      1  P1     A2
 ATOM      2  P2     A2
-TER
 ATOM      3  P1     B2
 ATOM      4  P2     B2
-TER
 ENDMDL
 MODEL        2
 ATOM      1  Y1     A1
 ATOM      2  Y2     A1
-TER
 ATOM      3  Y1     B1
 ATOM      4  Y2     B1
-TER
 ATOM      1  Q1     A2
 ATOM      2  Q2     A2
-TER
 ATOM      3  Q1     B2
 ATOM      4  Q2     B2
-TER
 ENDMDL
 MODEL        3
 ATOM      1  Z1     A1
 ATOM      2  Z2     A1
-TER
 ATOM      3  Z1     B1
 ATOM      4  Z2     B1
-TER
 ENDMDL
 """)
 
@@ -5443,19 +5493,19 @@ ATOM     18
 ENDMDL
 """)).construct_hierarchy(sort_atoms=False)
   try: h_all.select(atom_selection=flex.bool())
-  except (ValueError, RuntimeError), e:
+  except (ValueError, RuntimeError) as e:
     assert str(e) == "atom_selection array too short."
   else: raise Exception_expected
   try: h_all.select(atom_selection=flex.bool(17, False))
-  except (ValueError, RuntimeError), e:
+  except (ValueError, RuntimeError) as e:
     assert str(e) == "atom_selection array too large."
   else: raise Exception_expected
   try: h_all.select(atom_selection=flex.size_t([1,0]))
-  except (ValueError, RuntimeError), e:
+  except (ValueError, RuntimeError) as e:
     assert str(e) == "atom_selection indices not in strictly ascending order."
   else: raise Exception_expected
   try: h_all.select(atom_selection=flex.size_t([16]))
-  except (ValueError, RuntimeError), e:
+  except (ValueError, RuntimeError) as e:
     assert str(e) \
         == "atom_selection indices greater than or equal to number of atoms."
   else: raise Exception_expected
@@ -5465,11 +5515,11 @@ ENDMDL
     assert h_sel.models_size() == 0
     assert h_sel.select(atom_selection=atom_selections[1]).models_size() == 0
   try: h_sel.select(atom_selection=flex.bool(1, False))
-  except (ValueError, RuntimeError), e:
+  except (ValueError, RuntimeError) as e:
     assert str(e) == "atom_selection array too large."
   else: raise Exception_expected
   try: h_sel.select(atom_selection=flex.size_t([0]))
-  except (ValueError, RuntimeError), e:
+  except (ValueError, RuntimeError) as e:
     assert str(e) \
         == "atom_selection indices greater than or equal to number of atoms."
   else: raise Exception_expected
@@ -5508,7 +5558,7 @@ ENDMDL
   a_all.reset_i_seq()
   sentinel = a_all.reset_tmp(first_value=1, increment=0)
   for copy_atoms in [False, True]:
-    for i_trial in xrange(n_trials):
+    for i_trial in range(n_trials):
       sel = flex.random_bool(size=16, threshold=0.5)
       a_sel = a_all.select(sel)
       h_sel = h_all.select(sel, copy_atoms=copy_atoms)
@@ -5543,7 +5593,7 @@ ATOM      8  C
 ATOM      9  CD B
 ATOM     10  O
 """)
-  for i_trial in xrange(n_trials):
+  for i_trial in range(n_trials):
     pdb_inp = pdb.input(
       source_info=None,
       lines=lines.select(flex.random_permutation(size=lines.size())))
@@ -5559,6 +5609,7 @@ ATOM     10  O
 
 def exercise_root_pickling():
   # XXX fp, fdp?
+  # XXX resolution is not working either
   pdb_inp = pdb.input(source_info=None, lines="""\
 MODEL        1
 ATOM      1  N   MET A   1       6.215  22.789  24.067  1.00  0.00           N
@@ -5583,13 +5634,28 @@ ENDMDL
   hierarchy = pdb_inp.construct_hierarchy()
   hierarchy.info.append("a")
   hierarchy.info.append("b")
+  new_fp = flex.double([0, 0.1, 0.2, 0, 0, 0])
+  new_fdp = flex.double([0, 0.2, 0.3, 0.1, 0, 0])
+  new_res = flex.double([3.5, 3.5, 3.3, 3.3, 3.7, 0])
+
+  # hierarchy.atoms().set_fp(new_fp=new_fp)
+  # hierarchy.atoms().set_fdp(new_fdp=new_fdp)
+  # hierarchy.atoms().set_resolution(new_resolution=new_res)
+  # print(list(hierarchy.atoms().extract_fdp()))
+
   s = pickle.dumps(hierarchy, 1)
   l = pickle.loads(s)
   assert not show_diff("\n".join(l.info), "\n".join(hierarchy.info))
   assert not show_diff(l.as_pdb_string(), hierarchy.as_pdb_string())
 
+  # atoms = l.atoms()
+  # assert approx_equal(atoms.extract_fp(), new_fp)
+  # assert approx_equal(atoms.extract_fdp(), new_fdp)
+  # assert approx_equal(atoms.extract_resolution(), new_res)
+
 def exercise_residue_pickling():
   # XXX fp, fdp?
+  # XXX resolution is probably not working either
   pdb_inp = pdb.input(source_info=None, lines="""\
 ATOM      1  N   GLY A   1      -9.009   4.612   6.102  1.00 16.77           N
 ATOM      2  CA  GLY A   1      -9.052   4.207   4.651  1.00 16.57           C
@@ -5614,7 +5680,7 @@ ATOM     12  O   ASN A   3      -1.872   0.119   3.648  1.00 10.42           O
     rsc = residue.standalone_copy()
     assert not show_diff(rsc.root().as_pdb_string(), eps)
     for rp in [residue, rsc]:
-      for i_pass in xrange(2):
+      for i_pass in range(2):
         s = pickle.dumps(rp, 1)
         l = pickle.loads(s)
         assert not show_diff(l.root().as_pdb_string(), eps)
@@ -5634,7 +5700,7 @@ def exercise_hierarchy_input():
   check(h_atoms.select(h_i_perm), i_atoms)
   check(i_atoms.select(i_h_perm), h_atoms)
 
-def exercise_other () :
+def exercise_other():
   # XXX Nat's utility functions
   pdb_inp = pdb.input(source_info=None, lines="""\
 CRYST1    2.000    3.000    4.000  90.00  80.00  90.00 P 2           5
@@ -5649,6 +5715,9 @@ TER
 END
 """)
   hierarchy = pdb_inp.construct_hierarchy(sort_atoms=False)
+
+  assert hierarchy.first_resseq_as_int() == 0
+  assert hierarchy.last_resseq_as_int() == 0
   xray_structure = hierarchy.extract_xray_structure()
   assert xray_structure.sites_cart().size() == hierarchy.atoms().size()
   xray_structure.scale_adps(2.0)
@@ -5689,6 +5758,8 @@ ATOM      4  O3  SO4 C   4       4.481   9.037   9.159  1.00 10.00           O
 ATOM      5  O4  SO4 C   4       2.131   9.251   8.823  1.00 10.00           O
 """)
   hierarchy = pdb_inp.construct_hierarchy(sort_atoms=False)
+  assert hierarchy.first_resseq_as_int() == 1
+  assert hierarchy.last_resseq_as_int() == 4
   pdb_inp_new = pdb.input(source_info=None, lines="""\
 ATOM      5  N   ASN B   2      -7.656   2.923   3.155  1.00 15.02           N
 ATOM      6  CA  ASN B   2      -6.522   2.038   2.831  1.00 14.10           C
@@ -5732,7 +5803,6 @@ ATOM      0  S   SO4 C   4       3.302   8.419   8.560  1.00 10.00           S
 ATOM      1  O1  SO4 C   4       3.497   8.295   7.118  1.00 10.00           O
 ATOM      4  O3  SO4 C   4       4.481   9.037   9.159  1.00 10.00           O
 ATOM      5  O4  SO4 C   4       2.131   9.251   8.823  1.00 10.00           O
-TER
 """)
   # distance-based connectivity
   pdb_hierarchy = pdb.input(source_info=None, lines="""\
@@ -5789,7 +5859,7 @@ ATOM     13  HH BEOH     1       5.916   2.025  -7.573  1.00  0.00           H
 
   pdb_file = libtbx.env.find_in_repositories(
     relative_path="phenix_regression/pdb/2hr0.pdb", test=os.path.isfile)
-  if (pdb_file is not None) :
+  if (pdb_file is not None):
     (n_res,n_frag,n_wat)=pdb.hierarchy.get_residue_and_fragment_count(pdb_file)
     assert (n_res == 1548) and (n_frag == 7) and (n_wat == 708)
   #
@@ -5847,11 +5917,39 @@ ATOM     48  CA  TYR A   9       9.159   2.144   7.299  1.00 15.18           C
   assert chain.get_residue_names_and_classes() == (
     ['GLY', 'ASN', 'ASN', 'GLN', 'GLN', 'ASN', 'TYR'], {'common_amino_acid': 7})
   assert chain.as_sequence() == ['G', 'N', 'N', 'Q', 'Q', 'N', 'Y']
+  dd = chain.as_dict_of_resseq_as_int_residue_names()
+  keys = list(dd.keys())
+  keys.sort()
+  values = [dd[key] for key in keys]
+  assert [keys, values] == [[3, 4, 5, 6, 7, 8, 9], ['GLY', 'ASN', 'ASN', 'GLN', 'GLN', 'ASN', 'TYR']], [keys, values]
+  assert chain.as_new_hierarchy().as_pdb_string().splitlines()[0].strip() == \
+ "ATOM      1  CA  GLY A   3      -9.052   4.207   4.651  1.00 16.57           C"
+  assert chain.as_new_hierarchy().as_pdb_string() == \
+    chain.as_new_hierarchy().as_model_manager(pdb_in.crystal_symmetry()
+     ).get_hierarchy().as_pdb_string()
+  assert chain.as_new_hierarchy().as_model_manager(pdb_in.crystal_symmetry()
+     ).as_model_manager_each_chain()[0].get_hierarchy().as_pdb_string() == \
+      chain.as_new_hierarchy().as_pdb_string()
   assert chain.as_padded_sequence() == "XXGNNQQNY"
   assert (chain.is_protein()) and (not chain.is_na())
+  assert pdb_hierarchy.chain_types() == ['PROTEIN']
+  assert pdb_hierarchy.chain_type() == 'PROTEIN'
   assert pdb_hierarchy.contains_protein()
   assert not pdb_hierarchy.contains_nucleic_acid()
   assert not pdb_hierarchy.contains_rna()
+  assert not pdb_hierarchy.contains_dna()
+  assert pdb_hierarchy.as_sequence() == ['G', 'N', 'N', 'Q', 'Q', 'N', 'Y']
+  assert pdb_hierarchy.as_sequence(as_string = True) == 'GNNQQNY'
+  dd = pdb_hierarchy.as_dict_of_chain_id_resseq_as_int_residue_names()
+  keys = list(dd.keys())
+  keys.sort()
+  values = [dd[key] for key in keys]
+  assert [keys, values] == [['A'], [{3: 'GLY', 4: 'ASN', 5: 'ASN', 6: 'GLN', 7: 'GLN', 8: 'ASN', 9: 'TYR'}]], [keys, values]
+  assert pdb_hierarchy.format_fasta() == ['> chain " A"', 'GNNQQNY']
+  assert pdb_hierarchy.format_fasta(as_string = True) == \
+    """> chain " A"
+GNNQQNY"""
+
   pdb_hierarchy = pdb.input(source_info=None, lines="""\
 ATOM   1282  P     U A  75       8.046  10.090  17.379  1.00 20.97           P
 ATOM   1302  P     A A  76       3.836  12.353  14.321  1.00 22.14           P
@@ -5861,8 +5959,17 @@ ATOM   1367  P     U A  79      -6.043   2.064   7.771  1.00 35.59           P
 ATOM   1387  P     C A  80      -6.888  -3.348   8.809  1.00 52.93           P
 ATOM   1407  P     C A  81      -6.452  -7.275  14.101  1.00 67.04           P
 """).construct_hierarchy()
+  assert pdb_hierarchy.chain_types() == ['RNA']
+  assert pdb_hierarchy.chain_type() == 'RNA'
   assert pdb_hierarchy.contains_nucleic_acid()
   assert pdb_hierarchy.contains_rna()
+  assert not pdb_hierarchy.contains_dna()
+  assert pdb_hierarchy.as_sequence() == ['U', 'A', 'U', 'G', 'U', 'C', 'C']
+  assert pdb_hierarchy.as_sequence(as_string = True) == 'UAUGUCC'
+  assert pdb_hierarchy.format_fasta() == ['> chain " A"', 'UAUGUCC']
+  assert pdb_hierarchy.format_fasta(as_string = True) == \
+    """> chain " A"
+UAUGUCC"""
   pdb_hierarchy = pdb.input(source_info=None, lines="""\
 ATOM    590  P    DG B  19       0.025   6.958  12.325  1.00  0.00           P
 ATOM    623  P    DC B  20      -6.245   5.331  12.090  1.00  0.00           P
@@ -5873,6 +5980,44 @@ ATOM    748  P    DG B  24     -15.074 -12.316  24.830  1.00  0.00           P
 """).construct_hierarchy()
   assert pdb_hierarchy.contains_nucleic_acid()
   assert not pdb_hierarchy.contains_rna()
+  assert pdb_hierarchy.contains_dna()
+  assert pdb_hierarchy.chain_types() == ['DNA']
+  assert pdb_hierarchy.chain_type() == 'DNA'
+  assert pdb_hierarchy.as_sequence() == ['G', 'C', 'C', 'G', 'A', 'G']
+  assert pdb_hierarchy.as_sequence(as_string = True) == 'GCCGAG'
+  assert pdb_hierarchy.format_fasta() == ['> chain " B"', 'GCCGAG']
+  assert pdb_hierarchy.format_fasta(as_string = True) == \
+    """> chain " B"
+GCCGAG"""
+
+  pdb_hierarchy = pdb.input(source_info=None, lines="""\
+ATOM   1282  P     U A  75       8.046  10.090  17.379  1.00 20.97           P
+ATOM   1302  P     A A  76       3.836  12.353  14.321  1.00 22.14           P
+ATOM   1324  P     U A  77      -0.490  11.589  11.092  1.00 27.25           P
+ATOM   1344  P     G A  78      -4.128   7.571   8.789  1.00 29.69           P
+ATOM   1367  P     U A  79      -6.043   2.064   7.771  1.00 35.59           P
+ATOM   1387  P     C A  80      -6.888  -3.348   8.809  1.00 52.93           P
+ATOM    590  P    DG B  19       0.025   6.958  12.325  1.00  0.00           P
+ATOM    623  P    DC B  20      -6.245   5.331  12.090  1.00  0.00           P
+ATOM    653  P    DC B  21     -10.927   0.678  11.688  1.00  0.00           P
+ATOM    683  P    DG B  22     -13.972  -4.787  13.859  1.00  0.00           P
+ATOM    716  P    DA B  23     -14.817 -10.233  18.166  1.00  0.00           P
+ATOM    748  P    DG B  24     -15.074 -12.316  24.830  1.00  0.00           P
+""").construct_hierarchy()
+  assert pdb_hierarchy.contains_nucleic_acid()
+  assert pdb_hierarchy.contains_rna()
+  assert pdb_hierarchy.contains_dna()
+  assert pdb_hierarchy.chain_types() == ['DNA','RNA']
+  assert pdb_hierarchy.chain_type() == None
+  assert pdb_hierarchy.as_sequence() == ['U', 'A', 'U', 'G', 'U', 'C', 'G', 'C', 'C', 'G', 'A', 'G']
+  assert pdb_hierarchy.as_sequence(as_string = True) == 'UAUGUCGCCGAG'
+  assert pdb_hierarchy.format_fasta() == ['> chain " A"', 'UAUGUC','> chain " B"','GCCGAG']
+  assert pdb_hierarchy.format_fasta(as_string = True) == \
+    """> chain " A"
+UAUGUC
+> chain " B"
+GCCGAG"""
+
   pdb_hierarchy = pdb.input(source_info=None, lines="""\
 ATOM      2  CA  UNK A   3      -9.052   4.207   4.651  1.00 16.57           C
 ATOM      6  CA  UNK A   4      -6.522   2.038   2.831  1.00 14.10           C
@@ -5889,8 +6034,16 @@ HETATM   48  O   HOH A  14       8.000   4.000   7.299  1.00 15.18           O
 HETATM   48  O   HOH A  15      10.000   0.000   7.299  1.00 15.18           O
 """).construct_hierarchy()
   assert pdb_hierarchy.only_model().only_chain().is_protein()
+  assert not pdb_hierarchy.only_model().only_chain().is_water()
   assert not pdb_hierarchy.only_model().only_chain().is_protein(
     ignore_water=False)
+
+  assert pdb_hierarchy.as_sequence() == []
+  assert pdb_hierarchy.as_sequence(as_string = True) == ''
+  print(pdb_hierarchy.format_fasta())
+  assert pdb_hierarchy.format_fasta() == []
+  assert pdb_hierarchy.format_fasta(as_string = True) == ''
+
   pdb_hierarchy = pdb.input(source_info=None, lines="""\
 HETATM   48  O   HOH A  10       0.000  20.000   7.299  1.00 15.18           O
 HETATM   48  O   HOH A  11       2.000  16.000   7.299  1.00 15.18           O
@@ -5900,6 +6053,7 @@ HETATM   48  O   HOH A  14       8.000   4.000   7.299  1.00 15.18           O
 HETATM   48  O   HOH A  15      10.000   0.000   7.299  1.00 15.18           O
 """).construct_hierarchy()
   assert not pdb_hierarchy.only_model().only_chain().is_protein()
+  assert pdb_hierarchy.only_model().only_chain().is_water()
   assert not pdb_hierarchy.only_model().only_chain().is_protein(
     ignore_water=False)
   pdb_hierarchy = pdb.input(source_info=None, lines="""\
@@ -5935,6 +6089,7 @@ ATOM     48  CA  TYR A   9       9.159   2.144   7.299  1.00 15.18           C
   assert main_conf.as_sequence() == ['G', 'N', 'N', 'Q', 'A', 'G', 'Q', 'N', 'Y']
   assert (main_conf.as_padded_sequence() == "XXGNNQAGQNY")
   assert (main_conf.as_padded_sequence(skip_insertions=True) == "XXGNNQQNY")
+  assert pdb_hierarchy.as_sequence() == ['G', 'N', 'N', 'Q', 'A', 'G', 'Q', 'N', 'Y']
   resids = main_conf.get_residue_ids()
   assert (len(resids) == 11)
   assert (resids[0] == resids[1] == None)
@@ -5997,6 +6152,8 @@ ATOM    854  CA  GLY A  12      25.907  28.394  28.320  1.00 38.88           C
     {'common_amino_acid': 10})
   assert chain.as_sequence() == ['N', 'G', 'M', 'I', 'S', 'A', 'A', 'M', 'E', 'G']
   assert chain.as_padded_sequence() == 'NGMISXXAAMEG'
+  print(pdb_hierarchy.as_sequence())
+  assert "".join(pdb_hierarchy.as_sequence()) == 'NGMISAAMEG'
   assert chain.get_residue_ids() == [
     '   1 ', '   2 ', '   3 ', '   4 ', '   5 ', None, None,
     '   8 ', '   9 ', '  10 ', '  11 ', '  12 ']
@@ -6016,6 +6173,23 @@ ATOM     48  CA  PTR A   9       9.159   2.144   7.299  1.00 15.18           C
 """).construct_hierarchy()
   main_conf = pdb_hierarchy.models()[0].chains()[0].conformers()[0]
   assert (main_conf.as_padded_sequence() == "XXGNNQAGQNY")
+
+  # Ligand with big resid
+  pdb_hierarchy = pdb.input(source_info=None, lines="""\
+ATOM      2  CA  GLY A   3      -9.052   4.207   4.651  1.00 16.57           C
+ATOM      6  CA  ASN A   4      -6.522   2.038   2.831  1.00 14.10           C
+ATOM     14  CA  ASN A   5      -3.193   1.904   4.589  1.00 11.74           C
+ATOM     22  CA  GLN A   6       0.384   1.888   3.199  1.00 10.53           C
+ATOM     31  CA  GLN A   7       3.270   2.361   5.640  1.00 11.39           C
+ATOM     40  CA  ASN A   8       6.831   2.310   4.318  1.00 12.30           C
+ATOM     48  CA  TYR A   9       9.159   2.144   7.299  1.00 15.18           C
+HETATM45571  NB  CLA A1401      10.336  10.558  15.466  1.00 79.02      k    N
+
+""").construct_hierarchy()
+  ch = pdb_hierarchy.models()[0].chains()[0]
+  # assert ch.as_sequence() == ['G', 'N', 'N', 'Q', 'Q', 'N', 'Y']
+  # assert ch.as_padded_sequence() == "XXGNNQQNY"
+
   # sites_diff
   hierarchy_1 = pdb.input(source_info=None, lines="""\
 ATOM      0  O   WAT B   1      17.523   2.521  10.381  1.10 16.78           O
@@ -6045,7 +6219,7 @@ ATOM      5  O   HOH S   1      -9.523   5.521  11.381  0.10  6.78           O
   pdb_file = libtbx.env.find_in_repositories(
     relative_path="phenix_regression/pdb/2C30.pdb",
     test=os.path.isfile)
-  if (pdb_file is None) :
+  if (pdb_file is None):
     return
   pdb_in = pdb.input(file_name=pdb_file)
   info = pdb.show_file_summary(pdb_in, out=out)
@@ -6053,7 +6227,7 @@ ATOM      5  O   HOH S   1      -9.523   5.521  11.381  0.10  6.78           O
 Number of atoms:          2691
 Number of chains:         3
 Chain IDs:                A, Z
-Alternate conformations:  0
+Alternate conformations:  2
 Amino acid residues:      289
 Water molecules:          350
 Elemental ions:           1 ( CL)
@@ -6171,11 +6345,11 @@ END
 """).construct_hierarchy()
   atoms = pdb_hierarchy.atoms()
   for first in [0,3]:
-    for i in xrange(3):
+    for i in range(3):
       assert atoms[first].is_in_same_conformer_as(atoms[first+i])
     assert not atoms[first+1].is_in_same_conformer_as(atoms[first+2])
-  for i in xrange(3):
-    for j in xrange(3,6):
+  for i in range(3):
+    for j in range(3,6):
       assert not atoms[i].is_in_same_conformer_as(atoms[j])
 
 def get_phenix_regression_pdb_file_names():
@@ -6223,8 +6397,8 @@ ANISOU    6  O   HOH     1      788    626    677   -344    621   -232       O
     assert s1.scattering_type == s2.scattering_type
   xrs_new3 = xrs.concatenate(other = xrs_new1)
   try: hierarchy.adopt_xray_structure(xray_structure = xrs_new3)
-  except RuntimeError, e: pass
-  assert str(e) == "Incompatible size of hierarchy and scatterers array."
+  except RuntimeError as e:
+    assert str(e) == "Incompatible size of hierarchy and scatterers array."
   xrs_new4 = xrs.deep_copy_scatterers()
   xrs_new4.set_inelastic_form_factors(photon=1.4, table="sasaki")
   for atom in hierarchy.atoms():
@@ -6246,10 +6420,8 @@ ANISOU    6  O   HOH     1      788    626    677   -344    621   -232       O
     for chain in model.chains():
       if chain.id == "A": chain.id = "C"
   try: hierarchy.adopt_xray_structure(xray_structure=xrs)
-  except Exception, e: pass
-  else: raise Exception_expected
-  hierarchy.adopt_xray_structure(
-    xray_structure=xrs, assert_identical_id_str=False)
+  except Exception as e: pass
+  hierarchy.adopt_xray_structure(xray_structure=xrs)
   xrs_new5 = hierarchy.extract_xray_structure(
     crystal_symmetry=xrs.crystal_symmetry())
   for s1,s2 in zip(xrs.scatterers(), xrs_new5.scatterers()):
@@ -6276,7 +6448,7 @@ HETATM 1135 MG   MG  A1002      46.279  95.897 117.018  1.00 40.88          Mg
   #
   h2.adopt_xray_structure(xrs1)
 
-def exercise_substitute_atom_group () :
+def exercise_substitute_atom_group():
   hierarchy1 = pdb.input(source_info=None, lines="""\
 ATOM     39  N   ASN A   6       5.514   2.664   4.856  1.00 11.99           N
 ATOM     40  CA  ASN A   6       6.831   2.310   4.318  1.00 12.30           C
@@ -6318,7 +6490,7 @@ ATOM     59  OXT TYR A   7      11.358   2.999   7.612  1.00 17.49           O
     current_group=current_group,
     new_group=new_group)
   hierarchy1.write_pdb_file(file_name="moved.pdb")
-  print hierarchy1.as_pdb_string()
+  print(hierarchy1.as_pdb_string())
   assert not show_diff(hierarchy1.as_pdb_string(), """\
 ATOM     39  N   TYR A   6       5.514   2.664   4.856  1.00 11.99           N
 ATOM     40  CA  TYR A   6       6.831   2.310   4.318  1.00 12.30           C
@@ -6432,7 +6604,7 @@ ATOM     29  NZ  LYS A   4       0.827  -4.892  34.541  1.00 36.05           N
 """))
   h = pdb_inp.construct_hierarchy()
   h.atoms().reset_i_seq()
-  sites_cart = h.extract_xray_structure().sites_cart()
+  sites_cart = h.atoms().extract_xyz()
   #
   css = h.chunk_selections(residues_per_chunk=0)
   assert len(css)==0
@@ -6444,7 +6616,7 @@ ATOM     29  NZ  LYS A   4       0.827  -4.892  34.541  1.00 36.05           N
   assert len(css)==3
   for cs in css:
     assert approx_equal(sites_cart.select(cs),
-      h.select(cs).extract_xray_structure().sites_cart())
+      h.select(cs).atoms().extract_xyz())
   #
   css = h.chunk_selections(residues_per_chunk=2)
   assert list(css[0]) == [0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19, 20]
@@ -6452,7 +6624,7 @@ ATOM     29  NZ  LYS A   4       0.827  -4.892  34.541  1.00 36.05           N
   assert len(css)==2
   for cs in css:
     assert approx_equal(sites_cart.select(cs),
-      h.select(cs).extract_xray_structure().sites_cart())
+      h.select(cs).atoms().extract_xyz())
   #
   css = h.chunk_selections(residues_per_chunk=3)
   assert list(css[0]) == [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15,
@@ -6460,7 +6632,7 @@ ATOM     29  NZ  LYS A   4       0.827  -4.892  34.541  1.00 36.05           N
   assert len(css)==1
   for cs in css:
     assert approx_equal(sites_cart.select(cs),
-      h.select(cs).extract_xray_structure().sites_cart())
+      h.select(cs).atoms().extract_xyz())
   # multiple chains
   pdb_inp = pdb.input(source_info=None, lines=flex.split_lines("""\
 ATOM      0  N   ASP A   1      49.347 -62.804  60.380  1.00 34.60           N
@@ -6504,12 +6676,12 @@ TER
 """))
   h = pdb_inp.construct_hierarchy()
   h.atoms().reset_i_seq()
-  sites_cart = h.extract_xray_structure().sites_cart()
+  sites_cart = h.atoms().extract_xyz()
   #
   css = h.chunk_selections(residues_per_chunk=3)
   for cs in css:
     assert approx_equal(sites_cart.select(cs),
-      h.select(cs).extract_xray_structure().sites_cart())
+      h.select(cs).atoms().extract_xyz())
   #
   assert list(css[0]) == [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
   assert list(css[1]) == [12, 13, 14, 15]
@@ -6543,7 +6715,7 @@ ATOM  10851  OXT ILE A1445      50.752  78.273  41.078  1.00189.50      A
 ATOM  27953  ZN  ZN  A1506    9999.9999999.9999999.999  1.00166.17      A
 ATOM  27954  ZN  ZN  A1508    9999.9999999.9999999.999  1.00166.17      A
 """))
-  except RuntimeError, e:
+  except RuntimeError as e:
     assert str(e).find(
       "IOTBX_ASSERT(! (xyz[0]>9999 && xyz[1]>9999 && xyz[2]>9999)) failure.") >0
   else: raise Exception_expected
@@ -6583,27 +6755,27 @@ ATOM   1929  CG2CTHR M   8      26.350  43.915  -0.725  0.50 36.69           C
 """))
 
   h = pdb_inp.construct_hierarchy()
-  print "*"*50
+  print("*"*50)
   for conf in h.only_chain().conformers():
-    print "conf altloc '%s'" % conf.altloc
+    print("conf altloc '%s'" % conf.altloc)
     for res in conf.residues():
-      print "residue:", res.id_str(), "is_pure_main_conf:", res.is_pure_main_conf
+      print("residue:", res.id_str(), "is_pure_main_conf:", res.is_pure_main_conf)
       for atom in res.atoms():
-        print "  ", atom.id_str()
-  print "*"*50
-  print "*"*50
+        print("  ", atom.id_str())
+  print("*"*50)
+  print("*"*50)
   for rg in h.only_chain().residue_groups():
-    print "rg ", rg.resseq, rg.have_conformers()
+    print("rg ", rg.resseq, rg.have_conformers())
     for ag in rg.atom_groups():
-      print "ag:", ag.resname, ag.altloc
+      print("ag:", ag.resname, ag.altloc)
       for atom in ag.atoms():
-        print "  ", atom.id_str()
+        print("  ", atom.id_str())
   # assert not h.only_chain().conformers()[2].residues()[0].is_pure_main_conf
   # assert not h.only_chain().conformers()[2].residues()[1].is_pure_main_conf
   r0_pmc = h.only_chain().conformers()[2].residues()[0].is_pure_main_conf
   r1_pmc = h.only_chain().conformers()[2].residues()[1].is_pure_main_conf
-  print "Residue 0 is", r0_pmc
-  print "Residue 1 is", r1_pmc
+  print("Residue 0 is", r0_pmc)
+  print("Residue 1 is", r1_pmc)
 
 def exercise_selection_and_deep_copy():
   """
@@ -6614,7 +6786,7 @@ def exercise_selection_and_deep_copy():
   """
   def show_atoms(h):
     for a in h.atoms():
-      print a.id_str()
+      print(a.id_str())
   pdb_inp = pdb.input(source_info=None, lines=flex.split_lines("""\
 ATOM      0  N   ASP A   1      49.347 -62.804  60.380  1.00 34.60           N
 ATOM      1  CA  ASP A   1      47.975 -63.194  59.946  1.00 33.86           C
@@ -6641,26 +6813,26 @@ ATOM     15  O   MET A   4      40.633 -70.625  61.911  1.00 23.73           O
   h1 = h1.deep_copy()
   assert h1.atoms()[0].parent() is not None
 
-  print "example 2"
+  print("example 2")
   h2 = pdb_h.deep_copy()
   sel = h2.atom_selection_cache().selection("resid 3")
   h2 = h2.select(sel)
   # assert h2.atoms()[0].parent() is not None # FAILURE
   show_atoms(h2) # in this printout information about residue and chain is missing
-  print "==============="
+  print("===============")
 
   # example 3 - same as 2, but using separate variable for asc to make it work
-  print "example 3"
+  print("example 3")
   h2 = pdb_h.deep_copy()
   asc = h2.atom_selection_cache()
   sel = asc.selection("resid 3")
   h2 = h2.select(sel)
   assert h2.atoms()[0].parent() is not None # WORKING!!!
   show_atoms(h2)
-  print "==============="
+  print("===============")
 
   # example 4 - same as 2, but using variable for hierarchy to make it work
-  print "example 4"
+  print("example 4")
   h2 = pdb_h.deep_copy()
   sel = h2.atom_selection_cache().selection("resid 3")
   h3 = h2.select(sel)
@@ -6706,20 +6878,116 @@ ATOM     15  O   MET B   4      40.633 -70.625  61.911  1.00 23.73           O
   assert result == [True, False], result
 
 def exercise_expand_to_p1():
+  """
+  One atom with ANISOU in C 1 2 1, expanded to P1, matches the sites and
+  anisotropic U of xray.structure.expand_to_p1, and keeps its sigxyz under
+  the identity and the C centring but not under the 2-fold.
+  """
   pdb_str = """
 CRYST1  194.707   61.015   92.246  90.00 116.65  90.00 C 1 2 1       8
 ATOM      1  N   ASP L   1      52.015   9.560  31.693  1.00 25.58           N
+ANISOU    1  N   ASP L   1     3442   3176   3100   -128    630    -84       N
 END
 """
   pdb_inp = pdb.input(source_info=None, lines=pdb_str)
   cs = pdb_inp.crystal_symmetry()
   ph = pdb_inp.construct_hierarchy()
   assert len(ph.atoms())==1
-  xyz_p1 = ph.extract_xray_structure(
-    crystal_symmetry=cs).expand_to_p1().sites_cart()
+  sigxyz = (0.01, 0.02, 0.03)
+  ph.atoms()[0].set_sigxyz(sigxyz)
+  xrs_p1 = ph.extract_xray_structure(crystal_symmetry=cs).expand_to_p1()
   p1 = ph.expand_to_p1(crystal_symmetry=cs)
   assert len(p1.atoms())==4
-  assert approx_equal(xyz_p1, p1.atoms().extract_xyz())
+  assert approx_equal(xrs_p1.sites_cart(), p1.atoms().extract_xyz())
+  assert approx_equal(
+    xrs_p1.scatterers().extract_u_cart(xrs_p1.unit_cell()),
+    p1.atoms().extract_uij())
+  # One atom, so p1 holds one copy per operator, in all_ops() order.
+  for smx, atom in zip(cs.space_group().all_ops(), p1.atoms()):
+    if (smx.r().is_unit_mx()):
+      assert atom.sigxyz == sigxyz
+    else:
+      assert atom.sigxyz == (0, 0, 0)
+
+def exercise_apply_rotation_translation():
+  """
+  Two atoms, one with ANISOU, copied under a rotation and under a pure
+  translation: both copies have the moved sites, the rotated copy has U
+  rotated and sigxyz cleared, the translated copy keeps both, and the atom
+  without ANISOU stays without in both.
+  """
+  import scitbx.matrix
+  pdb_str = """
+ATOM      1  N   ASP L   1      52.015   9.560  31.693  1.00 25.58           N
+ANISOU    1  N   ASP L   1     3442   3176   3100   -128    630    -84       N
+ATOM      2  CA  ASP L   1      51.012  10.524  32.152  1.00 24.11           C
+END
+"""
+  ph = pdb.input(source_info=None, lines=pdb_str).construct_hierarchy()
+  sigxyz = (0.01, 0.02, 0.03)
+  ph.atoms().set_sigxyz(flex.vec3_double(2, sigxyz))
+  r = scitbx.matrix.sqr((
+     0.500000, -0.809017,  0.309017,
+     0.809017,  0.309017, -0.500000,
+     0.309017,  0.500000,  0.809017))
+  t = scitbx.matrix.col((1, 2, 3))
+  result = ph.apply_rotation_translation(
+    rot_matrices=[r, scitbx.matrix.identity(3)], trans_vectors=[t, t])
+  atoms = result.atoms()
+  # atoms[:2] is the rotated copy, atoms[2:] the translated one.
+  assert approx_equal(atoms[:2].extract_xyz(),
+    r.elems * ph.atoms().extract_xyz() + t.elems)
+  u = scitbx.matrix.sym(sym_mat3=ph.atoms()[0].uij)
+  assert approx_equal(atoms[0].uij, (r * u * r.transpose()).as_sym_mat3())
+  assert not atoms[1].uij_is_defined()
+  assert list(atoms[:2].extract_sigxyz()) == [(0, 0, 0)] * 2
+  assert approx_equal(atoms[2:].extract_xyz(),
+    ph.atoms().extract_xyz() + t.elems)
+  assert atoms[2].uij == ph.atoms()[0].uij
+  assert not atoms[3].uij_is_defined()
+  assert list(atoms[2:].extract_sigxyz()) == [sigxyz] * 2
+
+def exercise_rotate_uij_and_clear_sigmas():
+  """
+  Two atoms, one with ANISOU: under a rotation the U is rotated, sigxyz and
+  siguij are cleared, and the atom without ANISOU stays without; under the
+  identity, exact or as the Cartesian identity of a monoclinic cell, which
+  carries rounding error, both atoms are left unchanged.
+  """
+  from cctbx import adptbx, sgtbx, uctbx
+  pdb_str = """
+ATOM      1  N   ASP L   1      52.015   9.560  31.693  1.00 25.58           N
+ANISOU    1  N   ASP L   1     3442   3176   3100   -128    630    -84       N
+ATOM      2  CA  ASP L   1      51.012  10.524  32.152  1.00 24.11           C
+END
+"""
+  ph = pdb.input(source_info=None, lines=pdb_str).construct_hierarchy()
+  sigxyz = (0.01, 0.02, 0.03)
+  siguij = (.001, .002, .003, .0004, .0005, .0006)
+  has_siguij = pdb.hierarchy.atom.has_siguij()
+  ph.atoms().set_sigxyz(flex.vec3_double(2, sigxyz))
+  if (has_siguij):
+    ph.atoms()[0].set_siguij(new_siguij=siguij)
+  u = ph.atoms()[0].uij
+  r = (0.500000, -0.809017,  0.309017,
+       0.809017,  0.309017, -0.500000,
+       0.309017,  0.500000,  0.809017)
+  atoms = ph.deep_copy().atoms()
+  atoms.rotate_uij_and_clear_sigmas(r_cart=r)
+  assert approx_equal(atoms[0].uij, adptbx.c_u_c_transpose(r, u))
+  assert not atoms[1].uij_is_defined()
+  assert list(atoms.extract_sigxyz()) == [(0, 0, 0)] * 2
+  assert not atoms[0].siguij_is_defined()
+  monoclinic = uctbx.unit_cell((194.707, 61.015, 92.246, 90, 116.65, 90))
+  for identity in [(1, 0, 0, 0, 1, 0, 0, 0, 1),
+                   monoclinic.matrix_cart(sgtbx.rot_mx())]:
+    atoms = ph.deep_copy().atoms()
+    atoms.rotate_uij_and_clear_sigmas(r_cart=identity)
+    assert atoms[0].uij == u, identity
+    assert not atoms[1].uij_is_defined(), identity
+    assert list(atoms.extract_sigxyz()) == [sigxyz] * 2, identity
+    if (has_siguij):
+      assert atoms[0].siguij == siguij, identity
 
 def exercise_convert_met_to_semet():
   pdb_str_met1 = """
@@ -6806,8 +7074,6 @@ END
   assert (ph.atoms()[0].charge == '1-')
 
 def exercise_remove_atoms():
-  random.seed(1)
-  flex.set_random_seed(1)
   pdb_str = """
 ATOM      1  N  AMET B  37       7.525   5.296   6.399  1.00 10.00           N
 ATOM      2  CA AMET B  37       6.533   6.338   6.634  1.00 10.00           C
@@ -6862,11 +7128,9 @@ END
   """
   pi = pdb.input(source_info=None, lines=pdb_str)
   ph_in = pi.construct_hierarchy()
-  s1 = ph_in.atoms_size()
+  assert ph_in.atoms_size() == 48
   ph = ph_in.remove_atoms(fraction=0.1)
-  s2 = ph.atoms_size()
-  f = s2*100./s1
-  assert f>90 and f<100
+  assert ph.atoms_size() == 43
 
 def exercise_set_atomic_charge():
   pdb_str = """
@@ -6906,6 +7170,8 @@ END
   ph_in = pi.construct_hierarchy()
   ph_in.rename_chain_id(old_id="C", new_id="A")
   assert [c.id.strip() for c in ph_in.chains()] == ["B","A"]
+  ph_in.rename_chain_id(old_id="A", new_id="long_id")
+  assert [c.id.strip() for c in ph_in.chains()] == ["B","long_id"]
 
 def exercise_shift_to_origin():
   pdb_inp = pdb.input(source_info=None, lines="""\
@@ -6996,17 +7262,259 @@ ATOM     29  NZ  LYS A   4       0.827  -4.892  34.541  1.10 36.05           N
   assert (approx_equal(oc.greater_than_1_fraction, 2*100/30, eps=eps))
   assert (approx_equal(oc.alt_conf_frac, 100/3, eps=eps))
 
+def exercise_remove_ter_or_break():
+  pdb_inp_lines = flex.split_lines("""\
+ATOM      1  CA  ASP A   1      47.975 -63.194  59.946  1.00 33.86           C
+ATOM      5  CA  VAL A   2      44.978 -63.576  62.233  1.00 29.81           C
+TER
+ATOM      8  N   GLN B   3      44.585 -65.878  62.864  1.00 25.93           N
+ATOM      9  CA  GLN B   3      44.166 -67.262  62.686  1.00 24.46           C
+ATOM     10  C   GLN B   3      42.730 -67.505  63.153  1.00 23.33           C
+ATOM     11  O   GLN B   3      42.389 -67.234  64.302  1.00 20.10           O
+BREAK
+ATOM     12  N   MET B   4      41.894 -68.026  62.256  1.00 24.27           N
+ATOM     13  CA  MET B   4      40.497 -68.318  62.576  1.00 22.89           C
+ATOM     14  C   MET B   4      40.326 -69.824  62.795  1.00 21.48           C
+ATOM     15  O   MET B   4      40.633 -70.625  61.911  1.00 23.73           O
+TER
+ATOM     12  N   MET B   5      41.894 -68.026  62.256  1.00 24.27           N
+ATOM     13  CA  MET B   5      40.497 -68.318  62.576  1.00 22.89           C
+ATOM     14  C   MET B   5      40.326 -69.824  62.795  1.00 21.48           C
+ATOM     15  O   MET B   5      40.633 -70.625  61.911  1.00 23.73           O
+""")
+  h = pdb.input(source_info=None, lines=pdb_inp_lines).construct_hierarchy()
+  assert h.as_pdb_string().split().count("TER")==3
+  assert h.as_pdb_string().split().count("BREAK")==1
+  h.remove_ter_or_break()
+  assert h.as_pdb_string().split().count("TER")==2
+  assert h.as_pdb_string().split().count("BREAK")==0
+
+def exercise_forward_compatibility():
+  pdb_inp_lines = flex.split_lines("""\
+ATOM      1  CA  ASP A   1      47.975 -63.194  59.946  1.00 33.86           C
+ATOM      5  CA  VAL A   2      44.978 -63.576  62.233  1.00 29.81           C
+ATOM     12  N   MET B   4      41.894 -68.026  62.256  1.00 24.27           N
+ATOM     13  CA  MET B   4      40.497 -68.318  62.576  1.00 22.89           C
+ATOM     14  C   MET B   4      40.326 -69.824  62.795  1.00 21.48           C
+ATOM     15  O   MET B   4      40.633 -70.625  61.911  1.00 23.73           O
+""")
+  h = pdb.input(source_info=None, lines=pdb_inp_lines).construct_hierarchy()
+  from libtbx import easy_pickle
+  easy_pickle.dump('test.pkl',h)
+  new_h = easy_pickle.load('test.pkl')
+  assert new_h.as_mmcif_string() == h.as_mmcif_string()
+
+  assert h.as_pdb_string().split().count("ATOM")==6
+  assert h.apply_atom_selection("resname MET").overall_counts().n_residues == 1
+  assert h.apply_atom_selection("resname METXL").overall_counts().n_residues == 0
+  assert h.apply_atom_selection("chain A").overall_counts().n_residues == 2
+  assert h.apply_atom_selection("chain AXZLONG").overall_counts().n_residues == 0
+  assert h.fits_in_pdb_format()
+  assert not h.is_forward_compatible_hierarchy()
+
+  # Make pdb incompatible
+  for model in h.models():
+    for chain in model.chains():
+      chain.id = "%sXZLONG" %(chain.id)
+      for rg in chain.residue_groups():
+        for ag in rg.atom_groups():
+          ag.resname = "%sXL" %(ag.resname)
+  assert h.as_pdb_string().split().count("ATOM")==0
+  assert h.apply_atom_selection("resname MET").overall_counts().n_residues == 0
+  assert h.apply_atom_selection("resname METXL").overall_counts().n_residues == 1
+  assert h.apply_atom_selection("chain A").overall_counts().n_residues == 0
+  assert h.apply_atom_selection("chain AXZLONG").overall_counts().n_residues == 2
+  assert not h.fits_in_pdb_format()
+  assert not h.is_forward_compatible_hierarchy()
+
+  easy_pickle.dump('test.pkl',h)
+  new_h = easy_pickle.load('test.pkl')
+  assert new_h.as_mmcif_string() == h.as_mmcif_string()
+
+  # Convert to forward_compatible PDB
+  ph_fc = h.as_forward_compatible_hierarchy()
+
+  assert ph_fc.as_pdb_string().split().count("ATOM")==6
+  assert ph_fc.apply_atom_selection("resname MET").overall_counts().n_residues == 1
+  assert ph_fc.apply_atom_selection("resname METXL").overall_counts().n_residues == 0
+  assert ph_fc.apply_atom_selection("chain AX").overall_counts().n_residues == 2
+  assert ph_fc.apply_atom_selection("chain AXZLONG").overall_counts().n_residues == 0
+  assert ph_fc.fits_in_pdb_format()
+  assert ph_fc.is_forward_compatible_hierarchy()
+
+  # Convert some text from original to matching forward compatible
+  text = "Text with AXZLONG and METXL"
+  text_fc = ph_fc.convert_multi_word_text_to_forward_compatible(text)
+  assert text_fc == "Text with AX and MET"
+
+  try:
+    easy_pickle.dump('test.pkl',ph_fc)
+    assert 0, "Forward compatible should not be pickleable"
+  except Exception as e:
+    pass # expected
+
+  # Convert the hierarchy back
+  h_copy = ph_fc.forward_compatible_hierarchy_as_standard()
+  assert h_copy.is_similar_hierarchy(h)
+  assert h_copy.as_pdb_string() == h.as_pdb_string()
+  assert not h.is_forward_compatible_hierarchy()
+  easy_pickle.dump('test.pkl',h_copy)
+  new_h_copy= easy_pickle.load('test.pkl')
+  assert new_h_copy.as_mmcif_string() == h_copy.as_mmcif_string()
+
+def exercise_contains_hetero():
+  pdb_inp_lines = flex.split_lines("""\
+ATOM      1  CA  ASP A   1      47.975 -63.194  59.946  1.00 33.86           C
+ATOM      5  CA  VAL A   2      44.978 -63.576  62.233  1.00 29.81           C
+HETATM    8  N   GLN B   3      44.585 -65.878  62.864  1.00 25.93           N
+HETATM    9  CA  GLN B   3      44.166 -67.262  62.686  1.00 24.46           C
+HETATM   10  C   GLN B   3      42.730 -67.505  63.153  1.00 23.33           C
+HETATM   11  O   GLN B   3      42.389 -67.234  64.302  1.00 20.10           O
+ATOM     12  N   MET B   4      41.894 -68.026  62.256  1.00 24.27           N
+ATOM     13  CA  MET B   4      40.497 -68.318  62.576  1.00 22.89           C
+ATOM     14  C   MET B   4      40.326 -69.824  62.795  1.00 21.48           C
+ATOM     15  O   MET B   4      40.633 -70.625  61.911  1.00 23.73           O
+""")
+  h = pdb.input(source_info=None, lines=pdb_inp_lines).construct_hierarchy()
+  assert h.as_pdb_string().split().count("HETATM")==4
+  assert h.as_pdb_string().split().count("ATOM")==6
+  assert h.contains_hetero()
+  h.remove_hetero()
+  assert h.as_pdb_string().split().count("HETATM")==0
+  assert h.as_pdb_string().split().count("ATOM")==6
+  assert not h.contains_hetero()
+
+
+def exercise_as_pdb_or_mmcif_string():
+  pdb_inp_lines = flex.split_lines("""\
+ATOM      1  CA  ASP A   1      47.975 -63.194  59.946  1.00 33.86           C
+ATOM      5  CA  VAL A   2      44.978 -63.576  62.233  1.00 29.81           C
+ATOM      8  N   GLN B   3      44.585 -65.878  62.864  1.00 25.93           N
+ATOM      9  CA  GLN B   3      44.166 -67.262  62.686  1.00 24.46           C
+ATOM     10  C   GLN B   3      42.730 -67.505  63.153  1.00 23.33           C
+ATOM     11  O   GLN B   3      42.389 -67.234  64.302  1.00 20.10           O
+ATOM     12  N   MET B   4      41.894 -68.026  62.256  1.00 24.27           N
+ATOM     13  CA  MET B   4      40.497 -68.318  62.576  1.00 22.89           C
+ATOM     14  C   MET B   4      40.326 -69.824  62.795  1.00 21.48           C
+ATOM     15  O   MET B   4      40.633 -70.625  61.911  1.00 23.73           O
+""")
+  h = pdb.input(source_info=None, lines=pdb_inp_lines).construct_hierarchy()
+  assert h.fits_in_pdb_format()
+  text = h.as_pdb_or_mmcif_string()
+  pdb_inp = pdb.input(source_info=None, lines=flex.split_lines(text))
+  is_mmcif = (str(type(pdb_inp)).find('cif')>0)
+  assert not is_mmcif
+
+  h.only_model().chains()[1].id = "long_chain_id"
+  assert not h.fits_in_pdb_format()
+  text = h.as_pdb_or_mmcif_string()
+  pdb_inp = pdb.input(source_info=None, lines=flex.split_lines(text))
+  is_mmcif = (str(type(pdb_inp)).find('cif')>0)
+  assert is_mmcif
+
+  h = pdb.input(source_info=None, lines=pdb_inp_lines).construct_hierarchy()
+  assert h.fits_in_pdb_format()
+  text = h.as_pdb_or_mmcif_string(target_format='mmcif')
+  pdb_inp = pdb.input(source_info=None, lines=flex.split_lines(text))
+  is_mmcif = (str(type(pdb_inp)).find('cif')>0)
+  assert is_mmcif
+
+  h.only_model().chains()[1].id = "long_chain_id"
+  assert not h.fits_in_pdb_format()
+  text = h.as_pdb_or_mmcif_string(target_format='pdb')
+  pdb_inp = pdb.input(source_info=None, lines=flex.split_lines(text))
+  is_mmcif = (str(type(pdb_inp)).find('cif')>0)
+  assert is_mmcif
+
+def exercise_write_pdb_or_mmcif_file():
+  pdb_inp_lines = flex.split_lines("""\
+ATOM      1  CA  ASP A   1      47.975 -63.194  59.946  1.00 33.86           C
+ATOM      5  CA  VAL A   2      44.978 -63.576  62.233  1.00 29.81           C
+ATOM      8  N   GLN B   3      44.585 -65.878  62.864  1.00 25.93           N
+ATOM      9  CA  GLN B   3      44.166 -67.262  62.686  1.00 24.46           C
+ATOM     10  C   GLN B   3      42.730 -67.505  63.153  1.00 23.33           C
+ATOM     11  O   GLN B   3      42.389 -67.234  64.302  1.00 20.10           O
+ATOM     12  N   MET B   4      41.894 -68.026  62.256  1.00 24.27           N
+ATOM     13  CA  MET B   4      40.497 -68.318  62.576  1.00 22.89           C
+ATOM     14  C   MET B   4      40.326 -69.824  62.795  1.00 21.48           C
+ATOM     15  O   MET B   4      40.633 -70.625  61.911  1.00 23.73           O
+""")
+  from iotbx.pdb.utils import get_pdb_input
+  h = pdb.input(source_info=None, lines=pdb_inp_lines).construct_hierarchy()
+  assert h.fits_in_pdb_format()
+
+  file_name = h.write_pdb_or_mmcif_file('target_pdb.pdb')
+  assert file_name == 'target_pdb.pdb'
+  pdb_inp = get_pdb_input(file_name = file_name)
+  is_mmcif = (str(type(pdb_inp)).find('cif')>0)
+  assert not is_mmcif
+
+  file_name = h.write_pdb_or_mmcif_file('target_pdb.pdb', target_format='mmcif')
+  assert file_name == 'target_pdb.cif'
+  pdb_inp = get_pdb_input(file_name = file_name)
+  is_mmcif = (str(type(pdb_inp)).find('cif')>0)
+  assert is_mmcif
+
+  h.only_model().chains()[1].id = "long_chain_id"
+  assert not h.fits_in_pdb_format()
+
+  file_name = h.write_pdb_or_mmcif_file('target_pdb.pdb')
+  assert file_name == 'target_pdb.cif'
+  pdb_inp = get_pdb_input(file_name = file_name)
+  is_mmcif = (str(type(pdb_inp)).find('cif')>0)
+  assert is_mmcif
+
+  file_name = h.write_pdb_or_mmcif_file('target_pdb.pdb', target_format='pdb')
+  assert file_name == 'target_pdb.cif'
+  pdb_inp = get_pdb_input(file_name = file_name)
+  is_mmcif = (str(type(pdb_inp)).find('cif')>0)
+  assert is_mmcif
+
+def exercise_fits_in_pdb_format():
+  pdb_inp_lines = flex.split_lines("""\
+ATOM      1  CA  ASP A   1      47.975 -63.194  59.946  1.00 33.86           C
+ATOM      5  CA  VAL A   2      44.978 -63.576  62.233  1.00 29.81           C
+ATOM      8  N   GLN B   3      44.585 -65.878  62.864  1.00 25.93           N
+ATOM      9  CA  GLN B   3      44.166 -67.262  62.686  1.00 24.46           C
+ATOM     10  C   GLN B   3      42.730 -67.505  63.153  1.00 23.33           C
+ATOM     11  O   GLN B   3      42.389 -67.234  64.302  1.00 20.10           O
+ATOM     12  N   MET B   4      41.894 -68.026  62.256  1.00 24.27           N
+ATOM     13  CA  MET B   4      40.497 -68.318  62.576  1.00 22.89           C
+ATOM     14  C   MET B   4      40.326 -69.824  62.795  1.00 21.48           C
+ATOM     15  O   MET B   4      40.633 -70.625  61.911  1.00 23.73           O
+""")
+  h = pdb.input(source_info=None, lines=pdb_inp_lines).construct_hierarchy()
+  assert h.fits_in_pdb_format()
+  assert h.fits_in_pdb_format(use_hybrid36=False)
+  h.only_model().chains()[1].id = "long_chain_id"
+  assert not h.fits_in_pdb_format()
+  h.only_model().chains()[1].id = "B"
+  assert h.fits_in_pdb_format()
+  h.only_model().chains()[0].residue_groups()[0].atom_groups()[0].resname="long_resname"
+  assert not h.fits_in_pdb_format()
+  # hy36
+  h = pdb.input(source_info=None, lines=pdb_inp_lines).construct_hierarchy()
+  h.only_model().chains()[0].residue_groups()[0].resseq="A100"
+  # print(h.only_model().chains()[0].residue_groups()[0].resseq_as_int())
+  assert h.fits_in_pdb_format()
+  assert not h.fits_in_pdb_format(use_hybrid36=False)
+  # STOP()
+  h.atoms()[0].serial="A1000"
+  assert h.fits_in_pdb_format()
+  # print(h.atoms()[0].serial_as_int())
+  assert not h.fits_in_pdb_format(use_hybrid36=False)
+
 def exercise(args):
   comprehensive = "--comprehensive" in args
   forever = "--forever" in args
-  print "iotbx.pdb.hierarchy.atom.sizeof_data():", \
-    pdb.hierarchy.atom.sizeof_data()
+  print("iotbx.pdb.hierarchy.atom.sizeof_data():", \
+    pdb.hierarchy.atom.sizeof_data())
   offsets = pdb.hierarchy.atom.data_offsets()
   if (comprehensive):
-    print "iotbx.pdb.hierarchy.atom.data_offsets():"
+    print("iotbx.pdb.hierarchy.atom.data_offsets():")
     prev = 0
     for key,value in sorted(offsets.items()):
-      print "  %+3d %3d %s" % (key-prev, key, value)
+      print("  %+3d %3d %s" % (key-prev, key, value))
       prev = key
   phenix_regression_pdb_file_names = get_phenix_regression_pdb_file_names()
   while True:
@@ -7018,6 +7526,8 @@ def exercise(args):
     exercise_set_atomic_charge()
     exercise_remove_atoms()
     exercise_expand_to_p1()
+    exercise_apply_rotation_translation()
+    exercise_rotate_uij_and_clear_sigmas()
     exercise_chunk_selections()
     exercise_set_i_seq()
     exercise_get_peptide_c_alpha_selection()
@@ -7044,6 +7554,7 @@ def exercise(args):
     exercise_residue()
     exercise_is_identical_hierarchy()
     exercise_is_similar_hierarchy()
+    # exercise_is_similar_hierarchy_long()
     exercise_atoms()
     exercise_atoms_interleaved_conf()
     exercise_as_pdb_string(
@@ -7065,8 +7576,15 @@ def exercise(args):
     exercise_selection_and_deep_copy()
     exercise_is_ca_only()
     exercise_occupancy_counts()
+    exercise_fits_in_pdb_format()
+    exercise_remove_ter_or_break()
+    exercise_contains_hetero()
+    exercise_forward_compatibility()
+    exercise_as_pdb_or_mmcif_string()
+    exercise_write_pdb_or_mmcif_file()
     if (not forever): break
-  print format_cpu_times()
+  print(format_cpu_times())
 
 if (__name__ == "__main__"):
   exercise(sys.argv[1:])
+  print("OK")

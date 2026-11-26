@@ -1,4 +1,4 @@
-from __future__ import division, absolute_import
+from __future__ import absolute_import, division, print_function
 import time
 from mmtbx import monomer_library
 import mmtbx.monomer_library.server
@@ -75,7 +75,7 @@ class lbfgs(object):
       new_sites = self.xray_structure.sites_frac().set_selected(
         ~self.hd_selection, scatterers_shifted.extract_sites())
       self.xray_structure.set_sites_frac(new_sites)
-      self.riding_h_manager.idealize(
+      self.riding_h_manager.idealize_riding_h_positions(
           xray_structure = self.xray_structure)
     else:
       self.xray_structure.replace_scatterers(scatterers = scatterers_shifted)
@@ -100,15 +100,14 @@ class lbfgs(object):
 
   def callback_after_step(self, minimizer):
     if(self.verbose > 0):
-      print "refinement.minimization step: f,iter,nfun:",
-      print self.f,minimizer.iter(),minimizer.nfun()
+      print("refinement.minimization step: f,iter,nfun:", self.f,minimizer.iter(),minimizer.nfun())
 
   def compute_functional_and_gradients(self):
     self.apply_shifts()
     self.compute_target(compute_gradients = True)
     if(self.verbose > 1):
-      print "xray.minimization line search: f,rms(g):",
-      print self.f, math.sqrt(flex.mean_sq(self.g))
+      print ("xray.minimization line search: f,rms(g):",
+        self.f, math.sqrt(flex.mean_sq(self.g)))
     return self.f, self.g
 
 # distorted Tyrosine residue
@@ -158,7 +157,6 @@ def run():
     show_energies = False)
   #geometry_restraints.write_geo_file(file_name='start.geo')
   states = mmtbx.utils.states(
-    xray_structure = xray_structure,
     pdb_hierarchy  = pdb_hierarchy)
   states.add(sites_cart = xray_structure.sites_cart())
 
@@ -190,10 +188,10 @@ def run():
   target_final = geometry_restraints.energies_sites(
     sites_cart = xray_structure.sites_cart(),
     compute_gradients = True).target
-  print 'final target', target_final
+  print('final target', target_final)
   assert (target_final < 1.5), 'Target of final riding model is too large'
 
 if (__name__ == "__main__"):
   t0 = time.time()
   run()
-  print "OK. Time:", round(time.time()-t0, 2), "seconds"
+  print("OK. Time:", round(time.time()-t0, 2), "seconds")

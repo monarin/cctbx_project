@@ -1,4 +1,4 @@
-from __future__ import division
+from __future__ import absolute_import, division, print_function
 from libtbx import adopt_init_args
 import scitbx.lbfgs
 from cctbx import maptbx
@@ -9,6 +9,7 @@ from cctbx import crystal
 import mmtbx.refinement.minimization_ncs_constraints
 import mmtbx.model
 from cctbx.maptbx import minimization
+from six.moves import range
 
 class easy(object):
   """
@@ -23,6 +24,7 @@ class easy(object):
         geometry_restraints_manager,
         gradients_method="fd",
         selection=None,
+        selection_real_space=None,
         rms_bonds_limit=0.015,
         rms_angles_limit=2.0,
         max_iterations=150,
@@ -36,31 +38,34 @@ class easy(object):
     self.rmsd_angles_start = es.angle_deviations()[2]
     self.rmsd_bonds_start  = es.bond_deviations()[2]
     self.w = w
-    if(self.w is None):
-      import mmtbx.refinement.real_space.weight
-      self.weight = mmtbx.refinement.real_space.weight.run(
-        map_data                    = map_data,
-        xray_structure              = self.xray_structure,
-        pdb_hierarchy               = self.pdb_hierarchy,
-        geometry_restraints_manager = geometry_restraints_manager,
-        rms_bonds_limit             = rms_bonds_limit,
-        rms_angles_limit            = rms_angles_limit,
+    if(self.max_iterations > 0):
+      if(self.w is None):
+        import mmtbx.refinement.real_space.weight
+        self.weight = mmtbx.refinement.real_space.weight.run(
+          map_data                    = map_data,
+          xray_structure              = self.xray_structure,
+          pdb_hierarchy               = self.pdb_hierarchy,
+          geometry_restraints_manager = geometry_restraints_manager,
+          rms_bonds_limit             = rms_bonds_limit,
+          rms_angles_limit            = rms_angles_limit,
+          gradients_method            = gradients_method)
+        self.w = self.weight.weight
+      if(selection is None):
+        selection = flex.bool(self.xray_structure.scatterers().size(), True)
+      refine_object = simple(
+        target_map                  = map_data,
+        selection                   = selection,
+        selection_real_space        = selection_real_space,
+        max_iterations              = max_iterations,
+        geometry_restraints_manager = geometry_restraints_manager.geometry,
+        states_accumulator          = states_accumulator,
         gradients_method            = gradients_method)
-      self.w = self.weight.weight
-    if(selection is None):
-      selection = flex.bool(self.xray_structure.scatterers().size(), True)
-    refine_object = simple(
-      target_map                  = map_data,
-      selection                   = selection,
-      max_iterations              = max_iterations,
-      geometry_restraints_manager = geometry_restraints_manager.geometry,
-      states_accumulator          = states_accumulator,
-      gradients_method            = gradients_method)
-    refine_object.refine(weight = self.w, xray_structure = self.xray_structure)
-    self.rmsd_bonds_final, self.rmsd_angles_final = refine_object.rmsds()
-    self.xray_structure=self.xray_structure.replace_sites_cart(
-      new_sites=refine_object.sites_cart(), selection=None)
-    self.pdb_hierarchy.adopt_xray_structure(self.xray_structure)
+      refine_object.refine(
+        weight = self.w, xray_structure = self.xray_structure)
+      self.rmsd_bonds_final, self.rmsd_angles_final = refine_object.rmsds()
+      self.xray_structure=self.xray_structure.replace_sites_cart(
+        new_sites=refine_object.sites_cart(), selection=None)
+      self.pdb_hierarchy.adopt_xray_structure(self.xray_structure)
 
 class simple(object):
   def __init__(
@@ -75,6 +80,8 @@ class simple(object):
         states_accumulator=None,
         ncs_groups=None):
     adopt_init_args(self, locals())
+    self.lbfgs_core_params = scitbx.lbfgs.core_parameters(
+      stpmax = 25.0)
     self.lbfgs_termination_params = scitbx.lbfgs.termination_parameters(
       max_iterations = max_iterations)
     self.lbfgs_exception_handling_params = scitbx.lbfgs.\
@@ -99,6 +106,7 @@ class simple(object):
         geometry_restraints_manager     = self.geometry_restraints_manager,
         real_space_target_weight        = weight,
         real_space_gradients_delta      = self.real_space_gradients_delta,
+        lbfgs_core_params               = self.lbfgs_core_params,
         lbfgs_termination_params        = self.lbfgs_termination_params,
         lbfgs_exception_handling_params = self.lbfgs_exception_handling_params,
         states_collector                = self.states_accumulator)
@@ -334,16 +342,16 @@ class box_refinement_manager(object):
         if state:
           iselection.append(i)
       box = utils.extract_box_around_model_and_map(
-        xray_structure = self.xray_structure,
+        xray_structure = self.xray_structure.select(selection=selection_within),
         map_data       = self.target_map,
-        selection      = selection_within,
         box_cushion    = box_cushion)
       new_unit_cell = box.xray_structure_box.unit_cell()
-      geo_box = self.geometry_restraints_manager.select(box.selection)
+      geo_box = self.geometry_restraints_manager.select(selection_within)
       geo_box = geo_box.discard_symmetry(new_unit_cell=new_unit_cell)
-      geo_box.remove_reference_coordinate_restraints_in_place() # disaster happens otherwise
+      geo_box.shift_sites_cart(box.shift_cart) # disaster happens otherwise
       map_box = box.map_box
       sites_cart_box = box.xray_structure_box.sites_cart()
+
       rsr_simple_refiner = simple(
         target_map                  = map_box,
         selection                   = sel,
@@ -360,7 +368,7 @@ class box_refinement_manager(object):
         rms_angles_limit = rms_angles_limit)
       self.weight_optimal = real_space_result.weight_final
       sites_cart_box_refined = real_space_result.sites_cart_result
-      shift_back = [-box.shift_cart[i] for i in xrange(3)]
+      shift_back = [-box.shift_cart[i] for i in range(3)]
       sites_cart_box_refined_shifted_back = \
         sites_cart_box_refined + shift_back # Sure + not - ?
       sites_cart_refined = sites_cart_box_refined_shifted_back.select(sel)
@@ -403,12 +411,68 @@ class minimize_wrapper_with_map():
       refine_ncs_operators=False,
       number_of_cycles=1,
       cycles_to_converge=2,
+      min_mode='simple_cycles',
+      resolution=3.,
       log=None):
+
+    # completely new way of doing this. using RSR macro-cycle
+    # for test compatibility:
+    print("Minimizing using reference map...", file=log)
+    if model.ncs_constraints_present():
+      print("  Minimizing... (NCS)", file=log)
+    else:
+      print("  Minimizing...", file=log)
+    from phenix.refinement.macro_cycle_real_space import run as rsr_mc_run
+    import scitbx.math
+    from phenix.refinement import rsr
+    rsr_master_params = rsr.master_params_str
+    import iotbx.phil
+    rsr_master_params = iotbx.phil.parse(rsr_master_params, process_includes=True)
+    import mmtbx.idealized_aa_residues.rotamer_manager
+    sin_cos_table = scitbx.math.sin_cos_table(n=10000)
+    params = rsr_master_params.extract()
+    params.pdb_interpretation = model._pdb_interpretation_params.pdb_interpretation
+    params.refinement.run = "minimization_global+local_grid_search"
+    params.refine_ncs_operators=False
+    params.refinement.macro_cycles = number_of_cycles
+    params.resolution = resolution
+    rotamer_manager = mmtbx.idealized_aa_residues.rotamer_manager.load(
+        rotamers = "favored")
+    rigid_body_selections = [] # no RBR here
+    from iotbx import map_model_manager
+    from iotbx import map_manager
+    mm = map_manager.map_manager(
+      map_data                   = target_map,
+      unit_cell_grid             = target_map.all(),
+      wrapping                   = False,
+      unit_cell_crystal_symmetry = model.crystal_symmetry())
+    mmm = map_model_manager.map_model_manager(
+      model       = model,
+      map_manager = mm)
+    res = rsr_mc_run(
+      params                = params,
+      map_model_manager     = mmm,
+      log                   = log,
+      rotamer_manager       = rotamer_manager,
+      sin_cos_table         = sin_cos_table,
+      rigid_body_selections = rigid_body_selections)
+
+    model.set_sites_cart_from_hierarchy(res.model.get_hierarchy())
+    res.structure_monitor.states_collector.write(file_name="rsr_all_states.pdb")
+    return
+
+
+
+
+
+    # end ===================================================
+    # Very sophisticated implementation. Need to investigate before removal.
+
     from mmtbx.refinement.geometry_minimization import add_rotamer_restraints
     from mmtbx.refinement.minimization_monitor import minimization_monitor
     self.model = model
     self.log = log
-    print >> self.log, "Minimizing using reference map..."
+    print("Minimizing using reference map...", file=self.log)
     self.log.flush()
 
     # copy-paste from cctbx_project/mmtbx/refinement/geometry_minimization.py:
@@ -427,20 +491,21 @@ class minimize_wrapper_with_map():
         number_of_cycles=number_of_cycles,
         max_number_of_cycles=20,
         cycles_to_converge=cycles_to_converge,
-        mode="no_outliers")
+        mode=min_mode)
     selection_real_space = None
     import mmtbx.refinement.real_space.weight
     self.w = 1
-    print >> log, "number_of_cycles", number_of_cycles
-    print >> log, "Stats before minimization:"
+    print("number_of_cycles", number_of_cycles, file=log)
+    print("Stats before minimization:", file=log)
     ms = self.model.geometry_statistics()
     ms.show(log=log)
 
     while min_monitor.need_more_cycles():
-      print >> self.log, "Cycle number", min_monitor.get_current_cycle_n()
-      self.model.get_restraints_manager().geometry.update_ramachandran_restraints_phi_psi_targets(
-          sites_cart=self.model.get_sites_cart())
-      print >> self.log, "  Updating rotamer restraints..."
+      print("Cycle number", min_monitor.get_current_cycle_n(), file=self.log)
+      self.model.get_restraints_manager().geometry.\
+          update_ramachandran_restraints_phi_psi_targets(
+              hierarchy=self.model.get_hierarchy())
+      print("  Updating rotamer restraints...", file=self.log)
       add_rotamer_restraints(
         pdb_hierarchy      = self.model.get_hierarchy(),
         restraints_manager = self.model.get_restraints_manager(),
@@ -454,7 +519,7 @@ class minimize_wrapper_with_map():
 
       if min_monitor.need_weight_optimization():
         # if self.w is None:
-        print >> self.log, "  Determining weight..."
+        print("  Determining weight...", file=self.log)
         self.log.flush()
         self.weight = mmtbx.refinement.real_space.weight.run(
             map_data                    = target_map,
@@ -471,12 +536,12 @@ class minimize_wrapper_with_map():
         # self.w = 0
         # self.w = self.weight.weight
         for s in self.weight.msg_strings:
-          print >> self.log, s
+          print(s, file=self.log)
 
       if ncs_restraints_group_list is None or len(ncs_restraints_group_list)==0:
         #No NCS
-        print >> self.log, "  Minimizing..."
-        print >> self.log, "     with weight %f" % self.w
+        print("  Minimizing...", file=self.log)
+        print("     with weight %f" % self.w, file=self.log)
         self.log.flush()
         refine_object = simple(
             target_map                  = target_map,
@@ -488,7 +553,7 @@ class minimize_wrapper_with_map():
             ncs_groups                  = ncs_groups)
         refine_object.refine(weight = self.w, xray_structure = self.model.get_xray_structure())
         self.rmsd_bonds_final, self.rmsd_angles_final = refine_object.rmsds()
-        print >> log, "RMSDS:", self.rmsd_bonds_final, self.rmsd_angles_final
+        print("RMSDS:", self.rmsd_bonds_final, self.rmsd_angles_final, file=log)
         # print >> log, "sizes:", len(refine_object.sites_cart()), len(self.xrs.scatterers())
         self.model.set_sites_cart(refine_object.sites_cart(), update_grm=True)
         # print >> log, "sizes", self.xrs.scatterers()
@@ -502,7 +567,7 @@ class minimize_wrapper_with_map():
         #     xray_structure = self.model.get_xray_structure(),
         #     map_data       = target_map,
         #     d_min          = 3)
-        print >> self.log, "  Minimizing... (NCS)"
+        print("  Minimizing... (NCS)", file=self.log)
         tfg_obj = mmtbx.refinement.minimization_ncs_constraints.\
           target_function_and_grads_real_space(
             map_data                   = target_map,

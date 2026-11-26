@@ -1,10 +1,10 @@
-from __future__ import division
+from __future__ import absolute_import, division, print_function
 from libtbx import test_utils
 import libtbx.load_env
 
-
-tst_list = (
+tst_list = [
   "$D/tests/tst_smoothing.py",
+  "$D/tests/tst_genetic_algorithm_with_mp.py",
   "$D/tests/tst_basic.py",
   "$B/array_family/tst_af_1",
   "$B/array_family/tst_af_2",
@@ -18,6 +18,7 @@ tst_list = (
   "$B/array_family/tst_ref_matrix_facet",
   "$B/array_family/tst_accessors",
   "$B/array_family/tst_optional_copy",
+  "$B/array_family/tst_rectangular_full_packed",
   "$D/array_family/boost_python/tst_flex_argument_passing.py",
   "$B/serialization/tst_base_256",
   "$D/math/tests/tst_minimum_covering_ellipsoid.py",
@@ -43,6 +44,7 @@ tst_list = (
   "$D/array_family/boost_python/regression_test.py",
   "$D/array_family/boost_python/tst_flex.py",
   "$D/array_family/boost_python/tst_numpy_bridge.py",
+  "$D/array_family/boost_python/tst_numpy_scalar_conversions.py",
   "$D/array_family/boost_python/tst_smart_selection.py",
   "$D/array_family/boost_python/tst_shared.py",
   "$D/array_family/boost_python/tst_integer_offsets_vs_pointers.py",
@@ -94,6 +96,8 @@ tst_list = (
   "$D/lbfgs/tst_curvatures.py",
   "$D/lbfgs/tst_lbfgs_fem.py",
   "$D/lbfgs/tst_func_free_line_search.py",
+  "$D/lbfgs/tst_max_shift.py",
+  "$D/lbfgs/tst_gradient_only_line_search.py",
   "$B/lbfgs/tst_lbfgs",
   "$D/lbfgsb/boost_python/tst_lbfgsb.py",
   ["$D/fftpack/boost_python/tst_fftpack.py"],
@@ -132,15 +136,19 @@ tst_list = (
   "$D/tests/simplex.py",
   "$D/tests/differential_evolution.py",
   "$D/tests/golden_section_search.py",
+  "$D/tests/tst_minimizer_lbfgs_general.py",
   "$D/tests/direct_search_simulated_annealing.py",
   "$D/random/tests/tst_random.py",
   "$D/lstbx/tests/tst_normal_equations.py",
   "$D/lstbx/tests/test_problems.py",
   "$D/glmtbx/tests/tst.py",
+  "$D/dtmin/regression/tst_dtmin_basic.py",
+  "$D/dtmin/regression/tst_dtmin_booth.py",
+  "$D/dtmin/regression/tst_dtmin_twisted.py",
   "$D/suffixtree/test/tst_single.py",
-  )
+  ]
 
-def run () :
+def run():
   build_dir = libtbx.env.under_build("scitbx")
   dist_dir = libtbx.env.dist_path("scitbx")
 

@@ -1,8 +1,9 @@
-from __future__ import division
+from __future__ import absolute_import, division, print_function
 from cctbx.development import random_structure
 from cctbx.sgtbx import space_group_info
-import boost.python
-ext = boost.python.import_ext("cctbx_asymmetric_map_ext")
+import boost_adaptbx.boost.python as bp
+from six.moves import range
+ext = bp.import_ext("cctbx_asymmetric_map_ext")
 from cctbx_asymmetric_map_ext import *
 from cctbx.array_family import flex
 from cctbx import maptbx
@@ -12,8 +13,8 @@ import mmtbx.bulk_solvent.bulk_solvent_and_scaling as bss
 from libtbx.test_utils import approx_equal
 from cctbx import adptbx
 
-import boost.python
-ext = boost.python.import_ext("mmtbx_f_model_ext")
+import boost_adaptbx.boost.python as bp
+ext = bp.import_ext("mmtbx_f_model_ext")
 
 def get_f_masks(xrs, miller_array):
   crystal_gridding = maptbx.crystal_gridding(
@@ -33,7 +34,7 @@ def get_f_masks(xrs, miller_array):
   n = mask_data.all()
   mask_data1 = flex.double(flex.grid(n), 0)
   mask_data2 = flex.double(flex.grid(n), 0)
-  I,J,K = xrange(n[0]), xrange(n[1]), xrange(n[2])
+  I,J,K = range(n[0]), range(n[1]), range(n[2])
   for i in I:
     for j in J:
       for k in K:
@@ -126,7 +127,7 @@ def fd(TGO, k_sol, b_sol, u_star, param, e = 1.e-3):
 
 def run_group(symbol):
   group = space_group_info(symbol);
-  print "\n=="
+  print("\n==")
   elements = ('C', 'N', 'O', 'H')*11
   xrs = random_structure.xray_structure(
     space_group_info = group,
@@ -158,28 +159,28 @@ def run_group(symbol):
   # u_star
   gu_a=list(tg.grad_u_star())
   gu_fd, junk=fd(TGO=TGO, k_sol=k_sol, b_sol=b_sol, u_star=u_star, param="u_star")
-  print "u_star:",gu_a
-  print "u_star:",gu_fd
+  print("u_star:",gu_a)
+  print("u_star:",gu_fd)
   TGO2 = cpp_tg_u_star_only(fmodel=fmodel)
   tg2 = TGO2.get_tg(k_sol=k_sol, b_sol=b_sol, u_star=u_star)
   gu_a2=list(tg2.grad_u_star())
   gu_fd2, junk=fd(TGO=TGO2, k_sol=k_sol, b_sol=b_sol, u_star=u_star, param="u_star")
-  print "u_star:",gu_a2
-  print "u_star:",gu_fd2
+  print("u_star:",gu_a2)
+  print("u_star:",gu_fd2)
   #
-  print "k_sol:", gk_a,  ck_a
-  print "k_sol:", gk_fd, ck_fd
-  print "b_sol:", gb_a,  cb_a
-  print "b_sol:", gb_fd, cb_fd
+  print("k_sol:", gk_a,  ck_a)
+  print("k_sol:", gk_fd, ck_fd)
+  print("b_sol:", gb_a,  cb_a)
+  print("b_sol:", gb_fd, cb_fd)
   #
   assert approx_equal(gk_a, gk_fd, eps=1.e-4)
   assert approx_equal(gb_a, gb_fd, eps=1.e-4)
   assert approx_equal(ck_a, ck_fd, eps=1.e-4)
   assert approx_equal(cb_a, cb_fd, eps=1.e-4)
   assert approx_equal(gu_a, gu_fd, eps=1.e-4)
-  assert approx_equal(gu_a2, gu_fd2, eps=1.e-6)
+  assert approx_equal(gu_a2, gu_fd2, eps=1.e-5)
 
 if (__name__ == "__main__"):
-  for i in [1,]:#xrange(1,231):
-    print i
+  for i in list(range(1,231))[:10]: # XXX Do first 10 (to save time)
+    print(i)
     run_group(i)

@@ -1,6 +1,9 @@
-from __future__ import division
+from __future__ import absolute_import, division, print_function
 import scitbx.math
 from scitbx.array_family import flex
+from scitbx import lbfgsb as lbfgsb_core
+import scitbx.lbfgs as lbfgs_core
+from libtbx import adopt_init_args
 
 floating_point_epsilon_double = scitbx.math.floating_point_epsilon_double_get()
 
@@ -90,20 +93,20 @@ class damped_newton(object):
     self.number_of_cholesky_decompositions = number_of_cholesky_decompositions
 
   def show_statistics(self):
-    print "scitbx.minimizers.damped_newton results:"
-    print "  function:", self.function.label()
-    print "  x_star:", list(self.x_star)
-    print "  0.5*f_x0.norm()**2:", 0.5*self.f_x0.norm()**2
-    print "  0.5*f_x_star.norm()**2:", 0.5*self.f_x_star.norm()**2
-    print "  number_of_iterations:", self.number_of_iterations
-    print "  number_of_function_evaluations:", \
-        self.number_of_function_evaluations
-    print "  number_of_gradient_evaluations:", \
-        self.number_of_gradient_evaluations
-    print "  number_of_hessian_evaluations:", \
-        self.number_of_hessian_evaluations
-    print "  number_of_cholesky_decompositions:", \
-        self.number_of_cholesky_decompositions
+    print("scitbx.minimizers.damped_newton results:")
+    print("  function:", self.function.label())
+    print("  x_star:", list(self.x_star))
+    print("  0.5*f_x0.norm()**2:", 0.5*self.f_x0.norm()**2)
+    print("  0.5*f_x_star.norm()**2:", 0.5*self.f_x_star.norm()**2)
+    print("  number_of_iterations:", self.number_of_iterations)
+    print("  number_of_function_evaluations:", \
+        self.number_of_function_evaluations)
+    print("  number_of_gradient_evaluations:", \
+        self.number_of_gradient_evaluations)
+    print("  number_of_hessian_evaluations:", \
+        self.number_of_hessian_evaluations)
+    print("  number_of_cholesky_decompositions:", \
+        self.number_of_cholesky_decompositions)
 
 class newton_more_thuente_1994(object):
 
@@ -214,26 +217,154 @@ class newton_more_thuente_1994(object):
     self.line_search_info = line_search.info_meaning
 
   def show_statistics(self):
-    print "scitbx.minimizers.newton_more_thuente_1994 results:"
+    print("scitbx.minimizers.newton_more_thuente_1994 results:")
     get_label = getattr(self.function, "label", None)
     if (get_label is not None):
-      print "  function:", get_label()
-    print "  x_star:", list(self.x_star)
+      print("  function:", get_label())
+    print("  x_star:", list(self.x_star))
     if (self.f_x0 is not None):
-      print "  0.5*f_x0.norm()**2:", 0.5*self.f_x0.norm()**2
-      print "  0.5*f_x_star.norm()**2:", 0.5*self.f_x_star.norm()**2
-    print "  functional_x0:", self.functional_x0
-    print "  functional_x_star:", self.functional_x_star
-    print "  number_of_iterations:", self.number_of_iterations
-    print "  number_of_function_evaluations:", \
-        self.number_of_function_evaluations
-    print "  number_of_functional_exceptions:", \
-        self.number_of_functional_exceptions
-    print "  number_of_gradient_evaluations:", \
-        self.number_of_gradient_evaluations
-    print "  number_of_hessian_evaluations:", \
-        self.number_of_hessian_evaluations
-    print "  number_of_cholesky_decompositions:", \
-        self.number_of_cholesky_decompositions
-    print "  line_search_info:", \
-        self.line_search_info
+      print("  0.5*f_x0.norm()**2:", 0.5*self.f_x0.norm()**2)
+      print("  0.5*f_x_star.norm()**2:", 0.5*self.f_x_star.norm()**2)
+    print("  functional_x0:", self.functional_x0)
+    print("  functional_x_star:", self.functional_x_star)
+    print("  number_of_iterations:", self.number_of_iterations)
+    print("  number_of_function_evaluations:", \
+        self.number_of_function_evaluations)
+    print("  number_of_functional_exceptions:", \
+        self.number_of_functional_exceptions)
+    print("  number_of_gradient_evaluations:", \
+        self.number_of_gradient_evaluations)
+    print("  number_of_hessian_evaluations:", \
+        self.number_of_hessian_evaluations)
+    print("  number_of_cholesky_decompositions:", \
+        self.number_of_cholesky_decompositions)
+    print("  line_search_info:", \
+        self.line_search_info)
+
+
+class lbfgs(object):
+  """
+    A general L-BFGS and L-BFGS-B minimizer class.
+
+    This class implements a minimizer for solving optimization problems using
+    either the Limited-memory Broyden-Fletcher-Goldfarb-Shanno (L-BFGS) or
+    L-BFGS with Box constraints (L-BFGS-B) algorithms.
+    The behavior is determined by the selected mode, and it interacts with
+    provided calculator object to compute function values, gradients, and
+    curvatures.
+
+    Parameters
+    ----------
+    mode : str
+        The minimization mode, either 'lbfgs' for L-BFGS or 'lbfgsb' for
+        L-BFGS-B.
+    calculator : object
+        An object that provides methods to compute the target function value,
+        gradients, and optionally curvatures. It must have `x`,
+        `initial_values`, `target()`, `gradients()`, and `curvatures()`
+        methods.
+    max_iterations : int, optional
+        Maximum number of iterations for the minimization. Defaults to None,
+        allowing unlimited iterations.
+    diag_mode : str, optional
+        If specified, controls the frequency of diagonal updates for curvature
+        approximation. Must be either 'once' or 'always'. Defaults to None.
+
+    Attributes
+    ----------
+    x : flex.double
+        The current values of the variables being optimized.
+    minimizer : object
+        The underlying L-BFGS or L-BFGS-B minimizer object, depending on the
+        selected mode.
+
+    Notes
+    -----
+    - The class selects between L-BFGS and L-BFGS-B based on
+      the value of `mode`. For L-BFGS-B, it also uses bounds specified by the
+      `calculator` object.
+    - The `diag_mode` controls if curvature are used during optimization.
+
+    Methods
+    -------
+    compute_functional_and_gradients()
+        Computes the target function value and gradients for the current
+        values of the variables.
+    compute_functional_gradients_diag()
+        Computes the target function value, gradients, and curvatures
+        (diagonal) for the current values of the variables (only applicable
+        in modes where curvature is needed).
+  """
+
+  def __init__(self,
+               mode,
+               calculator,
+               core_params = None,
+               exception_handling_params = None,
+               max_iterations = None,
+               min_iterations = 0,
+               diag_mode = None,
+               gradient_only = False):
+    """
+    Initialize the minimizer with the selected mode and calculator object.
+    """
+    adopt_init_args(self, locals())
+    self.callback_after_step = getattr(
+      self.calculator, "callback_after_step", None)
+    assert mode in ['lbfgs', 'lbfgsb']
+    self.x = self.calculator.x
+    # necessary? also done in run_c_plus_plus
+    if diag_mode is not None: assert diag_mode in ['once', 'always']
+    if self.mode == 'lbfgs':
+      # TODO: How to best expose all the params of these classes?
+      if core_params is None: core_params = lbfgs_core.core_parameters()
+      termination_params = lbfgs_core.termination_parameters(
+        max_iterations = max_iterations, min_iterations = min_iterations)
+      if exception_handling_params is None:
+        exception_handling_params = lbfgs_core.exception_handling_parameters()
+      self.minimizer = lbfgs_core.run_c_plus_plus(
+        target_evaluator          = self,
+        termination_params        = termination_params,
+        core_params               = core_params,
+        exception_handling_params = exception_handling_params,
+        log                       = None,
+        gradient_only             = gradient_only,
+        line_search               = True
+        )
+    if self.mode == 'lbfgsb':
+      self.minimizer = lbfgsb_core.run(
+        target_evaluator = self,
+        max_iterations   = max_iterations,
+        bound_flags      = self.calculator.bound_flags,
+        lower_bound      = self.calculator.lower_bound,
+        upper_bound      = self.calculator.upper_bound,
+        n                = self.x.size())
+
+  def compute_functional_and_gradients(self):
+    """
+    Compute the target function value and gradients.
+
+    Updates the calculator with the current values of the variables `x`,
+    then computes the target function value and gradients.
+    """
+    self.calculator.update(x = self.x)
+    t = self.calculator.target()
+    g = self.calculator.gradients()
+    if self.mode == 'lbfgs':
+      return t,g
+    if self.mode == 'lbfgsb':
+      return self.x,t,g
+
+  def compute_functional_gradients_diag(self):
+    """
+    Compute the target function value, gradients, and diagonal curvatures.
+
+    Updates the calculator with the current values of the variables `x`,
+    then computes the target function value, gradients, and curvatures
+    (diagonal elements).
+    """
+    self.calculator.update(x = self.x)
+    t = self.calculator.target()
+    g = self.calculator.gradients()
+    d = self.calculator.curvatures()
+    return t,g,d
